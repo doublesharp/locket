@@ -7,10 +7,17 @@ llvm_cov="${CARGO_LLVM_COV:-cargo llvm-cov}"
 jobs="${CARGO_JOBS:-12}"
 offline="${OFFLINE:-1}"
 strict="${STRICT:-0}"
+doublcov_version="${DOUBLCOV_VERSION:-0.4.3}"
+doublcov_pkg="@0xdoublesharp/doublcov@${doublcov_version}"
 
 offline_args=()
 if [[ "${offline}" == "1" ]]; then
   offline_args=(--offline)
+fi
+
+doublcov_open_args=()
+if [[ -n "${CI:-}" ]]; then
+  doublcov_open_args=(--no-open)
 fi
 
 if ! ${llvm_cov} --version >/dev/null 2>&1; then
@@ -30,7 +37,23 @@ case "${mode}" in
     exec ${llvm_cov} --workspace --all-features "${offline_args[@]}" --fail-under-lines 90 --lcov --output-path coverage/lcov.info
     ;;
   html)
-    exec ${llvm_cov} --workspace --all-features "${offline_args[@]}" --fail-under-lines 90 --html --output-dir coverage/html
+    if ! command -v npx >/dev/null 2>&1; then
+      if [[ "${strict}" == "1" ]]; then
+        echo "npx (Node.js) is required for the doublcov html report" >&2
+        exit 127
+      fi
+
+      echo "npx not found; falling back to cargo llvm-cov --html" >&2
+      exec ${llvm_cov} --workspace --all-features "${offline_args[@]}" --fail-under-lines 90 --html --output-dir coverage/html
+    fi
+
+    ${llvm_cov} --workspace --all-features "${offline_args[@]}" --fail-under-lines 90 --lcov --output-path coverage/lcov.info
+    exec npx -y "${doublcov_pkg}" build \
+      --lcov coverage/lcov.info \
+      --sources crates \
+      --extensions rs \
+      --out coverage/report \
+      "${doublcov_open_args[@]}"
     ;;
   branch)
     exec ${llvm_cov} --workspace --all-features "${offline_args[@]}" --branch --fail-under-lines 90 --fail-under-branches 90 --lcov --output-path coverage/branch.lcov.info

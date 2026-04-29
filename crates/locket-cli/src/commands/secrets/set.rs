@@ -15,8 +15,8 @@ use crate::project_files::refresh_example_for_project_if_enabled;
 use crate::runtime::RuntimeContext;
 use crate::secret_helpers::{SecretEncryptRequest, encrypt_secret_version, secret_audit_metadata};
 use crate::{
-    ResolvedProject, SecretSourceArg, SecretWriteArgs, ensure_trusted_project_root,
-    now_unix_nanos, open_store, require_project, secret_deleted_error, source_arg_to_str,
+    ResolvedProject, SecretSourceArg, SecretWriteArgs, ensure_trusted_project_root, now_unix_nanos,
+    open_store, require_project, secret_deleted_error, source_arg_to_str,
 };
 
 pub fn set_command(

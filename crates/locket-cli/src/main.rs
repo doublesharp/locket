@@ -1,111 +1,86 @@
 //! Locket command-line entry point.
 
-mod agent;
-mod audit;
-mod bootstrap;
-mod bundle;
-mod cli_error;
-mod client;
-mod compose;
-mod config_cmd;
-mod config_validation;
-mod context;
-mod debug_cmd;
-mod device;
-pub(crate) mod diagnostics;
-mod diff;
-mod emit_example;
-mod env;
-mod exec;
-mod get;
-mod import;
-mod init;
-mod install_hooks;
-mod key_access;
-mod lock;
-mod meta;
-mod onboarding;
-mod passkey;
-mod policy_authoring;
-mod profile;
-mod project;
-mod project_files;
-mod prompts;
-mod recovery;
-mod redact;
-mod run;
+mod commands;
 mod runtime;
-pub(crate) mod scan;
-mod secret_helpers;
-mod secrets_cmd;
-mod set;
-mod shell;
-mod status;
-mod time_helpers;
+mod support;
 
-pub(crate) use cli_error::{
-    CliError, bundle_verification_error, exec_prepare_error,
-    project_root_untrusted_error, secret_deleted_error, unimplemented_in_build_error,
+// Legacy module-path aliases at crate root so existing intra-crate `crate::foo`
+// references resolve through the new layout. Each alias is a thin re-export of
+// its new home.
+pub(crate) use runtime::error as cli_error;
+pub(crate) use runtime::key_access;
+pub(crate) use runtime::prompts;
+pub(crate) use support::config_validation;
+pub(crate) use support::project_files;
+pub(crate) use support::secret_helpers;
+
+pub(crate) use runtime::context::RuntimeContext;
+pub(crate) use runtime::error::{
+    CliError, bundle_verification_error, exec_prepare_error, project_root_untrusted_error,
+    secret_deleted_error, unimplemented_in_build_error,
 };
-pub(crate) use config_validation::{
+pub(crate) use runtime::key_access::{
+    MasterKeySource, default_profile, ensure_project_exists, load_master_key,
+    load_master_key_verified_by_project_key, load_project_key, load_project_key_with_source,
+    store_master_key_with_fallback,
+};
+#[cfg(test)]
+pub(crate) use runtime::prompts::{
+    ConfirmationReader, PassphraseReader, RecoveryCodeReader, SecretValueReader,
+    read_secret_value_from_reader, validate_secret_value,
+};
+
+pub(crate) use support::config_validation::{
     CONFIG_KEY_SPECS, config_get_value, config_set_value, config_unset_value, format_config_value,
     parse_config_value, read_user_config, split_config_key, validate_config_key,
     validate_config_value_not_secret_like, validate_stored_config_value,
     write_config_update_audit_if_available, write_user_config,
 };
-pub(crate) use context::privacy_redact_names_enabled;
-#[cfg(test)]
-pub(crate) use device::{device_fingerprint_hex, encode_device_descriptor};
-pub(crate) use install_hooks::git_dir_for_worktree;
-pub(crate) use key_access::{
-    MasterKeySource, default_profile, ensure_project_exists, load_master_key,
-    load_master_key_verified_by_project_key, load_project_key, load_project_key_with_source,
-    store_master_key_with_fallback,
-};
-pub(crate) use project_files::{
+pub(crate) use support::project_files::{
     EXAMPLE_FILE, GITIGNORE_ENTRIES, GITIGNORE_FILE, collect_example_secret_names,
     config_bool_value, ensure_gitignore, refresh_example_for_project_if_enabled,
     write_example_block, write_example_block_for_emit, write_example_emit_audit,
 };
-#[cfg(test)]
-pub(crate) use prompts::{
-    ConfirmationReader, PassphraseReader, RecoveryCodeReader, SecretValueReader,
-    read_secret_value_from_reader, validate_secret_value,
+use support::secret_helpers::{
+    PolicySecretSelection, ResolvedSecret, SecretEncryptRequest, decrypt_secret_version,
+    encrypt_secret_version, policy_secret_selections, resolve_active_secret_for_source,
+    resolve_secret_for_source, secret_audit_metadata, select_copy_profiles_and_sources,
 };
+pub(crate) use support::time::{
+    format_optional_unix_nanos, format_unix_nanos, optional_i64, resolve_diff_since,
+    unix_nanos_to_rfc3339,
+};
+
+pub(crate) use commands::project::install_hooks::git_dir_for_worktree;
+pub(crate) use commands::scan::context::privacy_redact_names_enabled;
 #[cfg(test)]
-pub(crate) use recovery::{recovery_dir, recovery_rotate_command, restore_from_recovery_code};
-#[cfg(test)]
-pub(crate) use redact::{
+pub(crate) use commands::scan::redact::{
     AiSafeRawChunk, AiSafeStream, AiSafeStreamRedactor, KnownSecretRedaction,
     collect_redaction_values_for_redact,
 };
-pub(crate) use runtime::RuntimeContext;
-use secret_helpers::{
-    PolicySecretSelection, ResolvedSecret, SecretEncryptRequest,
-    decrypt_secret_version, encrypt_secret_version,
-    policy_secret_selections, resolve_active_secret_for_source,
-    resolve_secret_for_source, secret_audit_metadata,
-    select_copy_profiles_and_sources,
+#[cfg(test)]
+pub(crate) use commands::secrets::get::{
+    ClipboardCommand, copy_secret_to_clipboard_with, get_command_with_clipboard,
+    select_clipboard_command,
 };
 #[cfg(test)]
-pub(crate) use get::{ClipboardCommand, copy_secret_to_clipboard_with, get_command_with_clipboard, select_clipboard_command};
+pub(crate) use commands::secrets::import::{EnvImportEntry, parse_env_import};
 #[cfg(test)]
-pub(crate) use import::{EnvImportEntry, parse_env_import};
+pub(crate) use commands::secrets::set::set_secret_value;
 #[cfg(test)]
-pub(crate) use set::set_secret_value;
+pub(crate) use commands::shell::SHELL_HOOK_BEGIN;
 #[cfg(test)]
-pub(crate) use shell::SHELL_HOOK_BEGIN;
-pub(crate) use time_helpers::{
-    format_optional_unix_nanos, format_unix_nanos, optional_i64, resolve_diff_since,
-    unix_nanos_to_rfc3339,
+pub(crate) use commands::team::device::{device_fingerprint_hex, encode_device_descriptor};
+#[cfg(test)]
+pub(crate) use commands::vault::recovery::{
+    recovery_dir, recovery_rotate_command, restore_from_recovery_code,
 };
 
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::Shell as CompletionShell;
 use locket_core::{
     CommandPolicy, CommandSpec, Duration as LocketDuration, ExternalEnvSource, KeyId,
-    PROJECT_CONFIG_SCHEMA_VERSION, PolicyDocument, ProfileId, ProjectConfig,
-    SecretId, SecretName,
+    PROJECT_CONFIG_SCHEMA_VERSION, PolicyDocument, ProfileId, ProjectConfig, SecretId, SecretName,
 };
 use locket_crypto::{
     EncryptedSecretValue, HkdfWrapInfo, KeyPurpose, KeyWrapAad, KeyWrapPurpose,
@@ -139,8 +114,8 @@ use std::process::ExitCode as ProcessExitCode;
 use std::str::FromStr;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use policy_authoring::PolicyCommand;
-use time_helpers::NANOS_PER_SECOND;
+use commands::policy::PolicyCommand;
+use support::time::NANOS_PER_SECOND;
 
 pub(crate) const LOCKET_TOML: &str = "locket.toml";
 pub(crate) const CONFIG_TOML: &str = "config.toml";
@@ -1053,58 +1028,65 @@ fn run_with_context(
     context: &RuntimeContext,
     output: &mut impl Write,
 ) -> Result<u8, CliError> {
+    use commands::{
+        agent, audit, config, debug, diagnostics, exec, policy, project, scan, secrets, shell,
+        team, trust, vault,
+    };
+
     let command = cli.command.unwrap_or(Command::Status);
 
     match command {
-        Command::Status => status::status(context, output)?,
+        Command::Status => project::status::status(context, output)?,
         Command::New(args) => new_command(context, output, &args)?,
-        Command::Bootstrap => bootstrap::bootstrap_command(context, output)?,
+        Command::Bootstrap => project::bootstrap::bootstrap_command(context, output)?,
         Command::Completion(args) => completion_command(output, args.shell)?,
         Command::Doctor => return diagnostics::doctor_command(context, output),
-        Command::Debug { command } => debug_cmd::debug_command(context, output, command)?,
-        Command::Init(args) => init::init(context, output, args)?,
-        Command::Set(args) => set::set_command(context, output, &args)?,
-        Command::Import(args) => import::import_command(context, output, &args)?,
-        Command::Get(args) => get::get_command(context, output, &args)?,
-        Command::Rm(args) => secrets_cmd::rm_command(context, output, &args)?,
-        Command::Purge(args) => secrets_cmd::purge_command(context, output, &args)?,
-        Command::List(args) => secrets_cmd::list_command(context, output, &args)?,
-        Command::Exec(args) => exec::exec_command(context, output, &args)?,
-        Command::Run(args) => run::run_command(context, output, &args)?,
-        Command::Env { command } => env::env_command(context, output, command)?,
-        Command::Compose { command } => compose::compose_command(context, output, command)?,
-        Command::Rotate(args) => secrets_cmd::rotate_command(context, output, &args)?,
-        Command::Meta(args) => meta::meta_command(context, output, &args)?,
-        Command::History(args) => secrets_cmd::history_command(context, output, &args)?,
-        Command::Diff(args) => diff::diff_command(context, output, &args)?,
-        Command::Copy(args) => secrets_cmd::copy_command(context, output, &args)?,
+        Command::Debug { command } => debug::debug_command(context, output, command)?,
+        Command::Init(args) => project::init::init(context, output, args)?,
+        Command::Set(args) => secrets::set::set_command(context, output, &args)?,
+        Command::Import(args) => secrets::import::import_command(context, output, &args)?,
+        Command::Get(args) => secrets::get::get_command(context, output, &args)?,
+        Command::Rm(args) => secrets::lifecycle::rm_command(context, output, &args)?,
+        Command::Purge(args) => secrets::lifecycle::purge_command(context, output, &args)?,
+        Command::List(args) => secrets::lifecycle::list_command(context, output, &args)?,
+        Command::Exec(args) => exec::exec::exec_command(context, output, &args)?,
+        Command::Run(args) => exec::run::run_command(context, output, &args)?,
+        Command::Env { command } => exec::env::env_command(context, output, command)?,
+        Command::Compose { command } => exec::compose::compose_command(context, output, command)?,
+        Command::Rotate(args) => secrets::lifecycle::rotate_command(context, output, &args)?,
+        Command::Meta(args) => secrets::meta::meta_command(context, output, &args)?,
+        Command::History(args) => secrets::lifecycle::history_command(context, output, &args)?,
+        Command::Diff(args) => scan::diff::diff_command(context, output, &args)?,
+        Command::Copy(args) => secrets::lifecycle::copy_command(context, output, &args)?,
         Command::Audit { command } => audit::audit_command(context, output, command)?,
-        Command::Lock => lock::lock_command(context, output)?,
-        Command::Unlock(args) => lock::unlock_command(context, output, &args)?,
-        Command::EmitExample => emit_example::emit_example_command(context, output)?,
-        Command::InstallHooks => install_hooks::install_hooks_command(context, output)?,
-        Command::Profile { command } => profile::profile_command(context, output, command)?,
-        Command::Policy { command } => policy_authoring::command(context, output, command)?,
-        Command::Project { command } => project::project_command(context, output, command)?,
+        Command::Lock => vault::lock::lock_command(context, output)?,
+        Command::Unlock(args) => vault::lock::unlock_command(context, output, &args)?,
+        Command::EmitExample => project::emit_example::emit_example_command(context, output)?,
+        Command::InstallHooks => project::install_hooks::install_hooks_command(context, output)?,
+        Command::Profile { command } => trust::profile::profile_command(context, output, command)?,
+        Command::Policy { command } => policy::command(context, output, command)?,
+        Command::Project { command } => trust::project::project_command(context, output, command)?,
         Command::Shellenv(args) => shell::shellenv_command(output, &args)?,
         Command::Hook(args) => shell::hook_command(output, &args)?,
         Command::Allow => shell::allow_command(context, output)?,
         Command::Deny(args) => shell::deny_command(context, output, &args)?,
         Command::Agent { command } => agent::agent_command(context, output, command)?,
-        Command::Use(args) => profile::use_profile_command(context, output, args)?,
-        Command::Scan(args) => scan::scan_command(context, output, &args)?,
-        Command::Redact(args) => redact::redact_command(context, output, &args)?,
-        Command::Context(args) => context::context_command(context, output, &args)?,
-        Command::AiSafe(args) => redact::ai_safe_command(context, output, &args)?,
-        Command::Config { command } => config_cmd::config_command(context, output, command)?,
-        Command::Passkey { command } => passkey::passkey_command(context, output, command)?,
-        Command::Device { command } => device::device_command(context, output, command)?,
-        Command::Client { command } => client::client_command(context, output, command)?,
-        Command::Export(args) => bundle::export_bundle_command(context, output, &args)?,
-        Command::ImportBundle(args) => bundle::import_bundle_command(context, output, &args)?,
-        Command::Bundle { command } => bundle::bundle_command(context, output, command)?,
-        Command::Recover(args) => recovery::recover_command(context, output, &args)?,
-        Command::Recovery { command } => recovery::recovery_command(context, output, command)?,
+        Command::Use(args) => trust::profile::use_profile_command(context, output, args)?,
+        Command::Scan(args) => scan::scanner::scan_command(context, output, &args)?,
+        Command::Redact(args) => scan::redact::redact_command(context, output, &args)?,
+        Command::Context(args) => scan::context::context_command(context, output, &args)?,
+        Command::AiSafe(args) => scan::redact::ai_safe_command(context, output, &args)?,
+        Command::Config { command } => config::config_command(context, output, command)?,
+        Command::Passkey { command } => vault::passkey::passkey_command(context, output, command)?,
+        Command::Device { command } => team::device::device_command(context, output, command)?,
+        Command::Client { command } => team::client::client_command(context, output, command)?,
+        Command::Export(args) => team::bundle::export_bundle_command(context, output, &args)?,
+        Command::ImportBundle(args) => team::bundle::import_bundle_command(context, output, &args)?,
+        Command::Bundle { command } => team::bundle::bundle_command(context, output, command)?,
+        Command::Recover(args) => vault::recovery::recover_command(context, output, &args)?,
+        Command::Recovery { command } => {
+            vault::recovery::recovery_command(context, output, command)?
+        }
     }
 
     Ok(0)
@@ -1133,7 +1115,10 @@ fn new_command(
         ));
     }
 
-    let template = onboarding::load_project_template(&context.template_dir, &args.from_template)?;
+    let template = commands::project::onboarding::load_project_template(
+        &context.template_dir,
+        &args.from_template,
+    )?;
     let rendered = template.render_project_config(template.name.clone())?;
     fs::write(&config_path, rendered)?;
     let config = read_project_config(&config_path)?;
@@ -1414,7 +1399,7 @@ fn ensure_template_profiles(
     context: &RuntimeContext,
     store: &Store,
     config: &ProjectConfig,
-    template: &onboarding::ProjectTemplate,
+    template: &commands::project::onboarding::ProjectTemplate,
     timestamp: i64,
 ) -> Result<(), CliError> {
     for profile_name in &template.profiles {

@@ -3,7 +3,7 @@
 use std::path::Path;
 
 use crate::CliError;
-use crate::scan;
+use crate::commands::scan::scanner;
 
 pub const NANOS_PER_SECOND: i64 = 1_000_000_000;
 
@@ -12,7 +12,7 @@ pub fn resolve_diff_since(project_root: &Path, value: &str) -> Result<i64, CliEr
         return Ok(timestamp);
     }
 
-    let output = scan::git_output(project_root, ["log", "-1", "--format=%ct", value]).map_err(|error| {
+    let output = scanner::git_output(project_root, ["log", "-1", "--format=%ct", value]).map_err(|error| {
         CliError::Config(format!(
             "could not resolve diff --since value {value:?} as an ISO date/time or Git revision: {error}"
         ))

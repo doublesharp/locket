@@ -13,7 +13,9 @@ use locket_crypto::{
     KeyPurpose, derive_recovery_key_v1, generate_key, generate_recovery_code_bytes,
     generate_recovery_salt,
 };
-use locket_platform::{RecoveryEnvelope, RecoveryKdfToml, save_recovery_envelope, save_recovery_kdf_toml};
+use locket_platform::{
+    RecoveryEnvelope, RecoveryKdfToml, save_recovery_envelope, save_recovery_kdf_toml,
+};
 use locket_store::{AuditWrite, Store};
 use serde_json::json;
 

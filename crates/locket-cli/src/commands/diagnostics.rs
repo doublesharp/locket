@@ -11,7 +11,7 @@ use locket_crypto::KeyPurpose;
 use locket_store::{AuditWrite, SCHEMA_VERSION};
 use serde_json::{Value, json};
 
-use super::{
+use crate::{
     CONFIG_KEY_SPECS, CliError, GITIGNORE_ENTRIES, GITIGNORE_FILE, HOOK_BEGIN, LOCKET_TOML,
     RuntimeContext, agent_log_path, agent_pid_path, agent_socket_path, format_hex,
     git_dir_for_worktree, load_project_key, now_unix_nanos, open_store, read_project_config,

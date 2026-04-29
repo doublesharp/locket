@@ -11,9 +11,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
+use super::device;
 use crate::{
     BundleCommand, BundleVerifyArgs, CliError, ExportArgs, ImportBundleArgs, ResolvedProject,
-    RuntimeContext, bundle_verification_error, default_profile, device, ensure_project_exists,
+    RuntimeContext, bundle_verification_error, default_profile, ensure_project_exists,
     ensure_trusted_project_root, format_hex, load_project_key, now_unix_nanos, open_store,
     require_project, set_user_only_file_options, set_user_only_file_permissions,
 };

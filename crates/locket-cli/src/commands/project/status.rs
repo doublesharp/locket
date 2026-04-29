@@ -5,9 +5,10 @@ use std::path::Path;
 
 use locket_store::ProfileRecord;
 
+use crate::commands::scan::scanner;
 use crate::{
     CliError, EXAMPLE_FILE, LOCKET_TOML, ResolvedProject, RuntimeContext, config_bool_value,
-    open_store, privacy_alias, read_user_config, resolve_project, root_hash, scan,
+    open_store, privacy_alias, read_user_config, resolve_project, root_hash,
 };
 
 pub fn status(context: &RuntimeContext, output: &mut impl Write) -> Result<(), CliError> {
@@ -106,7 +107,7 @@ const fn status_lock_state(
 fn status_scan_warning_count(root: &Path) -> Result<usize, CliError> {
     let mut findings = Vec::new();
     let mut suppressed = Vec::new();
-    scan::scan_path(root, root, &[], true, &mut findings, &mut suppressed)?;
+    scanner::scan_path(root, root, &[], true, &mut findings, &mut suppressed)?;
     findings.retain(|finding| !matches!(finding.path_label.as_str(), LOCKET_TOML | EXAMPLE_FILE));
     Ok(findings.len())
 }

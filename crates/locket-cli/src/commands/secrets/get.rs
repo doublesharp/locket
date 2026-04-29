@@ -4,13 +4,13 @@ use std::io::{self, IsTerminal, Write};
 use std::path::Path;
 use std::process::{Command as ProcessCommand, Stdio};
 
+use crate::GetArgs;
 use crate::cli_error::CliError;
 use crate::runtime::RuntimeContext;
 use crate::secret_helpers::{
     ValueAccessAudit, decrypt_current_secret, resolve_active_secret, reveal_ttl_seconds,
     write_value_access_audit_if_available,
 };
-use crate::GetArgs;
 
 pub fn get_command(
     context: &RuntimeContext,

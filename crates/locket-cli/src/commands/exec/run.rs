@@ -10,7 +10,9 @@ use std::str::FromStr;
 use locket_core::{CommandSpec, SessionId};
 use locket_store::{ProfileRecord, RuntimeSessionRecord, RuntimeSessionSecretNameRetention, Store};
 
-use crate::cli_error::{CliError, child_exit_error, exec_prepare_error, unimplemented_in_build_error};
+use crate::cli_error::{
+    CliError, child_exit_error, exec_prepare_error, unimplemented_in_build_error,
+};
 use crate::config_validation::{config_get_value, read_user_config};
 use crate::key_access::default_profile;
 use crate::runtime::RuntimeContext;

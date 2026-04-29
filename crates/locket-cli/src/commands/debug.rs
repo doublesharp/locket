@@ -2,7 +2,8 @@
 
 use std::io::Write;
 
-use crate::{CliError, DebugCommand, RuntimeContext, diagnostics};
+use super::diagnostics;
+use crate::{CliError, DebugCommand, RuntimeContext};
 
 pub fn debug_command(
     context: &RuntimeContext,
