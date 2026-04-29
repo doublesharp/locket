@@ -296,7 +296,7 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
     spawn path in `commands/exec/run.rs`. Errors: `InvalidPolicy` (65). Audit:
     extend `RUN` metadata with `shape: "argv" | "shell"`. Tests cover argv
     success, shell success, mixed/invalid policy rejection.
-  - [ ] **subtask** — run-confirm-gate: implement `confirm = true` policy
+  - [~] [723116e9] **subtask** — run-confirm-gate: implement `confirm = true` policy
     gate via `RuntimeContext::confirmation_reader` with the documented
     typed-string format. Audit: `RUN`/`DENIED` with
     `denial_reason: "confirmation_required"` on rejection; `RUN` with
