@@ -1,7 +1,11 @@
 use std::fs;
 use std::io::{self, Write};
+#[cfg(unix)]
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
+use flate2::Compression;
+use flate2::write::GzEncoder;
 use locket_core::PROJECT_CONFIG_SCHEMA_VERSION;
 use locket_crypto::KeyPurpose;
 use locket_store::{AuditWrite, SCHEMA_VERSION};
@@ -216,20 +220,13 @@ pub fn debug_bundle_command(
     let text = serde_json::to_string_pretty(&bundle)
         .map_err(|error| CliError::Config(error.to_string()))?;
 
-    if let Some(output_path) = output_path {
-        let path = PathBuf::from(output_path);
-        if path.exists() {
-            return Err(CliError::Config("debug bundle output already exists".to_owned()));
-        }
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        fs::write(&path, format!("{text}\n"))?;
-        writeln!(output, "debug_bundle: {}", path.display())?;
-        writeln!(output, "redacted: yes")?;
-    } else {
-        writeln!(output, "{text}")?;
-    }
+    let path = output_path.map_or_else(
+        || default_debug_bundle_path(context),
+        |output_path| Ok(PathBuf::from(output_path)),
+    )?;
+    write_debug_bundle_file(&path, &text)?;
+    writeln!(output, "debug_bundle: {}", path.display())?;
+    writeln!(output, "redacted: yes")?;
 
     Ok(())
 }
@@ -486,6 +483,79 @@ fn write_doctor_report(output: &mut impl Write, report: &DiagnosticReport) -> Re
         report.counts.skip,
         report.counts.critical_fail
     )?;
+    Ok(())
+}
+
+fn default_debug_bundle_path(context: &RuntimeContext) -> Result<PathBuf, CliError> {
+    let parent = context
+        .store_path
+        .parent()
+        .ok_or_else(|| CliError::Config("could not resolve diagnostics directory".to_owned()))?;
+    Ok(parent.join("diagnostics").join(format!("locket-debug-{}.tar.gz", now_unix_nanos()?)))
+}
+
+fn write_debug_bundle_file(path: &Path, text: &str) -> Result<(), CliError> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+        set_user_only_dir_permissions(parent)?;
+    }
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    set_user_only_file_options(&mut options);
+    let file = options.open(path).map_err(|error| {
+        if error.kind() == io::ErrorKind::AlreadyExists {
+            CliError::Config("debug bundle output already exists".to_owned())
+        } else {
+            CliError::Io(error)
+        }
+    })?;
+    write_debug_bundle_archive(file, text)?;
+    set_user_only_file_permissions(path)?;
+    Ok(())
+}
+
+fn write_debug_bundle_archive(file: fs::File, text: &str) -> Result<(), CliError> {
+    let encoder = GzEncoder::new(file, Compression::default());
+    let mut archive = tar::Builder::new(encoder);
+    let bytes = format!("{text}\n").into_bytes();
+    let mut header = tar::Header::new_gnu();
+    header.set_size(u64::try_from(bytes.len()).map_err(|_| CliError::Time)?);
+    header.set_mode(0o600);
+    header.set_mtime(u64::try_from(now_unix_nanos()? / 1_000_000_000).map_err(|_| CliError::Time)?);
+    header.set_cksum();
+    archive.append_data(&mut header, "bundle.json", bytes.as_slice())?;
+    let encoder = archive.into_inner()?;
+    encoder.finish()?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn set_user_only_file_options(options: &mut fs::OpenOptions) {
+    options.mode(0o600);
+}
+
+#[cfg(not(unix))]
+fn set_user_only_file_options(_options: &mut fs::OpenOptions) {}
+
+#[cfg(unix)]
+fn set_user_only_file_permissions(path: &Path) -> Result<(), CliError> {
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn set_user_only_file_permissions(_path: &Path) -> Result<(), CliError> {
+    Ok(())
+}
+
+#[cfg(unix)]
+fn set_user_only_dir_permissions(path: &Path) -> Result<(), CliError> {
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn set_user_only_dir_permissions(_path: &Path) -> Result<(), CliError> {
     Ok(())
 }
 
