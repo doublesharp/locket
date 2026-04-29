@@ -189,3 +189,31 @@ fn recovery_rotate_creates_envelope_and_prints_full_code() -> Result<(), Box<dyn
     assert!(!metadata.contains(code_line));
     Ok(())
 }
+
+#[test]
+fn recover_with_corrupted_kdf_file_exits_with_metadata_invalid()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    let kdf_path = directory.path().join(".locket/recovery/kdf.toml");
+    std::fs::write(&kdf_path, "this-is-not-valid-toml = = = corrupted\n")?;
+
+    let recover_context = context_with_recovery_code(&context, "ignored-code\n");
+    let result = run_with_context(
+        Cli::try_parse_from(["locket", "recover"])?,
+        &recover_context,
+        &mut Vec::new(),
+    );
+
+    let Err(error) = result else {
+        return Err("recover with corrupted kdf.toml must fail".into());
+    };
+    assert_eq!(error.exit_code(), 64, "MetadataInvalid is in the input/config band");
+    assert!(error.to_string().contains("recovery/kdf.toml"));
+    Ok(())
+}

@@ -12,8 +12,8 @@ use std::path::PathBuf;
 use crate::{
     CliError, RecoverArgs, RecoveryCommand, ResolvedProject, RuntimeContext, format_hex,
     formatted_recovery_code, generate_recovery_code_bytes, generate_recovery_salt, load_master_key,
-    load_project_key, now_unix_nanos, open_store, recovery_code_decode, require_project,
-    seal_recovery_envelope_entry,
+    load_project_key, metadata_invalid_error, now_unix_nanos, open_store, recovery_code_decode,
+    require_project, seal_recovery_envelope_entry,
 };
 
 pub fn recover_command(
@@ -24,9 +24,9 @@ pub fn recover_command(
     let resolved = require_project(context)?;
     let recovery_dir = recovery_dir(&resolved);
     let kdf = load_recovery_kdf_toml(&recovery_dir)
-        .map_err(|error| CliError::Config(format!("recovery/kdf.toml: {error}")))?;
+        .map_err(|error| metadata_invalid_error(format!("recovery/kdf.toml: {error}")))?;
     let envelope = load_recovery_envelope(&recovery_dir)
-        .map_err(|error| CliError::Config(format!("recovery/envelope.bin: {error}")))?;
+        .map_err(|error| metadata_invalid_error(format!("recovery/envelope.bin: {error}")))?;
     let code = context.recovery_code_reader.read_recovery_code("recovery code")?;
     let code_bytes = recovery_code_decode(code.trim())?;
     restore_from_recovery_code(context, output, &resolved, &kdf, &envelope, &code_bytes, args.force)
@@ -58,15 +58,15 @@ pub fn recovery_rotate_command(
 
     let entries = if recovery_dir.join("envelope.bin").exists() {
         let old_kdf = load_recovery_kdf_toml(&recovery_dir)
-            .map_err(|error| CliError::Config(format!("recovery/kdf.toml: {error}")))?;
+            .map_err(|error| metadata_invalid_error(format!("recovery/kdf.toml: {error}")))?;
         let old_envelope = load_recovery_envelope(&recovery_dir)
-            .map_err(|error| CliError::Config(format!("recovery/envelope.bin: {error}")))?;
+            .map_err(|error| metadata_invalid_error(format!("recovery/envelope.bin: {error}")))?;
         validate_recovery_metadata(project_id, &old_kdf, &old_envelope)?;
         let old_code = context.recovery_code_reader.read_recovery_code("current recovery code")?;
         let old_code_bytes = recovery_code_decode(old_code.trim())?;
         let old_salt = old_kdf
             .decode_salt()
-            .map_err(|error| CliError::Config(format!("recovery kdf salt: {error}")))?;
+            .map_err(|error| metadata_invalid_error(format!("recovery kdf salt: {error}")))?;
         let old_root =
             derive_recovery_key_v1(&old_code_bytes, &old_salt, old_kdf.to_crypto_params())?;
         rewrap_recovery_entries(
@@ -93,9 +93,9 @@ pub fn recovery_rotate_command(
         entries,
     };
     save_recovery_kdf_toml(&recovery_dir, &new_kdf)
-        .map_err(|error| CliError::Config(format!("save recovery kdf: {error}")))?;
+        .map_err(|error| metadata_invalid_error(format!("save recovery kdf: {error}")))?;
     save_recovery_envelope(&recovery_dir, &new_envelope)
-        .map_err(|error| CliError::Config(format!("save recovery envelope: {error}")))?;
+        .map_err(|error| metadata_invalid_error(format!("save recovery envelope: {error}")))?;
     write_recovery_rotate_audit(context, &resolved, &new_kdf.kdf_profile_id, timestamp)?;
     display_recovery_code(output, &code_bytes)
 }
@@ -125,7 +125,7 @@ pub fn restore_from_recovery_code(
 
     let salt = kdf
         .decode_salt()
-        .map_err(|error| CliError::Config(format!("recovery kdf salt: {error}")))?;
+        .map_err(|error| metadata_invalid_error(format!("recovery kdf salt: {error}")))?;
     let unwrap_root = derive_recovery_key_v1(code_bytes, &salt, kdf.to_crypto_params())?;
     let mut restored = 0usize;
     for entry in &envelope.entries {
