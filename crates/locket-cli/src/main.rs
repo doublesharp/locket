@@ -1,6 +1,9 @@
 //! Locket command-line entry point.
 
-use clap::{Args, Parser, Subcommand, ValueEnum};
+mod onboarding;
+
+use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
+use clap_complete::Shell as CompletionShell;
 use directories::ProjectDirs;
 use ignore::{WalkBuilder, gitignore::GitignoreBuilder};
 use locket_core::{
@@ -65,6 +68,12 @@ struct Cli {
 enum Command {
     /// Show metadata-only status.
     Status,
+    /// Initialize a Locket project from a template.
+    New(NewArgs),
+    /// Show metadata-only onboarding checklist.
+    Bootstrap,
+    /// Generate shell completions.
+    Completion(CompletionArgs),
     /// Initialize a Locket project.
     Init(InitArgs),
     /// Store a new secret.
@@ -171,6 +180,20 @@ struct InitArgs {
     /// Initial profile name.
     #[arg(long)]
     profile: Option<String>,
+}
+
+#[derive(Debug, Args)]
+struct NewArgs {
+    /// Local or built-in template name.
+    #[arg(long)]
+    from_template: String,
+}
+
+#[derive(Debug, Args)]
+struct CompletionArgs {
+    /// Shell to generate completions for.
+    #[arg(value_enum)]
+    shell: CompletionShell,
 }
 
 #[derive(Debug, Args)]
@@ -586,6 +609,9 @@ fn run_with_context(
 
     match command {
         Command::Status => status(context, output)?,
+        Command::New(args) => new_command(context, output, &args)?,
+        Command::Bootstrap => bootstrap_command(context, output)?,
+        Command::Completion(args) => completion_command(output, args.shell),
         Command::Init(args) => init(context, output, args)?,
         Command::Set(args) => set_command(context, output, &args)?,
         Command::Import(args) => import_command(context, output, &args)?,
@@ -755,6 +781,94 @@ fn status(context: &RuntimeContext, output: &mut impl Write) -> Result<(), CliEr
     writeln!(output, "profile: {}", if profile.is_some() { "ready" } else { "missing" })?;
     writeln!(output, "agent: unavailable")?;
     Ok(())
+}
+
+fn new_command(
+    context: &RuntimeContext,
+    output: &mut impl Write,
+    args: &NewArgs,
+) -> Result<(), CliError> {
+    if resolve_project(&context.cwd)?.is_some() {
+        return Err(CliError::Config("project already initialized".to_owned()));
+    }
+    let config_path = context.cwd.join(LOCKET_TOML);
+    if config_path.exists() {
+        return Err(CliError::Config(
+            "locket.toml already exists but could not be resolved".to_owned(),
+        ));
+    }
+
+    let template = onboarding::load_project_template(&context.config_path, &args.from_template)?;
+    let rendered = template.render_project_config(template.name.clone())?;
+    fs::write(&config_path, rendered)?;
+    let config = read_project_config(&config_path)?;
+    let store = open_store(context)?;
+    let timestamp = now_unix_nanos()?;
+
+    if let Err(error) = (|| -> Result<(), CliError> {
+        ensure_project_metadata(&store, &config, timestamp)?;
+        initialize_project_keys(context, &store, &config, timestamp)?;
+        ensure_template_profiles(context, &store, &config, &template, timestamp)?;
+        trust_root(&store, &config, &context.cwd, timestamp)?;
+        ensure_gitignore(&context.cwd)?;
+        write_example_block(&context.cwd, &template.expected_secrets)?;
+        Ok(())
+    })() {
+        let _ignored = fs::remove_file(&config_path);
+        return Err(error);
+    }
+
+    writeln!(output, "initialized locket project {}", config.project_id)?;
+    writeln!(output, "template: {}", args.from_template)?;
+    writeln!(output, "template_source: {}", template.source.label())?;
+    writeln!(output, "default_profile: {}", config.default_profile)?;
+    writeln!(output, "profiles: {}", template.profiles.len())?;
+    writeln!(output, "expected_secrets: {}", template.expected_secrets.len())?;
+    writeln!(output, "commands: {}", template.command_count())?;
+    writeln!(output, "secrets: not written")?;
+    Ok(())
+}
+
+fn bootstrap_command(context: &RuntimeContext, output: &mut impl Write) -> Result<(), CliError> {
+    let resolved = require_project(context)?;
+    let store = open_store(context)?;
+    let project = store.get_project(resolved.config.project_id.as_str())?;
+    let profile = store.get_profile_by_name(
+        resolved.config.project_id.as_str(),
+        resolved.config.default_profile.as_str(),
+    )?;
+    let root_hash = root_hash(&resolved.root)?;
+    let trusted_root =
+        store.project_root_is_trusted(resolved.config.project_id.as_str(), &root_hash)?;
+    let example_exists = resolved.root.join(EXAMPLE_FILE).exists();
+
+    writeln!(output, "project: {}", resolved.config.name)?;
+    writeln!(output, "project_id: {}", resolved.config.project_id)?;
+    writeln!(output, "profile: {}", resolved.config.default_profile)?;
+    writeln!(output, "profile_ready: {}", if profile.is_some() { "yes" } else { "no" })?;
+    writeln!(output, "store_project: {}", if project.is_some() { "yes" } else { "no" })?;
+    writeln!(output, ".env.example: {}", if example_exists { "yes" } else { "no" })?;
+    writeln!(output, "trusted_root: {}", if trusted_root { "yes" } else { "no" })?;
+    writeln!(output, "metadata_only: yes")?;
+    writeln!(output, "next_actions:")?;
+    if project.is_none() || profile.is_none() {
+        writeln!(output, "- run locket init to resume local metadata setup")?;
+    }
+    if !example_exists {
+        writeln!(output, "- run locket emit-example")?;
+    }
+    if !trusted_root {
+        writeln!(output, "- run locket project trust-root")?;
+    }
+    if project.is_some() && profile.is_some() && example_exists && trusted_root {
+        writeln!(output, "- none")?;
+    }
+    Ok(())
+}
+
+fn completion_command(output: &mut impl Write, shell: CompletionShell) {
+    let mut command = Cli::command();
+    clap_complete::generate(shell, &mut command, "locket", output);
 }
 
 fn init(context: &RuntimeContext, output: &mut impl Write, args: InitArgs) -> Result<(), CliError> {
@@ -2441,6 +2555,30 @@ fn ensure_project_metadata(
             false,
             timestamp,
         )?;
+    }
+    Ok(())
+}
+
+fn ensure_template_profiles(
+    context: &RuntimeContext,
+    store: &Store,
+    config: &ProjectConfig,
+    template: &onboarding::ProjectTemplate,
+    timestamp: i64,
+) -> Result<(), CliError> {
+    for profile_name in &template.profiles {
+        if store.get_profile_by_name(config.project_id.as_str(), profile_name.as_str())?.is_some() {
+            continue;
+        }
+        let profile_id = ProfileId::generate().map_err(|_| CliError::Time)?;
+        store.insert_profile_if_absent(
+            profile_id.as_str(),
+            config.project_id.as_str(),
+            profile_name.as_str(),
+            false,
+            timestamp,
+        )?;
+        initialize_profile_keys(context, store, config, profile_id.as_str(), timestamp)?;
     }
     Ok(())
 }
@@ -4688,6 +4826,9 @@ mod tests {
             &["locket", "passkey", "register"],
             &["locket", "passkey", "list", "--all"],
             &["locket", "passkey", "remove", "work-laptop"],
+            &["locket", "new", "--from-template", "basic"],
+            &["locket", "bootstrap"],
+            &["locket", "completion", "bash"],
         ] {
             assert!(Cli::try_parse_from(args).is_ok(), "{args:?}");
         }
@@ -4740,6 +4881,121 @@ mod tests {
 
         let output = String::from_utf8(output)?;
         assert!(output.contains("not initialized"));
+        Ok(())
+    }
+
+    #[test]
+    fn completion_generates_shell_script() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        let mut output = Vec::new();
+
+        run_with_context(
+            Cli::try_parse_from(["locket", "completion", "bash"])?,
+            &context,
+            &mut output,
+        )?;
+
+        let output = String::from_utf8(output)?;
+        assert!(output.contains("_locket"));
+        assert!(output.contains("bootstrap"));
+        Ok(())
+    }
+
+    #[test]
+    fn new_from_builtin_template_initializes_metadata_only_project()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        let mut output = Vec::new();
+
+        run_with_context(
+            Cli::try_parse_from(["locket", "new", "--from-template", "basic"])?,
+            &context,
+            &mut output,
+        )?;
+
+        let output = String::from_utf8(output)?;
+        assert!(output.contains("template: basic"));
+        assert!(output.contains("template_source: built-in"));
+        assert!(output.contains("secrets: not written"));
+        assert!(!output.contains("postgres://"));
+        let config = std::fs::read_to_string(directory.path().join("locket.toml"))?;
+        assert!(config.contains("[commands.dev]"));
+        let example = std::fs::read_to_string(directory.path().join(".env.example"))?;
+        assert!(example.contains("DATABASE_URL="));
+        Ok(())
+    }
+
+    #[test]
+    fn new_from_local_template_and_bootstrap_report_checklist()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        let templates_dir = directory.path().join("templates");
+        std::fs::create_dir_all(&templates_dir)?;
+        std::fs::write(
+            templates_dir.join("web.toml"),
+            r#"
+name = "web-app"
+default_profile = "dev"
+profiles = ["dev", "staging"]
+expected_secrets = ["DATABASE_URL", "API_KEY"]
+
+[commands.test]
+argv = ["cargo", "test"]
+optional_secrets = ["API_KEY"]
+"#,
+        )?;
+
+        let mut output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "new", "--from-template", "web"])?,
+            &context,
+            &mut output,
+        )?;
+        let output = String::from_utf8(output)?;
+        assert!(output.contains("template_source: local:"));
+        assert!(output.contains("profiles: 2"));
+        assert!(output.contains("expected_secrets: 2"));
+        assert!(output.contains("commands: 1"));
+
+        let store = locket_store::Store::open(directory.path().join("store.db"))?;
+        let config = super::read_project_config(&directory.path().join("locket.toml"))?;
+        let profiles = store.list_profiles(config.project_id.as_str())?;
+        assert_eq!(profiles.len(), 2);
+
+        let mut bootstrap_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "bootstrap"])?,
+            &context,
+            &mut bootstrap_output,
+        )?;
+        let bootstrap_output = String::from_utf8(bootstrap_output)?;
+        assert!(bootstrap_output.contains("project: web-app"));
+        assert!(bootstrap_output.contains("profile: dev"));
+        assert!(bootstrap_output.contains(".env.example: yes"));
+        assert!(bootstrap_output.contains("trusted_root: yes"));
+        assert!(bootstrap_output.contains("metadata_only: yes"));
+        assert!(bootstrap_output.contains("- none"));
+        assert!(!bootstrap_output.contains("postgres://"));
+        Ok(())
+    }
+
+    #[test]
+    fn new_unknown_template_is_config_error() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        let mut output = Vec::new();
+
+        assert_error_contains(
+            run_with_context(
+                Cli::try_parse_from(["locket", "new", "--from-template", "missing"])?,
+                &context,
+                &mut output,
+            ),
+            "unknown template",
+        );
         Ok(())
     }
 
