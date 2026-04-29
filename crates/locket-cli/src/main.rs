@@ -31,8 +31,8 @@ use support::secret_helpers::{
     secret_audit_metadata, select_copy_profiles_and_sources,
 };
 pub(crate) use support::time::{
-    format_optional_unix_nanos, format_unix_nanos, optional_i64, resolve_diff_since,
-    unix_nanos_to_rfc3339,
+    format_optional_str, format_optional_unix_nanos, format_unix_nanos, optional_i64,
+    resolve_diff_since, unix_nanos_to_rfc3339,
 };
 
 #[cfg(test)]
@@ -1202,10 +1202,6 @@ pub(crate) fn active_profile_secret_names(
         .into_iter()
         .map(|secret| secret.name)
         .collect())
-}
-
-fn format_optional_str(value: Option<&str>) -> &str {
-    value.unwrap_or("none")
 }
 
 pub(crate) const fn yes_no(value: bool) -> &'static str {

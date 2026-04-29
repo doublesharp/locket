@@ -222,6 +222,13 @@ pub fn format_optional_unix_nanos(value: Option<i64>) -> String {
     value.map_or_else(|| "-".to_owned(), format_unix_nanos)
 }
 
+pub const fn format_optional_str(value: Option<&str>) -> &str {
+    match value {
+        Some(value) => value,
+        None => "-",
+    }
+}
+
 /// Renders Unix nanosecond timestamps as RFC 3339 in UTC.
 ///
 /// Returns `None` when the timestamp is negative or would overflow our calendar

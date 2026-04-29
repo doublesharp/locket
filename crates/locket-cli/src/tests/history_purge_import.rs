@@ -431,6 +431,14 @@ fn unix_nanos_to_rfc3339_renders_known_timestamps() {
 }
 
 #[test]
+fn optional_formatters_use_dash_for_absent_values() {
+    assert_eq!(crate::optional_i64(None), "-");
+    assert_eq!(crate::format_optional_unix_nanos(None), "-");
+    assert_eq!(crate::format_optional_str(None), "-");
+    assert_eq!(crate::format_optional_str(Some("run")), "run");
+}
+
+#[test]
 fn import_env_encrypts_values_and_refreshes_example() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempdir()?;
     let context = test_context(&directory);
