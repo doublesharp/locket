@@ -126,16 +126,15 @@ done
 
 ### Claiming work
 
-1. Pick an open `[ ]` item from the TODO sections below. Do not pick `[x]` items.
-2. Edit this file to convert the item to `[~] [<id>]` (in-progress, with your
-   claimed agent id) and add a one-line note: branch name, worktree path, and
-   scope. Commit that edit on your branch — never on `main` — so other agents
-   can see the claim. Reserve `[ ]` for unclaimed and `[x]` for
-   merged-and-verified.
-3. If an item is already `[~]` and the listed id still has an active claim file
-   in `.agents/active/`, pick something else. If the claim is stale (no live
-   pid via the reaper above, or the worktree is gone), the integration agent
-   can reassign it.
+Status legend: `[ ]` unclaimed · `[~] [<id>]` in progress (8-char agent
+id from your claim file) · `[x]` merged and verified.
+
+1. Pick an open `[ ]` item; never pick `[x]`.
+2. Flip it to `[~] [<your-agent-id>]` and add a one-line note (branch,
+   worktree, scope). The agent id MUST be the 8-char hex id of your live
+   claim file under `.agents/active/`. Commit on your feature branch.
+3. If a `[~]` line names an id with no live claim file (per the reaper),
+   it's free to reassign — replace the id with yours.
 
 ### Worktree and branch naming
 
