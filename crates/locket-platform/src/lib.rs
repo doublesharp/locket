@@ -10,9 +10,9 @@ use std::sync::Mutex;
 use data_encoding::{BASE64URL_NOPAD, HEXLOWER};
 use keyring::Entry;
 use locket_crypto::{
-    CryptoError, KEY_LEN, KeyBytes, PassphraseKdfParams, WrappedKeyMaterial,
-    derive_passphrase_fallback_key_v1, generate_passphrase_salt, passphrase_fallback_aad_v1,
-    unwrap_key_material_v1, wrap_key_material_v1,
+    CryptoError, KEY_LEN, KeyBytes, PASSPHRASE_FALLBACK_SALT_LEN, PassphraseKdfParams, TAG_LEN,
+    WrappedKeyMaterial, derive_passphrase_fallback_key_v1, generate_passphrase_salt,
+    passphrase_fallback_aad_v1, unwrap_key_material_v1, wrap_key_material_v1,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -222,8 +222,14 @@ impl PassphraseFallbackMasterKeyStore {
         let envelope: PassphraseFallbackEnvelope = toml::from_str(&text)?;
         envelope.validate()?;
         let salt = decode_bytes(&envelope.salt)?;
+        if salt.len() != PASSPHRASE_FALLBACK_SALT_LEN {
+            return Err(PlatformError::InvalidPassphraseFallback);
+        }
         let nonce = decode_nonce(&envelope.nonce)?;
         let ciphertext = decode_bytes(&envelope.wrapped_master_key)?;
+        if ciphertext.len() != KEY_LEN + TAG_LEN {
+            return Err(PlatformError::InvalidPassphraseFallback);
+        }
         let params = PassphraseKdfParams {
             m_cost: envelope.m_cost,
             t_cost: envelope.t_cost,
@@ -282,9 +288,14 @@ struct PassphraseFallbackEnvelope {
 
 impl PassphraseFallbackEnvelope {
     fn validate(&self) -> Result<(), PlatformError> {
+        let expected = PassphraseKdfParams::fallback_v1();
         if self.version != PASSPHRASE_FALLBACK_SCHEMA_VERSION
             || self.algorithm != PASSPHRASE_FALLBACK_ALGORITHM
             || !self.kdf_profile_id.starts_with("lk_kdf_")
+            || self.m_cost != expected.m_cost
+            || self.t_cost != expected.t_cost
+            || self.p_cost != expected.p_cost
+            || self.output_len != expected.output_len
         {
             return Err(PlatformError::InvalidPassphraseFallback);
         }
@@ -514,6 +525,49 @@ mod tests {
 
         assert!(matches!(result, Err(PlatformError::InvalidPassphrase)));
         Ok(())
+    }
+
+    #[test]
+    fn passphrase_fallback_rejects_tampered_kdf_params() -> Result<(), PlatformError> {
+        let cases = [
+            ("m_cost", "m_cost = 32768", "m_cost = 1048576"),
+            ("t_cost", "t_cost = 2", "t_cost = 100"),
+            ("p_cost", "p_cost = 4", "p_cost = 128"),
+            ("output_len", "output_len = 32", "output_len = 64"),
+            ("salt", "salt = ", "salt = \"AA\""),
+            ("wrapped_master_key", "wrapped_master_key = ", "wrapped_master_key = \"AA\""),
+        ];
+
+        for (case, from, to) in cases {
+            let directory = tempfile::tempdir()?;
+            let store = PassphraseFallbackMasterKeyStore::new(directory.path());
+
+            store.store_master_key(PROJECT_ID, &MASTER_KEY, b"fallback passphrase", 123)?;
+            let envelope_path = directory.path().join(format!("{PROJECT_ID}.toml"));
+            let envelope = std::fs::read_to_string(&envelope_path)?;
+            let tampered = if from.ends_with("= ") {
+                replace_toml_assignment(&envelope, from, to)
+            } else {
+                envelope.replace(from, to)
+            };
+            assert_ne!(tampered, envelope, "case {case} did not tamper the envelope");
+            std::fs::write(&envelope_path, tampered)?;
+
+            let result = store.load_master_key(PROJECT_ID, b"fallback passphrase");
+
+            assert!(
+                matches!(result, Err(PlatformError::InvalidPassphraseFallback)),
+                "case {case} should reject before derivation/decrypt"
+            );
+        }
+        Ok(())
+    }
+
+    fn replace_toml_assignment(text: &str, prefix: &str, replacement: &str) -> String {
+        text.lines()
+            .map(|line| if line.starts_with(prefix) { replacement } else { line })
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     #[test]
