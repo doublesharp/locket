@@ -1,0 +1,421 @@
+#[allow(unused_imports)]
+use super::*;
+
+#[test]
+fn config_commands_manage_allowlisted_non_secret_preferences()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+
+    let mut empty_list = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "config", "list"])?,
+        &context,
+        &mut empty_list,
+    )?;
+    assert_eq!(String::from_utf8(empty_list)?, "no config values\n");
+
+    let mut set_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "config", "set", "privacy.redact_names", "true"])?,
+        &context,
+        &mut set_output,
+    )?;
+    assert_eq!(String::from_utf8(set_output)?, "set privacy.redact_names\n");
+
+    let config_file = std::fs::read_to_string(directory.path().join("config.toml"))?;
+    assert!(config_file.contains("[privacy]"));
+    assert!(config_file.contains("redact_names = true"));
+
+    let mut get_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "config", "get", "privacy.redact_names"])?,
+        &context,
+        &mut get_output,
+    )?;
+    assert_eq!(String::from_utf8(get_output)?, "true\n");
+
+    let mut duration_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "config", "set", "reveal.ttl", "5m"])?,
+        &context,
+        &mut duration_output,
+    )?;
+    assert_eq!(String::from_utf8(duration_output)?, "set reveal.ttl\n");
+
+    let mut list_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "config", "list"])?,
+        &context,
+        &mut list_output,
+    )?;
+    let list_output = String::from_utf8(list_output)?;
+    assert!(list_output.contains("privacy.redact_names=true"));
+    assert!(list_output.contains("reveal.ttl=5m"));
+
+    let mut agent_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "config", "set", "agent.autostart", "false"])?,
+        &context,
+        &mut agent_output,
+    )?;
+    assert_eq!(String::from_utf8(agent_output)?, "set agent.autostart\n");
+
+    let mut refresh_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "config", "set", "example.auto_refresh", "false"])?,
+        &context,
+        &mut refresh_output,
+    )?;
+    assert_eq!(String::from_utf8(refresh_output)?, "set example.auto_refresh\n");
+
+    let mut retention_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from([
+            "locket",
+            "config",
+            "set",
+            "runtime.session_secret_name_retention",
+            "off",
+        ])?,
+        &context,
+        &mut retention_output,
+    )?;
+    assert_eq!(String::from_utf8(retention_output)?, "set runtime.session_secret_name_retention\n");
+
+    let mut unset_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "config", "unset", "privacy.redact_names"])?,
+        &context,
+        &mut unset_output,
+    )?;
+    assert_eq!(String::from_utf8(unset_output)?, "unset privacy.redact_names\n");
+
+    let mut get_unset_output = Vec::new();
+    let result = run_with_context(
+        Cli::try_parse_from(["locket", "config", "get", "privacy.redact_names"])?,
+        &context,
+        &mut get_unset_output,
+    );
+    assert_error_contains(result, "config key is not set");
+    Ok(())
+}
+
+#[test]
+fn config_commands_manage_documented_non_secret_preferences()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+
+    for (key, value) in [
+        ("ui.theme", "dark"),
+        ("ui.density", "compact"),
+        ("editor.default", "vim"),
+        ("agent.unlock_ttl", "15m"),
+        ("rotation.max_grace_ttl", "30d"),
+        ("shell.integration", "prompt-only"),
+        ("updates.channel", "stable"),
+        ("updates.manifest_url", "https://updates.example.test/manifest.json"),
+        ("user_verification_required_for.unlock", "true"),
+        ("user_verification_required_for.dangerous_profile_switch", "true"),
+    ] {
+        let mut output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "config", "set", key, value])?,
+            &context,
+            &mut output,
+        )?;
+        assert_eq!(String::from_utf8(output)?, format!("set {key}\n"));
+    }
+
+    let mut list_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "config", "list"])?,
+        &context,
+        &mut list_output,
+    )?;
+    let list_output = String::from_utf8(list_output)?;
+    assert!(list_output.contains("ui.theme=dark"));
+    assert!(list_output.contains("editor.default=vim"));
+    assert!(
+        list_output.contains("updates.manifest_url=https://updates.example.test/manifest.json")
+    );
+    assert!(list_output.contains("user_verification_required_for.unlock=true"));
+    Ok(())
+}
+
+#[test]
+fn config_set_rejects_unknown_keys_invalid_values_and_secret_like_values()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+
+    let mut output = Vec::new();
+    let unknown = run_with_context(
+        Cli::try_parse_from(["locket", "config", "set", "provider.token", "false"])?,
+        &context,
+        &mut output,
+    );
+    assert_error_contains(unknown, "unsupported config key");
+
+    let mut output = Vec::new();
+    let invalid_bool = run_with_context(
+        Cli::try_parse_from(["locket", "config", "set", "agent.autostart", "yes"])?,
+        &context,
+        &mut output,
+    );
+    assert_error_contains(invalid_bool, "true or false");
+
+    let mut output = Vec::new();
+    let oversized_ttl = run_with_context(
+        Cli::try_parse_from(["locket", "config", "set", "reveal.ttl", "6m"])?,
+        &context,
+        &mut output,
+    );
+    assert_error_contains(oversized_ttl, "5m or less");
+
+    let mut output = Vec::new();
+    let invalid_retention = run_with_context(
+        Cli::try_parse_from([
+            "locket",
+            "config",
+            "set",
+            "runtime.session_secret_name_retention",
+            "forever",
+        ])?,
+        &context,
+        &mut output,
+    );
+    assert_error_contains(invalid_retention, "duration or off");
+
+    let mut output = Vec::new();
+    let invalid_theme = run_with_context(
+        Cli::try_parse_from(["locket", "config", "set", "ui.theme", "purple"])?,
+        &context,
+        &mut output,
+    );
+    assert_error_contains(invalid_theme, "system, light, or dark");
+
+    let mut output = Vec::new();
+    let invalid_editor = run_with_context(
+        Cli::try_parse_from(["locket", "config", "set", "editor.default", "~/bin/editor"])?,
+        &context,
+        &mut output,
+    );
+    assert_error_contains(invalid_editor, "shell expansion");
+
+    let mut output = Vec::new();
+    let invalid_rotation = run_with_context(
+        Cli::try_parse_from(["locket", "config", "set", "rotation.max_grace_ttl", "31d"])?,
+        &context,
+        &mut output,
+    );
+    assert_error_contains(invalid_rotation, "30d or less");
+
+    let mut output = Vec::new();
+    let invalid_shell = run_with_context(
+        Cli::try_parse_from(["locket", "config", "set", "shell.integration", "always"])?,
+        &context,
+        &mut output,
+    );
+    assert_error_contains(invalid_shell, "off, prompt-only, or hook");
+
+    let mut output = Vec::new();
+    let invalid_manifest = run_with_context(
+        Cli::try_parse_from([
+            "locket",
+            "config",
+            "set",
+            "updates.manifest_url",
+            "http://updates.example.test/manifest.json",
+        ])?,
+        &context,
+        &mut output,
+    );
+    assert_error_contains(invalid_manifest, "HTTPS URL");
+
+    let mut output = Vec::new();
+    let token = run_with_context(
+        Cli::try_parse_from([
+            "locket",
+            "config",
+            "set",
+            "reveal.ttl",
+            "sk_test_sampleTokenValue123",
+        ])?,
+        &context,
+        &mut output,
+    );
+    assert_error_contains(token, "looks like a secret");
+    assert!(!directory.path().join("config.toml").exists());
+    Ok(())
+}
+
+#[test]
+fn config_get_and_list_reject_malformed_stored_values() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    fs::write(directory.path().join("config.toml"), "[privacy]\nredact_names = \"yes\"\n")?;
+
+    let mut get_output = Vec::new();
+    let get = run_with_context(
+        Cli::try_parse_from(["locket", "config", "get", "privacy.redact_names"])?,
+        &context,
+        &mut get_output,
+    );
+    assert_error_contains(get, "invalid stored config value for privacy.redact_names");
+
+    let mut list_output = Vec::new();
+    let list = run_with_context(
+        Cli::try_parse_from(["locket", "config", "list"])?,
+        &context,
+        &mut list_output,
+    );
+    assert_error_contains(list, "invalid stored config value for privacy.redact_names");
+    Ok(())
+}
+
+#[test]
+fn config_security_relevant_updates_write_metadata_only_audit_when_project_exists()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    let mut init_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut init_output,
+    )?;
+
+    let mut set_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "config", "set", "agent.autostart", "true"])?,
+        &context,
+        &mut set_output,
+    )?;
+
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let metadata: String = store.connection().query_row(
+        "SELECT metadata_json FROM audit_log WHERE action = 'CONFIG_UPDATE'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert!(metadata.contains("\"key\":\"agent.autostart\""));
+    assert!(metadata.contains("\"operation\":\"set\""));
+    assert!(!metadata.contains("true"));
+    Ok(())
+}
+
+#[test]
+fn passkey_register_is_unavailable_without_writing_metadata()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+
+    let mut register_output = Vec::new();
+    let register = run_with_context(
+        Cli::try_parse_from(["locket", "passkey", "register"])?,
+        &context,
+        &mut register_output,
+    );
+    assert_error_contains(register, "not available");
+    assert!(register_output.is_empty());
+    Ok(())
+}
+
+#[test]
+fn passkey_list_and_remove_use_project_store_and_audit() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context_with_confirmation(&directory, "work-laptop\n");
+    let mut init_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut init_output,
+    )?;
+    let resolved = crate::resolve_project(&context.cwd)?.ok_or("project should resolve")?;
+    let project_id = resolved.config.project_id.to_string();
+    let credential = locket_store::PasskeyCredentialRecord {
+        id: "lk_passkey_test".to_owned(),
+        project_id: project_id.clone(),
+        label: "work-laptop".to_owned(),
+        credential_id: vec![0xab, 0xcd, 0xef, 0x12, 0x34, 0x56],
+        transports: vec!["internal".to_owned(), "usb".to_owned()],
+        prf_capable: true,
+        backup_eligible: Some(true),
+        backup_state: Some(false),
+        created_at: 100,
+        last_used_at: Some(200),
+        revoked_at: None,
+    };
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    store.insert_passkey_credential(&credential)?;
+
+    let mut list_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "passkey", "list"])?,
+        &context,
+        &mut list_output,
+    )?;
+    let list_output = String::from_utf8(list_output)?;
+    assert!(list_output.contains("work-laptop"));
+    assert!(list_output.contains("credential_id_prefix=abcdef123456"));
+    assert!(list_output.contains("transports=internal,usb"));
+    assert!(list_output.contains("prf=yes"));
+    assert!(list_output.contains("private_key_material: never displayed"));
+
+    let mut remove_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "passkey", "remove", "work-laptop"])?,
+        &context,
+        &mut remove_output,
+    )?;
+    let remove_output = String::from_utf8(remove_output)?;
+    assert!(remove_output.contains("passkey: revoked"));
+    assert!(remove_output.contains("passkey_id: lk_passkey_test"));
+    assert!(!remove_output.contains("abcdef123456abcdef"));
+
+    let active = store.list_passkey_credentials(&project_id, false)?;
+    assert!(active.is_empty());
+    let all = store.list_passkey_credentials(&project_id, true)?;
+    assert_eq!(all.len(), 1);
+    assert!(all[0].revoked_at.is_some());
+    let metadata: String = store.connection().query_row(
+        "SELECT metadata_json FROM audit_log WHERE action = 'PASSKEY_REMOVE'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert!(metadata.contains("\"credential_id_prefix\":\"abcdef123456\""));
+    assert!(!metadata.contains("abcdef123456abcdef"));
+    Ok(())
+}
+
+#[test]
+fn lock_and_unlock_use_direct_metadata_only_mode() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+
+    let mut lock_output = Vec::new();
+    run_with_context(Cli::try_parse_from(["locket", "lock"])?, &context, &mut lock_output)?;
+    let lock_output = String::from_utf8(lock_output)?;
+    assert!(lock_output.contains("no agent-held keys"));
+    assert!(lock_output.contains("metadata_only: yes"));
+
+    let mut init_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut init_output,
+    )?;
+    let mut unlock_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "unlock", "--verify-user"])?,
+        &context,
+        &mut unlock_output,
+    )?;
+    let unlock_output = String::from_utf8(unlock_output)?;
+    assert!(unlock_output.contains("metadata-only direct CLI unlock succeeded"));
+    assert!(unlock_output.contains("cached_keys: no"));
+    assert!(unlock_output.contains("platform user verification is not implemented"));
+    Ok(())
+}

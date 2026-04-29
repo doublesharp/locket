@@ -1,0 +1,659 @@
+#[allow(unused_imports)]
+use super::*;
+
+#[test]
+fn allow_and_deny_manage_profile_scoped_directory_grants() -> Result<(), Box<dyn std::error::Error>>
+{
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    let mut output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut output,
+    )?;
+    let args = test_secret_write_args("DATABASE_URL");
+    crate::set_secret_value(&context, &args, "postgres://localhost/app", "manual", 1_000)?;
+
+    let mut allow_output = Vec::new();
+    run_with_context(Cli::try_parse_from(["locket", "allow"])?, &context, &mut allow_output)?;
+    let allow_output = String::from_utf8(allow_output)?;
+    assert!(allow_output.contains("directory grant allowed"));
+    assert!(allow_output.contains("metadata_only: yes"));
+    assert!(!allow_output.contains("postgres://localhost/app"));
+
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let grant_count: u32 =
+        store
+            .connection()
+            .query_row("SELECT COUNT(*) FROM directory_grants", [], |row| row.get(0))?;
+    assert_eq!(grant_count, 1);
+    let dev_profile_id: String =
+        store
+            .connection()
+            .query_row("SELECT profile_id FROM directory_grants", [], |row| row.get(0))?;
+
+    let mut create_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "profile", "create", "staging"])?,
+        &context,
+        &mut create_output,
+    )?;
+    let mut use_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "use", "staging"])?,
+        &context,
+        &mut use_output,
+    )?;
+
+    let mut staging_deny_output = Vec::new();
+    run_with_context(Cli::try_parse_from(["locket", "deny"])?, &context, &mut staging_deny_output)?;
+    assert!(String::from_utf8(staging_deny_output)?.contains("directory grant not found"));
+    let grant_count_after_staging_deny: u32 = store.connection().query_row(
+        "SELECT COUNT(*) FROM directory_grants WHERE profile_id = ?1",
+        [dev_profile_id.as_str()],
+        |row| row.get(0),
+    )?;
+    assert_eq!(grant_count_after_staging_deny, 1);
+
+    let mut deny_all_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "deny", "--all"])?,
+        &context,
+        &mut deny_all_output,
+    )?;
+    let deny_all_output = String::from_utf8(deny_all_output)?;
+    assert!(deny_all_output.contains("directory grants revoked: 1"));
+    assert!(!deny_all_output.contains("postgres://localhost/app"));
+    let remaining: u32 =
+        store
+            .connection()
+            .query_row("SELECT COUNT(*) FROM directory_grants", [], |row| row.get(0))?;
+    assert_eq!(remaining, 0);
+    Ok(())
+}
+
+#[test]
+fn allow_writes_allow_directory_audit_row() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+
+    run_with_context(Cli::try_parse_from(["locket", "allow"])?, &context, &mut Vec::new())?;
+
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let metadata: String = store.connection().query_row(
+        "SELECT metadata_json FROM audit_log WHERE action = 'ALLOW_DIRECTORY' ORDER BY sequence DESC LIMIT 1",
+        [],
+        |row| row.get(0),
+    )?;
+    assert!(metadata.contains("\"action\":\"ALLOW_DIRECTORY\""));
+    assert!(metadata.contains("\"status\":\"SUCCESS\""));
+    assert!(metadata.contains("\"grant_id\":"));
+    assert!(metadata.contains("\"grant_scope\":\"project-root\""));
+    assert!(metadata.contains("\"root_hash\":"));
+    assert!(metadata.contains("\"directory_hash\":"));
+    assert!(metadata.contains("\"prior_grant\":null"));
+    assert!(metadata.contains("\"result_state\":\"created\""));
+
+    // Re-allow records prior_grant metadata and result_state = "replaced".
+    run_with_context(Cli::try_parse_from(["locket", "allow"])?, &context, &mut Vec::new())?;
+    let metadata2: String = store.connection().query_row(
+        "SELECT metadata_json FROM audit_log WHERE action = 'ALLOW_DIRECTORY' ORDER BY sequence DESC LIMIT 1",
+        [],
+        |row| row.get(0),
+    )?;
+    assert!(metadata2.contains("\"result_state\":\"replaced\""));
+    assert!(metadata2.contains("\"prior_grant\":{"));
+    assert!(metadata2.contains("\"grant_id\":"));
+    assert!(metadata2.contains("\"created_at\":"));
+    Ok(())
+}
+
+#[test]
+fn deny_writes_deny_directory_audit_row_with_prior_grant() -> Result<(), Box<dyn std::error::Error>>
+{
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    run_with_context(Cli::try_parse_from(["locket", "allow"])?, &context, &mut Vec::new())?;
+
+    run_with_context(Cli::try_parse_from(["locket", "deny"])?, &context, &mut Vec::new())?;
+
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let metadata: String = store.connection().query_row(
+        "SELECT metadata_json FROM audit_log WHERE action = 'DENY_DIRECTORY' ORDER BY sequence DESC LIMIT 1",
+        [],
+        |row| row.get(0),
+    )?;
+    assert!(metadata.contains("\"action\":\"DENY_DIRECTORY\""));
+    assert!(metadata.contains("\"status\":\"SUCCESS\""));
+    assert!(metadata.contains("\"grant_scope\":\"project-root\""));
+    assert!(metadata.contains("\"prior_grant\":{"));
+    assert!(metadata.contains("\"result_state\":\"removed\""));
+
+    // Deny again with no grant present records absent state and null prior_grant.
+    run_with_context(Cli::try_parse_from(["locket", "deny"])?, &context, &mut Vec::new())?;
+    let metadata2: String = store.connection().query_row(
+        "SELECT metadata_json FROM audit_log WHERE action = 'DENY_DIRECTORY' ORDER BY sequence DESC LIMIT 1",
+        [],
+        |row| row.get(0),
+    )?;
+    assert!(metadata2.contains("\"result_state\":\"absent\""));
+    assert!(metadata2.contains("\"prior_grant\":null"));
+    Ok(())
+}
+
+#[test]
+fn deny_all_writes_deny_directory_audit_row_with_revoked_count()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    run_with_context(Cli::try_parse_from(["locket", "allow"])?, &context, &mut Vec::new())?;
+    run_with_context(
+        Cli::try_parse_from(["locket", "profile", "create", "staging"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    run_with_context(
+        Cli::try_parse_from(["locket", "use", "staging"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    run_with_context(Cli::try_parse_from(["locket", "allow"])?, &context, &mut Vec::new())?;
+
+    run_with_context(Cli::try_parse_from(["locket", "deny", "--all"])?, &context, &mut Vec::new())?;
+
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let metadata: String = store.connection().query_row(
+        "SELECT metadata_json FROM audit_log WHERE action = 'DENY_DIRECTORY' ORDER BY sequence DESC LIMIT 1",
+        [],
+        |row| row.get(0),
+    )?;
+    assert!(metadata.contains("\"action\":\"DENY_DIRECTORY\""));
+    assert!(metadata.contains("\"grant_scope\":\"all\""));
+    assert!(metadata.contains("\"revoked_count\":2"));
+    assert!(metadata.contains("\"result_state\":\"all\""));
+    Ok(())
+}
+
+#[test]
+fn allow_requires_trusted_project_root() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    let mut output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut output,
+    )?;
+    let args = test_secret_write_args("DATABASE_URL");
+    crate::set_secret_value(&context, &args, "postgres://localhost/app", "manual", 1_000)?;
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(directory.path().join("locket.toml"))?
+        .write_all(
+            br#"
+[commands.env_check]
+argv = ["/bin/sh", "-c", "true"]
+required_secrets = ["DATABASE_URL"]
+"#,
+        )?;
+
+    let mut roots_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "project", "list-roots"])?,
+        &context,
+        &mut roots_output,
+    )?;
+    let root_hash = String::from_utf8(roots_output)?
+        .lines()
+        .find_map(|line| line.strip_prefix("root_hash: "))
+        .ok_or("root hash should be listed")?
+        .to_owned();
+    let mut untrust_output = Vec::new();
+    let untrust_context = context_with_confirmation(&context, &format!("{root_hash}\n"));
+    run_with_context(
+        Cli::try_parse_from(["locket", "project", "untrust-root", root_hash.as_str()])?,
+        &untrust_context,
+        &mut untrust_output,
+    )?;
+
+    let mut allow_output = Vec::new();
+    let Err(error) =
+        run_with_context(Cli::try_parse_from(["locket", "allow"])?, &context, &mut allow_output)
+    else {
+        return Err("allow should fail for untrusted roots".into());
+    };
+    assert_eq!(error.exit_code(), 71);
+    assert!(error.to_string().contains("ProjectRootNotTrusted"));
+
+    let mut list_output = Vec::new();
+    let list_result =
+        run_with_context(Cli::try_parse_from(["locket", "list"])?, &context, &mut list_output);
+    assert_error_contains(list_result, "ProjectRootNotTrusted");
+
+    let mut get_output = Vec::new();
+    let get_result = run_with_context(
+        Cli::try_parse_from(["locket", "get", "DATABASE_URL", "--reveal", "--force"])?,
+        &context,
+        &mut get_output,
+    );
+    assert_error_contains(get_result, "ProjectRootNotTrusted");
+
+    let missing_args = test_secret_write_args("API_KEY");
+    assert_error_contains(
+        crate::set_secret_value(&context, &missing_args, "sk_test", "manual", 2_000),
+        "ProjectRootNotTrusted",
+    );
+
+    let mut run_output = Vec::new();
+    let run_result = run_with_context(
+        Cli::try_parse_from(["locket", "run", "env_check"])?,
+        &context,
+        &mut run_output,
+    );
+    assert_error_contains(run_result, "ProjectRootNotTrusted");
+
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let grant_count: u32 =
+        store
+            .connection()
+            .query_row("SELECT COUNT(*) FROM directory_grants", [], |row| row.get(0))?;
+    assert_eq!(grant_count, 0);
+    Ok(())
+}
+
+#[test]
+fn untrust_root_requires_hash_confirmation_and_revokes_directory_grants()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    let mut output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut output,
+    )?;
+
+    let mut allow_output = Vec::new();
+    run_with_context(Cli::try_parse_from(["locket", "allow"])?, &context, &mut allow_output)?;
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let grant_count: u32 =
+        store
+            .connection()
+            .query_row("SELECT COUNT(*) FROM directory_grants", [], |row| row.get(0))?;
+    assert_eq!(grant_count, 1);
+
+    let mut roots_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "project", "list-roots"])?,
+        &context,
+        &mut roots_output,
+    )?;
+    let root_hash = String::from_utf8(roots_output)?
+        .lines()
+        .find_map(|line| line.strip_prefix("root_hash: "))
+        .ok_or("root hash should be listed")?
+        .to_owned();
+
+    let failed_context = context_with_confirmation(&context, "wrong\n");
+    let mut failed_output = Vec::new();
+    let failed = run_with_context(
+        Cli::try_parse_from(["locket", "project", "untrust-root", root_hash.as_str()])?,
+        &failed_context,
+        &mut failed_output,
+    );
+    assert_error_contains(failed, "confirmation did not match root hash");
+    let grant_count_after_failed_confirm: u32 =
+        store
+            .connection()
+            .query_row("SELECT COUNT(*) FROM directory_grants", [], |row| row.get(0))?;
+    assert_eq!(grant_count_after_failed_confirm, 1);
+
+    let untrust_context = context_with_confirmation(&context, &format!("{root_hash}\n"));
+    let mut untrust_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "project", "untrust-root", root_hash.as_str()])?,
+        &untrust_context,
+        &mut untrust_output,
+    )?;
+    let untrust_output = String::from_utf8(untrust_output)?;
+    assert!(untrust_output.contains("directory_grants_revoked: 1"));
+    let remaining_grants: u32 =
+        store
+            .connection()
+            .query_row("SELECT COUNT(*) FROM directory_grants", [], |row| row.get(0))?;
+    assert_eq!(remaining_grants, 0);
+    Ok(())
+}
+
+#[test]
+fn agent_commands_report_metadata_only_unavailable_state() -> Result<(), Box<dyn std::error::Error>>
+{
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+
+    let mut status_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "agent", "status"])?,
+        &context,
+        &mut status_output,
+    )?;
+    let status_output = String::from_utf8(status_output)?;
+    assert!(status_output.contains("agent: unavailable"));
+    assert!(status_output.contains("running: no"));
+
+    let mut start_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "agent", "start"])?,
+        &context,
+        &mut start_output,
+    )?;
+    let start_output = String::from_utf8(start_output)?;
+    assert!(start_output.contains("daemon not available in this build"));
+    assert!(start_output.contains("socket:"));
+
+    let mut stop_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "agent", "stop"])?,
+        &context,
+        &mut stop_output,
+    )?;
+    assert!(String::from_utf8(stop_output)?.contains("agent: stopped"));
+
+    let mut logs_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "agent", "logs"])?,
+        &context,
+        &mut logs_output,
+    )?;
+    let logs_output = String::from_utf8(logs_output)?;
+    assert!(logs_output.contains("\"action\":\"start\""));
+    assert!(logs_output.contains("\"action\":\"stop\""));
+    assert!(!logs_output.contains("secret"));
+
+    let mut limited_logs_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "agent", "logs", "--lines", "1"])?,
+        &context,
+        &mut limited_logs_output,
+    )?;
+    let limited_logs_output = String::from_utf8(limited_logs_output)?;
+    assert!(limited_logs_output.contains("\"action\":\"stop\""));
+    assert!(!limited_logs_output.contains("\"action\":\"start\""));
+    Ok(())
+}
+
+#[test]
+fn agent_logs_filter_redact_rotate_and_harden_local_files() -> Result<(), Box<dyn std::error::Error>>
+{
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    let base = 1_700_000_000_i64 * crate::NANOS_PER_SECOND;
+    crate::prepare_agent_log_dir(&context)?;
+    let log_path = crate::agent_log_path(&context);
+    let old_path = crate::agent_rotated_log_path(&context, 1);
+    fs::write(
+        &old_path,
+        format!(
+            "{}\n",
+            json!({
+                "timestamp": base,
+                "action": "old",
+                "message": "older",
+            })
+        ),
+    )?;
+    fs::write(
+        &log_path,
+        format!(
+            "{}\n{}\n",
+            json!({
+                "timestamp": base + crate::NANOS_PER_SECOND,
+                "action": "token",
+                "message": "sk_test_sampleTokenValue123",
+                "path": directory.path().join("project/.env").display().to_string(),
+                "grant_token": "grant-token-value",
+                "env": {"DATABASE_URL": "postgres://localhost/app"},
+            }),
+            json!({
+                "timestamp": "2024-01-01T00:00:02Z",
+                "action": "new",
+                "message": "done",
+            }),
+        ),
+    )?;
+
+    let mut output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "agent", "logs", "--since", "2023-11-14T22:13:21Z"])?,
+        &context,
+        &mut output,
+    )?;
+    let output = String::from_utf8(output)?;
+    assert!(!output.contains("\"action\":\"old\""));
+    assert!(output.contains("\"action\":\"token\""));
+    assert!(output.contains("\"action\":\"new\""));
+    assert!(output.contains("lk_redacted_PROVIDER_TOKEN"));
+    assert!(output.contains("path_hash"));
+    assert!(!output.contains("sk_test_sampleTokenValue123"));
+    assert!(!output.contains(directory.path().to_string_lossy().as_ref()));
+    assert!(!output.contains("grant-token-value"));
+    assert!(!output.contains("postgres://localhost/app"));
+
+    let mut unix_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "agent", "logs", "--since", "1700000001"])?,
+        &context,
+        &mut unix_output,
+    )?;
+    assert!(!String::from_utf8(unix_output)?.contains("\"action\":\"old\""));
+
+    fs::write(&log_path, "x".repeat(usize::try_from(crate::AGENT_LOG_MAX_BYTES)? + 1))?;
+    crate::append_agent_log(&context, "rotated", "ok", "safe")?;
+    assert!(crate::agent_rotated_log_path(&context, 1).exists());
+    assert!(fs::read_to_string(&log_path)?.contains("\"action\":\"rotated\""));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(fs::metadata(&log_path)?.permissions().mode() & 0o777, 0o600);
+        assert_eq!(
+            fs::metadata(crate::agent_data_dir(&context))?.permissions().mode() & 0o777,
+            0o700
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn agent_logs_rejects_excessive_line_count() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    let mut output = Vec::new();
+    let result = run_with_context(
+        Cli::try_parse_from(["locket", "agent", "logs", "--lines", "10001"])?,
+        &context,
+        &mut output,
+    );
+    assert_error_contains(result, "capped at 10000");
+    Ok(())
+}
+
+#[test]
+fn doctor_reports_locked_safe_diagnostics_and_exit_codes() -> Result<(), Box<dyn std::error::Error>>
+{
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+
+    let mut missing_output = Vec::new();
+    let code = run_with_context(
+        Cli::try_parse_from(["locket", "doctor"])?,
+        &context,
+        &mut missing_output,
+    )?;
+    assert_eq!(code, 1);
+    let missing_output = String::from_utf8(missing_output)?;
+    assert!(missing_output.contains("fail project_resolution"));
+    assert!(missing_output.contains("pass store_open_schema_bootstrap"));
+
+    let mut init_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut init_output,
+    )?;
+    run_git(directory.path(), &["init"])?;
+    let mut hook_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "install-hooks"])?,
+        &context,
+        &mut hook_output,
+    )?;
+
+    let mut doctor_output = Vec::new();
+    let code =
+        run_with_context(Cli::try_parse_from(["locket", "doctor"])?, &context, &mut doctor_output)?;
+    assert_eq!(code, 0);
+    let doctor_output = String::from_utf8(doctor_output)?;
+    assert!(doctor_output.contains("pass locket_toml_parseability"));
+    assert!(doctor_output.contains("pass sqlite_integrity"));
+    assert!(doctor_output.contains("pass trusted_roots"));
+    assert!(doctor_output.contains("skip audit_hmac_verification"));
+    assert!(doctor_output.contains("summary:"));
+
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let doctor_metadata = store.connection().query_row(
+        "SELECT metadata_json FROM audit_log WHERE action = 'DOCTOR'",
+        [],
+        |row| row.get::<_, String>(0),
+    )?;
+    let doctor_metadata: serde_json::Value = serde_json::from_str(&doctor_metadata)?;
+    assert_eq!(doctor_metadata["action"], "DOCTOR");
+    assert_eq!(doctor_metadata["status"], "SUCCESS");
+    assert_eq!(doctor_metadata["fail_count"], 0);
+    assert_eq!(doctor_metadata["skip_count"], 5);
+    assert!(
+        doctor_metadata["check_names"]
+            .as_array()
+            .is_some_and(|names| names.iter().any(|name| name == "sqlite_integrity"))
+    );
+    assert!(!doctor_metadata.to_string().contains(directory.path().to_string_lossy().as_ref()));
+    Ok(())
+}
+
+#[test]
+fn debug_bundle_redacted_writes_metadata_only_summary() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    let mut init_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut init_output,
+    )?;
+    let output_path = directory.path().join("bundle.tar.gz");
+
+    let mut bundle_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from([
+            "locket",
+            "debug",
+            "bundle",
+            "--redacted",
+            "--output",
+            output_path.to_str().ok_or("utf8 path")?,
+        ])?,
+        &context,
+        &mut bundle_output,
+    )?;
+    assert!(String::from_utf8(bundle_output)?.contains("redacted: yes"));
+
+    let bundle = read_debug_bundle_json(&output_path)?;
+    assert!(bundle.contains("\"redacted\": true"));
+    assert!(bundle.contains("\"project\""));
+    assert!(bundle.contains("\"diagnostics\""));
+    assert!(bundle.contains("\"store_path_hash\""));
+    assert!(!bundle.contains(directory.path().to_string_lossy().as_ref()));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mode = fs::metadata(&output_path)?.permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+    }
+    Ok(())
+}
+
+#[test]
+fn debug_bundle_default_output_uses_user_diagnostics_dir() -> Result<(), Box<dyn std::error::Error>>
+{
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    let mut init_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut init_output,
+    )?;
+
+    let mut bundle_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "debug", "bundle", "--redacted"])?,
+        &context,
+        &mut bundle_output,
+    )?;
+    let bundle_output = String::from_utf8(bundle_output)?;
+    let path_line = bundle_output
+        .lines()
+        .find_map(|line| line.strip_prefix("debug_bundle: "))
+        .ok_or("missing debug bundle path")?;
+    let output_path = PathBuf::from(path_line);
+    assert!(output_path.starts_with(directory.path().join("diagnostics")));
+    assert_eq!(output_path.extension().and_then(OsStr::to_str), Some("gz"));
+    assert!(!output_path.starts_with(directory.path().join(".git")));
+    assert!(bundle_output.contains("redacted: yes"));
+
+    let bundle = read_debug_bundle_json(&output_path)?;
+    assert!(bundle.contains("\"redacted\": true"));
+    assert!(!bundle.contains(directory.path().to_string_lossy().as_ref()));
+    Ok(())
+}
+
+#[test]
+fn debug_bundle_refuses_to_overwrite_existing_output() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    let output_path = directory.path().join("existing.tar.gz");
+    fs::write(&output_path, "existing")?;
+
+    let mut bundle_output = Vec::new();
+    let result = run_with_context(
+        Cli::try_parse_from([
+            "locket",
+            "debug",
+            "bundle",
+            "--redacted",
+            "--output",
+            output_path.to_str().ok_or("utf8 path")?,
+        ])?,
+        &context,
+        &mut bundle_output,
+    );
+    assert_error_contains(result.map(|_| ()), "debug bundle output already exists");
+    assert_eq!(fs::read_to_string(output_path)?, "existing");
+    Ok(())
+}

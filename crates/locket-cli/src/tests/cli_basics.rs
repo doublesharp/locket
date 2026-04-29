@@ -1,0 +1,445 @@
+#[allow(unused_imports)]
+use super::*;
+
+#[test]
+fn completion_command_generates_scripts_without_project() -> Result<(), Box<dyn std::error::Error>>
+{
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    let mut output = Vec::new();
+
+    run_with_context(
+        Cli::try_parse_from(["locket", "completion", "bash"])?,
+        &context,
+        &mut output,
+    )?;
+
+    let output = String::from_utf8(output)?;
+    assert!(output.contains("_locket()"));
+    assert!(output.contains("complete -F _locket"));
+    assert!(output.contains("completion"));
+    assert!(!directory.path().join("locket.toml").exists());
+    Ok(())
+}
+
+#[test]
+fn client_add_list_and_revoke_are_metadata_only() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    run_with_context(
+        Cli::try_parse_from(["locket", "policy", "add", "ci", "--", "cargo", "test"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    let public_key = "11".repeat(32);
+    let mut add_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from([
+            "locket",
+            "client",
+            "add",
+            "ci_bot",
+            "--pubkey",
+            &public_key,
+            "--action",
+            "run-policy",
+            "--action",
+            "redact",
+            "--policy",
+            "ci",
+        ])?,
+        &context,
+        &mut add_output,
+    )?;
+
+    let add_output = String::from_utf8(add_output)?;
+    assert!(add_output.contains("client: ci_bot"));
+    assert!(add_output.contains("private_key_material: never displayed"));
+    assert!(!add_output.contains(&public_key));
+
+    let mut list_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "client", "list"])?,
+        &context,
+        &mut list_output,
+    )?;
+    let list_output = String::from_utf8(list_output)?;
+    assert!(list_output.contains("ci_bot"));
+    assert!(list_output.contains("actions=redact,run-policy"));
+    assert!(list_output.contains("policies=ci"));
+    assert!(list_output.contains("private_key_material: never displayed"));
+    assert!(!list_output.contains(&public_key));
+
+    let mut revoke_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "client", "revoke", "ci_bot"])?,
+        &context,
+        &mut revoke_output,
+    )?;
+    let revoke_output = String::from_utf8(revoke_output)?;
+    assert!(revoke_output.contains("revoked_at:"));
+
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let resolved = crate::resolve_project(&context.cwd)?.ok_or("project should resolve")?;
+    assert!(store.list_automation_clients(resolved.config.project_id.as_str(), false)?.is_empty());
+    assert!(
+        store.list_automation_clients(resolved.config.project_id.as_str(), true)?[0]
+            .revoked_at
+            .is_some()
+    );
+    let mut statement = store
+        .connection()
+        .prepare("SELECT action, metadata_json FROM audit_log ORDER BY sequence")?;
+    let rows = statement
+        .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?
+        .collect::<Result<Vec<_>, _>>()?;
+    assert!(rows.iter().any(|(action, _)| action == "CLIENT_ADD"));
+    assert!(rows.iter().any(|(action, _)| action == "CLIENT_REVOKE"));
+    for (_, metadata) in rows {
+        assert!(!metadata.contains(&public_key));
+    }
+    Ok(())
+}
+
+#[test]
+fn client_rejects_unsupported_actions_and_missing_policies()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    let public_key = "22".repeat(32);
+    assert_error_contains(
+        run_with_context(
+            Cli::try_parse_from([
+                "locket",
+                "client",
+                "add",
+                "ci_bot",
+                "--pubkey",
+                &public_key,
+                "--action",
+                "reveal",
+                "--policy",
+                "ci",
+            ])?,
+            &context,
+            &mut Vec::new(),
+        ),
+        "InvalidPolicy",
+    );
+    assert_error_contains(
+        run_with_context(
+            Cli::try_parse_from([
+                "locket",
+                "client",
+                "add",
+                "ci_bot",
+                "--pubkey",
+                &public_key,
+                "--action",
+                "run-policy",
+            ])?,
+            &context,
+            &mut Vec::new(),
+        ),
+        "at least one --policy",
+    );
+    Ok(())
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn sealed_bundle_export_verify_and_import_are_metadata_only()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    let args = test_secret_write_args("DATABASE_URL");
+    crate::set_secret_value(&context, &args, "postgres://bundle-secret", "manual", 1_000)?;
+
+    let mut device_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "device", "init"])?,
+        &context,
+        &mut device_output,
+    )?;
+    let descriptor = String::from_utf8(device_output)?
+        .lines()
+        .find_map(|line| line.strip_prefix("descriptor: "))
+        .ok_or("missing descriptor")?
+        .to_owned();
+    let bundle_path = directory.path().join("dev.locket-bundle");
+
+    let mut export_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from([
+            "locket",
+            "export",
+            "--sealed",
+            "--recipient",
+            &descriptor,
+            "--profile",
+            "dev",
+            "--include-audit",
+            "--output",
+            bundle_path.to_str().ok_or("utf8 path")?,
+        ])?,
+        &context,
+        &mut export_output,
+    )?;
+    let export_output = String::from_utf8(export_output)?;
+    assert!(export_output.contains("bundle: exported"));
+    assert!(export_output.contains("active_secret_count: 1"));
+    assert!(export_output.contains("metadata_only: yes"));
+    let bundle_text = fs::read_to_string(&bundle_path)?;
+    assert!(bundle_text.contains("LOCKET-BUNDLE-V1"));
+    assert!(!bundle_text.contains("postgres://bundle-secret"));
+    assert!(!bundle_text.contains("DATABASE_URL"));
+
+    let mut verify_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from([
+            "locket",
+            "bundle",
+            "verify",
+            bundle_path.to_str().ok_or("utf8 path")?,
+        ])?,
+        &context,
+        &mut verify_output,
+    )?;
+    let verify_output = String::from_utf8(verify_output)?;
+    assert!(verify_output.contains("bundle: valid"));
+    assert!(verify_output.contains("decryptable_by_this_device: no"));
+
+    let mut import_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from([
+            "locket",
+            "import-bundle",
+            bundle_path.to_str().ok_or("utf8 path")?,
+            "--accept-local",
+            "--include-audit",
+        ])?,
+        &context,
+        &mut import_output,
+    )?;
+    let import_output = String::from_utf8(import_output)?;
+    assert!(import_output.contains("bundle: verified"));
+    assert!(import_output.contains("import: not_applied"));
+    assert!(import_output.contains("metadata_only: yes"));
+
+    assert_error_contains(
+        run_with_context(
+            Cli::try_parse_from([
+                "locket",
+                "export",
+                "--sealed",
+                "--recipient",
+                &descriptor,
+                "--profile",
+                "dev",
+                "--output",
+                bundle_path.to_str().ok_or("utf8 path")?,
+            ])?,
+            &context,
+            &mut Vec::new(),
+        ),
+        "bundle output already exists",
+    );
+
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let mut statement = store
+        .connection()
+        .prepare("SELECT action, metadata_json FROM audit_log ORDER BY sequence")?;
+    let rows = statement
+        .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?
+        .collect::<Result<Vec<_>, _>>()?;
+    assert!(rows.iter().any(|(action, _)| action == "BACKUP_EXPORT"));
+    assert!(rows.iter().any(|(action, _)| action == "BACKUP_IMPORT"));
+    for (_, metadata) in rows {
+        assert!(!metadata.contains("postgres://bundle-secret"));
+    }
+    Ok(())
+}
+
+#[test]
+fn bundle_verify_rejects_tampered_digest() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    let mut device_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "device", "init"])?,
+        &context,
+        &mut device_output,
+    )?;
+    let descriptor = String::from_utf8(device_output)?
+        .lines()
+        .find_map(|line| line.strip_prefix("descriptor: "))
+        .ok_or("missing descriptor")?
+        .to_owned();
+    let bundle_path = directory.path().join("tampered.locket-bundle");
+    run_with_context(
+        Cli::try_parse_from([
+            "locket",
+            "export",
+            "--sealed",
+            "--recipient",
+            &descriptor,
+            "--output",
+            bundle_path.to_str().ok_or("utf8 path")?,
+        ])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    let tampered = fs::read_to_string(&bundle_path)?.replacen(
+        "\"active_secret_count\": 0",
+        "\"active_secret_count\": 1",
+        1,
+    );
+    fs::write(&bundle_path, tampered)?;
+    let result = run_with_context(
+        Cli::try_parse_from([
+            "locket",
+            "bundle",
+            "verify",
+            bundle_path.to_str().ok_or("utf8 path")?,
+        ])?,
+        &context,
+        &mut Vec::new(),
+    );
+    assert_error_contains(result, "manifest digest mismatch");
+    assert_eq!(crate::CliError::BundleVerification("failed".to_owned()).exit_code(), 110);
+    Ok(())
+}
+
+#[test]
+fn status_reports_not_initialized_without_project() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    let mut output = Vec::new();
+
+    run_with_context(Cli::try_parse_from(["locket"])?, &context, &mut output)?;
+
+    let output = String::from_utf8(output)?;
+    assert!(output.contains("not initialized"));
+    assert!(output.contains("next_action: run locket init"));
+    Ok(())
+}
+
+#[test]
+fn status_reports_metadata_summary_and_next_action() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    let mut init_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut init_output,
+    )?;
+
+    std::fs::write(directory.path().join("leak.txt"), "token=sk_test_sampleTokenValue123\n")?;
+    let resolved = crate::resolve_project(&context.cwd)?.ok_or("project should resolve")?;
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let profile = store
+        .get_profile_by_name(resolved.config.project_id.as_str(), "dev")?
+        .ok_or("default profile should exist")?;
+    store.insert_runtime_session(&locket_store::RuntimeSessionRecord {
+        id: "lk_sess_status".to_owned(),
+        project_id: resolved.config.project_id.to_string(),
+        profile_id: profile.id,
+        policy_name: Some("dev".to_owned()),
+        process_id: 42,
+        process_start_time: 900,
+        started_at: 1_000,
+        ended_at: None,
+        exit_status: None,
+        secret_names: vec!["API_KEY".to_owned()],
+        spawn_audit_sequence: None,
+        completion_audit_sequence: None,
+    })?;
+
+    let mut output = Vec::new();
+    run_with_context(Cli::try_parse_from(["locket", "status"])?, &context, &mut output)?;
+
+    let output = String::from_utf8(output)?;
+    assert!(output.contains("project: app"));
+    assert!(output.contains("default_profile: dev"));
+    assert!(output.contains("active_profile: dev"));
+    assert!(output.contains("lock_state: locked"));
+    assert!(output.contains("agent_state: unavailable"));
+    assert!(output.contains("running_sessions: 1"));
+    assert!(output.contains("scan_warnings: 1"), "{output}");
+    assert!(output.contains("trusted_root: yes"));
+    assert!(output.contains("metadata_only: yes"));
+    assert!(output.contains("next_action: run locket scan"));
+    assert!(!output.contains("sk_test_sampleTokenValue123"));
+    Ok(())
+}
+
+#[test]
+fn status_redacts_project_and_profile_names_from_privacy_config()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    let mut init_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut init_output,
+    )?;
+    let mut config_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "config", "set", "privacy.redact_names", "true"])?,
+        &context,
+        &mut config_output,
+    )?;
+
+    let mut output = Vec::new();
+    run_with_context(Cli::try_parse_from(["locket", "status"])?, &context, &mut output)?;
+
+    let output = String::from_utf8(output)?;
+    assert!(output.contains("project: project-"));
+    assert!(output.contains("project_id: project-"));
+    assert!(output.contains("default_profile: profile-"));
+    assert!(output.contains("active_profile: profile-"));
+    assert!(!output.contains("project: app"));
+    assert!(!output.contains("default_profile: dev"));
+    assert!(!output.contains("active_profile: dev"));
+    Ok(())
+}
+
+#[test]
+fn completion_generates_shell_script() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    let mut output = Vec::new();
+
+    run_with_context(
+        Cli::try_parse_from(["locket", "completion", "bash"])?,
+        &context,
+        &mut output,
+    )?;
+
+    let output = String::from_utf8(output)?;
+    assert!(output.contains("_locket"));
+    assert!(output.contains("bootstrap"));
+    Ok(())
+}

@@ -1,0 +1,271 @@
+#[allow(unused_imports)]
+use super::*;
+
+#[test]
+fn env_import_parser_handles_exports_quotes_comments_and_invalid_lines() {
+    let entries = crate::parse_env_import(
+        "# ignored\n\
+         export DATABASE_URL='postgres://localhost/app'\n\
+         OPENAI_API_KEY=\"sk_test_sample\"\n\
+         INVALID-NAME=value\n\
+         MISSING_EQUALS\n\
+         NULL_BYTE=bad\0value\n\
+         MULTILINE=\"first\n\
+         second\"\n",
+    );
+
+    assert_eq!(entries.len(), 7);
+    let first = match &entries[0] {
+        crate::EnvImportEntry::Secret { key, value } => Some((key.as_str(), value.as_str())),
+        crate::EnvImportEntry::Invalid => None,
+    };
+    let second = match &entries[1] {
+        crate::EnvImportEntry::Secret { key, value } => Some((key.as_str(), value.as_str())),
+        crate::EnvImportEntry::Invalid => None,
+    };
+    assert_eq!(first, Some(("DATABASE_URL", "postgres://localhost/app")));
+    assert_eq!(second, Some(("OPENAI_API_KEY", "sk_test_sample")));
+    assert!(matches!(&entries[2], crate::EnvImportEntry::Invalid));
+    assert!(matches!(&entries[3], crate::EnvImportEntry::Invalid));
+    assert!(matches!(&entries[4], crate::EnvImportEntry::Invalid));
+    assert!(matches!(&entries[5], crate::EnvImportEntry::Invalid));
+    assert!(matches!(&entries[6], crate::EnvImportEntry::Invalid));
+}
+
+#[test]
+fn root_hash_parser_accepts_prefixed_mixed_case_hex_and_rejects_bad_input()
+-> Result<(), Box<dyn std::error::Error>> {
+    let parsed = crate::parse_root_hash(&format!("0x{}", "Aa".repeat(32)))?;
+
+    assert_eq!(parsed, [0xaa; 32]);
+    assert_error_contains(crate::parse_root_hash("abcd").map(|_| ()), "64 hex characters");
+    assert_error_contains(
+        crate::parse_root_hash(&format!("{}0g", "00".repeat(31))).map(|_| ()),
+        "hex encoded",
+    );
+    Ok(())
+}
+
+#[test]
+fn grace_ttl_parser_handles_absent_values_caps_and_timestamp_overflow()
+-> Result<(), Box<dyn std::error::Error>> {
+    assert_eq!(crate::grace_until_from_args(None, 1_000)?, None);
+    assert_eq!(crate::grace_until_from_args(Some("24h"), 1_000)?, Some(86_400_000_001_000),);
+    assert_error_contains(crate::grace_until_from_args(Some("8d"), 1_000).map(|_| ()), "7d cap");
+    assert!(matches!(
+        crate::grace_until_from_args(Some("1s"), i64::MAX - 10),
+        Err(crate::CliError::Time)
+    ));
+    Ok(())
+}
+
+#[test]
+fn secret_value_reader_preserves_piped_values_and_rejects_invalid_input()
+-> Result<(), Box<dyn std::error::Error>> {
+    assert_eq!(
+        crate::read_secret_value_from_reader(b"postgres://localhost/app\n".as_slice())?.as_str(),
+        "postgres://localhost/app"
+    );
+    assert_eq!(
+        crate::read_secret_value_from_reader(b"postgres://localhost/app\r\n".as_slice())?.as_str(),
+        "postgres://localhost/app"
+    );
+    assert_eq!(
+        crate::read_secret_value_from_reader(b"line1\nline2".as_slice())?.as_str(),
+        "line1\nline2"
+    );
+    assert_eq!(
+        crate::read_secret_value_from_reader(b"line1\nline2\n".as_slice())?.as_str(),
+        "line1\nline2"
+    );
+    assert_eq!(
+        crate::read_secret_value_from_reader(b"line1\nline2\n\n".as_slice())?.as_str(),
+        "line1\nline2\n"
+    );
+
+    assert_error_contains(
+        crate::read_secret_value_from_reader(b"".as_slice()).map(|_| ()),
+        "secret value cannot be empty",
+    );
+    assert_error_contains(
+        crate::read_secret_value_from_reader(b"\n".as_slice()).map(|_| ()),
+        "secret value cannot be empty",
+    );
+    assert_error_contains(
+        crate::read_secret_value_from_reader(b"one\0two".as_slice()).map(|_| ()),
+        "NUL bytes",
+    );
+    assert_error_contains(
+        crate::read_secret_value_from_reader(&[0xff][..]).map(|_| ()),
+        "valid UTF-8",
+    );
+    Ok(())
+}
+
+#[test]
+fn parses_bare_status() {
+    let cli = Cli::try_parse_from(["locket"]);
+    assert!(cli.is_ok());
+}
+
+#[test]
+fn parses_core_secret_commands() {
+    for args in [
+        ["locket", "init", "--name", "app"].as_slice(),
+        &["locket", "set", "DATABASE_URL", "--source", "user-local"],
+        &["locket", "import", ".env", "--source", "user-local"],
+        &["locket", "get", "DATABASE_URL", "--copy"],
+        &["locket", "get", "DATABASE_URL", "--reveal", "--force"],
+        &["locket", "rm", "DATABASE_URL"],
+        &["locket", "purge", "DATABASE_URL", "--all-versions"],
+        &["locket", "rotate", "DATABASE_URL", "--grace-ttl", "24h"],
+        &["locket", "lock"],
+        &["locket", "unlock", "--verify-user"],
+        &["locket", "meta", "DATABASE_URL", "--owner", "platform", "--required"],
+        &["locket", "history", "DATABASE_URL"],
+        &["locket", "diff", "dev", "staging"],
+        &[
+            "locket",
+            "copy",
+            "DATABASE_URL",
+            "--from",
+            "dev",
+            "--to",
+            "staging",
+            "--from-source",
+            "user-local",
+            "--to-source",
+            "machine-local",
+        ],
+        &["locket", "audit", "verify"],
+        &["locket", "recover", "--force"],
+        &["locket", "recovery", "rotate"],
+        &["locket", "doctor"],
+        &["locket", "debug", "bundle", "--redacted"],
+        &["locket", "debug", "bundle", "--redacted", "--output", "bundle.json"],
+        &["locket", "exec", "--secret", "DATABASE_URL", "--", "/bin/sh", "-c", "true"],
+        &["locket", "config", "list"],
+        &["locket", "config", "get", "privacy.redact_names"],
+        &["locket", "config", "set", "privacy.redact_names", "true"],
+        &["locket", "config", "unset", "privacy.redact_names"],
+        &["locket", "passkey", "register"],
+        &["locket", "passkey", "list", "--all"],
+        &["locket", "passkey", "remove", "work-laptop"],
+        &["locket", "device", "init"],
+        &["locket", "device", "init", "--force"],
+        &["locket", "device", "pubkey"],
+        &["locket", "device", "add", "work-laptop", "--device", "lkdev1_abc"],
+        &["locket", "device", "list", "--all"],
+        &["locket", "device", "remove", "work-laptop", "--force"],
+        &["locket", "client", "create", "ci", "--action", "run-policy", "--policy", "dev"],
+        &[
+            "locket", "client", "add", "ci", "--pubkey", "00", "--action", "redact", "--policy",
+            "dev",
+        ],
+        &["locket", "client", "list", "--all"],
+        &["locket", "client", "revoke", "ci"],
+        &[
+            "locket",
+            "export",
+            "--sealed",
+            "--recipient",
+            "lkdev1_abc",
+            "--profile",
+            "dev",
+            "--include-audit",
+            "--output",
+            "bundle.locket-bundle",
+        ],
+        &["locket", "import-bundle", "bundle.locket-bundle", "--accept-local"],
+        &["locket", "bundle", "verify", "bundle.locket-bundle"],
+        &["locket", "new", "--from-template", "basic"],
+        &["locket", "bootstrap"],
+        &["locket", "completion", "bash"],
+    ] {
+        assert!(Cli::try_parse_from(args).is_ok(), "{args:?}");
+    }
+}
+
+#[test]
+fn get_force_requires_reveal() {
+    assert!(Cli::try_parse_from(["locket", "get", "DATABASE_URL", "--force"]).is_err());
+}
+
+#[test]
+fn clipboard_command_selection_uses_first_available_candidate() {
+    static COMMANDS: &[crate::ClipboardCommand] = &[
+        crate::ClipboardCommand { program: "missing", args: &[] },
+        crate::ClipboardCommand { program: "present", args: &["--clipboard"] },
+    ];
+
+    let selected = crate::select_clipboard_command(COMMANDS, |program| program == "present");
+
+    assert_eq!(selected.map(|command| command.program), Some("present"));
+    assert_eq!(selected.map(|command| command.args), Some(["--clipboard"].as_slice()));
+}
+
+#[test]
+fn clipboard_copy_reports_unavailable_without_value_leakage()
+-> Result<(), Box<dyn std::error::Error>> {
+    static COMMANDS: &[crate::ClipboardCommand] = &[];
+
+    let result =
+        crate::copy_secret_to_clipboard_with("postgres://localhost/app", COMMANDS, |_| false);
+    let error = result.err().ok_or("expected unavailable clipboard command")?;
+
+    assert_eq!(error, "clipboard command unavailable");
+    assert!(!error.contains("postgres://localhost/app"));
+    Ok(())
+}
+
+#[test]
+fn parses_profile_project_and_agent_commands() {
+    for args in [
+        ["locket", "profile", "create", "dev"].as_slice(),
+        &["locket", "profile", "mark-dangerous", "prod"],
+        &["locket", "project", "trust-root"],
+        &["locket", "project", "list-roots"],
+        &["locket", "project", "untrust-root", "abc123"],
+        &["locket", "shellenv"],
+        &["locket", "shellenv", "--shell", "zsh"],
+        &["locket", "hook"],
+        &["locket", "hook", "--install"],
+        &["locket", "completion", "bash"],
+        &["locket", "completion", "zsh"],
+        &["locket", "completion", "fish"],
+        &["locket", "completion", "elvish"],
+        &["locket", "completion", "powershell"],
+        &["locket", "allow"],
+        &["locket", "deny"],
+        &["locket", "deny", "--all"],
+        &["locket", "agent", "start"],
+        &["locket", "agent", "status"],
+        &["locket", "agent", "stop"],
+        &["locket", "agent", "logs"],
+        &["locket", "agent", "logs", "--lines", "10", "--since", "1700000000"],
+        &["locket", "agent", "logs", "--since", "2024-01-01T00:00:00Z"],
+        &["locket", "agent", "logs", "--follow"],
+        &["locket", "doctor"],
+        &["locket", "debug", "bundle", "--redacted"],
+        &["locket", "policy", "add", "dev", "--", "pnpm", "dev"],
+        &["locket", "policy", "allow", "dev", "DATABASE_URL"],
+        &["locket", "policy", "require", "dev", "API_KEY"],
+        &["locket", "policy", "delete", "dev", "--yes"],
+        &["locket", "policy", "doctor"],
+    ] {
+        assert!(Cli::try_parse_from(args).is_ok(), "{args:?}");
+    }
+}
+
+#[test]
+fn parses_scan_and_redaction_commands() {
+    for args in [
+        ["locket", "scan", "--staged", "--require-known"].as_slice(),
+        &["locket", "redact", "--stdin", "--redact-names"],
+        &["locket", "context", "--redact-names"],
+        &["locket", "ai-safe", "--pattern-only", "--", "npm", "test"],
+        &["locket", "install-hooks"],
+    ] {
+        assert!(Cli::try_parse_from(args).is_ok(), "{args:?}");
+    }
+}
