@@ -414,7 +414,9 @@ fn lock_and_unlock_use_direct_metadata_only_mode() -> Result<(), Box<dyn std::er
         &context,
         &mut unlock_with_verify,
     );
-    let verify_error = verify_result.expect_err("--verify-user must hard-error");
+    let Err(verify_error) = verify_result else {
+        return Err("--verify-user must hard-error".into());
+    };
     assert_eq!(
         verify_error.exit_code(),
         locket_core::LocketError::PolicyValidationIncomplete.exit_code(),
