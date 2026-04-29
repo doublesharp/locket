@@ -119,6 +119,7 @@ pub fn run_command(
         &policy,
         audit_status,
         &selections,
+        status.code(),
     )?;
     if status.success() {
         return Ok(());

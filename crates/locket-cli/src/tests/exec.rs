@@ -315,6 +315,12 @@ inherit_env = ["PATH"]
     let metadata_json: serde_json::Value = serde_json::from_str(&metadata)?;
     assert_eq!(metadata_json["command"], "run");
     assert_eq!(metadata_json["secret_names"], json!(["DATABASE_URL"]));
+    assert_eq!(metadata_json["allowed_secret_names"], json!(["DATABASE_URL"]));
+    assert_eq!(metadata_json["required_secret_names"], json!(["DATABASE_URL"]));
+    assert_eq!(metadata_json["policy_id"], "env_check");
+    assert_eq!(metadata_json["external_sources"], json!([]));
+    assert_eq!(metadata_json["confirmation_source"], json!(null));
+    assert_eq!(metadata_json["child_exit"], json!(0));
     assert_eq!(
         metadata_json["secrets"],
         json!([{
@@ -327,6 +333,53 @@ inherit_env = ["PATH"]
     );
     assert!(!metadata.contains("machine-precedence-value"));
     assert!(!metadata.contains("user-precedence-value"));
+    Ok(())
+}
+
+#[test]
+fn run_policy_audit_records_child_exit_code_on_failure()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(directory.path().join("locket.toml"))?
+        .write_all(
+            br#"
+[commands.fail_command]
+argv = ["/bin/sh", "-c", "exit 17"]
+env_mode = "strict"
+inherit_env = ["PATH"]
+"#,
+        )?;
+
+    let mut output = Vec::new();
+    let result = run_with_context(
+        Cli::try_parse_from(["locket", "run", "fail_command"])?,
+        &context,
+        &mut output,
+    );
+    let Err(error) = result else {
+        return Err("policy with `exit 17` should propagate child exit".into());
+    };
+    assert_eq!(error.exit_code(), 17);
+
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let metadata: String = store.connection().query_row(
+        "SELECT metadata_json FROM audit_log WHERE action = 'RUN_POLICY'
+         ORDER BY sequence DESC LIMIT 1",
+        [],
+        |row| row.get(0),
+    )?;
+    let metadata_json: serde_json::Value = serde_json::from_str(&metadata)?;
+    assert_eq!(metadata_json["status"], "FAILED");
+    assert_eq!(metadata_json["child_exit"], json!(17));
     Ok(())
 }
 
