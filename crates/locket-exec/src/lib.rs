@@ -107,11 +107,24 @@ pub fn prepare_execution(request: &ExecutionRequest) -> Result<PreparedExecution
     Ok(PreparedExecution { program: program.clone(), args: args.to_vec(), env })
 }
 
+/// Selects parent environment values that a policy explicitly allows through an
+/// external parent source.
+#[must_use]
+pub fn resolve_parent_external_env<'a>(
+    parent_env: &EnvMap,
+    allowed_names: impl IntoIterator<Item = &'a str>,
+) -> EnvMap {
+    allowed_names
+        .into_iter()
+        .filter_map(|name| parent_env.get(name).map(|value| (name.to_owned(), value.clone())))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use std::ffi::OsStr;
 
-    use super::{ExecError, ExecutionRequest, prepare_execution};
+    use super::{ExecError, ExecutionRequest, prepare_execution, resolve_parent_external_env};
     use crate::{EnvMap, EnvMode, EnvOverrideMode};
 
     fn env(values: &[(&str, &str)]) -> EnvMap {
@@ -225,5 +238,24 @@ mod tests {
         let request = ExecutionRequest::strict(Vec::new());
 
         assert_eq!(prepare_execution(&request), Err(ExecError::EmptyCommand));
+    }
+
+    #[test]
+    fn parent_external_env_selects_only_allowed_names() {
+        let parent_env = env(&[
+            ("DATABASE_URL", "postgres://parent"),
+            ("API_TOKEN", "parent-token"),
+            ("UNRELATED", "not-allowed"),
+        ]);
+
+        let selected = resolve_parent_external_env(&parent_env, ["DATABASE_URL", "MISSING"]);
+
+        assert_eq!(selected.len(), 1);
+        assert_eq!(
+            selected.get("DATABASE_URL").map(|value| value.as_str()),
+            Some("postgres://parent")
+        );
+        assert!(!selected.contains_key("API_TOKEN"));
+        assert!(!selected.contains_key("UNRELATED"));
     }
 }

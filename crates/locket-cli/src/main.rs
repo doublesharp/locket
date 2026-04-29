@@ -43,6 +43,8 @@ pub(crate) use commands::exec::docker::{
     compose_argv_with_options, docker_policy_audit_metadata, prepare_compose_policy_execution,
     prepare_docker_policy_execution, write_docker_policy_audit_if_available,
 };
+#[cfg(test)]
+pub(crate) use commands::exec::run::resolve_policy_external_env;
 pub(crate) use commands::project::install_hooks::git_dir_for_worktree;
 pub(crate) use commands::scan::context::privacy_redact_names_enabled;
 #[cfg(test)]

@@ -7,7 +7,7 @@ use std::path::Path;
 use std::process::ExitStatus;
 use std::str::FromStr;
 
-use locket_core::{CommandSpec, SessionId};
+use locket_core::{CommandPolicy, CommandSpec, ExternalEnvSource, SessionId};
 use locket_store::{ProfileRecord, RuntimeSessionRecord, RuntimeSessionSecretNameRetention, Store};
 
 use crate::commands::config::spec::{config_get_value, read_user_config};
@@ -16,7 +16,9 @@ use crate::runtime::error::{
     CliError, child_exit_error, exec_prepare_error, unimplemented_in_build_error,
 };
 use crate::runtime::key_access::default_profile;
-use crate::support::secret_helpers::{decrypt_secret_version, policy_secret_selections};
+use crate::support::secret_helpers::{
+    PolicySecretSelection, decrypt_secret_version, policy_secret_selections,
+};
 use crate::{
     ResolvedProject, RunArgs, ensure_trusted_project_root, load_command_policy, now_unix_nanos,
     open_store, require_project, write_runtime_policy_audit_if_available,
@@ -62,21 +64,15 @@ pub fn run_command(
             "policy user verification is not wired in this build",
         ));
     }
-    if !policy.external_env_sources.is_empty() {
-        return Err(unimplemented_in_build_error(
-            "policy external environment sources are not wired in this build",
-        ));
-    }
-
     let mut store = open_store(context)?;
     ensure_trusted_project_root(&store, &resolved)?;
     let profile = default_profile(&store, &resolved.config)?;
     let selections = policy_secret_selections(&store, &resolved, &profile, &policy)?;
-    let missing_required = selections
-        .iter()
-        .filter(|selection| selection.required && selection.selected.is_none())
-        .map(|selection| selection.name.as_str())
-        .collect::<Vec<_>>();
+    let parent_env = std::env::vars()
+        .map(|(name, value)| (name, locket_exec::env_value(value)))
+        .collect::<locket_exec::EnvMap>();
+    let external_env = resolve_policy_external_env(&policy, &parent_env)?;
+    let missing_required = missing_required_secret_names(&selections, &external_env);
     if !missing_required.is_empty() {
         return Err(CliError::Config(format!(
             "required secret(s) missing: {}",
@@ -84,41 +80,24 @@ pub fn run_command(
         )));
     }
 
-    let mut locket_env = locket_exec::EnvMap::new();
-    for selection in &selections {
-        if let Some(secret) = &selection.selected {
-            let value = decrypt_secret_version(
-                context,
-                &store,
-                resolved.config.project_id.as_str(),
-                &profile.id,
-                secret,
-                secret.current_version,
-            )?;
-            locket_env.insert(secret.name.clone(), value);
-        }
-    }
-
-    let command_argv = match &policy.command {
-        CommandSpec::Argv(arguments) => arguments.clone(),
-        CommandSpec::Shell(_) => unreachable!("shell policies are rejected before decryption"),
-    };
+    let locket_env = policy_locket_env(context, &store, &resolved, &profile, &selections)?;
     let request = locket_exec::ExecutionRequest {
-        argv: command_argv,
-        parent_env: std::env::vars()
-            .map(|(name, value)| (name, locket_exec::env_value(value)))
-            .collect(),
+        argv: policy_argv(&policy),
+        parent_env,
         inherit_env: policy.inherit_env.clone(),
-        external_env: locket_exec::EnvMap::new(),
+        external_env: external_env.clone(),
         locket_env,
         env_mode: policy.env_mode,
         override_mode: policy.override_behavior,
     };
     let prepared = locket_exec::prepare_execution(&request).map_err(exec_prepare_error)?;
-    let secret_names =
-        unique_secret_names(selections.iter().filter_map(|selection| {
-            selection.selected.as_ref().map(|secret| secret.name.as_str())
-        }));
+    let external_env_names = external_env.keys().map(ToOwned::to_owned).collect::<Vec<_>>();
+    let secret_names = unique_secret_names(
+        selections
+            .iter()
+            .filter_map(|selection| selection.selected.as_ref().map(|secret| secret.name.as_str()))
+            .chain(external_env_names.iter().map(String::as_str)),
+    );
     let status = execute_prepared_with_runtime_session(
         context,
         &RuntimeExecutionRequest {
@@ -147,6 +126,75 @@ pub fn run_command(
 
     writeln!(output, "child exited with status {status}")?;
     Err(child_exit_error(status))
+}
+
+pub fn resolve_policy_external_env(
+    policy: &CommandPolicy,
+    parent_env: &locket_exec::EnvMap,
+) -> Result<locket_exec::EnvMap, CliError> {
+    let mut external_env = locket_exec::EnvMap::new();
+    for source in &policy.external_env_sources {
+        match source {
+            ExternalEnvSource::Parent => {
+                external_env.extend(locket_exec::resolve_parent_external_env(
+                    parent_env,
+                    policy.allowed_secrets.iter().map(locket_core::SecretName::as_str),
+                ));
+            }
+            ExternalEnvSource::File(_) | ExternalEnvSource::Compose | ExternalEnvSource::Ide => {
+                return Err(unimplemented_in_build_error(
+                    "external env source is not wired in this build",
+                ));
+            }
+        }
+    }
+    Ok(external_env)
+}
+
+fn missing_required_secret_names<'a>(
+    selections: &'a [PolicySecretSelection],
+    external_env: &locket_exec::EnvMap,
+) -> Vec<&'a str> {
+    selections
+        .iter()
+        .filter(|selection| {
+            selection.required
+                && selection.selected.is_none()
+                && !external_env.contains_key(&selection.name)
+        })
+        .map(|selection| selection.name.as_str())
+        .collect()
+}
+
+fn policy_locket_env(
+    context: &RuntimeContext,
+    store: &Store,
+    resolved: &ResolvedProject,
+    profile: &ProfileRecord,
+    selections: &[PolicySecretSelection],
+) -> Result<locket_exec::EnvMap, CliError> {
+    let mut locket_env = locket_exec::EnvMap::new();
+    for selection in selections {
+        if let Some(secret) = &selection.selected {
+            let value = decrypt_secret_version(
+                context,
+                store,
+                resolved.config.project_id.as_str(),
+                &profile.id,
+                secret,
+                secret.current_version,
+            )?;
+            locket_env.insert(secret.name.clone(), value);
+        }
+    }
+    Ok(locket_env)
+}
+
+fn policy_argv(policy: &CommandPolicy) -> Vec<String> {
+    match &policy.command {
+        CommandSpec::Argv(arguments) => arguments.clone(),
+        CommandSpec::Shell(_) => unreachable!("shell policies are rejected before decryption"),
+    }
 }
 
 pub fn execute_prepared_with_runtime_session(
