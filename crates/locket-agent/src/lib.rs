@@ -1,159 +1,22 @@
 //! Local agent and protocol types for Locket.
 
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde::Serialize;
 
+mod envelope;
 mod error;
 mod method;
+mod status;
 
+pub use envelope::{ErrorEnvelope, RequestEnvelope, ResponseEnvelope, SuccessEnvelope};
 pub use error::ProtocolError;
 pub use method::{AgentMethod, UnknownMethod};
+pub use status::{LockState, StatusPayload};
 
 /// Maximum v1 protocol message size in bytes.
 pub const DEFAULT_MAX_MESSAGE_SIZE: usize = 1024 * 1024;
 
 /// Agent protocol version supported by this crate.
 pub const PROTOCOL_VERSION: u16 = 1;
-
-/// JSON request envelope sent after the v1 length prefix.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct RequestEnvelope {
-    /// Protocol version.
-    pub v: u16,
-    /// Client-generated request id.
-    pub id: String,
-    /// Method name.
-    pub kind: String,
-    /// Method payload.
-    pub payload: Value,
-}
-
-impl RequestEnvelope {
-    /// Creates a v1 request envelope for a typed method.
-    #[must_use]
-    pub fn new(id: impl Into<String>, method: AgentMethod, payload: Value) -> Self {
-        Self { v: PROTOCOL_VERSION, id: id.into(), kind: method.as_str().to_owned(), payload }
-    }
-
-    /// Returns the validated typed method.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ProtocolError::UnknownMethod`] when `kind` is not a supported
-    /// v1 method name.
-    pub fn method(&self) -> Result<AgentMethod, ProtocolError> {
-        self.kind.parse().map_err(ProtocolError::UnknownMethod)
-    }
-}
-
-/// JSON response envelope sent after the v1 length prefix.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(untagged)]
-pub enum ResponseEnvelope {
-    /// Successful response.
-    Success(SuccessEnvelope),
-    /// Error response.
-    Error(ErrorEnvelope),
-}
-
-/// Successful response envelope.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct SuccessEnvelope {
-    /// Protocol version.
-    pub v: u16,
-    /// Request id being answered.
-    pub id: String,
-    /// Success marker.
-    pub ok: bool,
-    /// Response payload.
-    pub payload: Value,
-}
-
-impl SuccessEnvelope {
-    /// Creates a successful v1 response.
-    #[must_use]
-    pub fn new(id: impl Into<String>, payload: Value) -> Self {
-        Self { v: PROTOCOL_VERSION, id: id.into(), ok: true, payload }
-    }
-}
-
-/// Error response envelope.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct ErrorEnvelope {
-    /// Protocol version.
-    pub v: u16,
-    /// Request id being answered.
-    pub id: String,
-    /// Success marker. Always false for this variant.
-    pub ok: bool,
-    /// Typed Locket error name.
-    pub error: String,
-    /// Redacted safe message.
-    pub message: String,
-    /// Whether the client may retry the request unchanged.
-    pub retryable: bool,
-}
-
-impl ErrorEnvelope {
-    /// Creates a redacted v1 error response.
-    #[must_use]
-    pub fn new(
-        id: impl Into<String>,
-        error: impl Into<String>,
-        message: impl Into<String>,
-        retryable: bool,
-    ) -> Self {
-        Self {
-            v: PROTOCOL_VERSION,
-            id: id.into(),
-            ok: false,
-            error: error.into(),
-            message: message.into(),
-            retryable,
-        }
-    }
-}
-
-/// Metadata-only lock state reported by status calls.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum LockState {
-    /// Agent is not holding unwrapped keys.
-    Locked,
-    /// Agent has unwrapped keys for the current user/session.
-    Unlocked,
-    /// Agent is unavailable or cannot determine lock state.
-    Unknown,
-}
-
-/// Metadata-only status payload shared by `Status` and status events.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct StatusPayload {
-    /// Lock state.
-    pub lock_state: LockState,
-    /// Optional active project id or privacy alias.
-    pub project_id: Option<String>,
-    /// Optional active profile name or privacy alias.
-    pub profile_name: Option<String>,
-    /// Count of live grants, never grant tokens.
-    pub live_grant_count: u32,
-    /// Agent version string.
-    pub agent_version: String,
-}
-
-impl StatusPayload {
-    /// Creates a locked status payload with no active project context.
-    #[must_use]
-    pub fn locked(agent_version: impl Into<String>) -> Self {
-        Self {
-            lock_state: LockState::Locked,
-            project_id: None,
-            profile_name: None,
-            live_grant_count: 0,
-            agent_version: agent_version.into(),
-        }
-    }
-}
 
 /// Serializes an envelope payload into a length-prefixed v1 frame.
 ///
