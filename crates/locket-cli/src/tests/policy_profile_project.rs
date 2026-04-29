@@ -204,6 +204,111 @@ fn profile_create_existing_profile_errors_without_audit_row()
 }
 
 #[test]
+fn use_profile_writes_profile_change_audit_row() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    run_with_context(
+        Cli::try_parse_from(["locket", "profile", "create", "staging"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+
+    let mut output = Vec::new();
+    run_with_context(Cli::try_parse_from(["locket", "use", "staging"])?, &context, &mut output)?;
+    assert!(String::from_utf8(output)?.contains("active profile: staging"));
+
+    let config = crate::read_project_config(&directory.path().join("locket.toml"))?;
+    assert_eq!(config.default_profile.as_str(), "staging");
+
+    let store = crate::open_store(&context)?;
+    let (profile_id, command, secret_name, metadata): (
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        String,
+    ) = store.connection().query_row(
+        "SELECT profile_id, command, secret_name, metadata_json
+         FROM audit_log
+         WHERE action = 'PROFILE_CHANGE' AND command = 'use'
+         ORDER BY sequence DESC LIMIT 1",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+    )?;
+    let metadata: serde_json::Value = serde_json::from_str(&metadata)?;
+    assert_eq!(command.as_deref(), Some("use"));
+    assert_eq!(secret_name, None);
+    assert_eq!(metadata["action"], json!("PROFILE_CHANGE"));
+    assert_eq!(metadata["status"], json!("SUCCESS"));
+    assert_eq!(metadata["operation"], json!("use"));
+    assert_eq!(metadata["command"], json!("use"));
+    assert_eq!(metadata["project_id"].as_str(), Some(config.project_id.as_str()));
+    assert_eq!(metadata["prior_profile_name"], json!("dev"));
+    assert_eq!(metadata["new_profile_name"], json!("staging"));
+    assert_eq!(metadata["new_profile_id"].as_str(), profile_id.as_deref());
+    assert_eq!(metadata["root_hash"].as_str().map(str::len), Some(64));
+    assert!(metadata.get("secret_name").is_none());
+    Ok(())
+}
+
+#[test]
+fn use_profile_same_default_writes_no_audit_row() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+
+    let mut output = Vec::new();
+    run_with_context(Cli::try_parse_from(["locket", "use", "dev"])?, &context, &mut output)?;
+    assert!(String::from_utf8(output)?.contains("unchanged"));
+
+    let store = crate::open_store(&context)?;
+    let count: i64 = store.connection().query_row(
+        "SELECT COUNT(*) FROM audit_log WHERE action = 'PROFILE_CHANGE' AND command = 'use'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(count, 0);
+    Ok(())
+}
+
+#[test]
+fn use_profile_missing_profile_writes_no_audit_row() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+
+    let result = run_with_context(
+        Cli::try_parse_from(["locket", "use", "staging"])?,
+        &context,
+        &mut Vec::new(),
+    );
+    assert_error_contains(result, "profile not found");
+    let config = crate::read_project_config(&directory.path().join("locket.toml"))?;
+    assert_eq!(config.default_profile.as_str(), "dev");
+
+    let store = crate::open_store(&context)?;
+    let count: i64 = store.connection().query_row(
+        "SELECT COUNT(*) FROM audit_log WHERE action = 'PROFILE_CHANGE' AND command = 'use'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(count, 0);
+    Ok(())
+}
+
+#[test]
 fn profile_mark_dangerous_writes_profile_change_audit_with_prior_flags()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempdir()?;

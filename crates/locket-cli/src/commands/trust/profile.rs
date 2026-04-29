@@ -8,9 +8,9 @@ use locket_store::{AuditWrite, ProfileRecord, Store};
 use serde_json::{Value, json};
 
 use crate::{
-    CliError, LOCKET_TOML, ProfileCommand, ProfileNameArgs, RuntimeContext,
+    CliError, LOCKET_TOML, ProfileCommand, ProfileNameArgs, RuntimeContext, format_hex,
     initialize_profile_keys, load_project_key, now_unix_nanos, open_store, require_project,
-    secret_already_exists_error, write_project_config,
+    root_hash, secret_already_exists_error, write_project_config,
 };
 
 pub fn profile_command(
@@ -227,12 +227,61 @@ pub fn use_profile_command(
     let profile_name = ProfileName::new(args.profile)
         .map_err(|_| CliError::Config("invalid profile name".to_owned()))?;
     let mut resolved = require_project(context)?;
-    let store = open_store(context)?;
-    let profile = store
-        .get_profile_by_name(resolved.config.project_id.as_str(), profile_name.as_str())?
+    let mut store = open_store(context)?;
+    let project_id = resolved.config.project_id.as_str().to_owned();
+    let new_profile = store
+        .get_profile_by_name(&project_id, profile_name.as_str())?
         .ok_or_else(|| CliError::Config("profile not found".to_owned()))?;
+    let prior_profile_name = resolved.config.default_profile.as_str().to_owned();
+    if prior_profile_name == profile_name.as_str() {
+        writeln!(output, "active profile: {} ({}) unchanged", new_profile.name, new_profile.id)?;
+        return Ok(());
+    }
+    let prior_profile = store
+        .get_profile_by_name(&project_id, &prior_profile_name)?
+        .ok_or_else(|| CliError::Config("current default profile not found".to_owned()))?;
+
+    let timestamp = now_unix_nanos()?;
+    let root_hash = format_hex(&root_hash(&resolved.root)?);
+    let audit_key = load_project_key(context, &store, &project_id, KeyPurpose::Audit)?;
+    let metadata =
+        profile_use_audit_metadata(&project_id, &prior_profile, &new_profile, root_hash.as_str());
     resolved.config.default_profile = profile_name;
     write_project_config(&resolved.root.join(LOCKET_TOML), &resolved.config)?;
-    writeln!(output, "active profile: {} ({})", profile.name, profile.id)?;
+
+    let audit = AuditWrite {
+        project_id: &project_id,
+        profile_id: Some(&new_profile.id),
+        action: "PROFILE_CHANGE",
+        status: "SUCCESS",
+        secret_name: None,
+        command: Some("use"),
+        metadata_json: &metadata,
+        timestamp,
+    };
+    store.append_audit(audit_key.as_ref(), &audit)?;
+
+    writeln!(output, "active profile: {} ({})", new_profile.name, new_profile.id)?;
     Ok(())
+}
+
+fn profile_use_audit_metadata(
+    project_id: &str,
+    prior_profile: &ProfileRecord,
+    new_profile: &ProfileRecord,
+    root_hash: &str,
+) -> Value {
+    json!({
+        "schema_version": 1,
+        "action": "PROFILE_CHANGE",
+        "status": "SUCCESS",
+        "operation": "use",
+        "command": "use",
+        "project_id": project_id,
+        "prior_profile_id": prior_profile.id,
+        "prior_profile_name": prior_profile.name,
+        "new_profile_id": new_profile.id,
+        "new_profile_name": new_profile.name,
+        "root_hash": root_hash,
+    })
 }
