@@ -745,7 +745,7 @@ pub fn recovery_code_decode(input: &str) -> CryptoResult<[u8; RECOVERY_CODE_BYTE
     let chars: Vec<u8> =
         input.bytes().filter(|&b| b != b'-' && b != b' ').map(|b| b.to_ascii_uppercase()).collect();
 
-    if chars.len() < RECOVERY_CODE_DATA_CHARS {
+    if !matches!(chars.len(), RECOVERY_CODE_DATA_CHARS | RECOVERY_CODE_TOTAL_CHARS) {
         return Err(CryptoError::InvalidSecretValue);
     }
 
@@ -773,7 +773,7 @@ pub fn recovery_code_decode(input: &str) -> CryptoResult<[u8; RECOVERY_CODE_BYTE
     }
 
     // Verify checksum if provided.
-    if chars.len() >= RECOVERY_CODE_TOTAL_CHARS {
+    if chars.len() == RECOVERY_CODE_TOTAL_CHARS {
         let expected_check = chars[RECOVERY_CODE_DATA_CHARS];
         let mut acc: u64 = 0;
         for &b in &bytes {
@@ -782,7 +782,7 @@ pub fn recovery_code_decode(input: &str) -> CryptoResult<[u8; RECOVERY_CODE_BYTE
         // acc is always < 37 after mod, usize cast is safe.
         #[allow(clippy::cast_possible_truncation)]
         let computed_symbol = CROCKFORD_CHECK[acc as usize];
-        if expected_check != computed_symbol {
+        if expected_check != computed_symbol || chars[RECOVERY_CODE_DATA_CHARS + 1] != b'0' {
             return Err(CryptoError::InvalidSecretValue);
         }
     }
@@ -961,9 +961,10 @@ mod tests {
     use super::{
         AAD_SCHEMA_V1, CryptoError, HKDF_WRAP_INFO_SCHEMA_V1, HkdfWrapInfo, KEY_LEN,
         KEY_WRAP_SCHEMA_V1, KeyPurpose, KeyWrapAad, KeyWrapPurpose, NONCE_LEN,
-        PASSPHRASE_FALLBACK_OUTPUT_LEN, PassphraseKdfParams, SecretBlobAad, TAG_LEN,
-        canonical_field, decrypt_secret_value_v1, derive_passphrase_fallback_key_v1,
-        derive_wrapping_key_v1, hkdf_wrap_info_v1, key_wrap_aad_v1, passphrase_fallback_aad_v1,
+        PASSPHRASE_FALLBACK_OUTPUT_LEN, PassphraseKdfParams, RECOVERY_CODE_BYTES,
+        RECOVERY_CODE_DATA_CHARS, SecretBlobAad, TAG_LEN, canonical_field, decrypt_secret_value_v1,
+        derive_passphrase_fallback_key_v1, derive_wrapping_key_v1, hkdf_wrap_info_v1,
+        key_wrap_aad_v1, passphrase_fallback_aad_v1, recovery_code_decode, recovery_code_encode,
         secret_blob_aad_v1, secret_fingerprint_v1, unwrap_dek_v1, unwrap_key_material_v1,
         wrap_dek_v1, wrap_key_material_v1,
     };
@@ -1306,6 +1307,53 @@ mod tests {
         assert_eq!(wrapped.nonce.len(), NONCE_LEN);
         assert_eq!(&*unwrapped, &key_material);
         Ok(())
+    }
+
+    #[test]
+    fn recovery_code_round_trips_with_and_without_checksum() -> Result<(), CryptoError> {
+        let code_bytes = [7_u8; RECOVERY_CODE_BYTES];
+        let encoded = recovery_code_encode(&code_bytes);
+        let encoded = String::from_utf8_lossy(&encoded);
+        let grouped = format!(
+            "{}-{}-{}-{}",
+            &encoded[0..8],
+            &encoded[8..16],
+            &encoded[16..24],
+            &encoded[24..]
+        );
+
+        assert_eq!(recovery_code_decode(&encoded)?, code_bytes);
+        assert_eq!(recovery_code_decode(&encoded[..RECOVERY_CODE_DATA_CHARS])?, code_bytes);
+        assert_eq!(recovery_code_decode(&grouped)?, code_bytes);
+        Ok(())
+    }
+
+    #[test]
+    fn recovery_code_rejects_malformed_lengths_and_checksum() {
+        let code_bytes = [9_u8; RECOVERY_CODE_BYTES];
+        let encoded = recovery_code_encode(&code_bytes);
+        let encoded = String::from_utf8_lossy(&encoded);
+        let mut bad_check = encoded.as_bytes().to_vec();
+        bad_check[RECOVERY_CODE_DATA_CHARS] =
+            if bad_check[RECOVERY_CODE_DATA_CHARS] == b'0' { b'1' } else { b'0' };
+        let bad_check = String::from_utf8_lossy(&bad_check);
+        let mut bad_reserved = encoded.as_bytes().to_vec();
+        bad_reserved[RECOVERY_CODE_DATA_CHARS + 1] = b'1';
+        let bad_reserved = String::from_utf8_lossy(&bad_reserved);
+
+        assert!(matches!(
+            recovery_code_decode(&encoded[..=RECOVERY_CODE_DATA_CHARS]),
+            Err(CryptoError::InvalidSecretValue)
+        ));
+        assert!(matches!(
+            recovery_code_decode(&format!("{encoded}A")),
+            Err(CryptoError::InvalidSecretValue)
+        ));
+        assert!(matches!(recovery_code_decode(&bad_check), Err(CryptoError::InvalidSecretValue)));
+        assert!(matches!(
+            recovery_code_decode(&bad_reserved),
+            Err(CryptoError::InvalidSecretValue)
+        ));
     }
 
     #[test]

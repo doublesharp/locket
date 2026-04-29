@@ -614,9 +614,7 @@ impl RecoveryKdfToml {
     /// Returns [`PlatformError::InvalidRecoveryEnvelope`] when the schema or
     /// Argon2id parameters do not match the supported v1 recovery profile.
     pub fn validate(&self) -> Result<(), PlatformError> {
-        use locket_crypto::{
-            RECOVERY_M_COST, RECOVERY_P_COST, RECOVERY_SALT_LEN, RECOVERY_T_COST,
-        };
+        use locket_crypto::{RECOVERY_M_COST, RECOVERY_P_COST, RECOVERY_SALT_LEN, RECOVERY_T_COST};
 
         if self.version != RECOVERY_KDF_TOML_VERSION {
             return Err(PlatformError::InvalidRecoveryEnvelope(
@@ -624,9 +622,7 @@ impl RecoveryKdfToml {
             ));
         }
         if self.algorithm != "argon2id" {
-            return Err(PlatformError::InvalidRecoveryEnvelope(
-                "unsupported kdf algorithm".into(),
-            ));
+            return Err(PlatformError::InvalidRecoveryEnvelope("unsupported kdf algorithm".into()));
         }
         if self.kdf_profile_id.is_empty()
             || self.kdf_profile_id.len() > 128
@@ -640,10 +636,12 @@ impl RecoveryKdfToml {
         if self.decode_salt()?.len() != RECOVERY_SALT_LEN {
             return Err(PlatformError::InvalidRecoveryEnvelope("invalid kdf salt length".into()));
         }
+        let expected_output_len = u32::try_from(KEY_LEN)
+            .map_err(|_| PlatformError::InvalidRecoveryEnvelope("invalid key length".into()))?;
         if self.m_cost != RECOVERY_M_COST
             || self.t_cost != RECOVERY_T_COST
             || self.p_cost != RECOVERY_P_COST
-            || self.output_len != KEY_LEN as u32
+            || self.output_len != expected_output_len
         {
             return Err(PlatformError::InvalidRecoveryEnvelope(
                 "unsupported kdf parameters".into(),
@@ -889,9 +887,11 @@ pub fn save_recovery_envelope(
 mod tests {
     use super::{
         KEY_LEN, LocalUserVerificationMethod, LocalUserVerificationRequest, LocalUserVerifier,
-        MasterKeyStore, MemoryLocalUserVerifier, MemoryMasterKeyStore,
-        PassphraseFallbackMasterKeyStore, PlatformError, UnavailableLocalUserVerifier, decode_key,
-        encode_key, master_key_account,
+        MasterKeyStore, MemoryLocalUserVerifier, MemoryMasterKeyStore, NONCE_LEN,
+        PassphraseFallbackMasterKeyStore, PlatformError, RecoveryEnvelope, RecoveryEnvelopeEntry,
+        RecoveryKdfToml, UnavailableLocalUserVerifier, decode_key, encode_key,
+        load_recovery_envelope, load_recovery_kdf_toml, master_key_account, save_recovery_envelope,
+        save_recovery_kdf_toml,
     };
 
     const PROJECT_ID: &str = "lk_proj_test";
@@ -1092,6 +1092,91 @@ mod tests {
             & 0o777;
         assert_eq!(dir_mode, 0o700);
         assert_eq!(file_mode, 0o600);
+        Ok(())
+    }
+
+    #[test]
+    fn recovery_kdf_toml_round_trips_and_rejects_tampering() -> Result<(), PlatformError> {
+        let directory = tempfile::tempdir()?;
+        let salt = [3_u8; locket_crypto::RECOVERY_SALT_LEN];
+        let kdf = RecoveryKdfToml::new_v1("lk_kdf_test".to_owned(), &salt, 456);
+
+        save_recovery_kdf_toml(directory.path(), &kdf)?;
+        let loaded = load_recovery_kdf_toml(directory.path())?;
+
+        assert_eq!(loaded.kdf_profile_id, "lk_kdf_test");
+        assert_eq!(loaded.decode_salt()?, salt);
+
+        let mut tampered = loaded;
+        tampered.m_cost = locket_crypto::RECOVERY_M_COST + 1;
+        assert!(matches!(
+            save_recovery_kdf_toml(directory.path(), &tampered),
+            Err(PlatformError::InvalidRecoveryEnvelope(_))
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn recovery_envelope_round_trips_and_rejects_tampering() -> Result<(), PlatformError> {
+        let directory = tempfile::tempdir()?;
+        let envelope = RecoveryEnvelope {
+            kdf_profile_id: "lk_kdf_test".to_owned(),
+            created_at_unix_nanos: 123,
+            entries: vec![RecoveryEnvelopeEntry {
+                entry_kind: "master_key".to_owned(),
+                entry_id: PROJECT_ID.to_owned(),
+                nonce: [1_u8; NONCE_LEN],
+                ciphertext: vec![2_u8; KEY_LEN + locket_crypto::TAG_LEN],
+            }],
+        };
+
+        save_recovery_envelope(directory.path(), &envelope)?;
+        let loaded = load_recovery_envelope(directory.path())?;
+
+        assert_eq!(loaded.kdf_profile_id, envelope.kdf_profile_id);
+        assert_eq!(loaded.entries.len(), 1);
+        assert_eq!(loaded.entries[0].ciphertext, envelope.entries[0].ciphertext);
+
+        let mut bytes = envelope.serialize()?;
+        bytes[0] ^= 0xFF;
+        assert!(matches!(
+            RecoveryEnvelope::deserialize(&bytes),
+            Err(PlatformError::InvalidRecoveryEnvelope(_))
+        ));
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recovery_files_use_user_only_permissions() -> Result<(), PlatformError> {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let directory = tempfile::tempdir()?;
+        let recovery_dir = directory.path().join("recovery");
+        let salt = [4_u8; locket_crypto::RECOVERY_SALT_LEN];
+        let kdf = RecoveryKdfToml::new_v1("lk_kdf_test".to_owned(), &salt, 456);
+        let envelope = RecoveryEnvelope {
+            kdf_profile_id: "lk_kdf_test".to_owned(),
+            created_at_unix_nanos: 123,
+            entries: vec![RecoveryEnvelopeEntry {
+                entry_kind: "master_key".to_owned(),
+                entry_id: PROJECT_ID.to_owned(),
+                nonce: [1_u8; NONCE_LEN],
+                ciphertext: vec![2_u8; KEY_LEN + locket_crypto::TAG_LEN],
+            }],
+        };
+
+        save_recovery_kdf_toml(&recovery_dir, &kdf)?;
+        save_recovery_envelope(&recovery_dir, &envelope)?;
+
+        let dir_mode = std::fs::metadata(&recovery_dir)?.permissions().mode() & 0o777;
+        let kdf_mode =
+            std::fs::metadata(recovery_dir.join("kdf.toml"))?.permissions().mode() & 0o777;
+        let envelope_mode =
+            std::fs::metadata(recovery_dir.join("envelope.bin"))?.permissions().mode() & 0o777;
+        assert_eq!(dir_mode, 0o700);
+        assert_eq!(kdf_mode, 0o600);
+        assert_eq!(envelope_mode, 0o600);
         Ok(())
     }
 }
