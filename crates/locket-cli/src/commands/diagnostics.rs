@@ -15,7 +15,8 @@ use crate::commands::config::spec::{CONFIG_KEY_SPECS, read_user_config};
 use crate::{
     CliError, GITIGNORE_ENTRIES, GITIGNORE_FILE, HOOK_BEGIN, LOCKET_TOML, RuntimeContext,
     agent_log_path, agent_pid_path, agent_socket_path, format_hex, git_dir_for_worktree,
-    load_project_key, now_unix_nanos, open_store, read_project_config, resolve_project, root_hash,
+    load_project_key, now_unix_nanos, open_store, privacy_alias, privacy_redact_names_enabled,
+    read_project_config, resolve_project, root_hash,
 };
 
 const SKIPPED_LOCKED_CHECKS: [&str; 5] = [
@@ -172,6 +173,9 @@ pub fn debug_bundle_command(
 
     let diagnostics = collect_diagnostics(context);
     let project = resolve_project(&context.cwd)?;
+    let redact_names = privacy_redact_names_enabled(context, false)?;
+    let alias_replacements =
+        debug_bundle_alias_replacements(context, project.as_ref(), redact_names);
     let user_config = read_user_config(context).unwrap_or_default();
     let config_keys = CONFIG_KEY_SPECS
         .iter()
@@ -188,14 +192,20 @@ pub fn debug_bundle_command(
         )
     });
     let project_json = project.as_ref().map(|project| {
+        let project_label =
+            debug_bundle_alias(&alias_replacements, project.config.project_id.as_str());
+        let project_name = debug_bundle_alias(&alias_replacements, &project.config.name);
+        let default_profile =
+            debug_bundle_alias(&alias_replacements, project.config.default_profile.as_str());
         json!({
-            "id": project.config.project_id.as_str(),
-            "name": project.config.name,
-            "default_profile": project.config.default_profile.as_str(),
+            "id": project_label,
+            "name": project_name,
+            "default_profile": default_profile,
             "root_kind": "project_root",
             "root_hash": root_hash(&project.root).map(|hash| format_hex(&hash)).ok(),
         })
     });
+    let diagnostics_json = redact_debug_bundle_value(diagnostics.as_json(), &alias_replacements);
     let bundle = json!({
         "schema_version": 1,
         "redacted": true,
@@ -215,7 +225,7 @@ pub fn debug_bundle_command(
         "config_keys": config_keys,
         "recent_audit_actions": audit_actions,
         "agent": agent_metadata(context),
-        "diagnostics": diagnostics.as_json(),
+        "diagnostics": diagnostics_json,
     });
     let text = serde_json::to_string_pretty(&bundle)
         .map_err(|error| CliError::Config(error.to_string()))?;
@@ -229,6 +239,70 @@ pub fn debug_bundle_command(
     writeln!(output, "redacted: yes")?;
 
     Ok(())
+}
+
+fn debug_bundle_alias_replacements(
+    context: &RuntimeContext,
+    project: Option<&crate::ResolvedProject>,
+    redact_names: bool,
+) -> Vec<(String, String)> {
+    if !redact_names {
+        return Vec::new();
+    }
+    let Some(project) = project else {
+        return Vec::new();
+    };
+
+    let project_alias = privacy_alias("project", project.config.project_id.as_str());
+    let profile_alias = privacy_alias("profile", project.config.default_profile.as_str());
+    let mut replacements = vec![
+        (project.config.project_id.to_string(), project_alias.clone()),
+        (project.config.name.clone(), project_alias),
+        (project.config.default_profile.to_string(), profile_alias),
+    ];
+
+    if let Ok(store) = open_store(context)
+        && let Ok(Some(profile)) = store.get_profile_by_name(
+            project.config.project_id.as_str(),
+            project.config.default_profile.as_str(),
+        )
+    {
+        let profile_alias = privacy_alias("profile", &profile.id);
+        replacements.push((profile.id, profile_alias.clone()));
+        replacements.push((profile.name, profile_alias));
+    }
+
+    replacements.retain(|(exact, _)| !exact.is_empty());
+    replacements
+}
+
+fn debug_bundle_alias(replacements: &[(String, String)], value: &str) -> String {
+    replacements
+        .iter()
+        .find_map(|(exact, alias)| (exact == value).then(|| alias.clone()))
+        .unwrap_or_else(|| value.to_owned())
+}
+
+fn redact_debug_bundle_value(mut value: Value, replacements: &[(String, String)]) -> Value {
+    match &mut value {
+        Value::String(text) => {
+            for (exact, alias) in replacements {
+                *text = text.replace(exact, alias);
+            }
+        }
+        Value::Array(values) => {
+            for entry in values {
+                *entry = redact_debug_bundle_value(std::mem::take(entry), replacements);
+            }
+        }
+        Value::Object(entries) => {
+            for entry in entries.values_mut() {
+                *entry = redact_debug_bundle_value(std::mem::take(entry), replacements);
+            }
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) => {}
+    }
+    value
 }
 
 #[allow(clippy::too_many_lines)]

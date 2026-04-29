@@ -599,6 +599,48 @@ fn debug_bundle_redacted_writes_metadata_only_summary() -> Result<(), Box<dyn st
 }
 
 #[test]
+fn debug_bundle_uses_privacy_aliases_when_configured() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    let mut init_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut init_output,
+    )?;
+    let mut config_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "config", "set", "privacy.redact_names", "true"])?,
+        &context,
+        &mut config_output,
+    )?;
+    let output_path = directory.path().join("private-bundle.tar.gz");
+
+    let mut bundle_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from([
+            "locket",
+            "debug",
+            "bundle",
+            "--redacted",
+            "--output",
+            output_path.to_str().ok_or("utf8 path")?,
+        ])?,
+        &context,
+        &mut bundle_output,
+    )?;
+
+    let bundle = read_debug_bundle_json(&output_path)?;
+    assert!(bundle.contains("project-"));
+    assert!(bundle.contains("profile-"));
+    assert!(!bundle.contains("\"app\""));
+    assert!(!bundle.contains("\"dev\""));
+    assert!(!bundle.contains("name=app"));
+    assert!(!bundle.contains("name=dev"));
+    Ok(())
+}
+
+#[test]
 fn debug_bundle_default_output_uses_user_diagnostics_dir() -> Result<(), Box<dyn std::error::Error>>
 {
     let directory = tempdir()?;
