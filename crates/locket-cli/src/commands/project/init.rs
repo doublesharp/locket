@@ -20,7 +20,7 @@ use locket_store::{AuditWrite, Store};
 use serde_json::json;
 
 use crate::runtime::RuntimeContext;
-use crate::runtime::error::CliError;
+use crate::runtime::error::{CliError, confirmation_failed_error};
 use crate::runtime::key_access::{
     MasterKeySource, default_profile, load_master_key_verified_by_project_key, load_project_key,
     store_master_key_with_fallback,
@@ -417,7 +417,7 @@ fn display_initial_recovery_code(
     writeln!(output, "type project name '{}' after recording the recovery code", config.name)?;
     let confirmation = context.confirmation_reader.read_confirmation("init recovery code")?;
     if confirmation.trim_end_matches(['\r', '\n']) != config.name {
-        return Err(CliError::Config("confirmation did not match project name".to_owned()));
+        return Err(confirmation_failed_error("confirmation did not match project name"));
     }
     writeln!(output, "metadata_only: yes")?;
     Ok(())

@@ -13,8 +13,8 @@ use sha2::{Digest, Sha256};
 
 use crate::commands::config::spec::{read_user_config, split_config_key};
 use crate::{
-    CliError, LOCKET_TOML, ResolvedProject, RuntimeContext, format_hex, load_project_key,
-    now_unix_nanos, open_store, require_project,
+    CliError, LOCKET_TOML, ResolvedProject, RuntimeContext, confirmation_failed_error, format_hex,
+    load_project_key, now_unix_nanos, open_store, require_project,
 };
 
 pub const EXAMPLE_FILE: &str = ".env.example";
@@ -296,7 +296,7 @@ fn replace_unmanaged_example(
             let mut confirmation = String::new();
             io::stdin().read_line(&mut confirmation)?;
             if confirmation.trim_end() != "replace .env.example" {
-                return Err(CliError::Config("confirmation did not match".to_owned()));
+                return Err(confirmation_failed_error("confirmation did not match"));
             }
             fs::write(path, managed_block)?;
             Ok(ExampleWriteResult {

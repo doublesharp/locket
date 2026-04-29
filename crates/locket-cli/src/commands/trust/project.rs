@@ -7,9 +7,9 @@ use locket_store::{AuditWrite, Store};
 use serde_json::json;
 
 use crate::{
-    CliError, ProjectCommand, ResolvedProject, RuntimeContext, ensure_project_exists, format_hex,
-    load_project_key, now_unix_nanos, open_store, optional_i64, parse_root_hash, require_project,
-    root_hash,
+    CliError, ProjectCommand, ResolvedProject, RuntimeContext, confirmation_failed_error,
+    ensure_project_exists, format_hex, load_project_key, now_unix_nanos, open_store, optional_i64,
+    parse_root_hash, require_project, root_hash,
 };
 
 pub fn project_command(
@@ -130,7 +130,7 @@ fn confirm_trust_root(
     writeln!(output, "type project name '{}' to confirm trusted root", resolved.config.name)?;
     let confirmation = context.confirmation_reader.read_confirmation("project trust-root")?;
     if confirmation.trim_end_matches(['\r', '\n']) != resolved.config.name {
-        return Err(CliError::Config("confirmation did not match project name".to_owned()));
+        return Err(confirmation_failed_error("confirmation did not match project name"));
     }
     Ok(())
 }
@@ -145,7 +145,7 @@ fn confirm_untrust_root(
     writeln!(output, "type root hash '{root_hash}' to confirm removal")?;
     let confirmation = context.confirmation_reader.read_confirmation("project untrust-root")?;
     if confirmation.trim_end_matches(['\r', '\n']) != root_hash {
-        return Err(CliError::Config("confirmation did not match root hash".to_owned()));
+        return Err(confirmation_failed_error("confirmation did not match root hash"));
     }
     Ok(())
 }

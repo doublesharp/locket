@@ -90,6 +90,18 @@ pub fn secret_already_exists_error(message: impl Into<String>) -> CliError {
     typed_cli_error(LocketError::SecretAlreadyExists, message)
 }
 
+pub fn secret_not_found_error(message: impl Into<String>) -> CliError {
+    typed_cli_error(LocketError::SecretNotFound, message)
+}
+
+pub fn profile_not_found_error(message: impl Into<String>) -> CliError {
+    typed_cli_error(LocketError::ProfileNotFound, message)
+}
+
+pub fn confirmation_failed_error(message: impl Into<String>) -> CliError {
+    typed_cli_error(LocketError::ConfirmationFailed, message)
+}
+
 pub fn bundle_verification_error(message: impl Into<String>) -> CliError {
     typed_cli_error(LocketError::BundleVerificationFailed, message)
 }

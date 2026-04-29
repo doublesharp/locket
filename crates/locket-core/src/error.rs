@@ -20,6 +20,9 @@ pub enum LocketError {
     /// Environment variable conflict under `override = \"error\"`.
     #[error("environment conflict")]
     EnvironmentConflict,
+    /// Typed-string confirmation prompt rejected by the user input.
+    #[error("confirmation did not match")]
+    ConfirmationFailed,
     /// Secret, profile, policy, or key material already exists.
     #[error("secret already exists")]
     SecretAlreadyExists,
@@ -44,6 +47,12 @@ pub enum LocketError {
     /// Selected secret source is tombstoned.
     #[error("secret deleted")]
     SecretDeleted,
+    /// Selected secret could not be found by name/source/profile.
+    #[error("secret not found")]
+    SecretNotFound,
+    /// Selected profile could not be found by name.
+    #[error("profile not found")]
+    ProfileNotFound,
     /// Required agent is unavailable.
     #[error("agent unavailable")]
     AgentUnavailable,
@@ -103,6 +112,7 @@ impl LocketError {
             Self::PolicyValidationIncomplete => 65,
             Self::EnvironmentConflict => 66,
             Self::SecretAlreadyExists => 67,
+            Self::ConfirmationFailed => 68,
             Self::AccessDenied => 70,
             Self::ProjectRootUntrusted => 71,
             Self::UnlockRequired => 72,
@@ -110,6 +120,8 @@ impl LocketError {
             Self::UserVerificationFailed => 74,
             Self::SecretVersionExpired => 75,
             Self::SecretDeleted => 76,
+            Self::SecretNotFound => 77,
+            Self::ProfileNotFound => 78,
             Self::AgentUnavailable => 80,
             Self::AgentSocketInUse => 81,
             Self::AutomationClientNotTrusted => 82,
@@ -147,6 +159,7 @@ mod tests {
         assert_eq!(LocketError::PolicyValidationIncomplete.exit_code(), 65);
         assert_eq!(LocketError::EnvironmentConflict.exit_code(), 66);
         assert_eq!(LocketError::SecretAlreadyExists.exit_code(), 67);
+        assert_eq!(LocketError::ConfirmationFailed.exit_code(), 68);
     }
 
     #[test]
@@ -158,6 +171,8 @@ mod tests {
         assert_eq!(LocketError::UserVerificationFailed.exit_code(), 74);
         assert_eq!(LocketError::SecretVersionExpired.exit_code(), 75);
         assert_eq!(LocketError::SecretDeleted.exit_code(), 76);
+        assert_eq!(LocketError::SecretNotFound.exit_code(), 77);
+        assert_eq!(LocketError::ProfileNotFound.exit_code(), 78);
     }
 
     #[test]
@@ -200,6 +215,9 @@ mod tests {
             (LocketError::SecretAlreadyExists, "secret already exists"),
             (LocketError::UnrecoverableVault, "vault unrecoverable"),
             (LocketError::DeviceRevoked, "device revoked"),
+            (LocketError::ConfirmationFailed, "confirmation did not match"),
+            (LocketError::SecretNotFound, "secret not found"),
+            (LocketError::ProfileNotFound, "profile not found"),
         ];
 
         for (error, message) in cases {

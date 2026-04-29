@@ -15,7 +15,7 @@ use serde_json::{Value, json};
 
 use crate::commands::config::spec::{config_get_value, read_user_config};
 use crate::runtime::RuntimeContext;
-use crate::runtime::error::{CliError, secret_deleted_error};
+use crate::runtime::error::{CliError, secret_deleted_error, secret_not_found_error};
 use crate::runtime::key_access::{default_profile, load_profile_key, load_project_key};
 use crate::{
     CopyArgs, CopySelection, ResolvedProject, SecretSourceArg, active_secrets_by_name,
@@ -165,7 +165,7 @@ pub fn resolve_active_secret(
         .into_iter()
         .filter(|secret| secret.name == name.as_str())
         .max_by_key(|secret| source_precedence(&secret.source))
-        .ok_or_else(|| CliError::Config("secret not found".to_owned()))?;
+        .ok_or_else(|| secret_not_found_error("secret not found"))?;
     Ok(ResolvedSecret { project, profile, secret })
 }
 
@@ -201,7 +201,7 @@ pub fn resolve_secret_for_source(
                 name.as_str(),
                 source,
             )?
-            .ok_or_else(|| CliError::Config("secret not found".to_owned()))?
+            .ok_or_else(|| secret_not_found_error("secret not found"))?
     } else {
         let secrets = store.list_secrets_by_name(
             project.config.project_id.as_str(),
@@ -209,7 +209,7 @@ pub fn resolve_secret_for_source(
             name.as_str(),
         )?;
         match secrets.as_slice() {
-            [] => return Err(CliError::Config("secret not found".to_owned())),
+            [] => return Err(secret_not_found_error("secret not found")),
             [secret] => secret.clone(),
             _ => {
                 return Err(CliError::Config(
@@ -232,7 +232,7 @@ pub fn select_copy_source_secret(
         let source = source_arg_to_str(source);
         let secret = store
             .get_secret_by_source(project_id, profile_id, name, source)?
-            .ok_or_else(|| CliError::Config("secret not found".to_owned()))?;
+            .ok_or_else(|| secret_not_found_error("secret not found"))?;
         if secret.state == "deleted" {
             return Err(secret_deleted_error("secret source is deleted"));
         }
@@ -248,7 +248,7 @@ pub fn select_copy_source_secret(
         .iter()
         .map(|secret| source_precedence(&secret.source))
         .max()
-        .ok_or_else(|| CliError::Config("secret not found".to_owned()))?;
+        .ok_or_else(|| secret_not_found_error("secret not found"))?;
     let selected = active
         .iter()
         .filter(|secret| source_precedence(&secret.source) == highest)

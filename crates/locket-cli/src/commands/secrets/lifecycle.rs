@@ -12,8 +12,9 @@ use crate::{
     RuntimeContext, SourceKeyArgs, copy_secret_value, default_profile, ensure_trusted_project_root,
     format_optional_unix_nanos, format_unix_nanos, format_versions, grace_until_from_args,
     load_project_key, now_unix_nanos, open_store, preflight_rotate_secret_value,
-    refresh_example_for_project_if_enabled, require_project, resolve_secret_for_source,
-    rotate_secret_value, secret_audit_metadata, source_arg_to_str,
+    profile_not_found_error, refresh_example_for_project_if_enabled, require_project,
+    resolve_secret_for_source, rotate_secret_value, secret_audit_metadata, secret_not_found_error,
+    source_arg_to_str,
 };
 
 pub fn rm_command(
@@ -33,7 +34,7 @@ pub fn rm_command(
         source,
     )?
     else {
-        return Err(CliError::Config("secret not found".to_owned()));
+        return Err(secret_not_found_error("secret not found"));
     };
     let timestamp = now_unix_nanos()?;
     let audit_key =
@@ -243,7 +244,7 @@ pub fn history_command(
     let profile = if let Some(profile_name) = &args.profile {
         store
             .get_profile_by_name(resolved.config.project_id.as_str(), profile_name)?
-            .ok_or_else(|| CliError::Config("profile not found".to_owned()))?
+            .ok_or_else(|| profile_not_found_error("profile not found"))?
     } else {
         default_profile(&store, &resolved.config)?
     };
@@ -253,7 +254,7 @@ pub fn history_command(
         name.as_str(),
     )?;
     if all_secrets.is_empty() {
-        return Err(CliError::Config("secret not found".to_owned()));
+        return Err(secret_not_found_error("secret not found"));
     }
 
     let secrets = if let Some(source) = args.source {

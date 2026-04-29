@@ -8,7 +8,7 @@ use locket_store::{AuditContext, AuditWrite, SecretMetadataUpdate};
 use crate::{
     CliError, RuntimeContext, SecretMetaArgs, load_project_key, metadata_flags_have_updates,
     metadata_required_update, metadata_update_field_names, now_unix_nanos, open_store,
-    resolve_active_secret_for_source, secret_meta_update_audit_metadata,
+    resolve_active_secret_for_source, secret_meta_update_audit_metadata, secret_not_found_error,
     validate_secret_metadata_update, write_secret_meta_update_failure_audit_if_available,
 };
 
@@ -69,7 +69,7 @@ pub fn meta_command(
         },
     )?;
     if !changed {
-        return Err(CliError::Config("secret not found".to_owned()));
+        return Err(secret_not_found_error("secret not found"));
     }
 
     writeln!(

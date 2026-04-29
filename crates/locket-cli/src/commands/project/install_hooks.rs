@@ -9,8 +9,8 @@ use locket_store::AuditWrite;
 use serde_json::json;
 
 use crate::{
-    CliError, HOOK_BEGIN, HOOK_END, ResolvedProject, RuntimeContext, load_project_key,
-    now_unix_nanos, open_store, require_project,
+    CliError, HOOK_BEGIN, HOOK_END, ResolvedProject, RuntimeContext, confirmation_failed_error,
+    load_project_key, now_unix_nanos, open_store, require_project,
 };
 
 pub fn install_hooks_command(
@@ -150,7 +150,7 @@ fn confirm_unmanaged_pre_commit_hook(
         .confirmation_reader
         .read_confirmation("install-hooks unmanaged hook replacement")?;
     if confirmation.trim_end_matches(['\r', '\n']) != project_name {
-        return Err(CliError::Config("confirmation did not match project name".to_owned()));
+        return Err(confirmation_failed_error("confirmation did not match project name"));
     }
     Ok(())
 }

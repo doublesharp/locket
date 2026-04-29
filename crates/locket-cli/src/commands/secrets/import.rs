@@ -16,7 +16,7 @@ use serde_json::json;
 
 use super::set::{SecretWriteRequest, set_secret_value_in_profile};
 use crate::runtime::RuntimeContext;
-use crate::runtime::error::CliError;
+use crate::runtime::error::{CliError, confirmation_failed_error, profile_not_found_error};
 use crate::runtime::key_access::load_project_key;
 use crate::support::project_files::{ensure_gitignore, refresh_example_for_project_if_enabled};
 use crate::support::secret_helpers::{SecretEncryptRequest, encrypt_secret_version};
@@ -134,7 +134,7 @@ fn import_target_profile(
         .map_err(|_| CliError::Config("invalid profile name".to_owned()))?;
     store
         .get_profile_by_name(resolved.config.project_id.as_str(), profile_name.as_str())?
-        .ok_or_else(|| CliError::Config("profile not found".to_owned()))
+        .ok_or_else(|| profile_not_found_error("profile not found"))
 }
 
 fn confirm_dangerous_import_overwrite(
@@ -153,7 +153,7 @@ fn confirm_dangerous_import_overwrite(
     let mut confirmation = String::new();
     io::stdin().read_line(&mut confirmation)?;
     if confirmation.trim_end() != profile.name {
-        return Err(CliError::Config("confirmation did not match".to_owned()));
+        return Err(confirmation_failed_error("confirmation did not match"));
     }
     Ok(())
 }

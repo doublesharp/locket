@@ -8,9 +8,10 @@ use locket_store::{AuditWrite, ProfileRecord, Store};
 use serde_json::{Value, json};
 
 use crate::{
-    CliError, LOCKET_TOML, ProfileCommand, ProfileNameArgs, RuntimeContext, format_hex,
-    initialize_profile_keys, load_project_key, now_unix_nanos, open_store, require_project,
-    root_hash, secret_already_exists_error, write_project_config,
+    CliError, LOCKET_TOML, ProfileCommand, ProfileNameArgs, RuntimeContext,
+    confirmation_failed_error, format_hex, initialize_profile_keys, load_project_key,
+    now_unix_nanos, open_store, profile_not_found_error, require_project, root_hash,
+    secret_already_exists_error, write_project_config,
 };
 
 pub fn profile_command(
@@ -105,7 +106,7 @@ fn set_profile_dangerous(
     let mut store = open_store(context)?;
     let project_id = resolved.config.project_id.as_str();
     let Some(profile) = store.get_profile_by_name(project_id, profile_name.as_str())? else {
-        return Err(CliError::Config("profile not found".to_owned()));
+        return Err(profile_not_found_error("profile not found"));
     };
 
     let prior_dangerous = profile.dangerous;
@@ -184,7 +185,7 @@ fn confirm_profile_dangerous_change(
     let confirmation =
         context.confirmation_reader.read_confirmation(&format!("profile {prompt_label}"))?;
     if confirmation.trim_end_matches(['\r', '\n']) != expected {
-        return Err(CliError::Config("confirmation did not match".to_owned()));
+        return Err(confirmation_failed_error("confirmation did not match"));
     }
     Ok(())
 }
@@ -231,7 +232,7 @@ pub fn use_profile_command(
     let project_id = resolved.config.project_id.as_str().to_owned();
     let new_profile = store
         .get_profile_by_name(&project_id, profile_name.as_str())?
-        .ok_or_else(|| CliError::Config("profile not found".to_owned()))?;
+        .ok_or_else(|| profile_not_found_error("profile not found"))?;
     let prior_profile_name = resolved.config.default_profile.as_str().to_owned();
     if prior_profile_name == profile_name.as_str() {
         writeln!(output, "active profile: {} ({}) unchanged", new_profile.name, new_profile.id)?;
@@ -239,7 +240,7 @@ pub fn use_profile_command(
     }
     let prior_profile = store
         .get_profile_by_name(&project_id, &prior_profile_name)?
-        .ok_or_else(|| CliError::Config("current default profile not found".to_owned()))?;
+        .ok_or_else(|| profile_not_found_error("current default profile not found"))?;
 
     let timestamp = now_unix_nanos()?;
     let root_hash = format_hex(&root_hash(&resolved.root)?);
