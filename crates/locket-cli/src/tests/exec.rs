@@ -331,6 +331,56 @@ inherit_env = ["PATH"]
 }
 
 #[test]
+fn parent_external_env_source_reinjects_only_allowed_names()
+-> Result<(), Box<dyn std::error::Error>> {
+    let document = locket_core::PolicyDocument::from_toml_str(
+        r#"
+[commands.env_check]
+argv = ["/bin/sh", "-c", "true"]
+required_secrets = ["PARENT_ALLOWED"]
+optional_secrets = ["PARENT_OPTIONAL"]
+external_env_sources = ["parent"]
+env_mode = "strict"
+"#,
+    )?;
+    let policy = document.commands.get("env_check").ok_or("missing policy")?;
+    let parent_env = [
+        ("PARENT_ALLOWED".to_owned(), locket_exec::env_value("from-parent")),
+        ("PARENT_OPTIONAL".to_owned(), locket_exec::env_value("also-parent")),
+        ("PARENT_DENIED".to_owned(), locket_exec::env_value("must-not-leak")),
+    ]
+    .into_iter()
+    .collect::<locket_exec::EnvMap>();
+
+    let external_env = crate::resolve_policy_external_env(policy, &parent_env)?;
+    assert_eq!(external_env.len(), 2);
+    assert_eq!(external_env.get("PARENT_ALLOWED").map(|value| value.as_str()), Some("from-parent"));
+    assert_eq!(
+        external_env.get("PARENT_OPTIONAL").map(|value| value.as_str()),
+        Some("also-parent")
+    );
+    assert!(!external_env.contains_key("PARENT_DENIED"));
+
+    let request = locket_exec::ExecutionRequest {
+        argv: vec!["/bin/sh".to_owned(), "-c".to_owned(), "true".to_owned()],
+        parent_env,
+        inherit_env: policy.inherit_env.clone(),
+        external_env,
+        locket_env: locket_exec::EnvMap::new(),
+        env_mode: policy.env_mode,
+        override_mode: policy.override_behavior,
+    };
+    let prepared = locket_exec::prepare_execution(&request)?;
+    assert_eq!(prepared.env.get("PARENT_ALLOWED").map(|value| value.as_str()), Some("from-parent"));
+    assert_eq!(
+        prepared.env.get("PARENT_OPTIONAL").map(|value| value.as_str()),
+        Some("also-parent")
+    );
+    assert!(!prepared.env.contains_key("PARENT_DENIED"));
+    Ok(())
+}
+
+#[test]
 fn docker_policy_plan_and_audit_are_metadata_only() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempdir()?;
     let context = test_context(&directory);
