@@ -850,6 +850,7 @@ struct RuntimeContext {
     passphrase_store: PassphraseFallbackMasterKeyStore,
     passphrase_reader: Arc<dyn PassphraseReader + Send + Sync>,
     confirmation_reader: Arc<dyn ConfirmationReader + Send + Sync>,
+    secret_value_reader: Arc<dyn SecretValueReader + Send + Sync>,
 }
 
 impl RuntimeContext {
@@ -876,6 +877,7 @@ impl RuntimeContext {
             ),
             passphrase_reader: Arc::new(EnvOrPromptPassphraseReader),
             confirmation_reader: Arc::new(StdinConfirmationReader),
+            secret_value_reader: Arc::new(StdinOrPromptSecretValueReader),
         })
     }
 }
@@ -938,6 +940,23 @@ fn read_hidden_passphrase(prompt: &str) -> Result<zeroize::Zeroizing<String>, Cl
         return Err(CliError::Config("passphrase must not be empty".to_owned()));
     }
     Ok(passphrase)
+}
+
+trait SecretValueReader {
+    fn read_secret_value(&self, prompt: &str) -> Result<zeroize::Zeroizing<String>, CliError>;
+}
+
+#[derive(Debug, Clone, Copy)]
+struct StdinOrPromptSecretValueReader;
+
+impl SecretValueReader for StdinOrPromptSecretValueReader {
+    fn read_secret_value(&self, prompt: &str) -> Result<zeroize::Zeroizing<String>, CliError> {
+        if io::stdin().is_terminal() {
+            read_secret_value_from_prompt(prompt)
+        } else {
+            read_secret_value_from_stdin()
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -1479,8 +1498,10 @@ fn set_command(
     output: &mut impl Write,
     args: &SecretWriteArgs,
 ) -> Result<(), CliError> {
-    let value = read_secret_value_from_stdin()?;
-    set_secret_value(context, args, &value, "manual", now_unix_nanos()?)?;
+    preflight_set_secret_value(context, args)?;
+    let prompt = format!("set secret value for {}", args.key);
+    let value = context.secret_value_reader.read_secret_value(&prompt)?;
+    set_secret_value(context, args, value.as_str(), "manual", now_unix_nanos()?)?;
     refresh_example_for_project_if_enabled(context)?;
     let source = source_arg_to_str(args.source.source.unwrap_or(SecretSourceArg::UserLocal));
     writeln!(output, "set {} ({source})", args.key)?;
@@ -1796,8 +1817,11 @@ fn rotate_command(
 ) -> Result<(), CliError> {
     let timestamp = now_unix_nanos()?;
     let grace_until = grace_until_from_args(args.grace_ttl.as_deref(), timestamp)?;
-    let value = read_secret_value_from_stdin()?;
-    let (source, version) = rotate_secret_value(context, args, &value, timestamp, grace_until)?;
+    preflight_rotate_secret_value(context, args)?;
+    let prompt = format!("rotate secret value for {}", args.key);
+    let value = context.secret_value_reader.read_secret_value(&prompt)?;
+    let (source, version) =
+        rotate_secret_value(context, args, value.as_str(), timestamp, grace_until)?;
     refresh_example_for_project_if_enabled(context)?;
     writeln!(output, "rotated {} ({source}) version={version}", args.key)?;
     Ok(())
@@ -4818,6 +4842,44 @@ fn default_profile(store: &Store, config: &ProjectConfig) -> Result<ProfileRecor
         .ok_or_else(|| CliError::Config("default profile is missing".to_owned()))
 }
 
+fn preflight_set_secret_value(
+    context: &RuntimeContext,
+    args: &SecretWriteArgs,
+) -> Result<(), CliError> {
+    let name = SecretName::new(args.key.clone())
+        .map_err(|_| CliError::Config("invalid secret name".to_owned()))?;
+    let resolved = require_project(context)?;
+    let store = open_store(context)?;
+    let profile = default_profile(&store, &resolved.config)?;
+    let source = source_arg_to_str(args.source.source.unwrap_or(SecretSourceArg::UserLocal));
+    if let Some(existing) = store.get_secret_by_source(
+        resolved.config.project_id.as_str(),
+        &profile.id,
+        name.as_str(),
+        source,
+    )? {
+        if existing.state == "deleted" {
+            return Err(CliError::Config(
+                "secret source is deleted; v1 does not reactivate tombstones".to_owned(),
+            ));
+        }
+        return Err(CliError::Config("secret already exists; use rotate".to_owned()));
+    }
+    if args.source.source.is_none() {
+        let existing = store.list_secrets_by_name(
+            resolved.config.project_id.as_str(),
+            &profile.id,
+            name.as_str(),
+        )?;
+        if !existing.is_empty() {
+            return Err(CliError::Config(
+                "secret exists in another source; pass --source to choose a target".to_owned(),
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn set_secret_value(
     context: &RuntimeContext,
     args: &SecretWriteArgs,
@@ -4961,6 +5023,16 @@ fn set_secret_value_in_profile(
         },
         Some(AuditContext { key: audit_key.as_ref(), write: &audit }),
     )?;
+    Ok(())
+}
+
+fn preflight_rotate_secret_value(
+    context: &RuntimeContext,
+    args: &RotateArgs,
+) -> Result<(), CliError> {
+    let name = SecretName::new(args.key.clone())
+        .map_err(|_| CliError::Config("invalid secret name".to_owned()))?;
+    resolve_active_secret_for_source(context, name.as_str(), args.source.source)?;
     Ok(())
 }
 
@@ -7729,23 +7801,39 @@ fn absolutize(cwd: &Path, path: &Path) -> PathBuf {
     if path.is_absolute() { path.to_path_buf() } else { cwd.join(path) }
 }
 
-fn read_secret_value_from_stdin() -> Result<String, CliError> {
-    let mut stdin = io::stdin();
-    if stdin.is_terminal() {
-        return Err(CliError::Config(
-            "secure TTY prompt is not wired in this build; pipe secret value on stdin".to_owned(),
-        ));
-    }
-    let mut value = String::new();
-    stdin.read_to_string(&mut value)?;
+fn read_secret_value_from_prompt(prompt: &str) -> Result<zeroize::Zeroizing<String>, CliError> {
+    let value = rpassword::prompt_password(format!("Enter {prompt}: "))?;
+    validate_secret_value(zeroize::Zeroizing::new(value))
+}
+
+fn read_secret_value_from_stdin() -> Result<zeroize::Zeroizing<String>, CliError> {
+    read_secret_value_from_reader(io::stdin())
+}
+
+fn read_secret_value_from_reader(
+    mut reader: impl Read,
+) -> Result<zeroize::Zeroizing<String>, CliError> {
+    let mut bytes = Vec::new();
+    reader.read_to_end(&mut bytes)?;
+    let mut value = String::from_utf8(bytes)
+        .map_err(|_| CliError::Config("secret value must be valid UTF-8".to_owned()))?;
     if value.ends_with('\n') {
         value.pop();
         if value.ends_with('\r') {
             value.pop();
         }
     }
+    validate_secret_value(zeroize::Zeroizing::new(value))
+}
+
+fn validate_secret_value(
+    value: zeroize::Zeroizing<String>,
+) -> Result<zeroize::Zeroizing<String>, CliError> {
     if value.is_empty() {
         return Err(CliError::Config("secret value cannot be empty".to_owned()));
+    }
+    if value.contains('\0') {
+        return Err(CliError::Config("secret value cannot contain NUL bytes".to_owned()));
     }
     Ok(value)
 }
@@ -8580,6 +8668,38 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
+    struct StaticSecretValueReader {
+        value: String,
+    }
+
+    impl StaticSecretValueReader {
+        fn new(value: &str) -> Self {
+            Self { value: value.to_owned() }
+        }
+    }
+
+    impl super::SecretValueReader for StaticSecretValueReader {
+        fn read_secret_value(
+            &self,
+            _prompt: &str,
+        ) -> Result<zeroize::Zeroizing<String>, super::CliError> {
+            super::validate_secret_value(zeroize::Zeroizing::new(self.value.clone()))
+        }
+    }
+
+    #[derive(Debug)]
+    struct FailingSecretValueReader;
+
+    impl super::SecretValueReader for FailingSecretValueReader {
+        fn read_secret_value(
+            &self,
+            _prompt: &str,
+        ) -> Result<zeroize::Zeroizing<String>, super::CliError> {
+            Err(super::CliError::Config("secret reader was called".to_owned()))
+        }
+    }
+
     #[derive(Debug, Default)]
     struct UnavailableMasterKeyStore;
 
@@ -8647,13 +8767,45 @@ mod tests {
         directory: &tempfile::TempDir,
         key_store: Arc<dyn MasterKeyStore + Send + Sync>,
     ) -> RuntimeContext {
-        test_context_with_key_store_and_confirmation(directory, key_store, "app\n")
+        test_context_with_key_store_confirmation_and_secret(directory, key_store, "app\n", "secret")
     }
 
     fn test_context_with_key_store_and_confirmation(
         directory: &tempfile::TempDir,
         key_store: Arc<dyn MasterKeyStore + Send + Sync>,
         confirmation: &str,
+    ) -> RuntimeContext {
+        test_context_with_key_store_confirmation_and_secret(
+            directory,
+            key_store,
+            confirmation,
+            "secret",
+        )
+    }
+
+    fn test_context_with_secret_value(
+        directory: &tempfile::TempDir,
+        secret_value: &str,
+    ) -> RuntimeContext {
+        test_context_with_key_store_confirmation_and_secret(
+            directory,
+            Arc::new(MemoryMasterKeyStore::default()),
+            "app\n",
+            secret_value,
+        )
+    }
+
+    fn test_context_with_failing_secret_reader(directory: &tempfile::TempDir) -> RuntimeContext {
+        let mut context = test_context(directory);
+        context.secret_value_reader = Arc::new(FailingSecretValueReader);
+        context
+    }
+
+    fn test_context_with_key_store_confirmation_and_secret(
+        directory: &tempfile::TempDir,
+        key_store: Arc<dyn MasterKeyStore + Send + Sync>,
+        confirmation: &str,
+        secret_value: &str,
     ) -> RuntimeContext {
         RuntimeContext {
             cwd: directory.path().to_path_buf(),
@@ -8666,6 +8818,7 @@ mod tests {
             ),
             passphrase_reader: Arc::new(StaticPassphraseReader::new("test fallback passphrase")),
             confirmation_reader: Arc::new(StaticConfirmationReader::new(confirmation)),
+            secret_value_reader: Arc::new(StaticSecretValueReader::new(secret_value)),
         }
     }
 
@@ -8688,6 +8841,15 @@ mod tests {
                 optional: false,
             },
         }
+    }
+
+    fn test_secret_write_args_for_source(
+        key: &str,
+        source: super::SecretSourceArg,
+    ) -> super::SecretWriteArgs {
+        let mut args = test_secret_write_args(key);
+        args.source.source = Some(source);
+        args
     }
 
     fn test_rotate_args(key: &str, grace_ttl: Option<&str>) -> super::RotateArgs {
@@ -8813,6 +8975,51 @@ mod tests {
             super::grace_until_from_args(Some("1s"), i64::MAX - 10),
             Err(super::CliError::Time)
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn secret_value_reader_preserves_piped_values_and_rejects_invalid_input()
+    -> Result<(), Box<dyn std::error::Error>> {
+        assert_eq!(
+            super::read_secret_value_from_reader(b"postgres://localhost/app\n".as_slice())?
+                .as_str(),
+            "postgres://localhost/app"
+        );
+        assert_eq!(
+            super::read_secret_value_from_reader(b"postgres://localhost/app\r\n".as_slice())?
+                .as_str(),
+            "postgres://localhost/app"
+        );
+        assert_eq!(
+            super::read_secret_value_from_reader(b"line1\nline2".as_slice())?.as_str(),
+            "line1\nline2"
+        );
+        assert_eq!(
+            super::read_secret_value_from_reader(b"line1\nline2\n".as_slice())?.as_str(),
+            "line1\nline2"
+        );
+        assert_eq!(
+            super::read_secret_value_from_reader(b"line1\nline2\n\n".as_slice())?.as_str(),
+            "line1\nline2\n"
+        );
+
+        assert_error_contains(
+            super::read_secret_value_from_reader(b"".as_slice()).map(|_| ()),
+            "secret value cannot be empty",
+        );
+        assert_error_contains(
+            super::read_secret_value_from_reader(b"\n".as_slice()).map(|_| ()),
+            "secret value cannot be empty",
+        );
+        assert_error_contains(
+            super::read_secret_value_from_reader(b"one\0two".as_slice()).map(|_| ()),
+            "NUL bytes",
+        );
+        assert_error_contains(
+            super::read_secret_value_from_reader(&[0xff][..]).map(|_| ()),
+            "valid UTF-8",
+        );
         Ok(())
     }
 
@@ -11310,6 +11517,182 @@ required_secrets = ["DATABASE_URL"]
         let rewritten_hook = std::fs::read_to_string(hooks_dir.join("pre-commit"))?;
         assert!(rewritten_hook.contains("locket scan --staged"));
         assert!(!rewritten_hook.contains("--old"));
+        Ok(())
+    }
+
+    #[test]
+    fn set_command_reads_secure_secret_value_without_leaking_it()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context_with_secret_value(&directory, "postgres://localhost/prompt");
+        let mut output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut output,
+        )?;
+
+        let mut set_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "set", "DATABASE_URL"])?,
+            &context,
+            &mut set_output,
+        )?;
+        let set_output = String::from_utf8(set_output)?;
+        assert!(set_output.contains("set DATABASE_URL"));
+        assert!(!set_output.contains("postgres://localhost/prompt"));
+
+        let store = locket_store::Store::open(directory.path().join("store.db"))?;
+        let metadata: String = store.connection().query_row(
+            "SELECT metadata_json FROM audit_log WHERE action = 'SET'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert!(!metadata.contains("postgres://localhost/prompt"));
+
+        let mut reveal_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "get", "DATABASE_URL", "--reveal", "--force"])?,
+            &context,
+            &mut reveal_output,
+        )?;
+        assert_eq!(String::from_utf8(reveal_output)?, "postgres://localhost/prompt\n");
+        Ok(())
+    }
+
+    #[test]
+    fn set_command_rejects_empty_secure_secret_before_writing()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context_with_secret_value(&directory, "");
+        let mut output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut output,
+        )?;
+
+        let result = run_with_context(
+            Cli::try_parse_from(["locket", "set", "DATABASE_URL"])?,
+            &context,
+            &mut Vec::new(),
+        );
+        assert_error_contains(result, "secret value cannot be empty");
+
+        let store = locket_store::Store::open(directory.path().join("store.db"))?;
+        let set_count: u32 = store.connection().query_row(
+            "SELECT COUNT(*) FROM audit_log WHERE action = 'SET'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(set_count, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn set_command_preflights_source_conflicts_before_reading_secret()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context_with_failing_secret_reader(&directory);
+        let mut output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut output,
+        )?;
+        let args =
+            test_secret_write_args_for_source("DATABASE_URL", super::SecretSourceArg::MachineLocal);
+        super::set_secret_value(&context, &args, "postgres://localhost/machine", "manual", 1_000)?;
+
+        let result = run_with_context(
+            Cli::try_parse_from(["locket", "set", "DATABASE_URL"])?,
+            &context,
+            &mut Vec::new(),
+        );
+        assert_error_contains(result, "pass --source");
+        Ok(())
+    }
+
+    #[test]
+    fn rotate_command_reads_secure_secret_value_without_leaking_it()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context_with_secret_value(&directory, "postgres://localhost/new");
+        let mut output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut output,
+        )?;
+        let args = test_secret_write_args("DATABASE_URL");
+        super::set_secret_value(&context, &args, "postgres://localhost/old", "manual", 1_000)?;
+
+        let mut rotate_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "rotate", "DATABASE_URL"])?,
+            &context,
+            &mut rotate_output,
+        )?;
+        let rotate_output = String::from_utf8(rotate_output)?;
+        assert!(rotate_output.contains("rotated DATABASE_URL"));
+        assert!(rotate_output.contains("version=2"));
+        assert!(!rotate_output.contains("postgres://localhost/new"));
+        assert!(!rotate_output.contains("postgres://localhost/old"));
+
+        let store = locket_store::Store::open(directory.path().join("store.db"))?;
+        let metadata: String = store.connection().query_row(
+            "SELECT metadata_json FROM audit_log WHERE action = 'ROTATE'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert!(!metadata.contains("postgres://localhost/new"));
+        assert!(!metadata.contains("postgres://localhost/old"));
+
+        let mut reveal_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "get", "DATABASE_URL", "--reveal", "--force"])?,
+            &context,
+            &mut reveal_output,
+        )?;
+        assert_eq!(String::from_utf8(reveal_output)?, "postgres://localhost/new\n");
+        Ok(())
+    }
+
+    #[test]
+    fn rotate_command_preflights_source_ambiguity_before_reading_secret()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context_with_failing_secret_reader(&directory);
+        let mut output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut output,
+        )?;
+        let user_args = test_secret_write_args("DATABASE_URL");
+        super::set_secret_value(
+            &context,
+            &user_args,
+            "postgres://localhost/user",
+            "manual",
+            1_000,
+        )?;
+        let machine_args =
+            test_secret_write_args_for_source("DATABASE_URL", super::SecretSourceArg::MachineLocal);
+        super::set_secret_value(
+            &context,
+            &machine_args,
+            "postgres://localhost/machine",
+            "manual",
+            2_000,
+        )?;
+
+        let result = run_with_context(
+            Cli::try_parse_from(["locket", "rotate", "DATABASE_URL"])?,
+            &context,
+            &mut Vec::new(),
+        );
+        assert_error_contains(result, "multiple sources");
         Ok(())
     }
 
