@@ -404,9 +404,9 @@ to touch. Items marked `[x]` are merged to `main` and verified.
     Depends on the `Local agent daemon` item below. Surface
     `AgentUnavailable` (80) when the daemon is down and the policy declares
     `require_agent = true`.
-- [~] [70c448c4] External env source resolution: `ExternalEnvSource::Parent` (re-inject
-  Claim: branch agent-70c448c4/external-env-parent, worktree .worktrees/agent-70c448c4-external-env-parent. Scope: implement parent external env resolution first; leave File/Compose/Ide follow-ups explicit if still pending.
-  only allowed names), `::File(path)` (canonical, in-project, non-symlink-escape;
+- [~] [70c448c4] ready: agent-70c448c4/external-env-parent @ 829b571 — `ExternalEnvSource::Parent` re-injects only policy-allowed parent names for `locket run`.
+  Claim: branch agent-70c448c4/external-env-parent, worktree .worktrees/agent-70c448c4-external-env-parent.
+- [ ] External env source resolution: `ExternalEnvSource::File(path)` (canonical, in-project, non-symlink-escape;
   `policy doctor` warns), `::Compose` (shell out to `docker compose config
   --format json`, names-only audit), `::Ide` (consume VS Code terminal
   `LOCKET_IDE_ENV_SESSION` map over the agent socket, names-only audit, no
@@ -1003,7 +1003,7 @@ echoed inside `metadata_json` so the HMAC chain covers them. Never write
 
 ## Latest Verified Checkpoint
 
-- Tip of `main`: `d0506aa` ("Define tray icon state descriptors").
+- Tip of `main`: `f9b3576` ("Claim typed template validation task").
 - `cargo fmt --all -- --check` clean on `main`.
 - `cargo test --workspace --all-targets --all-features` passes on `main`.
 - `cargo clippy --workspace --all-targets --all-features -- -D warnings` clean
