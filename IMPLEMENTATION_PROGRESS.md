@@ -660,6 +660,9 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
   - Files: `crates/locket-app/ui/`.
 - [~] [4efea70d] Denial UX differentiates locked vault, missing grant, policy
   Claim: branch agent-4efea70d/denial-ux-descriptors, worktree .worktrees/agent-4efea70d-denial-ux-descriptors.
+  Status: in progress; `crates/locket-app/src/lib.rs` has uncommitted denial
+  descriptor changes in the worktree. Focused `cargo test -p locket-app`
+  passed; full DoD gate and merge not run.
   denial, dangerous-profile, revoked device, and expired invite with
   distinct copy and recovery affordances.
   - Spec: `docs/specs/desktop.md` UX Requirements.
@@ -735,7 +738,8 @@ editing — they drift. Severity: **blocker** (security/correctness),
     name is invalid`, `template expected secret name is invalid`, `invalid
     template command policy: {error}`, `{field} must be an array`) to typed
     `MetadataInvalid`. Regression on at least one rejected template.
-  - [ ] **subtask** — typed-residual-strings: sweep the residual long tail
+  - [~] [b67f47d6] **subtask** — typed-residual-strings: sweep the residual long tail
+    Claim: branch agent-b67f47d6/typed-residual-strings, worktree .worktrees/agent-b67f47d6-typed-residual-strings.
     in `crates/locket-cli/src/` (anything still as `CliError::Config(...)`
     after the above subtasks) and either map each to an existing typed
     variant or document the remainder as intentional generic-input failures.
