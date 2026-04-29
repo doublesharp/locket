@@ -10,6 +10,8 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 locket-core = { path = "../crates/locket-core" }
+locket-scan = { path = "../crates/locket-scan" }
+toml = "0.8"
 
 [[bin]]
 name = "fuzz_secret_name"
@@ -21,6 +23,27 @@ bench = false
 [[bin]]
 name = "fuzz_env_merge"
 path = "fuzz_targets/fuzz_env_merge.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_locket_toml"
+path = "fuzz_targets/fuzz_locket_toml.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_scanner_tokenization"
+path = "fuzz_targets/fuzz_scanner_tokenization.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_redactor"
+path = "fuzz_targets/fuzz_redactor.rs"
 test = false
 doc = false
 bench = false

@@ -6,7 +6,7 @@ CARGO_FUZZ ?= cargo +nightly fuzz
 FUZZ_TARGET ?=
 FUZZ_TIME ?= 60
 
-.PHONY: ci fmt fmt-check clippy test coverage coverage-html audit deny fuzz-list fuzz clean
+.PHONY: ci fmt fmt-check clippy test coverage coverage-html audit deny fuzz-list fuzz-smoke fuzz fuzz-nightly clean
 
 ci: fmt-check clippy test deny audit
 
@@ -37,9 +37,23 @@ deny:
 fuzz-list:
 	$(CARGO_FUZZ) list
 
+fuzz-smoke:
+	$(CARGO_FUZZ) run fuzz_secret_name -- -max_total_time=60
+	$(CARGO_FUZZ) run fuzz_env_merge -- -max_total_time=60
+	$(CARGO_FUZZ) run fuzz_locket_toml -- -max_total_time=60
+	$(CARGO_FUZZ) run fuzz_scanner_tokenization -- -max_total_time=60
+	$(CARGO_FUZZ) run fuzz_redactor -- -max_total_time=60
+
 fuzz:
 	@test -n "$(FUZZ_TARGET)" || (echo "Set FUZZ_TARGET=<target>"; exit 2)
 	$(CARGO_FUZZ) run $(FUZZ_TARGET) -- -max_total_time=$(FUZZ_TIME)
+
+fuzz-nightly:
+	$(MAKE) fuzz FUZZ_TARGET=fuzz_secret_name FUZZ_TIME=900
+	$(MAKE) fuzz FUZZ_TARGET=fuzz_env_merge FUZZ_TIME=900
+	$(MAKE) fuzz FUZZ_TARGET=fuzz_locket_toml FUZZ_TIME=900
+	$(MAKE) fuzz FUZZ_TARGET=fuzz_scanner_tokenization FUZZ_TIME=900
+	$(MAKE) fuzz FUZZ_TARGET=fuzz_redactor FUZZ_TIME=900
 
 clean:
 	$(CARGO) clean
