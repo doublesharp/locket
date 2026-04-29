@@ -1,0 +1,184 @@
+//! Centralized Locket errors and stable process exit codes.
+
+use thiserror::Error;
+
+/// A process exit code reserved by the Locket failure-mode specification.
+pub type ExitCode = u8;
+
+/// Typed Locket failure modes.
+#[derive(Debug, Clone, Eq, Error, PartialEq)]
+pub enum LocketError {
+    /// Invalid `lk://` reference syntax or target.
+    #[error("invalid locket reference")]
+    InvalidReference,
+    /// A Git worktree was required but not found.
+    #[error("git worktree required")]
+    GitWorktreeRequired,
+    /// Policy validation could not complete without an agent or unlocked vault.
+    #[error("policy validation incomplete")]
+    PolicyValidationIncomplete,
+    /// Environment variable conflict under `override = \"error\"`.
+    #[error("environment conflict")]
+    EnvironmentConflict,
+    /// Policy, role, profile, or command scope explicitly denied the action.
+    #[error("access denied")]
+    AccessDenied,
+    /// Project root is not trusted.
+    #[error("project root untrusted")]
+    ProjectRootUntrusted,
+    /// Vault or required key is locked.
+    #[error("unlock required")]
+    UnlockRequired,
+    /// No live grant covers this action or context.
+    #[error("grant required")]
+    GrantRequired,
+    /// Local user verification failed.
+    #[error("local user verification failed")]
+    UserVerificationFailed,
+    /// Pinned deprecated secret version has no active grace window.
+    #[error("secret version expired")]
+    SecretVersionExpired,
+    /// Selected secret source is tombstoned.
+    #[error("secret deleted")]
+    SecretDeleted,
+    /// Required agent is unavailable.
+    #[error("agent unavailable")]
+    AgentUnavailable,
+    /// Agent socket is in use by a peer that is not the active trusted agent.
+    #[error("agent socket in use")]
+    AgentSocketInUse,
+    /// Automation client is not trusted.
+    #[error("automation client not trusted")]
+    AutomationClientNotTrusted,
+    /// Automation client replay was detected.
+    #[error("automation client replay detected")]
+    AutomationClientReplayDetected,
+    /// Database contents are corrupt.
+    #[error("corrupt database")]
+    CorruptDb,
+    /// Another Locket process is currently writing.
+    #[error("storage busy")]
+    StorageBusy,
+    /// Store schema is newer than this binary supports.
+    #[error("schema newer than binary")]
+    SchemaNewerThanBinary,
+    /// Audit chain verification failed.
+    #[error("audit integrity failed")]
+    AuditIntegrityFailed,
+    /// Keychain is unavailable.
+    #[error("keychain unavailable")]
+    KeychainUnavailable,
+    /// Recovery code is lost.
+    #[error("lost recovery code")]
+    LostRecoveryCode,
+    /// Keychain entry is lost.
+    #[error("lost keychain entry")]
+    LostKeychainEntry,
+    /// Recovery code and keychain entry are both lost.
+    #[error("vault unrecoverable")]
+    UnrecoverableVault,
+    /// Sealed bundle verification failed.
+    #[error("bundle verification failed")]
+    BundleVerificationFailed,
+    /// Invite has expired.
+    #[error("invite expired")]
+    InviteExpired,
+    /// Team bundle conflicts with local state.
+    #[error("team bundle conflict")]
+    TeamBundleConflict,
+    /// Device has been revoked.
+    #[error("device revoked")]
+    DeviceRevoked,
+}
+
+impl LocketError {
+    /// Returns the stable process exit code for this failure.
+    #[must_use]
+    pub const fn exit_code(&self) -> ExitCode {
+        match self {
+            Self::InvalidReference | Self::GitWorktreeRequired => 64,
+            Self::PolicyValidationIncomplete => 65,
+            Self::EnvironmentConflict => 66,
+            Self::AccessDenied => 70,
+            Self::ProjectRootUntrusted => 71,
+            Self::UnlockRequired => 72,
+            Self::GrantRequired => 73,
+            Self::UserVerificationFailed => 74,
+            Self::SecretVersionExpired => 75,
+            Self::SecretDeleted => 76,
+            Self::AgentUnavailable => 80,
+            Self::AgentSocketInUse => 81,
+            Self::AutomationClientNotTrusted => 82,
+            Self::AutomationClientReplayDetected => 83,
+            Self::CorruptDb => 90,
+            Self::StorageBusy => 91,
+            Self::SchemaNewerThanBinary => 92,
+            Self::AuditIntegrityFailed => 93,
+            Self::KeychainUnavailable => 100,
+            Self::LostRecoveryCode => 101,
+            Self::LostKeychainEntry => 102,
+            Self::UnrecoverableVault => 103,
+            Self::BundleVerificationFailed => 110,
+            Self::InviteExpired => 111,
+            Self::TeamBundleConflict => 112,
+            Self::DeviceRevoked => 113,
+        }
+    }
+}
+
+impl From<&LocketError> for ExitCode {
+    fn from(value: &LocketError) -> Self {
+        value.exit_code()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::LocketError;
+
+    #[test]
+    fn maps_input_exit_codes() {
+        assert_eq!(LocketError::InvalidReference.exit_code(), 64);
+        assert_eq!(LocketError::GitWorktreeRequired.exit_code(), 64);
+        assert_eq!(LocketError::PolicyValidationIncomplete.exit_code(), 65);
+        assert_eq!(LocketError::EnvironmentConflict.exit_code(), 66);
+    }
+
+    #[test]
+    fn maps_authorization_exit_codes() {
+        assert_eq!(LocketError::AccessDenied.exit_code(), 70);
+        assert_eq!(LocketError::ProjectRootUntrusted.exit_code(), 71);
+        assert_eq!(LocketError::UnlockRequired.exit_code(), 72);
+        assert_eq!(LocketError::GrantRequired.exit_code(), 73);
+        assert_eq!(LocketError::UserVerificationFailed.exit_code(), 74);
+        assert_eq!(LocketError::SecretVersionExpired.exit_code(), 75);
+        assert_eq!(LocketError::SecretDeleted.exit_code(), 76);
+    }
+
+    #[test]
+    fn maps_storage_and_later_exit_codes_below_reserved_shell_codes() {
+        let cases = [
+            (LocketError::AgentUnavailable, 80),
+            (LocketError::AgentSocketInUse, 81),
+            (LocketError::AutomationClientNotTrusted, 82),
+            (LocketError::AutomationClientReplayDetected, 83),
+            (LocketError::CorruptDb, 90),
+            (LocketError::StorageBusy, 91),
+            (LocketError::SchemaNewerThanBinary, 92),
+            (LocketError::AuditIntegrityFailed, 93),
+            (LocketError::KeychainUnavailable, 100),
+            (LocketError::LostRecoveryCode, 101),
+            (LocketError::LostKeychainEntry, 102),
+            (LocketError::UnrecoverableVault, 103),
+            (LocketError::BundleVerificationFailed, 110),
+            (LocketError::InviteExpired, 111),
+            (LocketError::TeamBundleConflict, 112),
+            (LocketError::DeviceRevoked, 113),
+        ];
+
+        for (error, code) in cases {
+            assert_eq!(error.exit_code(), code);
+            assert!(error.exit_code() < 126);
+        }
+    }
+}
