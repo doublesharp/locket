@@ -976,6 +976,29 @@ impl Store {
             .map_err(StoreError::from)
     }
 
+    /// Counts durable directory grants scoped to a single project/profile.
+    ///
+    /// Used by metadata-only profile summaries (e.g., the `clear-dangerous`
+    /// confirmation flow) so we can report how many grants will lose
+    /// dangerous-profile gating without exposing the underlying paths.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Sqlite`] when `SQLite` cannot query the count.
+    pub fn count_directory_grants_for_profile(
+        &self,
+        project_id: &str,
+        profile_id: &str,
+    ) -> Result<u32, StoreError> {
+        let count: i64 = self.connection.query_row(
+            "SELECT COUNT(*) FROM directory_grants
+             WHERE project_id = ?1 AND profile_id = ?2",
+            params![project_id, profile_id],
+            |row| row.get(0),
+        )?;
+        Ok(u32::try_from(count.max(0)).unwrap_or(u32::MAX))
+    }
+
     /// Inserts wrapped key material.
     ///
     /// # Errors

@@ -2980,21 +2980,108 @@ fn set_profile_dangerous(
     let resolved = require_project(context)?;
     let profile_name = ProfileName::new(args.profile)
         .map_err(|_| CliError::Config("invalid profile name".to_owned()))?;
-    let store = open_store(context)?;
-    let Some(profile) =
-        store.get_profile_by_name(resolved.config.project_id.as_str(), profile_name.as_str())?
-    else {
+    let mut store = open_store(context)?;
+    let project_id = resolved.config.project_id.as_str();
+    let Some(profile) = store.get_profile_by_name(project_id, profile_name.as_str())? else {
         return Err(CliError::Config("profile not found".to_owned()));
     };
 
-    store.set_profile_dangerous(
-        resolved.config.project_id.as_str(),
-        profile_name.as_str(),
-        dangerous,
+    let prior_dangerous = profile.dangerous;
+    let new_state = dangerous_state_label(dangerous);
+    let prior_state = dangerous_state_label(prior_dangerous);
+
+    print_profile_dangerous_summary(&store, output, project_id, &profile, dangerous)?;
+
+    if prior_dangerous == dangerous {
+        writeln!(
+            output,
+            "profile {} ({}) dangerous={new_state} unchanged metadata_only=yes",
+            profile.name, profile.id
+        )?;
+        return Ok(());
+    }
+
+    confirm_profile_dangerous_change(context, output, &profile, dangerous)?;
+
+    store.set_profile_dangerous(project_id, profile_name.as_str(), dangerous)?;
+
+    let timestamp = now_unix_nanos()?;
+    let metadata = profile_dangerous_audit_metadata(&profile, prior_dangerous, dangerous);
+    let audit_key = load_project_key(context, &store, project_id, KeyPurpose::Audit)?;
+    let audit = AuditWrite {
+        project_id,
+        profile_id: Some(&profile.id),
+        action: "PROFILE_CHANGE",
+        status: "SUCCESS",
+        secret_name: None,
+        command: Some(if dangerous { "profile mark-dangerous" } else { "profile clear-dangerous" }),
+        metadata_json: &metadata,
+        timestamp,
+    };
+    store.append_audit(audit_key.as_ref(), &audit)?;
+
+    writeln!(
+        output,
+        "profile {} ({}) dangerous={new_state} prior={prior_state} metadata_only=yes",
+        profile.name, profile.id
     )?;
-    let state = if dangerous { "dangerous" } else { "not-dangerous" };
-    writeln!(output, "profile {} ({}) dangerous={state}", profile.name, profile.id)?;
     Ok(())
+}
+
+fn print_profile_dangerous_summary(
+    store: &Store,
+    output: &mut impl Write,
+    project_id: &str,
+    profile: &ProfileRecord,
+    target_dangerous: bool,
+) -> Result<(), CliError> {
+    let secret_count = store.list_active_secrets_by_profile(project_id, &profile.id)?.len();
+    let grant_count = store.count_directory_grants_for_profile(project_id, &profile.id)?;
+    writeln!(output, "profile: {}", profile.name)?;
+    writeln!(output, "profile_id: {}", profile.id)?;
+    writeln!(output, "current_dangerous: {}", dangerous_state_label(profile.dangerous))?;
+    writeln!(output, "target_dangerous: {}", dangerous_state_label(target_dangerous))?;
+    writeln!(output, "active_secrets: {secret_count}")?;
+    writeln!(output, "directory_grants: {grant_count}")?;
+    writeln!(output, "metadata_only: yes")?;
+    Ok(())
+}
+
+fn confirm_profile_dangerous_change(
+    context: &RuntimeContext,
+    output: &mut impl Write,
+    profile: &ProfileRecord,
+    dangerous: bool,
+) -> Result<(), CliError> {
+    let (prompt_label, expected) = if dangerous {
+        ("mark-dangerous", profile.name.clone())
+    } else {
+        ("clear-dangerous", format!("clear {}", profile.name))
+    };
+    writeln!(output, "type '{expected}' to confirm {prompt_label}")?;
+    let confirmation =
+        context.confirmation_reader.read_confirmation(&format!("profile {prompt_label}"))?;
+    if confirmation.trim_end_matches(['\r', '\n']) != expected {
+        return Err(CliError::Config("confirmation did not match".to_owned()));
+    }
+    Ok(())
+}
+
+fn profile_dangerous_audit_metadata(profile: &ProfileRecord, prior: bool, new: bool) -> Value {
+    json!({
+        "schema_version": 1,
+        "action": "PROFILE_CHANGE",
+        "status": "SUCCESS",
+        "operation": "set_dangerous",
+        "profile_id": profile.id,
+        "profile_name": profile.name,
+        "prior_dangerous": prior,
+        "new_dangerous": new,
+    })
+}
+
+const fn dangerous_state_label(dangerous: bool) -> &'static str {
+    if dangerous { "dangerous" } else { "not-dangerous" }
 }
 
 fn use_profile_command(
@@ -9189,46 +9276,258 @@ argv = []
     }
 
     #[test]
+    fn profile_mark_dangerous_writes_profile_change_audit_with_prior_flags()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let key_store: Arc<dyn MasterKeyStore + Send + Sync> =
+            Arc::new(MemoryMasterKeyStore::default());
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &test_context_with_key_store(&directory, Arc::clone(&key_store)),
+            &mut Vec::new(),
+        )?;
+        let mark_context = test_context_with_key_store_and_confirmation(
+            &directory,
+            Arc::clone(&key_store),
+            "dev\n",
+        );
+        run_with_context(
+            Cli::try_parse_from(["locket", "profile", "mark-dangerous", "dev"])?,
+            &mark_context,
+            &mut Vec::new(),
+        )?;
+
+        let store = super::open_store(&mark_context)?;
+        let metadata: String = store.connection().query_row(
+            "SELECT metadata_json FROM audit_log WHERE action = 'PROFILE_CHANGE'
+             ORDER BY sequence DESC LIMIT 1",
+            [],
+            |row| row.get(0),
+        )?;
+        assert!(metadata.contains("\"operation\":\"set_dangerous\""));
+        assert!(metadata.contains("\"prior_dangerous\":false"));
+        assert!(metadata.contains("\"new_dangerous\":true"));
+        assert!(metadata.contains("\"profile_name\":\"dev\""));
+        Ok(())
+    }
+
+    #[test]
+    fn profile_mark_dangerous_rejects_wrong_typed_confirmation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let key_store: Arc<dyn MasterKeyStore + Send + Sync> =
+            Arc::new(MemoryMasterKeyStore::default());
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &test_context_with_key_store(&directory, Arc::clone(&key_store)),
+            &mut Vec::new(),
+        )?;
+        let bad_context = test_context_with_key_store_and_confirmation(
+            &directory,
+            Arc::clone(&key_store),
+            "wrong\n",
+        );
+        let mut output = Vec::new();
+        let result = run_with_context(
+            Cli::try_parse_from(["locket", "profile", "mark-dangerous", "dev"])?,
+            &bad_context,
+            &mut output,
+        );
+        assert_error_contains(result, "confirmation did not match");
+        let store = super::open_store(&bad_context)?;
+        let project_id: String =
+            store
+                .connection()
+                .query_row("SELECT id FROM projects LIMIT 1", [], |row| row.get(0))?;
+        let profile = store.get_profile_by_name(&project_id, "dev")?.ok_or("profile missing")?;
+        assert!(!profile.dangerous, "rejected confirmation must not flip flag");
+        Ok(())
+    }
+
+    #[test]
+    fn profile_clear_dangerous_requires_clear_prefix_in_confirmation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let key_store: Arc<dyn MasterKeyStore + Send + Sync> =
+            Arc::new(MemoryMasterKeyStore::default());
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &test_context_with_key_store(&directory, Arc::clone(&key_store)),
+            &mut Vec::new(),
+        )?;
+        run_with_context(
+            Cli::try_parse_from(["locket", "profile", "mark-dangerous", "dev"])?,
+            &test_context_with_key_store_and_confirmation(
+                &directory,
+                Arc::clone(&key_store),
+                "dev\n",
+            ),
+            &mut Vec::new(),
+        )?;
+
+        let bare_name_context = test_context_with_key_store_and_confirmation(
+            &directory,
+            Arc::clone(&key_store),
+            "dev\n",
+        );
+        let mut output = Vec::new();
+        let result = run_with_context(
+            Cli::try_parse_from(["locket", "profile", "clear-dangerous", "dev"])?,
+            &bare_name_context,
+            &mut output,
+        );
+        assert_error_contains(result, "confirmation did not match");
+
+        let prefix_context = test_context_with_key_store_and_confirmation(
+            &directory,
+            Arc::clone(&key_store),
+            "clear dev\n",
+        );
+        let mut output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "profile", "clear-dangerous", "dev"])?,
+            &prefix_context,
+            &mut output,
+        )?;
+        assert!(String::from_utf8(output)?.contains("dangerous=not-dangerous"));
+        Ok(())
+    }
+
+    #[test]
+    fn profile_mark_dangerous_is_no_op_when_already_dangerous()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let key_store: Arc<dyn MasterKeyStore + Send + Sync> =
+            Arc::new(MemoryMasterKeyStore::default());
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &test_context_with_key_store(&directory, Arc::clone(&key_store)),
+            &mut Vec::new(),
+        )?;
+        run_with_context(
+            Cli::try_parse_from(["locket", "profile", "mark-dangerous", "dev"])?,
+            &test_context_with_key_store_and_confirmation(
+                &directory,
+                Arc::clone(&key_store),
+                "dev\n",
+            ),
+            &mut Vec::new(),
+        )?;
+        let no_confirmation_context = test_context_with_key_store_and_confirmation(
+            &directory,
+            Arc::clone(&key_store),
+            "should-not-be-read\n",
+        );
+        let mut output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "profile", "mark-dangerous", "dev"])?,
+            &no_confirmation_context,
+            &mut output,
+        )?;
+        let output = String::from_utf8(output)?;
+        assert!(output.contains("dangerous=dangerous unchanged"));
+        let store = super::open_store(&no_confirmation_context)?;
+        let count: i64 = store.connection().query_row(
+            "SELECT COUNT(*) FROM audit_log WHERE action = 'PROFILE_CHANGE'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(count, 1, "no-op mark must not append a new audit row");
+        Ok(())
+    }
+
+    #[test]
+    fn profile_mark_dangerous_unknown_profile_errors_without_audit()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let key_store: Arc<dyn MasterKeyStore + Send + Sync> =
+            Arc::new(MemoryMasterKeyStore::default());
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &test_context_with_key_store(&directory, Arc::clone(&key_store)),
+            &mut Vec::new(),
+        )?;
+        let context = test_context_with_key_store_and_confirmation(
+            &directory,
+            Arc::clone(&key_store),
+            "missing\n",
+        );
+        let mut output = Vec::new();
+        let result = run_with_context(
+            Cli::try_parse_from(["locket", "profile", "mark-dangerous", "missing"])?,
+            &context,
+            &mut output,
+        );
+        assert_error_contains(result, "profile not found");
+        let store = super::open_store(&context)?;
+        let count: i64 = store.connection().query_row(
+            "SELECT COUNT(*) FROM audit_log WHERE action = 'PROFILE_CHANGE'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(count, 0);
+        Ok(())
+    }
+
+    #[test]
     fn profile_dangerous_marking_updates_metadata_only() -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempdir()?;
-        let context = test_context(&directory);
+        let key_store: Arc<dyn MasterKeyStore + Send + Sync> =
+            Arc::new(MemoryMasterKeyStore::default());
+        let init_context = test_context_with_key_store(&directory, Arc::clone(&key_store));
         let mut output = Vec::new();
         run_with_context(
             Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
-            &context,
+            &init_context,
             &mut output,
         )?;
 
+        let mark_context = test_context_with_key_store_and_confirmation(
+            &directory,
+            Arc::clone(&key_store),
+            "dev\n",
+        );
         let mut mark_output = Vec::new();
         run_with_context(
             Cli::try_parse_from(["locket", "profile", "mark-dangerous", "dev"])?,
-            &context,
+            &mark_context,
             &mut mark_output,
         )?;
         let mark_output = String::from_utf8(mark_output)?;
         assert!(mark_output.contains("dangerous=dangerous"));
+        assert!(mark_output.contains("metadata_only: yes"));
+        assert!(mark_output.contains("active_secrets: 0"));
+        assert!(mark_output.contains("directory_grants: 0"));
+        assert!(mark_output.contains("prior=not-dangerous"));
 
         let mut list_output = Vec::new();
         run_with_context(
             Cli::try_parse_from(["locket", "profile", "list"])?,
-            &context,
+            &mark_context,
             &mut list_output,
         )?;
         let list_output = String::from_utf8(list_output)?;
         assert!(list_output.contains("* dev"));
         assert!(list_output.contains("dangerous"));
 
+        let clear_context = test_context_with_key_store_and_confirmation(
+            &directory,
+            Arc::clone(&key_store),
+            "clear dev\n",
+        );
         let mut clear_output = Vec::new();
         run_with_context(
             Cli::try_parse_from(["locket", "profile", "clear-dangerous", "dev"])?,
-            &context,
+            &clear_context,
             &mut clear_output,
         )?;
-        assert!(String::from_utf8(clear_output)?.contains("dangerous=not-dangerous"));
+        let clear_output = String::from_utf8(clear_output)?;
+        assert!(clear_output.contains("dangerous=not-dangerous"));
+        assert!(clear_output.contains("prior=dangerous"));
         let mut list_after_clear = Vec::new();
         run_with_context(
             Cli::try_parse_from(["locket", "profile", "list"])?,
-            &context,
+            &clear_context,
             &mut list_after_clear,
         )?;
         assert!(!String::from_utf8(list_after_clear)?.contains("dangerous"));
@@ -12074,7 +12373,9 @@ required_secrets = ["DATABASE_URL"]
     fn import_overwrite_to_dangerous_profile_requires_confirmation_before_rotation()
     -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempdir()?;
-        let context = test_context(&directory);
+        let key_store: Arc<dyn MasterKeyStore + Send + Sync> =
+            Arc::new(MemoryMasterKeyStore::default());
+        let context = test_context_with_key_store(&directory, Arc::clone(&key_store));
         let mut output = Vec::new();
         run_with_context(
             Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
@@ -12086,9 +12387,14 @@ required_secrets = ["DATABASE_URL"]
             &context,
             &mut Vec::new(),
         )?;
+        let mark_context = test_context_with_key_store_and_confirmation(
+            &directory,
+            Arc::clone(&key_store),
+            "prod\n",
+        );
         run_with_context(
             Cli::try_parse_from(["locket", "profile", "mark-dangerous", "prod"])?,
-            &context,
+            &mark_context,
             &mut Vec::new(),
         )?;
         std::fs::write(directory.path().join(".env"), "API_KEY=sk_test_prodOriginal123\n")?;
