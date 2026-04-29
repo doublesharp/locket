@@ -155,6 +155,28 @@ fn invalid_profile_name_errors_exit_64() {
 }
 
 #[test]
+fn invalid_iso_date_via_diff_command_exits_64() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+
+    let result = run_with_context(
+        Cli::try_parse_from(["locket", "diff", "dev", "dev", "--since", "not-an-iso-date"])?,
+        &context,
+        &mut Vec::new(),
+    );
+    let Err(error) = result else {
+        return Err("diff --since with invalid ISO date should fail".into());
+    };
+    assert_eq!(error.exit_code(), 64);
+    Ok(())
+}
+
+#[test]
 fn invalid_secret_name_via_history_command_exits_64() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempdir()?;
     let context = test_context(&directory);

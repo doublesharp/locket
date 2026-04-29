@@ -4,6 +4,7 @@ use std::path::Path;
 
 use crate::CliError;
 use crate::commands::scan::scanner;
+use crate::runtime::error::metadata_invalid_error;
 
 pub const NANOS_PER_SECOND: i64 = 1_000_000_000;
 
@@ -82,19 +83,19 @@ fn split_iso_time_and_offset(value: &str) -> Result<(&str, i64), CliError> {
 
 fn parse_iso_time(value: &str) -> Result<(u32, u32, u32, u32), CliError> {
     if value.len() < 8 || &value[2..3] != ":" || &value[5..6] != ":" {
-        return Err(CliError::Config("invalid ISO date/time for diff --since".to_owned()));
+        return Err(metadata_invalid_error("invalid ISO date/time for diff --since"));
     }
     let hour = parse_u32_digits(&value[0..2])?;
     let minute = parse_u32_digits(&value[3..5])?;
     let second = parse_u32_digits(&value[6..8])?;
     if hour > 23 || minute > 59 || second > 59 {
-        return Err(CliError::Config("invalid ISO date/time for diff --since".to_owned()));
+        return Err(metadata_invalid_error("invalid ISO date/time for diff --since"));
     }
     let fractional_nanos = if value.len() == 8 {
         0
     } else {
         if value.as_bytes().get(8) != Some(&b'.') {
-            return Err(CliError::Config("invalid ISO date/time for diff --since".to_owned()));
+            return Err(metadata_invalid_error("invalid ISO date/time for diff --since"));
         }
         parse_fractional_nanos(&value[9..])?
     };
@@ -103,7 +104,7 @@ fn parse_iso_time(value: &str) -> Result<(u32, u32, u32, u32), CliError> {
 
 fn parse_fractional_nanos(value: &str) -> Result<u32, CliError> {
     if value.is_empty() || !value.as_bytes().iter().all(u8::is_ascii_digit) {
-        return Err(CliError::Config("invalid ISO date/time for diff --since".to_owned()));
+        return Err(metadata_invalid_error("invalid ISO date/time for diff --since"));
     }
     let mut nanos = 0_u32;
     let mut scale = 100_000_000_u32;
@@ -118,7 +119,7 @@ fn parse_iso_offset_seconds(value: &str) -> Result<i64, CliError> {
     let sign = match value.as_bytes().first() {
         Some(b'+') => 1_i64,
         Some(b'-') => -1_i64,
-        _ => return Err(CliError::Config("invalid ISO date/time for diff --since".to_owned())),
+        _ => return Err(metadata_invalid_error("invalid ISO date/time for diff --since")),
     };
     let offset = &value[1..];
     let (hours, minutes) = if offset.len() == 5 && &offset[2..3] == ":" {
@@ -126,35 +127,35 @@ fn parse_iso_offset_seconds(value: &str) -> Result<i64, CliError> {
     } else if offset.len() == 4 {
         (parse_u32_digits(&offset[0..2])?, parse_u32_digits(&offset[2..4])?)
     } else {
-        return Err(CliError::Config("invalid ISO date/time for diff --since".to_owned()));
+        return Err(metadata_invalid_error("invalid ISO date/time for diff --since"));
     };
     if hours > 23 || minutes > 59 {
-        return Err(CliError::Config("invalid ISO date/time for diff --since".to_owned()));
+        return Err(metadata_invalid_error("invalid ISO date/time for diff --since"));
     }
     Ok(sign * i64::from(hours * 3600 + minutes * 60))
 }
 
 fn parse_i32_digits(value: &str) -> Result<i32, CliError> {
     if value.is_empty() || !value.as_bytes().iter().all(u8::is_ascii_digit) {
-        return Err(CliError::Config("invalid ISO date/time for diff --since".to_owned()));
+        return Err(metadata_invalid_error("invalid ISO date/time for diff --since"));
     }
     value
         .parse::<i32>()
-        .map_err(|_| CliError::Config("invalid ISO date/time for diff --since".to_owned()))
+        .map_err(|_| metadata_invalid_error("invalid ISO date/time for diff --since"))
 }
 
 fn parse_u32_digits(value: &str) -> Result<u32, CliError> {
     if value.is_empty() || !value.as_bytes().iter().all(u8::is_ascii_digit) {
-        return Err(CliError::Config("invalid ISO date/time for diff --since".to_owned()));
+        return Err(metadata_invalid_error("invalid ISO date/time for diff --since"));
     }
     value
         .parse::<u32>()
-        .map_err(|_| CliError::Config("invalid ISO date/time for diff --since".to_owned()))
+        .map_err(|_| metadata_invalid_error("invalid ISO date/time for diff --since"))
 }
 
 fn validate_ymd(year: i32, month: u32, day: u32) -> Result<(), CliError> {
     if !(1..=12).contains(&month) || day == 0 || day > days_in_month(year, month) {
-        return Err(CliError::Config("invalid ISO date/time for diff --since".to_owned()));
+        return Err(metadata_invalid_error("invalid ISO date/time for diff --since"));
     }
     Ok(())
 }
