@@ -175,16 +175,9 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
 - [x] `locket new --from-template`.
 - [x] `locket config` spec coverage.
 - [x] `locket install-hooks`.
-- [~] [723116e9] Scan ignore/suppression spec coverage. Inline suppression markers and a
-  metadata-only `SCAN`/`SUPPRESSED` audit row are wired. Remaining: per-rule
-  severity (`.env` warning vs. blocking, provider-token blocking) and the rest of
-  the documented scan policies.
-  Claim: branch agent-723116e9/scan-severity, worktree .worktrees/agent-723116e9-scan-severity. Scope: introduce per-rule severity (`warning`/`blocking`), wire `.env` patterns to warning and provider-tokens/known-values to blocking, map scan exit code by max severity, surface severity in `SCAN` audit metadata.
-  - Spec: `docs/specs/scan-redaction.md`.
-  - Errors: `ScanFinding` (66), `InvalidConfig` (64).
-  - Audit actions: `SCAN` (already wired); add severity field to existing rows.
-  - Files: `crates/locket-scan/src/rules.rs` (severity table),
-    `crates/locket-cli/src/scan.rs` (exit-code mapping by max severity).
+- [~] Scan ignore/suppression: inline markers, `SCAN`/`SUPPRESSED` audit
+  rows, and per-rule severity (`ScanFindingBlocked` 69) shipped.
+  Remaining: project-level severity overrides and `.env` policy table.
 - [x] Secure interactive secret input for `set`/`rotate`.
 - [~] Destructive confirmation flows: `purge`, dangerous-profile, and
   root untrust shipped. Remaining: policy deletion and other sensitive
@@ -353,15 +346,12 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
 - [x] Runtime session storage/retention primitives and runtime execution
   recording for `exec`/`run` (doctor process-liveness classification is a
   follow-up under doctor enhancements).
-- [ ] Env layering modes `merge`/`passthrough` distinct from
+- [~] [70c448c4] Env layering modes `merge`/`passthrough` distinct from
+  Claim: branch agent-70c448c4/env-layering-modes, worktree .worktrees/agent-70c448c4-env-layering-modes.
   `minimal`/`strict`, plus `override = "preserve"`/`"error"` with a
   warning when a policy chooses neither.
-- [~] [70c448c4] Conservative env allowlist
+- [~] [70c448c4] ready: agent-70c448c4/conservative-env-allowlist @ 123d956 — minimal mode now uses the spec allowlist (`PATH HOME USER SHELL TMPDIR LANG LC_* TERM CI`) with `LC_*` matching, and `policy doctor` surfaces it.
   Claim: branch agent-70c448c4/conservative-env-allowlist, worktree .worktrees/agent-70c448c4-conservative-env-allowlist.
-  (`PATH HOME USER SHELL TMPDIR LANG LC_* TERM CI`) applied in `minimal`
-  mode and surfaced in `policy doctor`.
-  - Spec: `docs/specs/runtime.md` Runtime Execution.
-  - Files: `crates/locket-exec/src/env_layer.rs` (or equivalent).
 - [ ] Ephemeral env-file fallback for children that can't accept an env
   map: 0700 parent / 0600 file outside project tree, post-spawn delete,
   audited delivery mode, secure-erase warning when unsupported.
@@ -384,23 +374,10 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
   (`--accept-incoming`/`--accept-local`), decryptability checks in
   `bundle verify`, audit import
   (`docs/specs/team-sync-recovery.md:111-224`).
-- [~] Team command surfaces and behavior: `team init`, `team invite`,
-  `team accept`, `team revoke-invite`, `team members`, `team remove`,
-  `team revoke-device`. An unclaimed prior worktree exists at
-  `.worktrees/agent-c-team-metadata` on branch `agent-c/team-metadata`; an
-  agent picking up any subtask may inspect or salvage that branch but should
-  rebase onto current `main` (or rebuild from scratch) before integration.
-  Decomposed into subtasks below; pick any open one (later subtasks depend
-  on `team-store-schema`).
-  - Spec: `docs/specs/team-sync-recovery.md:5-110`.
-  - Errors: `KeychainEntryMissing` (100), `TeamRoleDenied` (113),
-    `InviteExpired` (113), `InviteRevoked` (113), `InviteSignatureInvalid` (113),
-    `InviteFingerprintMismatch` (113), `ReplayDetected` (113).
-  - Audit actions: `TEAM_INIT`, `TEAM_INVITE` (creation + revocation),
-    `TEAM_ACCEPT`, `TEAM_REMOVE`, `DEVICE_REVOKE`.
-  - Files: `crates/locket-cli/src/` (new `commands/team/`),
-    `crates/locket-store/src/teams.rs` (new module + tables `teams`,
-    `team_members`, `team_invites`).
+- [~] Team command surfaces (`team init`, `invite`, `accept`,
+  `revoke-invite`, `members`, `remove`, `revoke-device`). Decomposed
+  below; later subtasks depend on `team-store-schema`
+  (`docs/specs/team-sync-recovery.md:5-110`).
   - [x] **subtask** — team-store-schema: `teams`, `team_members`,
     `team_invites` tables already live in `crates/locket-store/src/schema.rs`
     with the spec-required column constraints (role check, profiles_json,
@@ -785,4 +762,3 @@ against the named spec file.
   `docs/specs/data-model.md`.
 - Required SQLite tables: `docs/specs/storage.md`.
 - Crate ownership: `docs/specs/architecture.md`.
-
