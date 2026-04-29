@@ -297,15 +297,41 @@ to touch. Items marked `[x]` are merged to `main` and verified.
   - Audit actions: `LOCK` on stop where keys were held; `AGENT_REVOKE` per
     revoked grant.
   - Files: `crates/locket-cli/src/agent.rs`, `crates/locket-agent/src/`.
-- [ ] `locket run` spec coverage. Argv policy execution exists; remaining: shell
-  policies, external env sources, confirmation/user-verification gates, TTL
-  grants, full audit metadata, agent-backed behavior.
+- [~] `locket run` spec coverage. Argv policy execution exists. Remaining work
+  is broken into subtasks below; pick any open one.
   - Spec: `docs/specs/runtime.md:5-122`, `docs/specs/policy.md`.
-  - Errors: `AccessDenied` (73), `GrantRequired` (72), `InvalidPolicy` (65),
-    `UserVerificationFailed` (76).
-  - Audit actions: `RUN` (with policy id, allowed/required secret name lists,
-    confirmation source, child exit).
-  - Files: `crates/locket-exec/src/`, `crates/locket-cli/src/main.rs` run path.
+  - Files: `crates/locket-exec/src/`, `crates/locket-cli/src/commands/exec/run.rs`.
+  - [ ] **subtask** — run-shell-policy: support shell-mode command policies
+    (`shell = "..."` + `args = [...]`) alongside the existing argv form. Wire
+    parser/normalizer in `crates/locket-core/src/policy/`, evaluator and
+    spawn path in `commands/exec/run.rs`. Errors: `InvalidPolicy` (65). Audit:
+    extend `RUN` metadata with `shape: "argv" | "shell"`. Tests cover argv
+    success, shell success, mixed/invalid policy rejection.
+  - [ ] **subtask** — run-confirm-gate: implement `confirm = true` policy
+    gate via `RuntimeContext::confirmation_reader` with the documented
+    typed-string format. Audit: `RUN`/`DENIED` with
+    `denial_reason: "confirmation_required"` on rejection; `RUN` with
+    `confirmation_source` on success. Errors: `ConfirmationFailed` (68).
+  - [ ] **subtask** — run-user-verification-gate: implement
+    `require_user_verification = true` gate via
+    `crates/locket-platform/src/user_verification.rs`. Audit: `RUN` records
+    `user_verification = { required, satisfied, method }`. Errors:
+    `UserVerificationFailed` (74).
+  - [ ] **subtask** — run-ttl-grant: enforce policy-declared `ttl = "Xs"`
+    grants with `(pid, process_start_time)` binding. Reuses the
+    process-start-time helper landed in
+    `agent-4efea70d/process-grant-binding`. Errors: `GrantRequired` (73).
+    Audit: `RUN` records `grant_id`, `grant_ttl_seconds`.
+  - [ ] **subtask** — run-audit-metadata: extend the existing `RUN` audit row
+    with the spec-required fields (`policy_id`, `allowed_secret_names`,
+    `required_secret_names`, `confirmation_source`, `child_exit`,
+    `external_sources`). No behavioural changes; pure metadata enrichment
+    plus test coverage.
+  - [ ] **subtask** — run-agent-backed: route `locket run` through the
+    local agent's `ResolveReference`/grant RPCs once the daemon ships.
+    Depends on the `Local agent daemon` item below. Surface
+    `AgentUnavailable` (80) when the daemon is down and the policy declares
+    `require_agent = true`.
 - [~] [70c448c4] External env source resolution: `ExternalEnvSource::Parent` (re-inject
   Claim: branch agent-70c448c4/external-env-parent, worktree .worktrees/agent-70c448c4-external-env-parent. Scope: implement parent external env resolution first; leave File/Compose/Ide follow-ups explicit if still pending.
   only allowed names), `::File(path)` (canonical, in-project, non-symlink-escape;
