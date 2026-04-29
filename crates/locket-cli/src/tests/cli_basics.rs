@@ -153,6 +153,39 @@ fn client_rejects_unsupported_actions_and_missing_policies()
         ),
         "at least one --policy",
     );
+
+    let missing_policy_result = run_with_context(
+        Cli::try_parse_from([
+            "locket",
+            "client",
+            "add",
+            "ci_bot",
+            "--pubkey",
+            &public_key,
+            "--action",
+            "run-policy",
+            "--policy",
+            "missing",
+        ])?,
+        &context,
+        &mut Vec::new(),
+    );
+    let Err(error) = missing_policy_result else {
+        return Err("client add with missing policy should fail".into());
+    };
+    assert_eq!(error.exit_code(), locket_core::LocketError::PolicyNotFound.exit_code());
+    assert!(error.to_string().contains("command policy not found: missing"));
+
+    let missing_client_result = run_with_context(
+        Cli::try_parse_from(["locket", "client", "revoke", "missing-client"])?,
+        &context,
+        &mut Vec::new(),
+    );
+    let Err(error) = missing_client_result else {
+        return Err("client revoke with missing client should fail".into());
+    };
+    assert_eq!(error.exit_code(), locket_core::LocketError::PolicyNotFound.exit_code());
+    assert!(error.to_string().contains("automation client not found: missing-client"));
     Ok(())
 }
 

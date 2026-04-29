@@ -14,7 +14,7 @@ use crate::{
     CliError, ClientAddArgs, ClientCommand, ClientCreateArgs, ResolvedProject, RuntimeContext,
     ensure_project_exists, ensure_trusted_project_root, format_hex, format_unix_nanos,
     hex_nibble_with_message, load_command_policy, load_project_key, now_unix_nanos, open_store,
-    require_project,
+    policy_not_found_error, require_project,
 };
 
 pub fn client_command(
@@ -195,7 +195,7 @@ fn client_revoke_command(
     let Some(client) =
         store.get_automation_client(resolved.config.project_id.as_str(), client_ref)?
     else {
-        return Err(CliError::Config(format!("automation client not found: {client_ref}")));
+        return Err(policy_not_found_error(format!("automation client not found: {client_ref}")));
     };
     if client.revoked_at.is_some() {
         writeln!(output, "client: {}", client.name)?;

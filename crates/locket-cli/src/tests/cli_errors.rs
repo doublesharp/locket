@@ -209,6 +209,14 @@ fn profile_not_found_errors_exit_78() {
 }
 
 #[test]
+fn policy_not_found_errors_exit_64() {
+    let error = crate::policy_not_found_error("command policy not found: missing");
+
+    assert_eq!(error.exit_code(), 64);
+    assert_eq!(error.to_string(), "command policy not found: missing");
+}
+
+#[test]
 fn invalid_secret_name_errors_exit_64() {
     let error = crate::invalid_secret_name_error("invalid secret name");
 

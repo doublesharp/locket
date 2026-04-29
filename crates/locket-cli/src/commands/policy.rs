@@ -8,7 +8,7 @@ use std::io::Write;
 
 use crate::{
     CliError, LOCKET_TOML, RuntimeContext, load_project_key, now_unix_nanos, open_store,
-    require_project, secret_already_exists_error,
+    policy_not_found_error, require_project, secret_already_exists_error,
 };
 
 #[derive(Debug, Subcommand)]
@@ -138,7 +138,7 @@ fn delete(
     let mut document = read_locket_toml(&path)?;
     let commands = commands_table_mut(&mut document)?;
     if commands.remove(&name).is_none() {
-        return Err(CliError::Config(format!("command policy not found: {name}")));
+        return Err(policy_not_found_error(format!("command policy not found: {name}")));
     }
     write_validated_locket_toml(&path, &document)?;
     write_policy_update_audit_if_available(context, "delete", &name)?;
@@ -197,7 +197,7 @@ fn policy_table_mut<'a>(
     commands
         .get_mut(name)
         .and_then(toml::Value::as_table_mut)
-        .ok_or_else(|| CliError::Config(format!("command policy not found: {name}")))
+        .ok_or_else(|| policy_not_found_error(format!("command policy not found: {name}")))
 }
 
 fn validate_policy_name(name: &str) -> Result<(), CliError> {

@@ -23,6 +23,9 @@ pub enum LocketError {
     /// Policy validation could not complete without an agent or unlocked vault.
     #[error("policy validation incomplete")]
     PolicyValidationIncomplete,
+    /// Referenced command policy or automation-client policy binding was not found.
+    #[error("policy not found")]
+    PolicyNotFound,
     /// Environment variable conflict under `override = \"error\"`.
     #[error("environment conflict")]
     EnvironmentConflict,
@@ -140,6 +143,7 @@ impl LocketError {
             | Self::MetadataInvalid
             | Self::InvalidSecretName
             | Self::InvalidProfileName
+            | Self::PolicyNotFound
             | Self::ProjectNotFound => 64,
             Self::PolicyValidationIncomplete => 65,
             Self::EnvironmentConflict | Self::MetadataLooksLikeSecret => 66,
@@ -192,6 +196,7 @@ mod tests {
         assert_eq!(LocketError::GitWorktreeRequired.exit_code(), 64);
         assert_eq!(LocketError::InvalidSecretName.exit_code(), 64);
         assert_eq!(LocketError::InvalidProfileName.exit_code(), 64);
+        assert_eq!(LocketError::PolicyNotFound.exit_code(), 64);
         assert_eq!(LocketError::ProjectNotFound.exit_code(), 64);
         assert_eq!(LocketError::PolicyValidationIncomplete.exit_code(), 65);
         assert_eq!(LocketError::EnvironmentConflict.exit_code(), 66);

@@ -139,6 +139,40 @@ argv = []
 }
 
 #[test]
+fn missing_policy_commands_exit_with_policy_not_found() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+
+    let allow_result = run_with_context(
+        Cli::try_parse_from(["locket", "policy", "allow", "missing", "DATABASE_URL"])?,
+        &context,
+        &mut Vec::new(),
+    );
+    let Err(error) = allow_result else {
+        return Err("missing policy allow should fail".into());
+    };
+    assert_eq!(error.exit_code(), locket_core::LocketError::PolicyNotFound.exit_code());
+    assert!(error.to_string().contains("command policy not found: missing"));
+
+    let delete_result = run_with_context(
+        Cli::try_parse_from(["locket", "policy", "delete", "missing", "--yes"])?,
+        &context,
+        &mut Vec::new(),
+    );
+    let Err(error) = delete_result else {
+        return Err("missing policy delete should fail".into());
+    };
+    assert_eq!(error.exit_code(), locket_core::LocketError::PolicyNotFound.exit_code());
+    assert!(error.to_string().contains("command policy not found: missing"));
+    Ok(())
+}
+
+#[test]
 fn profile_create_writes_metadata_only_audit_row() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempdir()?;
     let context = test_context(&directory);
