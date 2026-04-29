@@ -326,7 +326,7 @@ fn bundle_verify_rejects_tampered_digest() -> Result<(), Box<dyn std::error::Err
         &mut Vec::new(),
     );
     assert_error_contains(result, "manifest digest mismatch");
-    assert_eq!(crate::CliError::BundleVerification("failed".to_owned()).exit_code(), 110);
+    assert_eq!(crate::bundle_verification_error("failed").exit_code(), 110);
     Ok(())
 }
 

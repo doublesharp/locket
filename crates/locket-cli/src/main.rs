@@ -6,6 +6,7 @@ mod bootstrap;
 mod bundle;
 mod client;
 mod config_cmd;
+mod config_validation;
 mod debug_cmd;
 mod device;
 pub(crate) mod diagnostics;
@@ -25,6 +26,12 @@ mod secrets_cmd;
 mod shell;
 mod time_helpers;
 
+pub(crate) use config_validation::{
+    CONFIG_KEY_SPECS, config_get_value, config_set_value, config_unset_value, format_config_value,
+    parse_config_value, read_user_config, split_config_key, validate_config_key,
+    validate_config_value_not_secret_like, validate_stored_config_value,
+    write_config_update_audit_if_available, write_user_config,
+};
 #[cfg(test)]
 pub(crate) use device::{device_fingerprint_hex, encode_device_descriptor};
 pub(crate) use project_files::{
@@ -96,7 +103,7 @@ use policy_authoring::PolicyCommand;
 use time_helpers::NANOS_PER_SECOND;
 
 pub(crate) const LOCKET_TOML: &str = "locket.toml";
-const CONFIG_TOML: &str = "config.toml";
+pub(crate) const CONFIG_TOML: &str = "config.toml";
 pub(crate) const HOOK_BEGIN: &str = "# --- BEGIN LOCKET PRE-COMMIT ---";
 pub(crate) const HOOK_END: &str = "# --- END LOCKET PRE-COMMIT ---";
 const DEFAULT_MAX_GRACE_TTL_SECONDS: u64 = 7 * 24 * 60 * 60;
@@ -1202,7 +1209,6 @@ impl SecretValueReader for StdinOrPromptSecretValueReader {
 pub(crate) enum CliError {
     Config(String),
     Typed { kind: LocketError, message: String },
-    BundleVerification(String),
     ChildExit(u8),
     Io(io::Error),
     Store(StoreError),
@@ -1221,7 +1227,6 @@ impl CliError {
                 LocketError::InvalidReference.exit_code()
             }
             Self::Typed { kind, .. } => kind.exit_code(),
-            Self::BundleVerification(_) => LocketError::BundleVerificationFailed.exit_code(),
             Self::ChildExit(code) => *code,
             Self::Io(_) | Self::Time => LocketError::CorruptDb.exit_code(),
             Self::Store(error) => error.locket_error().exit_code(),
@@ -1279,6 +1284,10 @@ fn secret_deleted_error(message: impl Into<String>) -> CliError {
     typed_cli_error(LocketError::SecretDeleted, message)
 }
 
+pub(crate) fn bundle_verification_error(message: impl Into<String>) -> CliError {
+    typed_cli_error(LocketError::BundleVerificationFailed, message)
+}
+
 fn exec_prepare_error(error: locket_exec::ExecError) -> CliError {
     match error {
         locket_exec::ExecError::Environment(error) => {
@@ -1295,9 +1304,7 @@ fn child_exit_error(status: std::process::ExitStatus) -> CliError {
 impl Display for CliError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Config(message)
-            | Self::Typed { message, .. }
-            | Self::BundleVerification(message) => formatter.write_str(message),
+            Self::Config(message) | Self::Typed { message, .. } => formatter.write_str(message),
             Self::ChildExit(code) => write!(formatter, "child process exited with code {code}"),
             Self::Io(error) => error.fmt(formatter),
             Self::Store(error) => error.fmt(formatter),
@@ -5182,7 +5189,7 @@ pub(crate) fn require_project(context: &RuntimeContext) -> Result<ResolvedProjec
     resolve_project(&context.cwd)?.ok_or_else(|| CliError::Config("project not found".to_owned()))
 }
 
-fn resolve_project(start: &Path) -> Result<Option<ResolvedProject>, CliError> {
+pub(crate) fn resolve_project(start: &Path) -> Result<Option<ResolvedProject>, CliError> {
     let mut current = start.canonicalize()?;
     loop {
         let candidate = current.join(LOCKET_TOML);
@@ -5245,370 +5252,6 @@ fn external_env_source_label(source: &ExternalEnvSource) -> String {
 fn write_project_config(path: &Path, config: &ProjectConfig) -> Result<(), CliError> {
     let content = toml::to_string_pretty(config)?;
     fs::write(path, content)?;
-    Ok(())
-}
-
-#[derive(Clone, Copy)]
-struct ConfigKeySpec {
-    key: &'static str,
-    kind: ConfigValueKind,
-    audit: bool,
-}
-
-#[derive(Clone, Copy)]
-enum ConfigValueKind {
-    Bool,
-    Duration,
-    DurationMax { max_secs: u64, message: &'static str },
-    Enum { values: &'static [&'static str], message: &'static str },
-    EditorDefault,
-    HttpsUrl,
-    RuntimeSessionSecretNameRetention,
-}
-
-const UI_THEME_VALUES: &[&str] = &["system", "light", "dark"];
-const UI_DENSITY_VALUES: &[&str] = &["comfortable", "compact"];
-const SHELL_INTEGRATION_VALUES: &[&str] = &["off", "prompt-only", "hook"];
-const UPDATES_CHANNEL_VALUES: &[&str] = &["off", "stable", "beta"];
-
-const CONFIG_KEY_SPECS: &[ConfigKeySpec] = &[
-    ConfigKeySpec {
-        key: "ui.theme",
-        kind: ConfigValueKind::Enum {
-            values: UI_THEME_VALUES,
-            message: "ui.theme must be system, light, or dark",
-        },
-        audit: false,
-    },
-    ConfigKeySpec {
-        key: "ui.density",
-        kind: ConfigValueKind::Enum {
-            values: UI_DENSITY_VALUES,
-            message: "ui.density must be comfortable or compact",
-        },
-        audit: false,
-    },
-    ConfigKeySpec { key: "privacy.redact_names", kind: ConfigValueKind::Bool, audit: false },
-    ConfigKeySpec { key: "editor.default", kind: ConfigValueKind::EditorDefault, audit: false },
-    ConfigKeySpec { key: "agent.autostart", kind: ConfigValueKind::Bool, audit: true },
-    ConfigKeySpec { key: "agent.unlock_ttl", kind: ConfigValueKind::Duration, audit: true },
-    ConfigKeySpec {
-        key: "runtime.session_secret_name_retention",
-        kind: ConfigValueKind::RuntimeSessionSecretNameRetention,
-        audit: true,
-    },
-    ConfigKeySpec {
-        key: "reveal.ttl",
-        kind: ConfigValueKind::DurationMax {
-            max_secs: 300,
-            message: "reveal.ttl must be 5m or less",
-        },
-        audit: true,
-    },
-    ConfigKeySpec {
-        key: "rotation.max_grace_ttl",
-        kind: ConfigValueKind::DurationMax {
-            max_secs: 30 * 24 * 60 * 60,
-            message: "rotation.max_grace_ttl must be 30d or less",
-        },
-        audit: true,
-    },
-    ConfigKeySpec {
-        key: "shell.integration",
-        kind: ConfigValueKind::Enum {
-            values: SHELL_INTEGRATION_VALUES,
-            message: "shell.integration must be off, prompt-only, or hook",
-        },
-        audit: true,
-    },
-    ConfigKeySpec {
-        key: "updates.channel",
-        kind: ConfigValueKind::Enum {
-            values: UPDATES_CHANNEL_VALUES,
-            message: "updates.channel must be off, stable, or beta",
-        },
-        audit: true,
-    },
-    ConfigKeySpec { key: "updates.manifest_url", kind: ConfigValueKind::HttpsUrl, audit: true },
-    ConfigKeySpec { key: "example.auto_refresh", kind: ConfigValueKind::Bool, audit: false },
-    ConfigKeySpec {
-        key: "user_verification_required_for.unlock",
-        kind: ConfigValueKind::Bool,
-        audit: true,
-    },
-    ConfigKeySpec {
-        key: "user_verification_required_for.reveal",
-        kind: ConfigValueKind::Bool,
-        audit: true,
-    },
-    ConfigKeySpec {
-        key: "user_verification_required_for.copy",
-        kind: ConfigValueKind::Bool,
-        audit: true,
-    },
-    ConfigKeySpec {
-        key: "user_verification_required_for.dangerous_profile_switch",
-        kind: ConfigValueKind::Bool,
-        audit: true,
-    },
-    ConfigKeySpec {
-        key: "user_verification_required_for.recovery",
-        kind: ConfigValueKind::Bool,
-        audit: true,
-    },
-    ConfigKeySpec {
-        key: "user_verification_required_for.team_accept",
-        kind: ConfigValueKind::Bool,
-        audit: true,
-    },
-    ConfigKeySpec {
-        key: "user_verification_required_for.device_register",
-        kind: ConfigValueKind::Bool,
-        audit: true,
-    },
-];
-
-fn validate_config_key(key: &str) -> Result<&'static ConfigKeySpec, CliError> {
-    CONFIG_KEY_SPECS
-        .iter()
-        .find(|spec| spec.key == key)
-        .ok_or_else(|| CliError::Config("unsupported config key".to_owned()))
-}
-
-fn validate_config_value_not_secret_like(value: &str) -> Result<(), CliError> {
-    let secret_like = scan_text(CONFIG_TOML, value).iter().any(|finding| {
-        matches!(finding.kind, FindingKind::HighEntropy | FindingKind::ProviderTokenPattern)
-    });
-    if secret_like {
-        return Err(CliError::Config(
-            "config value looks like a secret; refusing to store it".to_owned(),
-        ));
-    }
-    Ok(())
-}
-
-fn parse_config_value(spec: &ConfigKeySpec, value: &str) -> Result<toml::Value, CliError> {
-    match spec.kind {
-        ConfigValueKind::Bool => match value {
-            "true" => Ok(toml::Value::Boolean(true)),
-            "false" => Ok(toml::Value::Boolean(false)),
-            _ => Err(CliError::Config("config value must be true or false".to_owned())),
-        },
-        ConfigValueKind::Duration => {
-            LocketDuration::from_str(value)
-                .map_err(|_| CliError::Config("invalid config duration".to_owned()))?;
-            Ok(toml::Value::String(value.to_owned()))
-        }
-        ConfigValueKind::DurationMax { max_secs, message } => {
-            let duration = LocketDuration::from_str(value)
-                .map_err(|_| CliError::Config("invalid config duration".to_owned()))?;
-            if duration.as_secs() > max_secs {
-                return Err(CliError::Config(message.to_owned()));
-            }
-            Ok(toml::Value::String(value.to_owned()))
-        }
-        ConfigValueKind::Enum { values, message } => {
-            if values.contains(&value) {
-                Ok(toml::Value::String(value.to_owned()))
-            } else {
-                Err(CliError::Config(message.to_owned()))
-            }
-        }
-        ConfigValueKind::EditorDefault => {
-            validate_editor_default(value)?;
-            Ok(toml::Value::String(value.to_owned()))
-        }
-        ConfigValueKind::HttpsUrl => {
-            validate_https_url(value)?;
-            Ok(toml::Value::String(value.to_owned()))
-        }
-        ConfigValueKind::RuntimeSessionSecretNameRetention => {
-            RuntimeSessionSecretNameRetention::from_str(value).map_err(|_| {
-                CliError::Config(
-                    "runtime.session_secret_name_retention must be a duration or off".to_owned(),
-                )
-            })?;
-            Ok(toml::Value::String(value.to_owned()))
-        }
-    }
-}
-
-fn validate_stored_config_value(spec: &ConfigKeySpec, value: &toml::Value) -> Result<(), CliError> {
-    match spec.kind {
-        ConfigValueKind::Bool => {
-            if value.as_bool().is_some() {
-                Ok(())
-            } else {
-                Err(invalid_stored_config_value(spec.key))
-            }
-        }
-        ConfigValueKind::Duration
-        | ConfigValueKind::DurationMax { .. }
-        | ConfigValueKind::Enum { .. }
-        | ConfigValueKind::EditorDefault
-        | ConfigValueKind::HttpsUrl
-        | ConfigValueKind::RuntimeSessionSecretNameRetention => {
-            let Some(value) = value.as_str() else {
-                return Err(invalid_stored_config_value(spec.key));
-            };
-            parse_config_value(spec, value)
-                .map(|_| ())
-                .map_err(|_| invalid_stored_config_value(spec.key))
-        }
-    }
-}
-
-fn invalid_stored_config_value(key: &str) -> CliError {
-    CliError::Config(format!("invalid stored config value for {key}"))
-}
-
-fn validate_editor_default(value: &str) -> Result<(), CliError> {
-    if value.is_empty() || value.chars().any(char::is_control) {
-        return Err(CliError::Config(
-            "editor.default must be a command name or absolute path".to_owned(),
-        ));
-    }
-    if value.starts_with('~') || value.contains('$') || value.contains('`') {
-        return Err(CliError::Config("editor.default must not use shell expansion".to_owned()));
-    }
-    if Path::new(value).is_absolute() {
-        return Ok(());
-    }
-    let shell_meta = ['/', '\\', '|', '&', ';', '<', '>', '(', ')'];
-    if value.chars().any(char::is_whitespace) || value.chars().any(|c| shell_meta.contains(&c)) {
-        return Err(CliError::Config(
-            "editor.default must be a command name or absolute path".to_owned(),
-        ));
-    }
-    Ok(())
-}
-
-fn validate_https_url(value: &str) -> Result<(), CliError> {
-    let Some(rest) = value.strip_prefix("https://") else {
-        return Err(CliError::Config("updates.manifest_url must be an HTTPS URL".to_owned()));
-    };
-    if rest.is_empty()
-        || value.chars().any(char::is_whitespace)
-        || value.chars().any(char::is_control)
-    {
-        return Err(CliError::Config("updates.manifest_url must be an HTTPS URL".to_owned()));
-    }
-    let host = rest.split(['/', '?', '#']).next().unwrap_or_default();
-    if host.is_empty() || host.starts_with(':') || host.contains('@') {
-        return Err(CliError::Config("updates.manifest_url must be an HTTPS URL".to_owned()));
-    }
-    Ok(())
-}
-
-pub(crate) fn read_user_config(runtime: &RuntimeContext) -> Result<toml::Table, CliError> {
-    let toml_text = match fs::read_to_string(&runtime.config_path) {
-        Ok(toml_text) => toml_text,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(toml::Table::new()),
-        Err(error) => return Err(error.into()),
-    };
-    Ok(toml::from_str::<toml::Table>(&toml_text)?)
-}
-
-fn write_user_config(runtime: &RuntimeContext, config: &toml::Table) -> Result<(), CliError> {
-    if let Some(parent) = runtime.config_path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let toml_text = toml::to_string_pretty(config)?;
-    fs::write(&runtime.config_path, toml_text)?;
-    Ok(())
-}
-
-fn config_get_value<'a>(config: &'a toml::Table, key: &str) -> Option<&'a toml::Value> {
-    let (section, name) = split_config_key(key)?;
-    config.get(section)?.as_table()?.get(name)
-}
-
-fn config_set_value(
-    config: &mut toml::Table,
-    key: &str,
-    value: toml::Value,
-) -> Result<(), CliError> {
-    let (section, name) = split_config_key(key)
-        .ok_or_else(|| CliError::Config("unsupported config key".to_owned()))?;
-    let section_value =
-        config.entry(section.to_owned()).or_insert_with(|| toml::Value::Table(toml::Table::new()));
-    let Some(section_table) = section_value.as_table_mut() else {
-        return Err(CliError::Config("config section is not a table".to_owned()));
-    };
-    section_table.insert(name.to_owned(), value);
-    Ok(())
-}
-
-fn config_unset_value(config: &mut toml::Table, key: &str) -> Result<(), CliError> {
-    let (section, name) = split_config_key(key)
-        .ok_or_else(|| CliError::Config("unsupported config key".to_owned()))?;
-    let should_remove_section = if let Some(section_value) = config.get_mut(section) {
-        let Some(section_table) = section_value.as_table_mut() else {
-            return Err(CliError::Config("config section is not a table".to_owned()));
-        };
-        section_table.remove(name);
-        section_table.is_empty()
-    } else {
-        false
-    };
-    if should_remove_section {
-        config.remove(section);
-    }
-    Ok(())
-}
-
-pub(crate) fn split_config_key(key: &str) -> Option<(&str, &str)> {
-    let (section, name) = key.split_once('.')?;
-    if section.is_empty() || name.is_empty() || name.contains('.') {
-        return None;
-    }
-    Some((section, name))
-}
-
-fn format_config_value(value: &toml::Value) -> String {
-    match value {
-        toml::Value::Boolean(value) => value.to_string(),
-        toml::Value::String(value) => value.clone(),
-        _ => value.to_string(),
-    }
-}
-
-fn write_config_update_audit_if_available(
-    context: &RuntimeContext,
-    key: &str,
-    operation: &str,
-) -> Result<(), CliError> {
-    let Some(resolved) = resolve_project(&context.cwd)? else {
-        return Ok(());
-    };
-    let mut store = open_store(context)?;
-    if store.get_project(resolved.config.project_id.as_str())?.is_none() {
-        return Ok(());
-    }
-    let Ok(audit_key) =
-        load_project_key(context, &store, resolved.config.project_id.as_str(), KeyPurpose::Audit)
-    else {
-        return Ok(());
-    };
-    let metadata = json!({
-        "schema_version": 1,
-        "action": "CONFIG_UPDATE",
-        "status": "SUCCESS",
-        "operation": operation,
-        "key": key,
-        "value": "hidden",
-    });
-    let audit = AuditWrite {
-        project_id: resolved.config.project_id.as_str(),
-        profile_id: None,
-        action: "CONFIG_UPDATE",
-        status: "SUCCESS",
-        secret_name: None,
-        command: Some("config"),
-        metadata_json: &metadata,
-        timestamp: now_unix_nanos()?,
-    };
-    store.append_audit(audit_key.as_ref(), &audit)?;
     Ok(())
 }
 

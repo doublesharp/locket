@@ -13,9 +13,9 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     BundleCommand, BundleVerifyArgs, CliError, ExportArgs, ImportBundleArgs, ResolvedProject,
-    RuntimeContext, default_profile, device, ensure_project_exists, ensure_trusted_project_root,
-    format_hex, load_project_key, now_unix_nanos, open_store, require_project,
-    set_user_only_file_options, set_user_only_file_permissions,
+    RuntimeContext, bundle_verification_error, default_profile, device, ensure_project_exists,
+    ensure_trusted_project_root, format_hex, load_project_key, now_unix_nanos, open_store,
+    require_project, set_user_only_file_options, set_user_only_file_permissions,
 };
 
 const BUNDLE_MAGIC_V1: &str = "LOCKET-BUNDLE-V1";
@@ -278,27 +278,23 @@ fn write_bundle_file(path: &Path, bundle: &SealedBundleFileV1) -> Result<(), Cli
 fn verify_bundle_file(path: &Path) -> Result<SealedBundleFileV1, CliError> {
     let bytes = fs::read(path)?;
     let bundle: SealedBundleFileV1 = serde_json::from_slice(&bytes).map_err(|error| {
-        CliError::BundleVerification(format!("bundle verification failed: {error}"))
+        bundle_verification_error(format!("bundle verification failed: {error}"))
     })?;
     if bundle.magic != BUNDLE_MAGIC_V1 {
-        return Err(CliError::BundleVerification(
-            "bundle verification failed: bad magic".to_owned(),
-        ));
+        return Err(bundle_verification_error("bundle verification failed: bad magic"));
     }
     if bundle.schema_version != 1 {
-        return Err(CliError::BundleVerification(
-            "bundle verification failed: unsupported schema version".to_owned(),
+        return Err(bundle_verification_error(
+            "bundle verification failed: unsupported schema version",
         ));
     }
     if bundle.kind != "sealed-bundle" {
-        return Err(CliError::BundleVerification(
-            "bundle verification failed: bad kind".to_owned(),
-        ));
+        return Err(bundle_verification_error("bundle verification failed: bad kind"));
     }
     let digest = bundle_payload_digest(&bundle.payload)?;
     if digest != bundle.manifest_digest_sha256 {
-        return Err(CliError::BundleVerification(
-            "bundle verification failed: manifest digest mismatch".to_owned(),
+        return Err(bundle_verification_error(
+            "bundle verification failed: manifest digest mismatch",
         ));
     }
     Ok(bundle)
