@@ -317,8 +317,48 @@ fn emit_example_uses_all_profiles_rewrites_managed_block_and_audits()
         |row| row.get(0),
     )?;
     assert!(metadata.contains("\"secret_name_count\":2"));
+    assert!(metadata.contains("\"command\":\"emit-example\""));
     assert!(metadata.contains("\"path_kind\":\"project_env_example\""));
     assert!(metadata.contains("\"marker_only\":true"));
+    assert!(!metadata.contains("DATABASE_URL"));
+    assert!(!metadata.contains("postgres://localhost/app"));
+    Ok(())
+}
+
+#[test]
+fn emit_example_confirms_unmanaged_replacement_without_value_leakage()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context_with_confirmation(&directory, "replace .env.example\n");
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    let args = test_secret_write_args("DATABASE_URL");
+    crate::set_secret_value(&context, &args, "postgres://localhost/app", "manual", 1_000)?;
+    std::fs::write(directory.path().join(".env.example"), "DATABASE_URL=manual-value\n")?;
+
+    let mut emit_output = Vec::new();
+    run_with_context(Cli::try_parse_from(["locket", "emit-example"])?, &context, &mut emit_output)?;
+    let emit_output = String::from_utf8(emit_output)?;
+    assert!(emit_output.contains(".env.example: unmanaged"));
+    assert!(!emit_output.contains("manual-value"));
+
+    let example = std::fs::read_to_string(directory.path().join(".env.example"))?;
+    assert!(example.contains(crate::support::project_files::EXAMPLE_BEGIN));
+    assert!(example.contains("DATABASE_URL="));
+    assert!(!example.contains("manual-value"));
+    assert!(!example.contains("postgres://localhost/app"));
+
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let metadata: String = store.connection().query_row(
+        "SELECT metadata_json FROM audit_log WHERE action = 'EXAMPLE_EMIT'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert!(metadata.contains("\"replaced_unmanaged\":true"));
+    assert!(metadata.contains("\"command\":\"emit-example\""));
     assert!(!metadata.contains("DATABASE_URL"));
     assert!(!metadata.contains("postgres://localhost/app"));
     Ok(())
