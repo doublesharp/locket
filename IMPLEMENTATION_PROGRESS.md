@@ -261,7 +261,8 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
   - Files: `crates/locket-cli/src/commands/project/init.rs`.
 - [ ] Dotenv import: name-level parity check (never run user app) and
   explicit post-import confirmation to delete `.env`.
-- [ ] `.env.example` Locket-managed block markers
+- [~] [6e4d05db] `.env.example` Locket-managed block markers
+  Claim: branch agent-6e4d05db/env-example-managed-block, worktree .worktrees/agent-6e4d05db-env-example-managed-block.
   (`# --- BEGIN/END LOCKET MANAGED ---`); rewrite only between markers;
   tombstoned secrets excluded from the cross-profile union.
 - [~] `example.auto_refresh` config key (default `true`, project-override-wins)
