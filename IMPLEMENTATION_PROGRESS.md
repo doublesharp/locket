@@ -476,8 +476,9 @@ to touch. Items marked `[x]` are merged to `main` and verified.
     refusals, role denials, grant denials, and reveal/copy denials.
   - Files: `crates/locket-store/src/audit.rs` (helper writers); per-command
     call sites.
-- [ ] Local user verification gates for unlock, dangerous actions, recovery,
+- [~] [bec7ddfc] Local user verification gates for unlock, dangerous actions, recovery,
   team/device trust, and reveal/copy.
+  Claim: branch agent-bec7ddfc/user-verification-gates, worktree .worktrees/agent-bec7ddfc-user-verification-gates. Scope: introduce the shared verification helper and wire the `get --reveal/--copy --verify-user` gate with typed failure/audit metadata.
   - Spec: `docs/specs/crypto.md:192-218`.
   - Errors: `UserVerificationFailed` (76), `PasskeyUnsupported` (102).
   - Audit actions: extend `UNLOCK`, `REVEAL`, `COPY`, `TEAM_*`, `RECOVER*`
@@ -575,6 +576,7 @@ editing — they drift. Severity: **blocker** (security/correctness),
   decrypted secrets clear on drop.
 
 - [~] [723116e9] **important** — Typed error system underused: ~6 typed callers vs ~249
+  Claim: branch agent-723116e9/typed-iso-date, worktree .worktrees/agent-723116e9-typed-iso-date.
   `CliError::Config`.
   Partial: SecretNotFound (77), ProfileNotFound (78), ConfirmationFailed (68)
   variants added in `e6e2447` and the highest-frequency callsites (`secret not
