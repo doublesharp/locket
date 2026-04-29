@@ -964,10 +964,11 @@ fn new_command(
     let config = read_project_config(&config_path)?;
     let store = open_store(context)?;
     let timestamp = now_unix_nanos()?;
+    let mut master_key_source = MasterKeySource::OsKeyStore;
 
     if let Err(error) = (|| -> Result<(), CliError> {
         ensure_project_metadata(&store, &config, timestamp)?;
-        initialize_project_keys(context, &store, &config, timestamp)?;
+        master_key_source = initialize_project_keys(context, &store, &config, timestamp)?;
         ensure_template_profiles(context, &store, &config, &template, timestamp)?;
         trust_root(&store, &config, &context.cwd, timestamp)?;
         ensure_gitignore(&context.cwd)?;
@@ -982,6 +983,7 @@ fn new_command(
     writeln!(output, "template: {}", args.from_template)?;
     writeln!(output, "template_source: {}", template.source.label())?;
     writeln!(output, "default_profile: {}", config.default_profile)?;
+    writeln!(output, "master_key_source: {}", master_key_source.as_str())?;
     writeln!(output, "profiles: {}", template.profiles.len())?;
     writeln!(output, "expected_secrets: {}", template.expected_secrets.len())?;
     writeln!(output, "commands: {}", template.command_count())?;
@@ -1060,9 +1062,10 @@ fn init(context: &RuntimeContext, output: &mut impl Write, args: InitArgs) -> Re
     }
 
     write_project_config(&config_path, &config)?;
+    let mut master_key_source = MasterKeySource::OsKeyStore;
     if let Err(error) = (|| -> Result<(), CliError> {
         ensure_project_metadata(&store, &config, timestamp)?;
-        initialize_project_keys(context, &store, &config, timestamp)?;
+        master_key_source = initialize_project_keys(context, &store, &config, timestamp)?;
         trust_root(&store, &config, &context.cwd, timestamp)?;
         ensure_gitignore(&context.cwd)?;
         ensure_example_file(&context.cwd)?;
@@ -1074,6 +1077,7 @@ fn init(context: &RuntimeContext, output: &mut impl Write, args: InitArgs) -> Re
 
     writeln!(output, "initialized locket project {}", config.project_id)?;
     writeln!(output, "default_profile: {}", config.default_profile)?;
+    writeln!(output, "master_key_source: {}", master_key_source.as_str())?;
     Ok(())
 }
 
@@ -2555,12 +2559,11 @@ fn unlock_command(
     let store = open_store(context)?;
     ensure_project_exists(&store, resolved.config.project_id.as_str())?;
     let profile = default_profile(&store, &resolved.config)?;
-    let (master_key, source) = load_master_key(context, resolved.config.project_id.as_str())?;
-    load_project_key_with_master(
+    let (_audit_key, source) = load_project_key_with_source(
+        context,
         &store,
         resolved.config.project_id.as_str(),
         KeyPurpose::Audit,
-        &master_key,
     )?;
 
     writeln!(output, "unlock: metadata-only direct CLI unlock succeeded")?;
@@ -3319,12 +3322,20 @@ fn load_master_key(
             if !context.passphrase_store.contains_project(project_id)? {
                 return Err(primary_error.into());
             }
-            let passphrase = context.passphrase_reader.existing_passphrase()?;
-            let master_key =
-                context.passphrase_store.load_master_key(project_id, passphrase.as_bytes())?;
-            Ok((master_key, MasterKeySource::PassphraseFallback))
+            Ok((
+                load_fallback_master_key(context, project_id)?,
+                MasterKeySource::PassphraseFallback,
+            ))
         }
     }
+}
+
+fn load_fallback_master_key(
+    context: &RuntimeContext,
+    project_id: &str,
+) -> Result<zeroize::Zeroizing<locket_crypto::KeyBytes>, CliError> {
+    let passphrase = context.passphrase_reader.existing_passphrase()?;
+    Ok(context.passphrase_store.load_master_key(project_id, passphrase.as_bytes())?)
 }
 
 fn initialize_project_keys(
@@ -3332,9 +3343,14 @@ fn initialize_project_keys(
     store: &Store,
     config: &ProjectConfig,
     timestamp: i64,
-) -> Result<(), CliError> {
+) -> Result<MasterKeySource, CliError> {
     let master_key = generate_key()?;
-    store_master_key_with_fallback(context, config.project_id.as_str(), &master_key, timestamp)?;
+    let source = store_master_key_with_fallback(
+        context,
+        config.project_id.as_str(),
+        &master_key,
+        timestamp,
+    )?;
     insert_wrapped_key(
         store,
         config.project_id.as_str(),
@@ -3353,7 +3369,7 @@ fn initialize_project_keys(
     )?;
     let profile = default_profile(store, config)?;
     initialize_profile_keys_with_master(store, config, &profile.id, &master_key, timestamp)?;
-    Ok(())
+    Ok(source)
 }
 
 fn initialize_profile_keys(
@@ -3363,7 +3379,12 @@ fn initialize_profile_keys(
     profile_id: &str,
     timestamp: i64,
 ) -> Result<(), CliError> {
-    let (master_key, _) = load_master_key(context, config.project_id.as_str())?;
+    let (master_key, _) = load_master_key_verified_by_project_key(
+        context,
+        store,
+        config.project_id.as_str(),
+        KeyPurpose::ProjectMetadata,
+    )?;
     initialize_profile_keys_with_master(store, config, profile_id, &master_key, timestamp)
 }
 
@@ -3988,12 +4009,38 @@ fn load_profile_key(
     profile_id: &str,
     purpose: KeyPurpose,
 ) -> Result<zeroize::Zeroizing<locket_crypto::KeyBytes>, CliError> {
-    let (master_key, _) = load_master_key(context, project_id)?;
+    let (master_key, source) = load_master_key(context, project_id)?;
+    match load_profile_key_with_master(store, project_id, profile_id, purpose, &master_key) {
+        Ok(key) => Ok(key),
+        Err(error) if should_try_passphrase_fallback(source, &error) => {
+            if !context.passphrase_store.contains_project(project_id)? {
+                return Err(error);
+            }
+            let fallback_master_key = load_fallback_master_key(context, project_id)?;
+            load_profile_key_with_master(
+                store,
+                project_id,
+                profile_id,
+                purpose,
+                &fallback_master_key,
+            )
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn load_profile_key_with_master(
+    store: &Store,
+    project_id: &str,
+    profile_id: &str,
+    purpose: KeyPurpose,
+    master_key: &locket_crypto::KeyBytes,
+) -> Result<zeroize::Zeroizing<locket_crypto::KeyBytes>, CliError> {
     let record = store
         .get_key_by_scope(project_id, Some(profile_id), purpose.as_str())?
         .ok_or_else(|| CliError::Config("profile key is missing".to_owned()))?;
     let wrapping_key = derive_wrapping_key_v1(
-        &master_key,
+        master_key,
         &HkdfWrapInfo::new(project_id, Some(profile_id), purpose),
     )?;
     let aad = key_wrap_aad_v1(&KeyWrapAad::new(
@@ -4013,8 +4060,61 @@ fn load_project_key(
     project_id: &str,
     purpose: KeyPurpose,
 ) -> Result<zeroize::Zeroizing<locket_crypto::KeyBytes>, CliError> {
-    let (master_key, _) = load_master_key(context, project_id)?;
-    load_project_key_with_master(store, project_id, purpose, &master_key)
+    load_project_key_with_source(context, store, project_id, purpose).map(|(key, _)| key)
+}
+
+fn load_project_key_with_source(
+    context: &RuntimeContext,
+    store: &Store,
+    project_id: &str,
+    purpose: KeyPurpose,
+) -> Result<(zeroize::Zeroizing<locket_crypto::KeyBytes>, MasterKeySource), CliError> {
+    let (master_key, source) = load_master_key(context, project_id)?;
+    match load_project_key_with_master(store, project_id, purpose, &master_key) {
+        Ok(key) => Ok((key, source)),
+        Err(error) if should_try_passphrase_fallback(source, &error) => {
+            if !context.passphrase_store.contains_project(project_id)? {
+                return Err(error);
+            }
+            let fallback_master_key = load_fallback_master_key(context, project_id)?;
+            let key =
+                load_project_key_with_master(store, project_id, purpose, &fallback_master_key)?;
+            Ok((key, MasterKeySource::PassphraseFallback))
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn load_master_key_verified_by_project_key(
+    context: &RuntimeContext,
+    store: &Store,
+    project_id: &str,
+    purpose: KeyPurpose,
+) -> Result<(zeroize::Zeroizing<locket_crypto::KeyBytes>, MasterKeySource), CliError> {
+    let (master_key, source) = load_master_key(context, project_id)?;
+    match load_project_key_with_master(store, project_id, purpose, &master_key) {
+        Ok(_) => Ok((master_key, source)),
+        Err(error) if should_try_passphrase_fallback(source, &error) => {
+            if !context.passphrase_store.contains_project(project_id)? {
+                return Err(error);
+            }
+            let fallback_master_key = load_fallback_master_key(context, project_id)?;
+            load_project_key_with_master(store, project_id, purpose, &fallback_master_key)?;
+            Ok((fallback_master_key, MasterKeySource::PassphraseFallback))
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn should_try_passphrase_fallback(source: MasterKeySource, error: &CliError) -> bool {
+    source == MasterKeySource::OsKeyStore
+        && matches!(
+            error,
+            CliError::Crypto(
+                locket_crypto::CryptoError::DecryptionFailed
+                    | locket_crypto::CryptoError::InvalidWrappedKey
+            )
+        )
 }
 
 fn load_project_key_with_master(
@@ -5921,6 +6021,30 @@ mod tests {
         }
     }
 
+    #[derive(Debug, Default)]
+    struct StaleLoadingMasterKeyStore;
+
+    impl MasterKeyStore for StaleLoadingMasterKeyStore {
+        fn store_master_key(
+            &self,
+            _project_id: &str,
+            _master_key: &locket_crypto::KeyBytes,
+        ) -> Result<(), PlatformError> {
+            Ok(())
+        }
+
+        fn load_master_key(
+            &self,
+            _project_id: &str,
+        ) -> Result<zeroize::Zeroizing<locket_crypto::KeyBytes>, PlatformError> {
+            Ok(zeroize::Zeroizing::new([99; locket_crypto::KEY_LEN]))
+        }
+
+        fn delete_master_key(&self, _project_id: &str) -> Result<(), PlatformError> {
+            Ok(())
+        }
+    }
+
     fn test_context(directory: &tempfile::TempDir) -> RuntimeContext {
         test_context_with_key_store(directory, Arc::new(MemoryMasterKeyStore::default()))
     }
@@ -7375,6 +7499,7 @@ argv = []
             &context,
             &mut init_output,
         )?;
+        assert!(String::from_utf8(init_output)?.contains("master_key_source: passphrase-fallback"));
         let fallback_files = std::fs::read_dir(directory.path().join("passphrase-fallback"))?
             .collect::<Result<Vec<_>, _>>()?;
         assert_eq!(fallback_files.len(), 1);
@@ -7393,6 +7518,72 @@ argv = []
             &mut reveal_output,
         )?;
         assert_eq!(String::from_utf8(reveal_output)?, "postgres://localhost/app\n");
+        Ok(())
+    }
+
+    #[test]
+    fn passphrase_fallback_covers_stale_os_key_material() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let directory = tempdir()?;
+        let fallback_context =
+            test_context_with_key_store(&directory, Arc::new(UnavailableMasterKeyStore));
+
+        let mut init_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &fallback_context,
+            &mut init_output,
+        )?;
+        let args = test_secret_write_args("DATABASE_URL");
+        super::set_secret_value(
+            &fallback_context,
+            &args,
+            "postgres://localhost/app",
+            "manual",
+            1_000,
+        )?;
+
+        let stale_context =
+            test_context_with_key_store(&directory, Arc::new(StaleLoadingMasterKeyStore));
+
+        let mut unlock_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "unlock"])?,
+            &stale_context,
+            &mut unlock_output,
+        )?;
+        assert!(String::from_utf8(unlock_output)?.contains("unlock_source: passphrase-fallback"));
+
+        let mut reveal_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "get", "DATABASE_URL", "--reveal"])?,
+            &stale_context,
+            &mut reveal_output,
+        )?;
+        assert_eq!(String::from_utf8(reveal_output)?, "postgres://localhost/app\n");
+
+        let mut create_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "profile", "create", "prod"])?,
+            &stale_context,
+            &mut create_output,
+        )?;
+        let mut use_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "use", "prod"])?,
+            &fallback_context,
+            &mut use_output,
+        )?;
+        let args = test_secret_write_args("API_TOKEN");
+        super::set_secret_value(&fallback_context, &args, "prod-token", "manual", 2_000)?;
+
+        let mut prod_reveal_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "get", "API_TOKEN", "--reveal"])?,
+            &fallback_context,
+            &mut prod_reveal_output,
+        )?;
+        assert_eq!(String::from_utf8(prod_reveal_output)?, "prod-token\n");
         Ok(())
     }
 
