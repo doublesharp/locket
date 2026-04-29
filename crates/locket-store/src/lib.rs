@@ -696,6 +696,19 @@ impl Store {
             .map_err(StoreError::from)
     }
 
+    /// Deletes a project and its cascading local metadata.
+    ///
+    /// Returns `true` when a project row was removed and `false` when it was
+    /// already absent.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Sqlite`] when `SQLite` rejects the delete.
+    pub fn delete_project(&self, id: &str) -> Result<bool, StoreError> {
+        self.connection.execute("DELETE FROM projects WHERE id = ?1", [id])?;
+        Ok(self.connection.changes() > 0)
+    }
+
     /// Inserts a profile metadata row when `id` and `(project_id, name)` are absent.
     ///
     /// Returns `true` when the profile was inserted and `false` when either the
