@@ -333,9 +333,8 @@ to touch. Items marked `[x]` are merged to `main` and verified.
     hooks/tray actions/clients/tasks summary), `POLICY_DOCTOR`.
   - Files: `crates/locket-cli/src/policy_authoring.rs` (currently a stub),
     `crates/locket-core/src/policy/`.
-- [x] Shell command surface (`shellenv`, `hook`, `allow`, `deny`). Remaining
-  follow-ups (agent hook install, shellenv lock-state indicator, live-grant TTL)
-  are tracked under the agent daemon and shellenv tasks above.
+- [x] Shell command surface (`shellenv`, `hook`, `allow`, `deny`)
+  (agent-hook install and live-grant TTL tracked under the agent daemon).
 - [ ] Resolve `lk://` references through the agent (policy authorization,
   pinned-version resolution, expired-grace behavior).
   - Spec: `docs/specs/runtime.md:123-155`.
@@ -383,16 +382,16 @@ to touch. Items marked `[x]` are merged to `main` and verified.
     write `RUN`/`EXEC` failure rows with the deny reason.
   - Files: `crates/locket-core/src/policy/` (parser, normalizer, evaluator).
 - [x] Runtime session storage/retention primitives and runtime execution
-  recording for `exec`/`run`. Doctor process-liveness classification remains a
-  follow-up (track under doctor enhancements).
+  recording for `exec`/`run` (doctor process-liveness classification is a
+  follow-up under doctor enhancements).
 
 ### Security/Recovery/Team
 
 - [x] Passphrase fallback beyond OS-key-store path.
 - [x] Recovery command surfaces (`recover`, `recovery rotate`).
 - [x] Recovery-code generation, one-time display, restore, and rotation.
-- [x] Device command surfaces (`device init`, `pubkey`, `add`, `list`, `remove`).
-  Local device private-key persistence/recovery remains tracked under device
+- [x] Device command surfaces (`device init`, `pubkey`, `add`, `list`,
+  `remove`); local private-key persistence/recovery tracked under device
   descriptors and sealed-bundle/team work.
 - [~] Sealed bundle behavior. Metadata-safe command surfaces (`export --sealed`,
   `import-bundle`, `bundle verify`) and structural verification exist.
