@@ -226,6 +226,16 @@ enum Command {
         #[command(subcommand)]
         command: ClientCommand,
     },
+    /// Export a sealed local bundle.
+    Export(ExportArgs),
+    /// Import a sealed local bundle.
+    ImportBundle(ImportBundleArgs),
+    /// Verify sealed local bundles.
+    Bundle {
+        /// Bundle command.
+        #[command(subcommand)]
+        command: BundleCommand,
+    },
     /// Restore vault access from a recovery code.
     Recover(RecoverArgs),
     /// Manage recovery codes.
@@ -807,6 +817,55 @@ struct ClientListArgs {
     all: bool,
 }
 
+#[derive(Debug, Args)]
+struct ExportArgs {
+    /// Require sealed-bundle mode.
+    #[arg(long)]
+    sealed: bool,
+    /// Recipient device descriptor. May be repeated.
+    #[arg(long = "recipient", required = true)]
+    recipients: Vec<String>,
+    /// Profile to include. Defaults to the active profile.
+    #[arg(long, conflicts_with = "all_profiles")]
+    profile: Option<String>,
+    /// Include all profiles.
+    #[arg(long)]
+    all_profiles: bool,
+    /// Include encrypted remote audit rows in the bundle payload.
+    #[arg(long)]
+    include_audit: bool,
+    /// Output path. Defaults to locket-bundle-<utc-timestamp>.locket-bundle.
+    #[arg(long)]
+    output: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+struct ImportBundleArgs {
+    /// Bundle file to import.
+    bundle: PathBuf,
+    /// Import remote audit rows when present.
+    #[arg(long)]
+    include_audit: bool,
+    /// Prefer incoming metadata on conflicts.
+    #[arg(long, conflicts_with = "accept_local")]
+    accept_incoming: bool,
+    /// Prefer local metadata on conflicts.
+    #[arg(long)]
+    accept_local: bool,
+}
+
+#[derive(Debug, Subcommand)]
+enum BundleCommand {
+    /// Verify a sealed bundle without importing it.
+    Verify(BundleVerifyArgs),
+}
+
+#[derive(Debug, Args)]
+struct BundleVerifyArgs {
+    /// Bundle file to verify.
+    bundle: PathBuf,
+}
+
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum ClientStorageArg {
     /// Store client private key in the OS keychain.
@@ -962,6 +1021,9 @@ fn run_with_context(
         Command::Passkey { command } => passkey_command(output, command)?,
         Command::Device { command } => device_command(context, output, command)?,
         Command::Client { command } => client_command(context, output, command)?,
+        Command::Export(args) => export_bundle_command(context, output, &args)?,
+        Command::ImportBundle(args) => import_bundle_command(context, output, &args)?,
+        Command::Bundle { command } => bundle_command(context, output, command)?,
         Command::Recover(args) => recover_command(context, output, &args)?,
         Command::Recovery { command } => recovery_command(context, output, command)?,
     }
@@ -1115,6 +1177,7 @@ impl SecretValueReader for StdinOrPromptSecretValueReader {
 enum CliError {
     Config(String),
     Typed { kind: LocketError, message: String },
+    BundleVerification(String),
     ChildExit(u8),
     Io(io::Error),
     Store(StoreError),
@@ -1133,6 +1196,7 @@ impl CliError {
                 LocketError::InvalidReference.exit_code()
             }
             Self::Typed { kind, .. } => kind.exit_code(),
+            Self::BundleVerification(_) => LocketError::BundleVerificationFailed.exit_code(),
             Self::ChildExit(code) => *code,
             Self::Io(_) | Self::Time => LocketError::CorruptDb.exit_code(),
             Self::Store(error) => error.locket_error().exit_code(),
@@ -1206,7 +1270,9 @@ fn child_exit_error(status: std::process::ExitStatus) -> CliError {
 impl Display for CliError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Config(message) | Self::Typed { message, .. } => formatter.write_str(message),
+            Self::Config(message)
+            | Self::Typed { message, .. }
+            | Self::BundleVerification(message) => formatter.write_str(message),
             Self::ChildExit(code) => write!(formatter, "child process exited with code {code}"),
             Self::Io(error) => error.fmt(formatter),
             Self::Store(error) => error.fmt(formatter),
@@ -3944,6 +4010,350 @@ fn client_revoke_command(
     writeln!(output, "client_id: {}", client.id)?;
     writeln!(output, "revoked_at: {}", format_unix_nanos(timestamp))?;
     writeln!(output, "private_key_material: never displayed")?;
+    Ok(())
+}
+
+const BUNDLE_MAGIC_V1: &str = "LOCKET-BUNDLE-V1";
+
+#[derive(Debug, Deserialize, Serialize)]
+struct SealedBundleFileV1 {
+    magic: String,
+    schema_version: u16,
+    kind: String,
+    created_at: i64,
+    project_id: String,
+    include_audit: bool,
+    recipient_fingerprints: Vec<String>,
+    payload_status: String,
+    manifest_digest_sha256: String,
+    payload: SealedBundlePayloadV1,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct SealedBundlePayloadV1 {
+    profiles: Vec<SealedBundleProfileV1>,
+    profile_count: usize,
+    active_secret_count: usize,
+    audit_rows_included: bool,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct SealedBundleProfileV1 {
+    profile_id: String,
+    dangerous: bool,
+    active_secret_count: usize,
+}
+
+fn bundle_command(
+    context: &RuntimeContext,
+    output: &mut impl Write,
+    command: BundleCommand,
+) -> Result<(), CliError> {
+    match command {
+        BundleCommand::Verify(args) => bundle_verify_command(context, output, &args),
+    }
+}
+
+fn export_bundle_command(
+    context: &RuntimeContext,
+    output: &mut impl Write,
+    args: &ExportArgs,
+) -> Result<(), CliError> {
+    if !args.sealed {
+        return Err(CliError::Config("bundle export requires --sealed".to_owned()));
+    }
+    if args.recipients.is_empty() {
+        return Err(CliError::Config("bundle export requires at least one --recipient".to_owned()));
+    }
+
+    let resolved = require_project(context)?;
+    let mut store = open_store(context)?;
+    ensure_project_exists(&store, resolved.config.project_id.as_str())?;
+    ensure_trusted_project_root(&store, &resolved)?;
+    let recipient_fingerprints = bundle_recipient_fingerprints(&args.recipients)?;
+    let selected_profiles = selected_bundle_profiles(&store, &resolved, args)?;
+    let timestamp = now_unix_nanos()?;
+    let payload = bundle_payload(&store, &selected_profiles, args.include_audit)?;
+    let manifest_digest_sha256 = bundle_payload_digest(&payload)?;
+    let bundle = SealedBundleFileV1 {
+        magic: BUNDLE_MAGIC_V1.to_owned(),
+        schema_version: 1,
+        kind: "sealed-bundle".to_owned(),
+        created_at: timestamp,
+        project_id: resolved.config.project_id.to_string(),
+        include_audit: args.include_audit,
+        recipient_fingerprints,
+        payload_status: "metadata-only-placeholder".to_owned(),
+        manifest_digest_sha256,
+        payload,
+    };
+    let output_path =
+        args.output.clone().unwrap_or_else(|| default_bundle_output_path(context, timestamp));
+    write_bundle_file(&output_path, &bundle)?;
+    write_bundle_audit_if_available(
+        context,
+        &mut store,
+        &BundleAuditRequest {
+            resolved: &resolved,
+            action: "BACKUP_EXPORT",
+            command: "export --sealed",
+            bundle: &bundle,
+            path_kind: output_path_kind(&output_path, context),
+            timestamp,
+        },
+    )?;
+
+    writeln!(output, "bundle: exported")?;
+    writeln!(output, "path: {}", output_path.display())?;
+    writeln!(output, "profiles: {}", bundle.payload.profile_count)?;
+    writeln!(output, "active_secret_count: {}", bundle.payload.active_secret_count)?;
+    writeln!(output, "recipients: {}", bundle.recipient_fingerprints.len())?;
+    writeln!(output, "include_audit: {}", if bundle.include_audit { "yes" } else { "no" })?;
+    writeln!(output, "payload_status: {}", bundle.payload_status)?;
+    writeln!(output, "digest: {}", bundle.manifest_digest_sha256)?;
+    writeln!(output, "metadata_only: yes")?;
+    Ok(())
+}
+
+fn import_bundle_command(
+    context: &RuntimeContext,
+    output: &mut impl Write,
+    args: &ImportBundleArgs,
+) -> Result<(), CliError> {
+    let resolved = require_project(context)?;
+    let mut store = open_store(context)?;
+    ensure_project_exists(&store, resolved.config.project_id.as_str())?;
+    ensure_trusted_project_root(&store, &resolved)?;
+    let bundle = verify_bundle_file(&args.bundle)?;
+    if bundle.project_id != resolved.config.project_id.as_str() {
+        return Err(CliError::Config(
+            "bundle project id does not match current project".to_owned(),
+        ));
+    }
+    let conflict_policy = if args.accept_incoming {
+        "accept-incoming"
+    } else if args.accept_local {
+        "accept-local"
+    } else {
+        "interactive-required"
+    };
+    write_bundle_audit_if_available(
+        context,
+        &mut store,
+        &BundleAuditRequest {
+            resolved: &resolved,
+            action: "BACKUP_IMPORT",
+            command: "import-bundle",
+            bundle: &bundle,
+            path_kind: "input",
+            timestamp: now_unix_nanos()?,
+        },
+    )?;
+
+    writeln!(output, "bundle: verified")?;
+    writeln!(output, "import: not_applied")?;
+    writeln!(output, "reason: local device private-key import is not implemented in this build")?;
+    writeln!(output, "profiles: {}", bundle.payload.profile_count)?;
+    writeln!(output, "active_secret_count: {}", bundle.payload.active_secret_count)?;
+    writeln!(output, "include_audit_requested: {}", if args.include_audit { "yes" } else { "no" })?;
+    writeln!(output, "bundle_include_audit: {}", if bundle.include_audit { "yes" } else { "no" })?;
+    writeln!(output, "conflict_policy: {conflict_policy}")?;
+    writeln!(output, "metadata_only: yes")?;
+    Ok(())
+}
+
+fn bundle_verify_command(
+    _context: &RuntimeContext,
+    output: &mut impl Write,
+    args: &BundleVerifyArgs,
+) -> Result<(), CliError> {
+    let bundle = verify_bundle_file(&args.bundle)?;
+    writeln!(output, "bundle: valid")?;
+    writeln!(output, "schema_version: {}", bundle.schema_version)?;
+    writeln!(output, "project_id: {}", bundle.project_id)?;
+    writeln!(output, "profiles: {}", bundle.payload.profile_count)?;
+    writeln!(output, "active_secret_count: {}", bundle.payload.active_secret_count)?;
+    writeln!(output, "recipients: {}", bundle.recipient_fingerprints.len())?;
+    writeln!(output, "digest: {}", bundle.manifest_digest_sha256)?;
+    writeln!(output, "decryptable_by_this_device: no")?;
+    writeln!(output, "metadata_only: yes")?;
+    Ok(())
+}
+
+fn bundle_recipient_fingerprints(recipients: &[String]) -> Result<Vec<String>, CliError> {
+    let mut fingerprints = BTreeSet::new();
+    for recipient in recipients {
+        let descriptor = decode_device_descriptor(recipient)?;
+        let signing_public_key = decode_descriptor_key(&descriptor.signing_public_key_ed25519)?;
+        let sealing_public_key = decode_descriptor_key(&descriptor.sealing_public_key_x25519)?;
+        let fingerprint = device_fingerprint_hex(&signing_public_key, &sealing_public_key);
+        if fingerprint != descriptor.fingerprint_sha256 {
+            return Err(CliError::Config(
+                "recipient device descriptor fingerprint mismatch".to_owned(),
+            ));
+        }
+        fingerprints.insert(fingerprint);
+    }
+    Ok(fingerprints.into_iter().collect())
+}
+
+fn selected_bundle_profiles(
+    store: &Store,
+    resolved: &ResolvedProject,
+    args: &ExportArgs,
+) -> Result<Vec<ProfileRecord>, CliError> {
+    if args.all_profiles {
+        return store.list_profiles(resolved.config.project_id.as_str()).map_err(Into::into);
+    }
+    if let Some(profile_name) = &args.profile {
+        return store
+            .get_profile_by_name(resolved.config.project_id.as_str(), profile_name)?
+            .map(|profile| vec![profile])
+            .ok_or_else(|| CliError::Config(format!("profile not found: {profile_name}")));
+    }
+    Ok(vec![default_profile(store, &resolved.config)?])
+}
+
+fn bundle_payload(
+    store: &Store,
+    profiles: &[ProfileRecord],
+    include_audit: bool,
+) -> Result<SealedBundlePayloadV1, CliError> {
+    let mut profile_summaries = Vec::with_capacity(profiles.len());
+    let mut active_secret_count = 0_usize;
+    for profile in profiles {
+        let secrets = store.list_active_secrets_by_profile(&profile.project_id, &profile.id)?;
+        active_secret_count = active_secret_count.saturating_add(secrets.len());
+        profile_summaries.push(SealedBundleProfileV1 {
+            profile_id: profile.id.clone(),
+            dangerous: profile.dangerous,
+            active_secret_count: secrets.len(),
+        });
+    }
+    Ok(SealedBundlePayloadV1 {
+        profile_count: profile_summaries.len(),
+        active_secret_count,
+        audit_rows_included: include_audit,
+        profiles: profile_summaries,
+    })
+}
+
+fn bundle_payload_digest(payload: &SealedBundlePayloadV1) -> Result<String, CliError> {
+    let bytes = serde_json::to_vec(payload)?;
+    let mut hasher = Sha256::new();
+    hasher.update(b"locket-bundle-payload-v1");
+    hasher.update(bytes);
+    Ok(format_hex(&hasher.finalize()))
+}
+
+fn default_bundle_output_path(context: &RuntimeContext, timestamp: i64) -> PathBuf {
+    context.cwd.join(format!("locket-bundle-{timestamp}.locket-bundle"))
+}
+
+fn write_bundle_file(path: &Path, bundle: &SealedBundleFileV1) -> Result<(), CliError> {
+    let text = serde_json::to_string_pretty(bundle)?;
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    set_user_only_file_options(&mut options);
+    let mut file = options.open(path).map_err(|error| {
+        if error.kind() == io::ErrorKind::AlreadyExists {
+            CliError::Config("bundle output already exists".to_owned())
+        } else {
+            CliError::Io(error)
+        }
+    })?;
+    file.write_all(text.as_bytes())?;
+    file.write_all(b"\n")?;
+    set_user_only_file_permissions(path)?;
+    Ok(())
+}
+
+fn verify_bundle_file(path: &Path) -> Result<SealedBundleFileV1, CliError> {
+    let bytes = fs::read(path)?;
+    let bundle: SealedBundleFileV1 = serde_json::from_slice(&bytes).map_err(|error| {
+        CliError::BundleVerification(format!("bundle verification failed: {error}"))
+    })?;
+    if bundle.magic != BUNDLE_MAGIC_V1 {
+        return Err(CliError::BundleVerification(
+            "bundle verification failed: bad magic".to_owned(),
+        ));
+    }
+    if bundle.schema_version != 1 {
+        return Err(CliError::BundleVerification(
+            "bundle verification failed: unsupported schema version".to_owned(),
+        ));
+    }
+    if bundle.kind != "sealed-bundle" {
+        return Err(CliError::BundleVerification(
+            "bundle verification failed: bad kind".to_owned(),
+        ));
+    }
+    let digest = bundle_payload_digest(&bundle.payload)?;
+    if digest != bundle.manifest_digest_sha256 {
+        return Err(CliError::BundleVerification(
+            "bundle verification failed: manifest digest mismatch".to_owned(),
+        ));
+    }
+    Ok(bundle)
+}
+
+fn output_path_kind(path: &Path, context: &RuntimeContext) -> &'static str {
+    if path.parent().is_some_and(|parent| parent == context.cwd) {
+        "current_directory"
+    } else if path.is_absolute() {
+        "absolute"
+    } else {
+        "relative"
+    }
+}
+
+struct BundleAuditRequest<'a> {
+    resolved: &'a ResolvedProject,
+    action: &'static str,
+    command: &'static str,
+    bundle: &'a SealedBundleFileV1,
+    path_kind: &'static str,
+    timestamp: i64,
+}
+
+fn write_bundle_audit_if_available(
+    context: &RuntimeContext,
+    store: &mut Store,
+    request: &BundleAuditRequest<'_>,
+) -> Result<(), CliError> {
+    let Ok(audit_key) = load_project_key(
+        context,
+        store,
+        request.resolved.config.project_id.as_str(),
+        KeyPurpose::Audit,
+    ) else {
+        return Ok(());
+    };
+    let metadata = json!({
+        "schema_version": 1,
+        "action": request.action,
+        "status": "SUCCESS",
+        "command": request.command,
+        "project_id": request.resolved.config.project_id.as_str(),
+        "profile_count": request.bundle.payload.profile_count,
+        "active_secret_count": request.bundle.payload.active_secret_count,
+        "recipient_fingerprints": &request.bundle.recipient_fingerprints,
+        "bundle_digest": &request.bundle.manifest_digest_sha256,
+        "path_kind": request.path_kind,
+        "include_audit": request.bundle.include_audit,
+        "metadata_only": true,
+    });
+    let audit = AuditWrite {
+        project_id: request.resolved.config.project_id.as_str(),
+        profile_id: None,
+        action: request.action,
+        status: "SUCCESS",
+        secret_name: None,
+        command: Some(request.command),
+        metadata_json: &metadata,
+        timestamp: request.timestamp,
+    };
+    store.append_audit(audit_key.as_ref(), &audit)?;
     Ok(())
 }
 
@@ -10988,6 +11398,20 @@ mod tests {
             ],
             &["locket", "client", "list", "--all"],
             &["locket", "client", "revoke", "ci"],
+            &[
+                "locket",
+                "export",
+                "--sealed",
+                "--recipient",
+                "lkdev1_abc",
+                "--profile",
+                "dev",
+                "--include-audit",
+                "--output",
+                "bundle.locket-bundle",
+            ],
+            &["locket", "import-bundle", "bundle.locket-bundle", "--accept-local"],
+            &["locket", "bundle", "verify", "bundle.locket-bundle"],
             &["locket", "new", "--from-template", "basic"],
             &["locket", "bootstrap"],
             &["locket", "completion", "bash"],
@@ -11234,6 +11658,180 @@ mod tests {
             ),
             "at least one --policy",
         );
+        Ok(())
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn sealed_bundle_export_verify_and_import_are_metadata_only()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut Vec::new(),
+        )?;
+        let args = test_secret_write_args("DATABASE_URL");
+        super::set_secret_value(&context, &args, "postgres://bundle-secret", "manual", 1_000)?;
+
+        let mut device_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "device", "init"])?,
+            &context,
+            &mut device_output,
+        )?;
+        let descriptor = String::from_utf8(device_output)?
+            .lines()
+            .find_map(|line| line.strip_prefix("descriptor: "))
+            .ok_or("missing descriptor")?
+            .to_owned();
+        let bundle_path = directory.path().join("dev.locket-bundle");
+
+        let mut export_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from([
+                "locket",
+                "export",
+                "--sealed",
+                "--recipient",
+                &descriptor,
+                "--profile",
+                "dev",
+                "--include-audit",
+                "--output",
+                bundle_path.to_str().ok_or("utf8 path")?,
+            ])?,
+            &context,
+            &mut export_output,
+        )?;
+        let export_output = String::from_utf8(export_output)?;
+        assert!(export_output.contains("bundle: exported"));
+        assert!(export_output.contains("active_secret_count: 1"));
+        assert!(export_output.contains("metadata_only: yes"));
+        let bundle_text = fs::read_to_string(&bundle_path)?;
+        assert!(bundle_text.contains("LOCKET-BUNDLE-V1"));
+        assert!(!bundle_text.contains("postgres://bundle-secret"));
+        assert!(!bundle_text.contains("DATABASE_URL"));
+
+        let mut verify_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from([
+                "locket",
+                "bundle",
+                "verify",
+                bundle_path.to_str().ok_or("utf8 path")?,
+            ])?,
+            &context,
+            &mut verify_output,
+        )?;
+        let verify_output = String::from_utf8(verify_output)?;
+        assert!(verify_output.contains("bundle: valid"));
+        assert!(verify_output.contains("decryptable_by_this_device: no"));
+
+        let mut import_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from([
+                "locket",
+                "import-bundle",
+                bundle_path.to_str().ok_or("utf8 path")?,
+                "--accept-local",
+                "--include-audit",
+            ])?,
+            &context,
+            &mut import_output,
+        )?;
+        let import_output = String::from_utf8(import_output)?;
+        assert!(import_output.contains("bundle: verified"));
+        assert!(import_output.contains("import: not_applied"));
+        assert!(import_output.contains("metadata_only: yes"));
+
+        assert_error_contains(
+            run_with_context(
+                Cli::try_parse_from([
+                    "locket",
+                    "export",
+                    "--sealed",
+                    "--recipient",
+                    &descriptor,
+                    "--profile",
+                    "dev",
+                    "--output",
+                    bundle_path.to_str().ok_or("utf8 path")?,
+                ])?,
+                &context,
+                &mut Vec::new(),
+            ),
+            "bundle output already exists",
+        );
+
+        let store = locket_store::Store::open(directory.path().join("store.db"))?;
+        let mut statement = store
+            .connection()
+            .prepare("SELECT action, metadata_json FROM audit_log ORDER BY sequence")?;
+        let rows = statement
+            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?
+            .collect::<Result<Vec<_>, _>>()?;
+        assert!(rows.iter().any(|(action, _)| action == "BACKUP_EXPORT"));
+        assert!(rows.iter().any(|(action, _)| action == "BACKUP_IMPORT"));
+        for (_, metadata) in rows {
+            assert!(!metadata.contains("postgres://bundle-secret"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn bundle_verify_rejects_tampered_digest() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut Vec::new(),
+        )?;
+        let mut device_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "device", "init"])?,
+            &context,
+            &mut device_output,
+        )?;
+        let descriptor = String::from_utf8(device_output)?
+            .lines()
+            .find_map(|line| line.strip_prefix("descriptor: "))
+            .ok_or("missing descriptor")?
+            .to_owned();
+        let bundle_path = directory.path().join("tampered.locket-bundle");
+        run_with_context(
+            Cli::try_parse_from([
+                "locket",
+                "export",
+                "--sealed",
+                "--recipient",
+                &descriptor,
+                "--output",
+                bundle_path.to_str().ok_or("utf8 path")?,
+            ])?,
+            &context,
+            &mut Vec::new(),
+        )?;
+        let tampered = fs::read_to_string(&bundle_path)?.replacen(
+            "\"active_secret_count\": 0",
+            "\"active_secret_count\": 1",
+            1,
+        );
+        fs::write(&bundle_path, tampered)?;
+        let result = run_with_context(
+            Cli::try_parse_from([
+                "locket",
+                "bundle",
+                "verify",
+                bundle_path.to_str().ok_or("utf8 path")?,
+            ])?,
+            &context,
+            &mut Vec::new(),
+        );
+        assert_error_contains(result, "manifest digest mismatch");
+        assert_eq!(super::CliError::BundleVerification("failed".to_owned()).exit_code(), 110);
         Ok(())
     }
 
