@@ -2,12 +2,13 @@
 
 use std::io::Write;
 
-use crate::runtime::RuntimeContext;
-use crate::runtime::error::{CliError, child_exit_error};
-use crate::{
-    ComposeCommand, ComposeRunArgs, compose_argv_with_options, prepare_compose_policy_execution,
+use super::docker::{
+    compose_argv_with_options, prepare_compose_policy_execution,
     write_docker_policy_audit_if_available,
 };
+use crate::runtime::RuntimeContext;
+use crate::runtime::error::{CliError, child_exit_error};
+use crate::{ComposeCommand, ComposeRunArgs};
 
 pub fn compose_command(
     context: &RuntimeContext,

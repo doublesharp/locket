@@ -1,6 +1,7 @@
 //! Execution commands: exec, run, env, compose.
 
 pub mod compose;
+pub mod docker;
 pub mod env;
 #[allow(clippy::module_inception)]
 pub mod exec;

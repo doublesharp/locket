@@ -53,7 +53,8 @@ fn exec_prepare_environment_conflict_exits_66() -> Result<(), Box<dyn std::error
         std::iter::once(("DATABASE_URL".to_owned(), "locket".to_owned())).collect();
     request.override_mode = locket_exec::EnvOverrideMode::Error;
 
-    let Err(error) = locket_exec::prepare_execution(&request).map_err(crate::exec_prepare_error)
+    let Err(error) =
+        locket_exec::prepare_execution(&request).map_err(crate::runtime::error::exec_prepare_error)
     else {
         return Err("environment conflict should fail before spawn".into());
     };
