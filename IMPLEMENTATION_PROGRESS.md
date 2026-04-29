@@ -928,8 +928,7 @@ editing — they drift. Severity: **blocker** (security/correctness),
   recovery, bundles, team invite accept, and UI/editor smoke flows.
   - Spec: `docs/specs/testing.md`.
   - Files: new `tests/e2e/` workspace under each integration owner crate.
-- [~] [6e4d05db] Full fuzz coverage for required parsers/protocols.
-  Claim: branch agent-6e4d05db/fuzz-required-targets, worktree .worktrees/agent-6e4d05db-fuzz-required-targets.
+- [x] Full fuzz coverage for required parsers/protocols.
   - Spec: `docs/specs/fuzzing.md`.
   - Files: `fuzz/fuzz_targets/` — current targets are smoke only; spec lists
     required corpora and sanitizer/nightly cadence.
