@@ -1,5 +1,7 @@
 //! Local agent and protocol types for Locket.
 
+use std::str::FromStr;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
@@ -9,6 +11,102 @@ pub const DEFAULT_MAX_MESSAGE_SIZE: usize = 1024 * 1024;
 
 /// Agent protocol version supported by this crate.
 pub const PROTOCOL_VERSION: u16 = 1;
+
+/// V1 agent RPC method names.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AgentMethod {
+    /// Return metadata-only agent status.
+    Status,
+    /// Unlock local key material.
+    Unlock,
+    /// Clear local key material and live grants.
+    Lock,
+    /// Register an automation client.
+    RegisterClient,
+    /// Revoke an automation client.
+    RevokeClient,
+    /// Request a live TTL grant.
+    RequestGrant,
+    /// Revoke a live TTL grant.
+    RevokeGrant,
+    /// Lazily record an expired grant.
+    ExpireGrant,
+    /// Resolve an authorized `lk://` reference.
+    ResolveReference,
+    /// Prepare a command policy for execution.
+    PrepareExec,
+    /// Provide known-value scan matching.
+    ScanKnownValues,
+    /// Reveal one secret value through a gated path.
+    Reveal,
+    /// Copy one secret value through a gated path.
+    Copy,
+    /// Subscribe to metadata-only status events.
+    SubscribeStatus,
+    /// Cancel a status subscription.
+    CancelSubscription,
+    /// Automation client challenge handshake.
+    ClientHello,
+}
+
+impl AgentMethod {
+    /// Returns the exact v1 wire method name.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Status => "Status",
+            Self::Unlock => "Unlock",
+            Self::Lock => "Lock",
+            Self::RegisterClient => "RegisterClient",
+            Self::RevokeClient => "RevokeClient",
+            Self::RequestGrant => "RequestGrant",
+            Self::RevokeGrant => "RevokeGrant",
+            Self::ExpireGrant => "ExpireGrant",
+            Self::ResolveReference => "ResolveReference",
+            Self::PrepareExec => "PrepareExec",
+            Self::ScanKnownValues => "ScanKnownValues",
+            Self::Reveal => "Reveal",
+            Self::Copy => "Copy",
+            Self::SubscribeStatus => "SubscribeStatus",
+            Self::CancelSubscription => "CancelSubscription",
+            Self::ClientHello => "ClientHello",
+        }
+    }
+}
+
+impl FromStr for AgentMethod {
+    type Err = UnknownMethod;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "Status" => Ok(Self::Status),
+            "Unlock" => Ok(Self::Unlock),
+            "Lock" => Ok(Self::Lock),
+            "RegisterClient" => Ok(Self::RegisterClient),
+            "RevokeClient" => Ok(Self::RevokeClient),
+            "RequestGrant" => Ok(Self::RequestGrant),
+            "RevokeGrant" => Ok(Self::RevokeGrant),
+            "ExpireGrant" => Ok(Self::ExpireGrant),
+            "ResolveReference" => Ok(Self::ResolveReference),
+            "PrepareExec" => Ok(Self::PrepareExec),
+            "ScanKnownValues" => Ok(Self::ScanKnownValues),
+            "Reveal" => Ok(Self::Reveal),
+            "Copy" => Ok(Self::Copy),
+            "SubscribeStatus" => Ok(Self::SubscribeStatus),
+            "CancelSubscription" => Ok(Self::CancelSubscription),
+            "ClientHello" => Ok(Self::ClientHello),
+            other => Err(UnknownMethod { method: other.to_owned() }),
+        }
+    }
+}
+
+/// Unknown v1 agent method name.
+#[derive(Clone, Debug, Eq, Error, PartialEq)]
+#[error("unknown agent method: {method}")]
+pub struct UnknownMethod {
+    /// Method string found in the envelope.
+    pub method: String,
+}
 
 /// JSON request envelope sent after the v1 length prefix.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -21,6 +119,24 @@ pub struct RequestEnvelope {
     pub kind: String,
     /// Method payload.
     pub payload: Value,
+}
+
+impl RequestEnvelope {
+    /// Creates a v1 request envelope for a typed method.
+    #[must_use]
+    pub fn new(id: impl Into<String>, method: AgentMethod, payload: Value) -> Self {
+        Self { v: PROTOCOL_VERSION, id: id.into(), kind: method.as_str().to_owned(), payload }
+    }
+
+    /// Returns the validated typed method.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProtocolError::UnknownMethod`] when `kind` is not a supported
+    /// v1 method name.
+    pub fn method(&self) -> Result<AgentMethod, ProtocolError> {
+        self.kind.parse().map_err(ProtocolError::UnknownMethod)
+    }
 }
 
 /// JSON response envelope sent after the v1 length prefix.
@@ -46,6 +162,14 @@ pub struct SuccessEnvelope {
     pub payload: Value,
 }
 
+impl SuccessEnvelope {
+    /// Creates a successful v1 response.
+    #[must_use]
+    pub fn new(id: impl Into<String>, payload: Value) -> Self {
+        Self { v: PROTOCOL_VERSION, id: id.into(), ok: true, payload }
+    }
+}
+
 /// Error response envelope.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ErrorEnvelope {
@@ -61,6 +185,67 @@ pub struct ErrorEnvelope {
     pub message: String,
     /// Whether the client may retry the request unchanged.
     pub retryable: bool,
+}
+
+impl ErrorEnvelope {
+    /// Creates a redacted v1 error response.
+    #[must_use]
+    pub fn new(
+        id: impl Into<String>,
+        error: impl Into<String>,
+        message: impl Into<String>,
+        retryable: bool,
+    ) -> Self {
+        Self {
+            v: PROTOCOL_VERSION,
+            id: id.into(),
+            ok: false,
+            error: error.into(),
+            message: message.into(),
+            retryable,
+        }
+    }
+}
+
+/// Metadata-only lock state reported by status calls.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum LockState {
+    /// Agent is not holding unwrapped keys.
+    Locked,
+    /// Agent has unwrapped keys for the current user/session.
+    Unlocked,
+    /// Agent is unavailable or cannot determine lock state.
+    Unknown,
+}
+
+/// Metadata-only status payload shared by `Status` and status events.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct StatusPayload {
+    /// Lock state.
+    pub lock_state: LockState,
+    /// Optional active project id or privacy alias.
+    pub project_id: Option<String>,
+    /// Optional active profile name or privacy alias.
+    pub profile_name: Option<String>,
+    /// Count of live grants, never grant tokens.
+    pub live_grant_count: u32,
+    /// Agent version string.
+    pub agent_version: String,
+}
+
+impl StatusPayload {
+    /// Creates a locked status payload with no active project context.
+    #[must_use]
+    pub fn locked(agent_version: impl Into<String>) -> Self {
+        Self {
+            lock_state: LockState::Locked,
+            project_id: None,
+            profile_name: None,
+            live_grant_count: 0,
+            agent_version: agent_version.into(),
+        }
+    }
 }
 
 /// Error returned while encoding or decoding agent protocol frames.
@@ -89,6 +274,9 @@ pub enum ProtocolError {
         /// Version found in the envelope.
         version: u16,
     },
+    /// Request kind is not a supported v1 method.
+    #[error(transparent)]
+    UnknownMethod(#[from] UnknownMethod),
 }
 
 /// Serializes an envelope payload into a length-prefixed v1 frame.
@@ -136,6 +324,7 @@ pub fn decode_request_frame(
     if envelope.v != PROTOCOL_VERSION {
         return Err(ProtocolError::UnsupportedVersion { version: envelope.v });
     }
+    envelope.method()?;
     Ok((envelope, consumed))
 }
 
@@ -158,19 +347,16 @@ fn frame_payload(bytes: &[u8], maximum_size: usize) -> Result<(&[u8], usize), Pr
 #[cfg(test)]
 mod tests {
     use super::{
-        DEFAULT_MAX_MESSAGE_SIZE, PROTOCOL_VERSION, ProtocolError, RequestEnvelope,
-        decode_request_frame, encode_frame,
+        AgentMethod, DEFAULT_MAX_MESSAGE_SIZE, ErrorEnvelope, LockState, PROTOCOL_VERSION,
+        ProtocolError, RequestEnvelope, StatusPayload, SuccessEnvelope, decode_request_frame,
+        encode_frame,
     };
     use serde_json::json;
 
     #[test]
     fn encodes_and_decodes_length_prefixed_request() -> Result<(), ProtocolError> {
-        let request = RequestEnvelope {
-            v: PROTOCOL_VERSION,
-            id: "req-1".to_owned(),
-            kind: "Status".to_owned(),
-            payload: json!({"client_kind": "cli"}),
-        };
+        let request =
+            RequestEnvelope::new("req-1", AgentMethod::Status, json!({"client_kind": "cli"}));
 
         let frame = encode_frame(&request, DEFAULT_MAX_MESSAGE_SIZE)?;
         assert_eq!(
@@ -192,12 +378,7 @@ mod tests {
             Err(ProtocolError::IncompleteFrame)
         ));
 
-        let request = RequestEnvelope {
-            v: PROTOCOL_VERSION,
-            id: "req-1".to_owned(),
-            kind: "Status".to_owned(),
-            payload: json!({}),
-        };
+        let request = RequestEnvelope::new("req-1", AgentMethod::Status, json!({}));
         let frame = encode_frame(&request, DEFAULT_MAX_MESSAGE_SIZE)?;
         let partial = &frame[..frame.len() - 1];
 
@@ -225,7 +406,7 @@ mod tests {
         let request = RequestEnvelope {
             v: 99,
             id: "req-1".to_owned(),
-            kind: "Status".to_owned(),
+            kind: AgentMethod::Status.as_str().to_owned(),
             payload: json!({}),
         };
         let frame = encode_frame(&request, DEFAULT_MAX_MESSAGE_SIZE)?;
@@ -235,5 +416,46 @@ mod tests {
             Err(ProtocolError::UnsupportedVersion { version: 99 })
         ));
         Ok(())
+    }
+
+    #[test]
+    fn rejects_unknown_request_methods() -> Result<(), ProtocolError> {
+        let request = RequestEnvelope {
+            v: PROTOCOL_VERSION,
+            id: "req-1".to_owned(),
+            kind: "Nope".to_owned(),
+            payload: json!({}),
+        };
+        let frame = encode_frame(&request, DEFAULT_MAX_MESSAGE_SIZE)?;
+
+        assert!(matches!(
+            decode_request_frame(&frame, DEFAULT_MAX_MESSAGE_SIZE),
+            Err(ProtocolError::UnknownMethod(error)) if error.method == "Nope"
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn constructors_emit_spec_envelope_shapes() {
+        let success = SuccessEnvelope::new("req-1", json!({"ok": "payload"}));
+        assert_eq!(success.v, PROTOCOL_VERSION);
+        assert!(success.ok);
+        assert_eq!(success.id, "req-1");
+
+        let error = ErrorEnvelope::new("req-2", "AccessDenied", "access denied", false);
+        assert_eq!(error.v, PROTOCOL_VERSION);
+        assert!(!error.ok);
+        assert!(!error.retryable);
+        assert_eq!(error.error, "AccessDenied");
+    }
+
+    #[test]
+    fn status_payload_is_metadata_only() {
+        let payload = StatusPayload::locked("0.1.0");
+
+        assert_eq!(payload.lock_state, LockState::Locked);
+        assert_eq!(payload.live_grant_count, 0);
+        assert!(payload.project_id.is_none());
+        assert!(payload.profile_name.is_none());
     }
 }
