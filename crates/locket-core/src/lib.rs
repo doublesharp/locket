@@ -11,6 +11,7 @@ pub mod project;
 pub mod reference_uri;
 pub mod secret_name;
 pub mod time;
+pub mod update_manifest;
 
 pub use audit::{
     AUDIT_HMAC_LEN, AuditCanonicalizationError, AuditHmacInput, audit_hmac_v1_bytes, bytes,
@@ -38,3 +39,7 @@ pub use reference_uri::{
 };
 pub use secret_name::{InvalidSecretName, SecretName};
 pub use time::{Duration, InvalidDuration, Timestamp};
+pub use update_manifest::{
+    UpdateArtifact, UpdateChannel, UpdateManifestError, UpdateManifestPayload,
+    UpdateManifestSignature, VerifiedUpdateManifest, verify_update_manifest,
+};

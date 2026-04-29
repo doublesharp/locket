@@ -80,6 +80,9 @@ pub enum LocketError {
     /// Automation client replay was detected.
     #[error("automation client replay detected")]
     AutomationClientReplayDetected,
+    /// Update manifest signature, schema, or metadata validation failed.
+    #[error("update manifest invalid")]
+    UpdateManifestInvalid,
     /// Database contents are corrupt.
     #[error("corrupt database")]
     CorruptDb,
@@ -146,6 +149,7 @@ impl LocketError {
             Self::AgentSocketInUse => 81,
             Self::AutomationClientNotTrusted => 82,
             Self::AutomationClientReplayDetected => 83,
+            Self::UpdateManifestInvalid => 89,
             Self::CorruptDb => 90,
             Self::StorageBusy => 91,
             Self::SchemaNewerThanBinary => 92,
@@ -207,6 +211,7 @@ mod tests {
             (LocketError::AgentSocketInUse, 81),
             (LocketError::AutomationClientNotTrusted, 82),
             (LocketError::AutomationClientReplayDetected, 83),
+            (LocketError::UpdateManifestInvalid, 89),
             (LocketError::CorruptDb, 90),
             (LocketError::StorageBusy, 91),
             (LocketError::SchemaNewerThanBinary, 92),
