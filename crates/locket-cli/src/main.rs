@@ -40,14 +40,16 @@ use std::error::Error;
 use std::ffi::OsStr;
 use std::fmt::{self, Display};
 use std::fs;
-use std::io::{self, IsTerminal, Read, Write};
+use std::io::{self, IsTerminal, Read, Seek, SeekFrom, Write};
 #[cfg(unix)]
-use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command as ProcessCommand, ExitCode as ProcessExitCode, Stdio};
 use std::str::FromStr;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration as StdDuration, SystemTime, UNIX_EPOCH};
+use time::OffsetDateTime;
+use time::format_description::well_known::Rfc3339;
 
 use policy_authoring::PolicyCommand;
 
@@ -66,6 +68,9 @@ const DIRECTORY_GRANT_SCOPE_PROJECT_ROOT: &str = "project-root";
 const GITIGNORE_ENTRIES: [&str; 4] = [".env", ".env.*", ".locket.local", ".locketignore"];
 const DEFAULT_MAX_GRACE_TTL_SECONDS: u64 = 7 * 24 * 60 * 60;
 const NANOS_PER_SECOND: i64 = 1_000_000_000;
+const AGENT_LOG_MAX_BYTES: u64 = 1024 * 1024;
+const AGENT_LOG_RETAINED_FILES: u8 = 5;
+const AGENT_LOG_FOLLOW_SLEEP_MS: u64 = 250;
 
 #[derive(Debug, Parser)]
 #[command(name = "locket", version, about = "Local-first secrets control plane")]
@@ -582,7 +587,7 @@ struct CopyArgs {
     to_source: Option<SecretSourceArg>,
 }
 
-#[derive(Clone, Copy, Debug, Subcommand)]
+#[derive(Clone, Debug, Subcommand)]
 enum AgentCommand {
     /// Start the local agent.
     Start,
@@ -594,14 +599,17 @@ enum AgentCommand {
     Logs(AgentLogsArgs),
 }
 
-#[derive(Clone, Copy, Debug, Args)]
+#[derive(Clone, Debug, Args)]
 struct AgentLogsArgs {
     /// Number of lines to print.
     #[arg(long, default_value_t = 200)]
     lines: usize,
-    /// Unix timestamp in seconds or nanoseconds to filter from.
+    /// RFC 3339 UTC timestamp or Unix timestamp in seconds/nanoseconds to filter from.
     #[arg(long)]
-    since: Option<i64>,
+    since: Option<String>,
+    /// Stream new log entries until interrupted.
+    #[arg(long)]
+    follow: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -3294,7 +3302,7 @@ fn agent_command(
         AgentCommand::Start => agent_start_command(context, output),
         AgentCommand::Status => agent_status_command(context, output),
         AgentCommand::Stop => agent_stop_command(context, output),
-        AgentCommand::Logs(args) => agent_logs_command(context, output, args),
+        AgentCommand::Logs(args) => agent_logs_command(context, output, &args),
     }
 }
 
@@ -3344,36 +3352,58 @@ fn agent_stop_command(context: &RuntimeContext, output: &mut impl Write) -> Resu
 fn agent_logs_command(
     context: &RuntimeContext,
     output: &mut impl Write,
-    args: AgentLogsArgs,
+    args: &AgentLogsArgs,
 ) -> Result<(), CliError> {
     if args.lines > 10_000 {
         return Err(CliError::Config("agent logs --lines is capped at 10000".to_owned()));
     }
-    let log_path = agent_log_path(context);
-    let log_text = match fs::read_to_string(&log_path) {
-        Ok(log_text) => log_text,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+    let since = args.since.as_deref().map(parse_agent_log_since).transpose()?;
+    let lines = read_agent_log_lines(context, since)?;
+    if lines.is_empty() {
+        if !args.follow {
             writeln!(output, "no agent logs")?;
-            return Ok(());
         }
-        Err(error) => return Err(error.into()),
-    };
-
-    let since = args.since.map(normalize_log_since);
-    let lines = log_text
-        .lines()
-        .filter(|line| agent_log_line_is_since(line, since))
-        .rev()
-        .take(args.lines)
-        .collect::<Vec<_>>();
-    for line in lines.iter().rev() {
-        writeln!(output, "{line}")?;
+    } else {
+        for line in lines.iter().skip(lines.len().saturating_sub(args.lines)) {
+            writeln!(output, "{}", sanitize_agent_log_line(line))?;
+        }
+    }
+    if args.follow {
+        follow_agent_logs(context, output, since)?;
     }
     Ok(())
 }
 
+fn parse_agent_log_since(value: &str) -> Result<i64, CliError> {
+    if let Ok(timestamp) = value.parse::<i64>() {
+        return Ok(normalize_log_since(timestamp));
+    }
+    let timestamp = OffsetDateTime::parse(value, &Rfc3339).map_err(|_| {
+        CliError::Config("agent logs --since must be RFC3339 UTC or Unix seconds".to_owned())
+    })?;
+    timestamp.unix_timestamp_nanos().try_into().map_err(|_| CliError::Time)
+}
+
 const fn normalize_log_since(value: i64) -> i64 {
     if value.abs() < 10_000_000_000 { value.saturating_mul(NANOS_PER_SECOND) } else { value }
+}
+
+fn read_agent_log_lines(
+    context: &RuntimeContext,
+    since: Option<i64>,
+) -> Result<Vec<String>, CliError> {
+    let mut lines = Vec::new();
+    for path in agent_log_paths_oldest_first(context) {
+        let log_text = match fs::read_to_string(&path) {
+            Ok(log_text) => log_text,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error.into()),
+        };
+        lines.extend(
+            log_text.lines().filter(|line| agent_log_line_is_since(line, since)).map(str::to_owned),
+        );
+    }
+    Ok(lines)
 }
 
 fn agent_log_line_is_since(line: &str, since: Option<i64>) -> bool {
@@ -3382,8 +3412,44 @@ fn agent_log_line_is_since(line: &str, since: Option<i64>) -> bool {
     };
     serde_json::from_str::<Value>(line)
         .ok()
-        .and_then(|value| value.get("timestamp").and_then(Value::as_i64))
+        .and_then(|value| agent_log_timestamp_nanos(value.get("timestamp")?))
         .is_some_and(|timestamp| timestamp >= since)
+}
+
+fn agent_log_timestamp_nanos(value: &Value) -> Option<i64> {
+    if let Some(timestamp) = value.as_i64() {
+        return Some(normalize_log_since(timestamp));
+    }
+    let timestamp = OffsetDateTime::parse(value.as_str()?, &Rfc3339).ok()?;
+    timestamp.unix_timestamp_nanos().try_into().ok()
+}
+
+fn follow_agent_logs(
+    context: &RuntimeContext,
+    output: &mut impl Write,
+    since: Option<i64>,
+) -> Result<(), CliError> {
+    prepare_agent_log_dir(context)?;
+    let log_path = agent_log_path(context);
+    let mut file = fs::OpenOptions::new().read(true).create(true).append(true).open(&log_path)?;
+    set_user_only_file_permissions(&log_path)?;
+    file.seek(SeekFrom::End(0))?;
+    let mut pending = String::new();
+    loop {
+        let mut chunk = String::new();
+        file.read_to_string(&mut chunk)?;
+        if !chunk.is_empty() {
+            pending.push_str(&chunk);
+            while let Some(newline) = pending.find('\n') {
+                let line = pending[..newline].to_owned();
+                pending.drain(..=newline);
+                if agent_log_line_is_since(&line, since) {
+                    writeln!(output, "{}", sanitize_agent_log_line(&line))?;
+                }
+            }
+        }
+        std::thread::sleep(StdDuration::from_millis(AGENT_LOG_FOLLOW_SLEEP_MS));
+    }
 }
 
 fn scan_command(
@@ -5433,6 +5499,19 @@ fn agent_log_path(context: &RuntimeContext) -> PathBuf {
     agent_data_dir(context).join("agent.log")
 }
 
+fn agent_rotated_log_path(context: &RuntimeContext, index: u8) -> PathBuf {
+    agent_data_dir(context).join(format!("agent.log.{index}"))
+}
+
+fn agent_log_paths_oldest_first(context: &RuntimeContext) -> Vec<PathBuf> {
+    let mut paths = (1..=AGENT_LOG_RETAINED_FILES)
+        .rev()
+        .map(|index| agent_rotated_log_path(context, index))
+        .collect::<Vec<_>>();
+    paths.push(agent_log_path(context));
+    paths
+}
+
 fn write_agent_paths(context: &RuntimeContext, output: &mut impl Write) -> Result<(), CliError> {
     writeln!(output, "socket: {}", agent_socket_path(context).display())?;
     writeln!(output, "pid_file: {}", agent_pid_path(context).display())?;
@@ -5457,18 +5536,164 @@ fn append_agent_log(
     status: &str,
     message: &str,
 ) -> Result<(), CliError> {
-    fs::create_dir_all(agent_data_dir(context))?;
+    prepare_agent_log_dir(context)?;
+    rotate_agent_logs_if_needed(context)?;
     let entry = json!({
         "timestamp": now_unix_nanos()?,
         "severity": "info",
         "component": "agent",
         "action": action,
         "status": status,
-        "message": message,
+        "message": sanitize_agent_log_value(Value::String(message.to_owned())),
     });
-    let mut file =
-        fs::OpenOptions::new().create(true).append(true).open(agent_log_path(context))?;
+    let log_path = agent_log_path(context);
+    let mut options = fs::OpenOptions::new();
+    options.create(true).append(true);
+    set_user_only_file_options(&mut options);
+    let mut file = options.open(&log_path)?;
     writeln!(file, "{entry}")?;
+    set_user_only_file_permissions(&log_path)?;
+    Ok(())
+}
+
+fn prepare_agent_log_dir(context: &RuntimeContext) -> Result<(), CliError> {
+    let data_dir = agent_data_dir(context);
+    fs::create_dir_all(&data_dir)?;
+    set_user_only_dir_permissions(&data_dir)?;
+    Ok(())
+}
+
+fn rotate_agent_logs_if_needed(context: &RuntimeContext) -> Result<(), CliError> {
+    let log_path = agent_log_path(context);
+    let Ok(metadata) = fs::metadata(&log_path) else {
+        return Ok(());
+    };
+    if metadata.len() < AGENT_LOG_MAX_BYTES {
+        return Ok(());
+    }
+    let oldest = agent_rotated_log_path(context, AGENT_LOG_RETAINED_FILES);
+    match fs::remove_file(oldest) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    for index in (1..AGENT_LOG_RETAINED_FILES).rev() {
+        let from = agent_rotated_log_path(context, index);
+        let to = agent_rotated_log_path(context, index + 1);
+        match fs::rename(from, to) {
+            Ok(()) => set_user_only_file_permissions(&agent_rotated_log_path(context, index + 1))?,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    let rotated = agent_rotated_log_path(context, 1);
+    fs::rename(&log_path, &rotated)?;
+    set_user_only_file_permissions(&rotated)?;
+    Ok(())
+}
+
+fn sanitize_agent_log_line(line: &str) -> String {
+    serde_json::from_str::<Value>(line).map_or_else(
+        |_| redact_text(line).text,
+        |value| sanitize_agent_log_value(value).to_string(),
+    )
+}
+
+fn sanitize_agent_log_value(value: Value) -> Value {
+    match value {
+        Value::Object(object) => {
+            let mut sanitized = serde_json::Map::new();
+            for (key, value) in object {
+                if agent_log_key_is_forbidden(&key) {
+                    continue;
+                }
+                if agent_log_key_is_path(&key) {
+                    if let Some(path) = value.as_str() {
+                        let path_hash = privacy_alias("path", path);
+                        sanitized.insert(
+                            format!("{key}_kind"),
+                            Value::String(path_kind(path).to_owned()),
+                        );
+                        sanitized.insert(format!("{key}_hash"), Value::String(path_hash));
+                    }
+                    continue;
+                }
+                sanitized.insert(key, sanitize_agent_log_value(value));
+            }
+            Value::Object(sanitized)
+        }
+        Value::Array(values) => {
+            Value::Array(values.into_iter().map(sanitize_agent_log_value).collect())
+        }
+        Value::String(value) => {
+            if looks_like_full_path(&value) {
+                Value::String(privacy_alias("path", &value))
+            } else {
+                Value::String(redact_text(&value).text)
+            }
+        }
+        other => other,
+    }
+}
+
+fn agent_log_key_is_forbidden(key: &str) -> bool {
+    let normalized = key.to_ascii_lowercase();
+    normalized.contains("secret")
+        || normalized.contains("env")
+        || normalized.contains("token")
+        || normalized.contains("recovery")
+        || normalized.contains("wrapped")
+        || normalized.contains("private")
+        || normalized.contains("credential")
+        || normalized.contains("username")
+        || normalized.contains("user_name")
+        || normalized == "host"
+        || normalized == "hostname"
+}
+
+fn agent_log_key_is_path(key: &str) -> bool {
+    let normalized = key.to_ascii_lowercase();
+    normalized == "path" || normalized.ends_with("_path") || normalized.contains("filesystem")
+}
+
+fn path_kind(path: &str) -> &'static str {
+    if Path::new(path).is_absolute() { "absolute" } else { "relative" }
+}
+
+fn looks_like_full_path(value: &str) -> bool {
+    Path::new(value).is_absolute()
+        || value.contains("\\Users\\")
+        || value.contains("\\Program Files\\")
+        || value.contains(":/")
+}
+
+#[cfg(unix)]
+fn set_user_only_file_options(options: &mut fs::OpenOptions) {
+    options.mode(0o600);
+}
+
+#[cfg(not(unix))]
+fn set_user_only_file_options(_options: &mut fs::OpenOptions) {}
+
+#[cfg(unix)]
+fn set_user_only_file_permissions(path: &Path) -> Result<(), CliError> {
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn set_user_only_file_permissions(_path: &Path) -> Result<(), CliError> {
+    Ok(())
+}
+
+#[cfg(unix)]
+fn set_user_only_dir_permissions(path: &Path) -> Result<(), CliError> {
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn set_user_only_dir_permissions(_path: &Path) -> Result<(), CliError> {
     Ok(())
 }
 
@@ -7418,6 +7643,7 @@ mod tests {
     use locket_platform::{
         MasterKeyStore, MemoryMasterKeyStore, PassphraseFallbackMasterKeyStore, PlatformError,
     };
+    use serde_json::json;
     use std::collections::BTreeSet;
     use std::ffi::OsStr;
     use std::fs;
@@ -7810,6 +8036,8 @@ mod tests {
             &["locket", "agent", "stop"],
             &["locket", "agent", "logs"],
             &["locket", "agent", "logs", "--lines", "10", "--since", "1700000000"],
+            &["locket", "agent", "logs", "--since", "2024-01-01T00:00:00Z"],
+            &["locket", "agent", "logs", "--follow"],
             &["locket", "doctor"],
             &["locket", "debug", "bundle", "--redacted"],
             &["locket", "policy", "add", "dev", "--", "pnpm", "dev"],
@@ -8773,6 +9001,101 @@ argv = []
     }
 
     #[test]
+    fn agent_logs_filter_redact_rotate_and_harden_local_files()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        let base = 1_700_000_000_i64 * super::NANOS_PER_SECOND;
+        super::prepare_agent_log_dir(&context)?;
+        let log_path = super::agent_log_path(&context);
+        let old_path = super::agent_rotated_log_path(&context, 1);
+        fs::write(
+            &old_path,
+            format!(
+                "{}\n",
+                json!({
+                    "timestamp": base,
+                    "action": "old",
+                    "message": "older",
+                })
+            ),
+        )?;
+        fs::write(
+            &log_path,
+            format!(
+                "{}\n{}\n",
+                json!({
+                    "timestamp": base + super::NANOS_PER_SECOND,
+                    "action": "token",
+                    "message": "sk_test_sampleTokenValue123",
+                    "path": directory.path().join("project/.env").display().to_string(),
+                    "grant_token": "grant-token-value",
+                    "env": {"DATABASE_URL": "postgres://localhost/app"},
+                }),
+                json!({
+                    "timestamp": "2024-01-01T00:00:02Z",
+                    "action": "new",
+                    "message": "done",
+                }),
+            ),
+        )?;
+
+        let mut output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "agent", "logs", "--since", "2023-11-14T22:13:21Z"])?,
+            &context,
+            &mut output,
+        )?;
+        let output = String::from_utf8(output)?;
+        assert!(!output.contains("\"action\":\"old\""));
+        assert!(output.contains("\"action\":\"token\""));
+        assert!(output.contains("\"action\":\"new\""));
+        assert!(output.contains("lk_redacted_PROVIDER_TOKEN"));
+        assert!(output.contains("path_hash"));
+        assert!(!output.contains("sk_test_sampleTokenValue123"));
+        assert!(!output.contains(directory.path().to_string_lossy().as_ref()));
+        assert!(!output.contains("grant-token-value"));
+        assert!(!output.contains("postgres://localhost/app"));
+
+        let mut unix_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "agent", "logs", "--since", "1700000001"])?,
+            &context,
+            &mut unix_output,
+        )?;
+        assert!(!String::from_utf8(unix_output)?.contains("\"action\":\"old\""));
+
+        fs::write(&log_path, "x".repeat(usize::try_from(super::AGENT_LOG_MAX_BYTES)? + 1))?;
+        super::append_agent_log(&context, "rotated", "ok", "safe")?;
+        assert!(super::agent_rotated_log_path(&context, 1).exists());
+        assert!(fs::read_to_string(&log_path)?.contains("\"action\":\"rotated\""));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(fs::metadata(&log_path)?.permissions().mode() & 0o777, 0o600);
+            assert_eq!(
+                fs::metadata(super::agent_data_dir(&context))?.permissions().mode() & 0o777,
+                0o700
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn agent_logs_rejects_excessive_line_count() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        let mut output = Vec::new();
+        let result = run_with_context(
+            Cli::try_parse_from(["locket", "agent", "logs", "--lines", "10001"])?,
+            &context,
+            &mut output,
+        );
+        assert_error_contains(result, "capped at 10000");
+        Ok(())
+    }
+
+    #[test]
     fn doctor_reports_locked_safe_diagnostics_and_exit_codes()
     -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempdir()?;
@@ -9458,7 +9781,8 @@ argv = []
         assert!(recovery_dir.join("envelope.bin").exists());
 
         let recovered_key_store = Arc::new(MemoryMasterKeyStore::default());
-        let recovered_context = test_context_with_key_store(&directory, recovered_key_store.clone());
+        let recovered_context =
+            test_context_with_key_store(&directory, recovered_key_store.clone());
         let resolved = super::require_project(&recovered_context)?;
         let kdf = locket_platform::load_recovery_kdf_toml(&super::recovery_dir(&resolved))?;
         let envelope = locket_platform::load_recovery_envelope(&super::recovery_dir(&resolved))?;
@@ -9476,11 +9800,7 @@ argv = []
         assert!(recover_output.contains("recovered: master_key"));
         assert!(recover_output.contains("metadata_only: yes"));
         assert!(!recover_output.contains("postgres://localhost/app"));
-        assert!(
-            recovered_key_store
-                .load_master_key(resolved.config.project_id.as_str())
-                .is_ok()
-        );
+        assert!(recovered_key_store.load_master_key(resolved.config.project_id.as_str()).is_ok());
 
         let mut get_output = Vec::new();
         run_with_context(
