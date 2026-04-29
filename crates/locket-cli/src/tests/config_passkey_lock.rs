@@ -252,6 +252,85 @@ fn config_set_rejects_unknown_keys_invalid_values_and_secret_like_values()
 }
 
 #[test]
+fn config_value_validation_errors_are_typed_metadata_failures()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+
+    assert_typed_config_error(
+        run_with_context(
+            Cli::try_parse_from(["locket", "config", "set", "agent.autostart", "yes"])?,
+            &context,
+            &mut Vec::new(),
+        ),
+        &locket_core::LocketError::MetadataInvalid,
+        "true or false",
+    )?;
+    assert_typed_config_error(
+        run_with_context(
+            Cli::try_parse_from(["locket", "config", "set", "reveal.ttl", "not-a-duration"])?,
+            &context,
+            &mut Vec::new(),
+        ),
+        &locket_core::LocketError::MetadataInvalid,
+        "invalid config duration",
+    )?;
+    assert_typed_config_error(
+        run_with_context(
+            Cli::try_parse_from([
+                "locket",
+                "config",
+                "set",
+                "updates.manifest_url",
+                "http://updates.example.test/manifest.json",
+            ])?,
+            &context,
+            &mut Vec::new(),
+        ),
+        &locket_core::LocketError::MetadataInvalid,
+        "HTTPS URL",
+    )?;
+    assert_typed_config_error(
+        run_with_context(
+            Cli::try_parse_from([
+                "locket",
+                "config",
+                "set",
+                "reveal.ttl",
+                "sk_test_sampleTokenValue123",
+            ])?,
+            &context,
+            &mut Vec::new(),
+        ),
+        &locket_core::LocketError::MetadataLooksLikeSecret,
+        "looks like a secret",
+    )?;
+
+    fs::write(directory.path().join("config.toml"), "[privacy]\nredact_names = \"yes\"\n")?;
+    assert_typed_config_error(
+        run_with_context(
+            Cli::try_parse_from(["locket", "config", "get", "privacy.redact_names"])?,
+            &context,
+            &mut Vec::new(),
+        ),
+        &locket_core::LocketError::MetadataInvalid,
+        "invalid stored config value",
+    )?;
+
+    fs::write(directory.path().join("config.toml"), "agent = \"not-a-table\"\n")?;
+    assert_typed_config_error(
+        run_with_context(
+            Cli::try_parse_from(["locket", "config", "set", "agent.autostart", "true"])?,
+            &context,
+            &mut Vec::new(),
+        ),
+        &locket_core::LocketError::MetadataInvalid,
+        "config section is not a table",
+    )?;
+    Ok(())
+}
+
+#[test]
 fn config_get_and_list_reject_malformed_stored_values() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempdir()?;
     let context = test_context(&directory);
@@ -433,5 +512,22 @@ fn lock_and_unlock_use_direct_metadata_only_mode() -> Result<(), Box<dyn std::er
     assert!(unlock_output.contains("metadata-only direct CLI unlock succeeded"));
     assert!(unlock_output.contains("cached_keys: no"));
     assert!(unlock_output.contains("verify_user: not requested"));
+    Ok(())
+}
+
+fn assert_typed_config_error<T>(
+    result: Result<T, crate::CliError>,
+    expected_kind: &locket_core::LocketError,
+    expected_message: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let Err(error) = result else {
+        return Err(format!("expected typed config error containing {expected_message:?}").into());
+    };
+    assert_eq!(error.exit_code(), expected_kind.exit_code());
+    let crate::CliError::Typed { kind, message } = error else {
+        return Err(format!("expected typed config error, got {error:?}").into());
+    };
+    assert_eq!(&kind, expected_kind);
+    assert!(message.contains(expected_message), "{message}");
     Ok(())
 }
