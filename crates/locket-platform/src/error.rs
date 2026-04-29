@@ -33,6 +33,9 @@ pub enum PlatformError {
     /// Local filesystem operation failed.
     #[error(transparent)]
     Io(#[from] std::io::Error),
+    /// Process start metadata could not be read for grant binding.
+    #[error("process start metadata unavailable")]
+    ProcessStartTimeUnavailable,
     /// Passphrase fallback TOML decoding failed.
     #[error(transparent)]
     TomlDe(#[from] toml::de::Error),

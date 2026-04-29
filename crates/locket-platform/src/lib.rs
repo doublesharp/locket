@@ -8,12 +8,17 @@ mod error;
 mod fs_helpers;
 mod master_key;
 mod passphrase;
+mod process;
 mod recovery;
 mod user_verification;
 
 pub use error::PlatformError;
 pub use master_key::{KeyringMasterKeyStore, MasterKeyStore, MemoryMasterKeyStore};
 pub use passphrase::PassphraseFallbackMasterKeyStore;
+pub use process::{
+    ProcessBinding, current_process_binding, process_binding_for_pid,
+    process_binding_matches_live_process,
+};
 pub use recovery::{
     RECOVERY_KDF_TOML_VERSION, RecoveryEnvelope, RecoveryEnvelopeEntry, RecoveryKdfToml,
     load_recovery_envelope, load_recovery_kdf_toml, save_recovery_envelope, save_recovery_kdf_toml,

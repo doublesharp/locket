@@ -55,6 +55,9 @@ const fn platform_error_exit_code(error: &locket_platform::PlatformError) -> u8 
         | locket_platform::PlatformError::LocalUserVerificationUnavailable => {
             LocketError::UserVerificationFailed.exit_code()
         }
+        locket_platform::PlatformError::ProcessStartTimeUnavailable => {
+            LocketError::AgentUnavailable.exit_code()
+        }
         locket_platform::PlatformError::RecoveryEnvelopeSchemaUnsupported(_)
         | locket_platform::PlatformError::InvalidRecoveryEnvelope(_)
         | locket_platform::PlatformError::InvalidPassphraseFallback

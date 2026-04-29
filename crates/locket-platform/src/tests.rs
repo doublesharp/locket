@@ -3,9 +3,10 @@ use locket_crypto::{KEY_LEN, NONCE_LEN};
 use super::{
     LocalUserVerificationMethod, LocalUserVerificationRequest, LocalUserVerifier, MasterKeyStore,
     MemoryLocalUserVerifier, MemoryMasterKeyStore, PassphraseFallbackMasterKeyStore, PlatformError,
-    RecoveryEnvelope, RecoveryEnvelopeEntry, RecoveryKdfToml, UnavailableLocalUserVerifier,
-    decode_key, encode_key, load_recovery_envelope, load_recovery_kdf_toml, master_key_account,
-    save_recovery_envelope, save_recovery_kdf_toml,
+    ProcessBinding, RecoveryEnvelope, RecoveryEnvelopeEntry, RecoveryKdfToml,
+    UnavailableLocalUserVerifier, current_process_binding, decode_key, encode_key,
+    load_recovery_envelope, load_recovery_kdf_toml, master_key_account,
+    process_binding_matches_live_process, save_recovery_envelope, save_recovery_kdf_toml,
 };
 
 const PROJECT_ID: &str = "lk_proj_test";
@@ -94,6 +95,33 @@ fn memory_user_verifier_supports_success_and_failure() -> Result<(), PlatformErr
         MemoryLocalUserVerifier::denying().verify_user(&request),
         Err(PlatformError::LocalUserVerificationFailed)
     ));
+    Ok(())
+}
+
+#[test]
+fn current_process_binding_matches_current_process() -> Result<(), PlatformError> {
+    let binding = current_process_binding()?;
+
+    assert_eq!(binding.pid, std::process::id());
+    assert!(!binding.process_start_time.is_empty());
+    assert!(process_binding_matches_live_process(&binding)?);
+    Ok(())
+}
+
+#[test]
+fn process_binding_rejects_start_time_mismatch() -> Result<(), PlatformError> {
+    let current = current_process_binding()?;
+    let stale = ProcessBinding::new(current.pid, format!("{}-stale", current.process_start_time));
+
+    assert!(!process_binding_matches_live_process(&stale)?);
+    Ok(())
+}
+
+#[test]
+fn process_binding_rejects_missing_pid_without_trusting_pid() -> Result<(), PlatformError> {
+    let missing = ProcessBinding::new(u32::MAX, "not-a-real-start-time");
+
+    assert!(!process_binding_matches_live_process(&missing)?);
     Ok(())
 }
 

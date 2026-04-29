@@ -3,12 +3,14 @@
 mod envelope;
 mod error;
 mod framing;
+mod grant;
 mod method;
 mod status;
 
 pub use envelope::{ErrorEnvelope, RequestEnvelope, ResponseEnvelope, SuccessEnvelope};
 pub use error::ProtocolError;
 pub use framing::{decode_request_frame, decode_response_frame, encode_frame};
+pub use grant::{GrantBinding, GrantRecord, GrantTable, GrantValidation};
 pub use method::{AgentMethod, UnknownMethod};
 pub use status::{
     LockState, STATUS_HEARTBEAT_INTERVAL_SECS, StatusEvent, StatusEventKind, StatusEventSequence,
