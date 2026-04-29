@@ -17,7 +17,7 @@ else
 CARGO_OFFLINE_FLAG :=
 endif
 
-.PHONY: ci ci-local ci-strict fmt fmt-check clippy test nextest coverage coverage-html coverage-branch mutation supply-chain supply-chain-local audit deny unsafe-inventory sbom bench bench-ci bench-report fuzz-list fuzz-smoke fuzz fuzz-nightly leak-canary clean
+.PHONY: ci ci-local ci-strict fmt fmt-check clippy test nextest coverage coverage-html coverage-branch mutation supply-chain supply-chain-local audit deny unsafe-inventory sbom bench bench-ci bench-report fuzz-list fuzz-smoke fuzz fuzz-nightly leak-canary docs-check clean
 
 # Local default gate. It avoids network by default and skips missing optional tools
 # with explicit warnings. Use `make ci-strict OFFLINE=0 STRICT=1` for release-style
@@ -26,7 +26,7 @@ ci: ci-local
 
 ci-local: fmt-check clippy test leak-canary bench-ci supply-chain-local
 
-ci-strict: fmt-check clippy test coverage coverage-branch mutation leak-canary bench-ci deny audit fuzz-smoke
+ci-strict: fmt-check clippy test coverage coverage-branch mutation leak-canary docs-check bench-ci deny audit fuzz-smoke
 
 fmt:
 	$(CARGO) fmt --all
@@ -96,6 +96,9 @@ fuzz-nightly:
 
 leak-canary:
 	scripts/leak-canary.sh
+
+docs-check:
+	scripts/docs-check.pl
 
 clean:
 	$(CARGO) clean
