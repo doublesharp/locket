@@ -665,7 +665,8 @@ editing — they drift. Severity: **blocker** (security/correctness),
   exist. Remaining: broader CLI/agent/UI artifact scanning.
   - Spec: `docs/specs/testing.md` leak-canary section.
   - Files: `scripts/leak-canary*` and the canary test harness.
-- [ ] Signed distribution packaging and opt-in update-check verification
+- [~] [b67f47d6] Signed distribution packaging and opt-in update-check verification
+  Claim: branch agent-b67f47d6/update-manifest-verifier, worktree .worktrees/agent-b67f47d6-update-manifest-verifier. Scope: add offline signed update-manifest schema/verifier and typed `UpdateManifestInvalid`; leave package builders/signing workflows as follow-ups.
   (Homebrew, signed macOS package, signed Windows MSI, Linux package, signed
   VS Code extension).
   - Spec: `docs/specs/operations.md:27-53`.
