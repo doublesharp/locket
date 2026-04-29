@@ -216,7 +216,7 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
   name; reject at every editor before write.
 - [ ] `locket init` atomic rollback and resumable-partial-state when
   store/keychain/recovery-envelope creation fails mid-flight.
-- [ ] Dotenv import: name-level parity check (never run user app) and
+- [x] Dotenv import: name-level parity check (never run user app) and
   explicit post-import confirmation to delete `.env`.
 - [x] `.env.example` Locket-managed block markers
   (`# --- BEGIN/END LOCKET MANAGED ---`); rewrite only between markers;
@@ -694,13 +694,9 @@ editing — they drift. Severity: **blocker** (security/correctness),
 - [x] `locket doctor`.
 - [x] Redacted `locket agent logs`.
 - [x] `locket debug bundle --redacted`.
-- [ ] Expand tests from current core/CLI coverage toward spec coverage targets.
-  - Spec: `docs/specs/testing.md`.
-  - Files: per-crate `tests/` modules; current line coverage gate at 90%.
-- [ ] Integration and end-to-end coverage for agent, policy/run, Docker/Compose,
+- [ ] Expand tests toward spec coverage (90% line/branch gate).
+- [ ] End-to-end coverage for agent, policy/run, Docker/Compose,
   recovery, bundles, team invite accept, and UI/editor smoke flows.
-  - Spec: `docs/specs/testing.md`.
-  - Files: new `tests/e2e/` workspace under each integration owner crate.
 - [x] Required fuzz targets landed under `fuzz/fuzz_targets/` (cadence
   and sanitizer gates tracked under the fuzz tooling TODO below).
 - [~] Bench harnesses and performance gates. Local bench smoke/report scaffolding
