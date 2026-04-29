@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use locket_core::{PolicyDocument, ProfileName, ProjectConfig, ProjectId};
+use locket_core::{PolicyDocument, ProfileName, ProjectConfig, ProjectId, SecretName};
 use serde::Deserialize;
 use toml::{Table, Value};
 
@@ -86,9 +86,9 @@ impl ProjectTemplate {
     }
 }
 
-pub fn load_project_template(config_path: &Path, name: &str) -> Result<ProjectTemplate, CliError> {
+pub fn load_project_template(template_dir: &Path, name: &str) -> Result<ProjectTemplate, CliError> {
     validate_template_name(name)?;
-    let local_path = template_dir(config_path).join(format!("{name}.toml"));
+    let local_path = template_dir.join(format!("{name}.toml"));
     if local_path.exists() {
         let text = fs::read_to_string(&local_path)?;
         return parse_project_template(&text, TemplateSource::Local(local_path));
@@ -100,10 +100,6 @@ pub fn load_project_template(config_path: &Path, name: &str) -> Result<ProjectTe
         "unknown template {name:?}; expected a local template at {} or built-in template \"basic\"",
         local_path.display()
     )))
-}
-
-fn template_dir(config_path: &Path) -> PathBuf {
-    config_path.parent().map_or_else(|| PathBuf::from("templates"), |path| path.join("templates"))
 }
 
 fn parse_project_template(text: &str, source: TemplateSource) -> Result<ProjectTemplate, CliError> {
@@ -120,7 +116,12 @@ fn parse_project_template(text: &str, source: TemplateSource) -> Result<ProjectT
                 .map_err(|_| CliError::Config("template profile name is invalid".to_owned()))?,
         );
     }
-    let expected_secrets = raw.expected_secrets.unwrap_or_default().into_iter().collect();
+    let mut expected_secrets = BTreeSet::new();
+    for secret in raw.expected_secrets.unwrap_or_default() {
+        let secret_name = SecretName::new(secret)
+            .map_err(|_| CliError::Config("template expected secret name is invalid".to_owned()))?;
+        expected_secrets.insert(secret_name.into_string());
+    }
     let commands = value.as_table().and_then(|table| table.get("commands")).cloned();
     Ok(ProjectTemplate {
         source,
