@@ -155,6 +155,29 @@ fn invalid_profile_name_errors_exit_64() {
 }
 
 #[test]
+fn unsupported_config_key_via_config_get_exits_64() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+
+    let result = run_with_context(
+        Cli::try_parse_from(["locket", "config", "get", "not.a.real.key"])?,
+        &context,
+        &mut Vec::new(),
+    );
+    let Err(error) = result else {
+        return Err("config get with unsupported key should fail".into());
+    };
+    assert_eq!(error.exit_code(), 64);
+    assert!(error.to_string().contains("unsupported config key"));
+    Ok(())
+}
+
+#[test]
 fn invalid_iso_date_via_diff_command_exits_64() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempdir()?;
     let context = test_context(&directory);

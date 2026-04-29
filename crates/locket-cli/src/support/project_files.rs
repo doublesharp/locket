@@ -14,7 +14,7 @@ use sha2::{Digest, Sha256};
 use crate::commands::config::spec::{read_user_config, split_config_key};
 use crate::{
     CliError, LOCKET_TOML, ResolvedProject, RuntimeContext, confirmation_failed_error, format_hex,
-    load_project_key, now_unix_nanos, open_store, require_project,
+    load_project_key, metadata_invalid_error, now_unix_nanos, open_store, require_project,
 };
 
 pub const EXAMPLE_FILE: &str = ".env.example";
@@ -161,7 +161,7 @@ fn read_config_table(path: &Path) -> Result<toml::Table, CliError> {
 
 pub fn config_bool_value(config: &toml::Table, key: &str) -> Result<Option<bool>, CliError> {
     let Some((section, name)) = split_config_key(key) else {
-        return Err(CliError::Config("unsupported config key".to_owned()));
+        return Err(metadata_invalid_error("unsupported config key"));
     };
     let Some(section_value) = config.get(section) else {
         return Ok(None);

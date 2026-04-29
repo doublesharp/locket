@@ -12,8 +12,8 @@ use locket_store::{AuditWrite, RuntimeSessionSecretNameRetention};
 use serde_json::json;
 
 use crate::{
-    CONFIG_TOML, CliError, RuntimeContext, load_project_key, now_unix_nanos, open_store,
-    resolve_project,
+    CONFIG_TOML, CliError, RuntimeContext, load_project_key, metadata_invalid_error,
+    now_unix_nanos, open_store, resolve_project,
 };
 
 #[derive(Clone, Copy)]
@@ -140,7 +140,7 @@ pub fn validate_config_key(key: &str) -> Result<&'static ConfigKeySpec, CliError
     CONFIG_KEY_SPECS
         .iter()
         .find(|spec| spec.key == key)
-        .ok_or_else(|| CliError::Config("unsupported config key".to_owned()))
+        .ok_or_else(|| metadata_invalid_error("unsupported config key"))
 }
 
 pub fn validate_config_value_not_secret_like(value: &str) -> Result<(), CliError> {
@@ -299,8 +299,8 @@ pub fn config_set_value(
     key: &str,
     value: toml::Value,
 ) -> Result<(), CliError> {
-    let (section, name) = split_config_key(key)
-        .ok_or_else(|| CliError::Config("unsupported config key".to_owned()))?;
+    let (section, name) =
+        split_config_key(key).ok_or_else(|| metadata_invalid_error("unsupported config key"))?;
     let section_value =
         config.entry(section.to_owned()).or_insert_with(|| toml::Value::Table(toml::Table::new()));
     let Some(section_table) = section_value.as_table_mut() else {
@@ -311,8 +311,8 @@ pub fn config_set_value(
 }
 
 pub fn config_unset_value(config: &mut toml::Table, key: &str) -> Result<(), CliError> {
-    let (section, name) = split_config_key(key)
-        .ok_or_else(|| CliError::Config("unsupported config key".to_owned()))?;
+    let (section, name) =
+        split_config_key(key).ok_or_else(|| metadata_invalid_error("unsupported config key"))?;
     let should_remove_section = if let Some(section_value) = config.get_mut(section) {
         let Some(section_table) = section_value.as_table_mut() else {
             return Err(CliError::Config("config section is not a table".to_owned()));
