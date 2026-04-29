@@ -23,9 +23,9 @@ use locket_scan::{
     FindingKind, KnownRedaction, ScanFinding, redact_text, redact_text_with_known_values, scan_text,
 };
 use locket_store::{
-    AuditContext, AuditWrite, DirectoryGrantRecord, KeyRecord, ProfileRecord, SecretBlobRecord,
-    SecretCopyTarget, SecretFingerprintRecord, SecretRecord, SecretVersionRecord, Store,
-    StoreError, VersionDeprecation,
+    AuditContext, AuditWrite, DirectoryGrantRecord, KeyRecord, ProfileRecord,
+    RuntimeSessionSecretNameRetention, SecretBlobRecord, SecretCopyTarget, SecretFingerprintRecord,
+    SecretRecord, SecretVersionRecord, Store, StoreError, VersionDeprecation,
 };
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -2211,6 +2211,7 @@ fn config_list_command(context: &RuntimeContext, output: &mut impl Write) -> Res
     let mut listed = 0_u32;
     for spec in CONFIG_KEY_SPECS {
         if let Some(value) = config_get_value(&config, spec.key) {
+            validate_stored_config_value(spec, value)?;
             writeln!(output, "{}={}", spec.key, format_config_value(value))?;
             listed += 1;
         }
@@ -2226,10 +2227,11 @@ fn config_get_command(
     output: &mut impl Write,
     key: &str,
 ) -> Result<(), CliError> {
-    validate_config_key(key)?;
+    let spec = validate_config_key(key)?;
     let config = read_user_config(context)?;
     let value = config_get_value(&config, key)
         .ok_or_else(|| CliError::Config("config key is not set".to_owned()))?;
+    validate_stored_config_value(spec, value)?;
     writeln!(output, "{}", format_config_value(value))?;
     Ok(())
 }
@@ -5271,16 +5273,111 @@ struct ConfigKeySpec {
 enum ConfigValueKind {
     Bool,
     Duration,
+    DurationMax { max_secs: u64, message: &'static str },
+    Enum { values: &'static [&'static str], message: &'static str },
+    EditorDefault,
+    HttpsUrl,
+    RuntimeSessionSecretNameRetention,
 }
 
-const CONFIG_KEY_SPECS: [ConfigKeySpec; 5] = [
+const UI_THEME_VALUES: &[&str] = &["system", "light", "dark"];
+const UI_DENSITY_VALUES: &[&str] = &["comfortable", "compact"];
+const SHELL_INTEGRATION_VALUES: &[&str] = &["off", "prompt-only", "hook"];
+const UPDATES_CHANNEL_VALUES: &[&str] = &["off", "stable", "beta"];
+
+const CONFIG_KEY_SPECS: &[ConfigKeySpec] = &[
+    ConfigKeySpec {
+        key: "ui.theme",
+        kind: ConfigValueKind::Enum {
+            values: UI_THEME_VALUES,
+            message: "ui.theme must be system, light, or dark",
+        },
+        audit: false,
+    },
+    ConfigKeySpec {
+        key: "ui.density",
+        kind: ConfigValueKind::Enum {
+            values: UI_DENSITY_VALUES,
+            message: "ui.density must be comfortable or compact",
+        },
+        audit: false,
+    },
     ConfigKeySpec { key: "privacy.redact_names", kind: ConfigValueKind::Bool, audit: false },
-    ConfigKeySpec { key: "example.auto_refresh", kind: ConfigValueKind::Bool, audit: false },
+    ConfigKeySpec { key: "editor.default", kind: ConfigValueKind::EditorDefault, audit: false },
     ConfigKeySpec { key: "agent.autostart", kind: ConfigValueKind::Bool, audit: true },
-    ConfigKeySpec { key: "reveal.ttl", kind: ConfigValueKind::Duration, audit: true },
+    ConfigKeySpec { key: "agent.unlock_ttl", kind: ConfigValueKind::Duration, audit: true },
     ConfigKeySpec {
         key: "runtime.session_secret_name_retention",
-        kind: ConfigValueKind::Duration,
+        kind: ConfigValueKind::RuntimeSessionSecretNameRetention,
+        audit: true,
+    },
+    ConfigKeySpec {
+        key: "reveal.ttl",
+        kind: ConfigValueKind::DurationMax {
+            max_secs: 300,
+            message: "reveal.ttl must be 5m or less",
+        },
+        audit: true,
+    },
+    ConfigKeySpec {
+        key: "rotation.max_grace_ttl",
+        kind: ConfigValueKind::DurationMax {
+            max_secs: 30 * 24 * 60 * 60,
+            message: "rotation.max_grace_ttl must be 30d or less",
+        },
+        audit: true,
+    },
+    ConfigKeySpec {
+        key: "shell.integration",
+        kind: ConfigValueKind::Enum {
+            values: SHELL_INTEGRATION_VALUES,
+            message: "shell.integration must be off, prompt-only, or hook",
+        },
+        audit: true,
+    },
+    ConfigKeySpec {
+        key: "updates.channel",
+        kind: ConfigValueKind::Enum {
+            values: UPDATES_CHANNEL_VALUES,
+            message: "updates.channel must be off, stable, or beta",
+        },
+        audit: true,
+    },
+    ConfigKeySpec { key: "updates.manifest_url", kind: ConfigValueKind::HttpsUrl, audit: true },
+    ConfigKeySpec { key: "example.auto_refresh", kind: ConfigValueKind::Bool, audit: false },
+    ConfigKeySpec {
+        key: "user_verification_required_for.unlock",
+        kind: ConfigValueKind::Bool,
+        audit: true,
+    },
+    ConfigKeySpec {
+        key: "user_verification_required_for.reveal",
+        kind: ConfigValueKind::Bool,
+        audit: true,
+    },
+    ConfigKeySpec {
+        key: "user_verification_required_for.copy",
+        kind: ConfigValueKind::Bool,
+        audit: true,
+    },
+    ConfigKeySpec {
+        key: "user_verification_required_for.dangerous_profile_switch",
+        kind: ConfigValueKind::Bool,
+        audit: true,
+    },
+    ConfigKeySpec {
+        key: "user_verification_required_for.recovery",
+        kind: ConfigValueKind::Bool,
+        audit: true,
+    },
+    ConfigKeySpec {
+        key: "user_verification_required_for.team_accept",
+        kind: ConfigValueKind::Bool,
+        audit: true,
+    },
+    ConfigKeySpec {
+        key: "user_verification_required_for.device_register",
+        kind: ConfigValueKind::Bool,
         audit: true,
     },
 ];
@@ -5316,7 +5413,105 @@ fn parse_config_value(spec: &ConfigKeySpec, value: &str) -> Result<toml::Value, 
                 .map_err(|_| CliError::Config("invalid config duration".to_owned()))?;
             Ok(toml::Value::String(value.to_owned()))
         }
+        ConfigValueKind::DurationMax { max_secs, message } => {
+            let duration = LocketDuration::from_str(value)
+                .map_err(|_| CliError::Config("invalid config duration".to_owned()))?;
+            if duration.as_secs() > max_secs {
+                return Err(CliError::Config(message.to_owned()));
+            }
+            Ok(toml::Value::String(value.to_owned()))
+        }
+        ConfigValueKind::Enum { values, message } => {
+            if values.contains(&value) {
+                Ok(toml::Value::String(value.to_owned()))
+            } else {
+                Err(CliError::Config(message.to_owned()))
+            }
+        }
+        ConfigValueKind::EditorDefault => {
+            validate_editor_default(value)?;
+            Ok(toml::Value::String(value.to_owned()))
+        }
+        ConfigValueKind::HttpsUrl => {
+            validate_https_url(value)?;
+            Ok(toml::Value::String(value.to_owned()))
+        }
+        ConfigValueKind::RuntimeSessionSecretNameRetention => {
+            RuntimeSessionSecretNameRetention::from_str(value).map_err(|_| {
+                CliError::Config(
+                    "runtime.session_secret_name_retention must be a duration or off".to_owned(),
+                )
+            })?;
+            Ok(toml::Value::String(value.to_owned()))
+        }
     }
+}
+
+fn validate_stored_config_value(spec: &ConfigKeySpec, value: &toml::Value) -> Result<(), CliError> {
+    match spec.kind {
+        ConfigValueKind::Bool => {
+            if value.as_bool().is_some() {
+                Ok(())
+            } else {
+                Err(invalid_stored_config_value(spec.key))
+            }
+        }
+        ConfigValueKind::Duration
+        | ConfigValueKind::DurationMax { .. }
+        | ConfigValueKind::Enum { .. }
+        | ConfigValueKind::EditorDefault
+        | ConfigValueKind::HttpsUrl
+        | ConfigValueKind::RuntimeSessionSecretNameRetention => {
+            let Some(value) = value.as_str() else {
+                return Err(invalid_stored_config_value(spec.key));
+            };
+            parse_config_value(spec, value)
+                .map(|_| ())
+                .map_err(|_| invalid_stored_config_value(spec.key))
+        }
+    }
+}
+
+fn invalid_stored_config_value(key: &str) -> CliError {
+    CliError::Config(format!("invalid stored config value for {key}"))
+}
+
+fn validate_editor_default(value: &str) -> Result<(), CliError> {
+    if value.is_empty() || value.chars().any(char::is_control) {
+        return Err(CliError::Config(
+            "editor.default must be a command name or absolute path".to_owned(),
+        ));
+    }
+    if value.starts_with('~') || value.contains('$') || value.contains('`') {
+        return Err(CliError::Config("editor.default must not use shell expansion".to_owned()));
+    }
+    if Path::new(value).is_absolute() {
+        return Ok(());
+    }
+    let shell_meta = ['/', '\\', '|', '&', ';', '<', '>', '(', ')'];
+    if value.chars().any(char::is_whitespace) || value.chars().any(|c| shell_meta.contains(&c)) {
+        return Err(CliError::Config(
+            "editor.default must be a command name or absolute path".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_https_url(value: &str) -> Result<(), CliError> {
+    let Some(rest) = value.strip_prefix("https://") else {
+        return Err(CliError::Config("updates.manifest_url must be an HTTPS URL".to_owned()));
+    };
+    if rest.is_empty()
+        || value.chars().any(char::is_whitespace)
+        || value.chars().any(char::is_control)
+    {
+        return Err(CliError::Config("updates.manifest_url must be an HTTPS URL".to_owned()));
+    }
+    let host = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    if host.is_empty() || host.starts_with(':') || host.contains('@') {
+        return Err(CliError::Config("updates.manifest_url must be an HTTPS URL".to_owned()));
+    }
+    Ok(())
 }
 
 fn read_user_config(runtime: &RuntimeContext) -> Result<toml::Table, CliError> {
@@ -7976,6 +8171,39 @@ argv = []
         assert!(list_output.contains("privacy.redact_names=true"));
         assert!(list_output.contains("reveal.ttl=5m"));
 
+        let mut agent_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "config", "set", "agent.autostart", "false"])?,
+            &context,
+            &mut agent_output,
+        )?;
+        assert_eq!(String::from_utf8(agent_output)?, "set agent.autostart\n");
+
+        let mut refresh_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "config", "set", "example.auto_refresh", "false"])?,
+            &context,
+            &mut refresh_output,
+        )?;
+        assert_eq!(String::from_utf8(refresh_output)?, "set example.auto_refresh\n");
+
+        let mut retention_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from([
+                "locket",
+                "config",
+                "set",
+                "runtime.session_secret_name_retention",
+                "off",
+            ])?,
+            &context,
+            &mut retention_output,
+        )?;
+        assert_eq!(
+            String::from_utf8(retention_output)?,
+            "set runtime.session_secret_name_retention\n"
+        );
+
         let mut unset_output = Vec::new();
         run_with_context(
             Cli::try_parse_from(["locket", "config", "unset", "privacy.redact_names"])?,
@@ -7991,6 +8219,49 @@ argv = []
             &mut get_unset_output,
         );
         assert_error_contains(result, "config key is not set");
+        Ok(())
+    }
+
+    #[test]
+    fn config_commands_manage_documented_non_secret_preferences()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+
+        for (key, value) in [
+            ("ui.theme", "dark"),
+            ("ui.density", "compact"),
+            ("editor.default", "vim"),
+            ("agent.unlock_ttl", "15m"),
+            ("rotation.max_grace_ttl", "30d"),
+            ("shell.integration", "prompt-only"),
+            ("updates.channel", "stable"),
+            ("updates.manifest_url", "https://updates.example.test/manifest.json"),
+            ("user_verification_required_for.unlock", "true"),
+            ("user_verification_required_for.dangerous_profile_switch", "true"),
+        ] {
+            let mut output = Vec::new();
+            run_with_context(
+                Cli::try_parse_from(["locket", "config", "set", key, value])?,
+                &context,
+                &mut output,
+            )?;
+            assert_eq!(String::from_utf8(output)?, format!("set {key}\n"));
+        }
+
+        let mut list_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "config", "list"])?,
+            &context,
+            &mut list_output,
+        )?;
+        let list_output = String::from_utf8(list_output)?;
+        assert!(list_output.contains("ui.theme=dark"));
+        assert!(list_output.contains("editor.default=vim"));
+        assert!(
+            list_output.contains("updates.manifest_url=https://updates.example.test/manifest.json")
+        );
+        assert!(list_output.contains("user_verification_required_for.unlock=true"));
         Ok(())
     }
 
@@ -8017,6 +8288,74 @@ argv = []
         assert_error_contains(invalid_bool, "true or false");
 
         let mut output = Vec::new();
+        let oversized_ttl = run_with_context(
+            Cli::try_parse_from(["locket", "config", "set", "reveal.ttl", "6m"])?,
+            &context,
+            &mut output,
+        );
+        assert_error_contains(oversized_ttl, "5m or less");
+
+        let mut output = Vec::new();
+        let invalid_retention = run_with_context(
+            Cli::try_parse_from([
+                "locket",
+                "config",
+                "set",
+                "runtime.session_secret_name_retention",
+                "forever",
+            ])?,
+            &context,
+            &mut output,
+        );
+        assert_error_contains(invalid_retention, "duration or off");
+
+        let mut output = Vec::new();
+        let invalid_theme = run_with_context(
+            Cli::try_parse_from(["locket", "config", "set", "ui.theme", "purple"])?,
+            &context,
+            &mut output,
+        );
+        assert_error_contains(invalid_theme, "system, light, or dark");
+
+        let mut output = Vec::new();
+        let invalid_editor = run_with_context(
+            Cli::try_parse_from(["locket", "config", "set", "editor.default", "~/bin/editor"])?,
+            &context,
+            &mut output,
+        );
+        assert_error_contains(invalid_editor, "shell expansion");
+
+        let mut output = Vec::new();
+        let invalid_rotation = run_with_context(
+            Cli::try_parse_from(["locket", "config", "set", "rotation.max_grace_ttl", "31d"])?,
+            &context,
+            &mut output,
+        );
+        assert_error_contains(invalid_rotation, "30d or less");
+
+        let mut output = Vec::new();
+        let invalid_shell = run_with_context(
+            Cli::try_parse_from(["locket", "config", "set", "shell.integration", "always"])?,
+            &context,
+            &mut output,
+        );
+        assert_error_contains(invalid_shell, "off, prompt-only, or hook");
+
+        let mut output = Vec::new();
+        let invalid_manifest = run_with_context(
+            Cli::try_parse_from([
+                "locket",
+                "config",
+                "set",
+                "updates.manifest_url",
+                "http://updates.example.test/manifest.json",
+            ])?,
+            &context,
+            &mut output,
+        );
+        assert_error_contains(invalid_manifest, "HTTPS URL");
+
+        let mut output = Vec::new();
         let token = run_with_context(
             Cli::try_parse_from([
                 "locket",
@@ -8030,6 +8369,31 @@ argv = []
         );
         assert_error_contains(token, "looks like a secret");
         assert!(!directory.path().join("config.toml").exists());
+        Ok(())
+    }
+
+    #[test]
+    fn config_get_and_list_reject_malformed_stored_values() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        fs::write(directory.path().join("config.toml"), "[privacy]\nredact_names = \"yes\"\n")?;
+
+        let mut get_output = Vec::new();
+        let get = run_with_context(
+            Cli::try_parse_from(["locket", "config", "get", "privacy.redact_names"])?,
+            &context,
+            &mut get_output,
+        );
+        assert_error_contains(get, "invalid stored config value for privacy.redact_names");
+
+        let mut list_output = Vec::new();
+        let list = run_with_context(
+            Cli::try_parse_from(["locket", "config", "list"])?,
+            &context,
+            &mut list_output,
+        );
+        assert_error_contains(list, "invalid stored config value for privacy.redact_names");
         Ok(())
     }
 
