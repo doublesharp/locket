@@ -4,13 +4,13 @@ use std::io::{self, IsTerminal, Write};
 use std::path::Path;
 use std::process::{Command as ProcessCommand, Stdio};
 
-use crate::GetArgs;
 use crate::runtime::RuntimeContext;
 use crate::runtime::error::CliError;
 use crate::support::secret_helpers::{
     ValueAccessAudit, decrypt_current_secret, resolve_active_secret, reveal_ttl_seconds,
     write_value_access_audit_if_available,
 };
+use crate::{GetArgs, access_denied_error};
 
 pub fn get_command(
     context: &RuntimeContext,
@@ -50,6 +50,7 @@ pub fn get_command_with_clipboard(
             clipboard_supported: Some(result.is_ok()),
             clipboard_clear_supported: Some(false),
             unsupported_reason,
+            denial_reason: None,
         })?;
         result.map_err(CliError::Config)?;
         writeln!(
@@ -64,9 +65,21 @@ pub fn get_command_with_clipboard(
     }
     if args.reveal {
         if !args.force && !io::stdout().is_terminal() {
-            return Err(CliError::Config(
-                "get --reveal requires an interactive terminal; pass --force for noninteractive stdout"
-                    .to_owned(),
+            write_value_access_audit_if_available(&ValueAccessAudit {
+                context,
+                resolved: &resolved_secret,
+                action: "REVEAL",
+                status: "DENIED",
+                access_mode: "stdout",
+                ttl_seconds: None,
+                force: args.force,
+                clipboard_supported: None,
+                clipboard_clear_supported: None,
+                unsupported_reason: None,
+                denial_reason: Some("noninteractive_terminal"),
+            })?;
+            return Err(access_denied_error(
+                "get --reveal requires an interactive terminal; pass --force for noninteractive stdout",
             ));
         }
         let value = decrypt_current_secret(context, &resolved_secret)?;
@@ -81,6 +94,7 @@ pub fn get_command_with_clipboard(
             clipboard_supported: None,
             clipboard_clear_supported: None,
             unsupported_reason: None,
+            denial_reason: None,
         })?;
         writeln!(output, "{}", value.as_str())?;
         return Ok(());

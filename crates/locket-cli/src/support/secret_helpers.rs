@@ -47,6 +47,7 @@ pub struct ValueAccessAudit<'a> {
     pub clipboard_supported: Option<bool>,
     pub clipboard_clear_supported: Option<bool>,
     pub unsupported_reason: Option<&'a str>,
+    pub denial_reason: Option<&'static str>,
 }
 
 #[derive(Clone, Copy)]
@@ -344,6 +345,7 @@ pub fn write_value_access_audit_if_available(
         "schema_version": 1,
         "action": request.action,
         "status": request.status,
+        "command": "get",
         "secret_name": &request.resolved.secret.name,
         "profile": &request.resolved.profile.name,
         "profile_id": &request.resolved.profile.id,
@@ -355,6 +357,7 @@ pub fn write_value_access_audit_if_available(
         "clipboard_supported": request.clipboard_supported,
         "clipboard_clear_supported": request.clipboard_clear_supported,
         "unsupported_reason": request.unsupported_reason,
+        "denial_reason": request.denial_reason,
     });
     let audit = AuditWrite {
         project_id,

@@ -390,14 +390,29 @@ fn reveal_requires_force_for_noninteractive_stdout_and_audits_force()
     assert_eq!(String::from_utf8(forced_output)?, "postgres://localhost/app\n");
 
     let store = locket_store::Store::open(directory.path().join("store.db"))?;
-    let metadata: String = store.connection().query_row(
-        "SELECT metadata_json FROM audit_log WHERE action = 'REVEAL'",
-        [],
-        |row| row.get(0),
+    let mut statement = store.connection().prepare(
+        "SELECT command, status, metadata_json FROM audit_log WHERE action = 'REVEAL' ORDER BY sequence",
     )?;
-    assert!(metadata.contains("\"force\":true"));
-    assert!(metadata.contains("\"access_mode\":\"stdout\""));
-    assert!(!metadata.contains("postgres://localhost/app"));
+    let rows = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    assert_eq!(rows.len(), 2);
+    let (denied_command, denied_status, denied_metadata) = &rows[0];
+    assert_eq!(denied_command, "get");
+    assert_eq!(denied_status, "DENIED");
+    assert!(denied_metadata.contains("\"command\":\"get\""));
+    assert!(denied_metadata.contains("\"denial_reason\":\"noninteractive_terminal\""));
+    assert!(denied_metadata.contains("\"force\":false"));
+    assert!(!denied_metadata.contains("postgres://localhost/app"));
+    let (success_command, success_status, success_metadata) = &rows[1];
+    assert_eq!(success_command, "get");
+    assert_eq!(success_status, "SUCCESS");
+    assert!(success_metadata.contains("\"command\":\"get\""));
+    assert!(success_metadata.contains("\"force\":true"));
+    assert!(success_metadata.contains("\"access_mode\":\"stdout\""));
+    assert!(!success_metadata.contains("postgres://localhost/app"));
     Ok(())
 }
 

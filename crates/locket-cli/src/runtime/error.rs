@@ -105,6 +105,10 @@ pub fn confirmation_failed_error(message: impl Into<String>) -> CliError {
     typed_cli_error(LocketError::ConfirmationFailed, message)
 }
 
+pub fn access_denied_error(message: impl Into<String>) -> CliError {
+    typed_cli_error(LocketError::AccessDenied, message)
+}
+
 pub fn scan_finding_blocked_error(message: impl Into<String>) -> CliError {
     typed_cli_error(LocketError::ScanFindingBlocked, message)
 }
