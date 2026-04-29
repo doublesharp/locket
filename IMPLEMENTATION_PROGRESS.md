@@ -574,7 +574,7 @@ editing — they drift. Severity: **blocker** (security/correctness),
 - [x] **important** — `EnvMap` values now wrap in `Zeroizing` so
   decrypted secrets clear on drop.
 
-- [~] **important** — Typed error system underused: ~6 typed callers vs ~249
+- [~] [723116e9] **important** — Typed error system underused: ~6 typed callers vs ~249
   `CliError::Config`.
   Partial: SecretNotFound (77), ProfileNotFound (78), ConfirmationFailed (68)
   variants added in `e6e2447` and the highest-frequency callsites (`secret not
@@ -671,9 +671,7 @@ editing — they drift. Severity: **blocker** (security/correctness),
   - Audit actions: none (release tooling is out-of-process).
   - Files: `scripts/release/`, signing config in `Cargo.toml` workspace
     metadata once tooling is chosen.
-- [x] Markdown/spec link checks and release-readiness documentation gates.
-  - Spec: `docs/specs/operations.md` release checks.
-  - Files: `Makefile` (`make docs-check`), CI workflow.
+- [x] Markdown/spec link checks via `make docs-check`.
 
 ## Spec-by-Spec Completion Gates
 
