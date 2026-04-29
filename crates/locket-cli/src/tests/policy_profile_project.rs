@@ -664,9 +664,29 @@ fn shell_snippets_are_metadata_only() -> Result<(), Box<dyn std::error::Error>> 
     let shellenv_output = String::from_utf8(shellenv_output)?;
     assert!(shellenv_output.contains(crate::SHELL_HOOK_BEGIN));
     assert!(shellenv_output.contains("__LOCKET_SHELLENV_SOURCED"));
+    assert!(shellenv_output.contains("locket_prompt_segment()"));
+    assert!(shellenv_output.contains("^project: "));
+    assert!(shellenv_output.contains("^default_profile: "));
+    assert!(shellenv_output.contains("^lock_state: "));
+    assert!(shellenv_output.contains(" · "));
+    assert!(shellenv_output.contains("🔒"));
+    assert!(shellenv_output.contains("🔓"));
+    assert!(!shellenv_output.contains("project_id:"));
     assert!(!shellenv_output.contains("postgres://localhost/app"));
     assert!(!shellenv_output.contains("grant_id"));
     assert!(!shellenv_output.contains("token"));
+
+    let mut fish_shellenv_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "shellenv", "--shell", "fish"])?,
+        &context,
+        &mut fish_shellenv_output,
+    )?;
+    let fish_shellenv_output = String::from_utf8(fish_shellenv_output)?;
+    assert!(fish_shellenv_output.contains("function locket_prompt_segment"));
+    assert!(fish_shellenv_output.contains("^lock_state: "));
+    assert!(fish_shellenv_output.contains(" · "));
+    assert!(!fish_shellenv_output.contains("postgres://localhost/app"));
 
     let mut hook_output = Vec::new();
     run_with_context(

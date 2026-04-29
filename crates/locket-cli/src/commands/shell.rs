@@ -17,6 +17,32 @@ use crate::{
 const DIRECTORY_GRANT_SCOPE_PROJECT_ROOT: &str = "project-root";
 pub const SHELL_HOOK_BEGIN: &str = "# --- BEGIN LOCKET SHELL HOOK ---";
 pub const SHELL_HOOK_END: &str = "# --- END LOCKET SHELL HOOK ---";
+const PROMPT_STATUS_AWK: &str = r#"awk '
+  /^project: / { project = substr($0, 10) }
+  /^default_profile: / { profile = substr($0, 18) }
+  /^lock_state: / { lock_state = substr($0, 13) }
+  END {
+    if (project == "" && profile == "" && lock_state == "") {
+      exit
+    }
+    if (lock_state == "unlocked") {
+      icon = "🔓"
+    } else if (lock_state == "locked") {
+      icon = "🔒"
+    } else {
+      icon = "stopped"
+    }
+    if (project != "" && profile != "") {
+      print project " · " profile " · " icon
+    } else if (project != "") {
+      print project " · " icon
+    } else if (profile != "") {
+      print profile " · " icon
+    } else {
+      print icon
+    }
+  }
+'"#;
 
 pub fn shellenv_command(output: &mut impl Write, args: &ShellenvArgs) -> Result<(), CliError> {
     let shell = args.shell.unwrap_or_else(detect_shell);
@@ -246,10 +272,9 @@ fn write_shellenv_snippet(output: &mut impl Write, shell: ShellArg) -> Result<()
             writeln!(output, "{SHELL_HOOK_BEGIN}")?;
             writeln!(output, "if [ -z \"${{__LOCKET_SHELLENV_SOURCED:-}}\" ]; then")?;
             writeln!(output, "  export __LOCKET_SHELLENV_SOURCED=1")?;
-            writeln!(
-                output,
-                "  locket_prompt_segment() {{ locket status 2>/dev/null | sed -n 's/^project: //p; s/^default_profile: //p' | paste -sd ' / ' -; }}"
-            )?;
+            writeln!(output, "  locket_prompt_segment() {{")?;
+            write_prompt_status_pipeline(output, "    ")?;
+            writeln!(output, "  }}")?;
             writeln!(output, "fi")?;
             writeln!(output, "{SHELL_HOOK_END}")?;
         }
@@ -258,13 +283,21 @@ fn write_shellenv_snippet(output: &mut impl Write, shell: ShellArg) -> Result<()
             writeln!(output, "if not set -q __LOCKET_SHELLENV_SOURCED")?;
             writeln!(output, "  set -gx __LOCKET_SHELLENV_SOURCED 1")?;
             writeln!(output, "  function locket_prompt_segment")?;
-            writeln!(
-                output,
-                "    locket status 2>/dev/null | string match -r '^(project|default_profile): ' | string replace -r '^[^:]+: ' '' | string join ' / '"
-            )?;
+            write_prompt_status_pipeline(output, "    ")?;
             writeln!(output, "  end")?;
             writeln!(output, "end")?;
             writeln!(output, "{SHELL_HOOK_END}")?;
+        }
+    }
+    Ok(())
+}
+
+fn write_prompt_status_pipeline(output: &mut impl Write, indent: &str) -> Result<(), CliError> {
+    for (index, line) in PROMPT_STATUS_AWK.lines().enumerate() {
+        if index == 0 {
+            writeln!(output, "{indent}locket status 2>/dev/null | {line}")?;
+        } else {
+            writeln!(output, "{indent}{line}")?;
         }
     }
     Ok(())
