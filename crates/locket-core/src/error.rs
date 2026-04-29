@@ -20,6 +20,9 @@ pub enum LocketError {
     /// Environment variable conflict under `override = \"error\"`.
     #[error("environment conflict")]
     EnvironmentConflict,
+    /// Secret, profile, policy, or key material already exists.
+    #[error("secret already exists")]
+    SecretAlreadyExists,
     /// Policy, role, profile, or command scope explicitly denied the action.
     #[error("access denied")]
     AccessDenied,
@@ -99,6 +102,7 @@ impl LocketError {
             Self::InvalidReference | Self::GitWorktreeRequired => 64,
             Self::PolicyValidationIncomplete => 65,
             Self::EnvironmentConflict => 66,
+            Self::SecretAlreadyExists => 67,
             Self::AccessDenied => 70,
             Self::ProjectRootUntrusted => 71,
             Self::UnlockRequired => 72,
@@ -142,6 +146,7 @@ mod tests {
         assert_eq!(LocketError::GitWorktreeRequired.exit_code(), 64);
         assert_eq!(LocketError::PolicyValidationIncomplete.exit_code(), 65);
         assert_eq!(LocketError::EnvironmentConflict.exit_code(), 66);
+        assert_eq!(LocketError::SecretAlreadyExists.exit_code(), 67);
     }
 
     #[test]
@@ -192,6 +197,7 @@ mod tests {
         let cases = [
             (LocketError::InvalidReference, "invalid locket reference"),
             (LocketError::EnvironmentConflict, "environment conflict"),
+            (LocketError::SecretAlreadyExists, "secret already exists"),
             (LocketError::UnrecoverableVault, "vault unrecoverable"),
             (LocketError::DeviceRevoked, "device revoked"),
         ];

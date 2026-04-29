@@ -8,7 +8,7 @@ use std::io::Write;
 
 use crate::{
     CliError, LOCKET_TOML, RuntimeContext, load_project_key, now_unix_nanos, open_store,
-    require_project,
+    require_project, secret_already_exists_error,
 };
 
 #[derive(Debug, Subcommand)]
@@ -77,7 +77,10 @@ fn add(
     let mut document = read_locket_toml(&path)?;
     let commands = commands_table_mut(&mut document)?;
     if commands.contains_key(&args.name) {
-        return Err(CliError::Config(format!("command policy already exists: {}", args.name)));
+        return Err(secret_already_exists_error(format!(
+            "command policy already exists: {}",
+            args.name
+        )));
     }
 
     let mut policy = toml::map::Map::new();

@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use crate::{
     CliError, LOCKET_TOML, ProfileCommand, ProfileNameArgs, RuntimeContext,
     initialize_profile_keys, load_project_key, now_unix_nanos, open_store, require_project,
-    write_project_config,
+    secret_already_exists_error, write_project_config,
 };
 
 pub fn profile_command(
@@ -60,7 +60,7 @@ fn create_profile(
         .get_profile_by_name(resolved.config.project_id.as_str(), profile_name.as_str())?
         .is_some()
     {
-        return Err(CliError::Config("profile already exists".to_owned()));
+        return Err(secret_already_exists_error("profile already exists"));
     }
 
     let profile_id = ProfileId::generate().map_err(|_| CliError::Time)?;
@@ -72,7 +72,7 @@ fn create_profile(
         now_unix_nanos()?,
     )?;
     if !inserted {
-        return Err(CliError::Config("profile already exists".to_owned()));
+        return Err(secret_already_exists_error("profile already exists"));
     }
     initialize_profile_keys(
         context,

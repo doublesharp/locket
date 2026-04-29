@@ -18,7 +18,8 @@ use crate::support::secret_helpers::{
 };
 use crate::{
     ResolvedProject, SecretSourceArg, SecretWriteArgs, ensure_trusted_project_root, now_unix_nanos,
-    open_store, require_project, secret_deleted_error, source_arg_to_str,
+    open_store, require_project, secret_already_exists_error, secret_deleted_error,
+    source_arg_to_str,
 };
 
 pub fn set_command(
@@ -57,7 +58,7 @@ pub fn preflight_set_secret_value(
                 "secret source is deleted; v1 does not reactivate tombstones".to_owned(),
             ));
         }
-        return Err(CliError::Config("secret already exists; use rotate".to_owned()));
+        return Err(secret_already_exists_error("secret exists; use rotate"));
     }
     if args.source.source.is_none() {
         let existing = store.list_secrets_by_name(
@@ -66,8 +67,8 @@ pub fn preflight_set_secret_value(
             name.as_str(),
         )?;
         if !existing.is_empty() {
-            return Err(CliError::Config(
-                "secret exists in another source; pass --source to choose a target".to_owned(),
+            return Err(secret_already_exists_error(
+                "secret exists in another source; pass --source to choose a target",
             ));
         }
     }
@@ -132,7 +133,7 @@ pub fn set_secret_value_in_profile(
                 "secret source is deleted; v1 does not reactivate tombstones",
             ));
         }
-        return Err(CliError::Config("secret already exists; use rotate".to_owned()));
+        return Err(secret_already_exists_error("secret exists; use rotate"));
     }
 
     let secret_id = SecretId::generate().map_err(|_| CliError::Time)?;

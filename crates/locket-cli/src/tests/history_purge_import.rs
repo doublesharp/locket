@@ -468,6 +468,18 @@ fn import_env_encrypts_values_and_refreshes_example() -> Result<(), Box<dyn std:
     assert!(!example.contains("postgres://localhost/app"));
 
     std::fs::write(directory.path().join(".env"), "DATABASE_URL=postgres://localhost/new\n")?;
+    let mut duplicate_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "import", ".env"])?,
+        &context,
+        &mut duplicate_output,
+    )?;
+    let duplicate_output = String::from_utf8(duplicate_output)?;
+    assert!(duplicate_output.contains("imported: 0"));
+    assert!(duplicate_output.contains("skipped: 1"));
+    assert!(duplicate_output.contains("skipped_names: DATABASE_URL"));
+    assert!(!duplicate_output.contains("postgres://localhost/new"));
+
     let mut overwrite_output = Vec::new();
     run_with_context(
         Cli::try_parse_from(["locket", "import", ".env", "--overwrite"])?,

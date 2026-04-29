@@ -6,7 +6,7 @@ use std::fs;
 use std::io::{self, IsTerminal, Write};
 use std::path::Path;
 
-use locket_core::{ProfileName, SecretName};
+use locket_core::{LocketError, ProfileName, SecretName};
 use locket_crypto::KeyPurpose;
 use locket_store::{
     AuditContext, AuditWrite, ProfileRecord, SecretBlobRecord, SecretFingerprintRecord,
@@ -74,8 +74,8 @@ pub fn import_command(
                     },
                 ) {
                     Ok(()) => imported += 1,
-                    Err(CliError::Config(message))
-                        if message.contains("already exists") && args.overwrite =>
+                    Err(CliError::Typed { kind: LocketError::SecretAlreadyExists, .. })
+                        if args.overwrite =>
                     {
                         rotate_import_secret_value_in_profile(
                             context,
@@ -91,7 +91,7 @@ pub fn import_command(
                         )?;
                         overwritten += 1;
                     }
-                    Err(CliError::Config(message)) if message.contains("already exists") => {
+                    Err(CliError::Typed { kind: LocketError::SecretAlreadyExists, .. }) => {
                         skipped += 1;
                         skipped_names.insert(key);
                     }

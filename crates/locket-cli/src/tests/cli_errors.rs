@@ -73,6 +73,14 @@ fn secret_deleted_errors_exit_76() {
 }
 
 #[test]
+fn secret_already_exists_errors_exit_67() {
+    let error = crate::secret_already_exists_error("secret exists; use rotate");
+
+    assert_eq!(error.exit_code(), 67);
+    assert_eq!(error.to_string(), "secret exists; use rotate");
+}
+
+#[test]
 fn project_root_untrusted_exits_71() {
     let error = crate::project_root_untrusted_error();
 

@@ -113,8 +113,8 @@ pub fn restore_from_recovery_code(
     if !force {
         match context.key_store.load_master_key(project_id) {
             Ok(_) => {
-                return Err(CliError::Config(
-                    "master key already exists; use --force to overwrite".to_owned(),
+                return Err(crate::secret_already_exists_error(
+                    "master key already exists; use --force to overwrite",
                 ));
             }
             Err(locket_platform::PlatformError::MasterKeyNotFound) => {}

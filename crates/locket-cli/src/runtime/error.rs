@@ -86,6 +86,10 @@ pub fn secret_deleted_error(message: impl Into<String>) -> CliError {
     typed_cli_error(LocketError::SecretDeleted, message)
 }
 
+pub fn secret_already_exists_error(message: impl Into<String>) -> CliError {
+    typed_cli_error(LocketError::SecretAlreadyExists, message)
+}
+
 pub fn bundle_verification_error(message: impl Into<String>) -> CliError {
     typed_cli_error(LocketError::BundleVerificationFailed, message)
 }
