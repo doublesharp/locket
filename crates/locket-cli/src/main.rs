@@ -40,6 +40,8 @@ const EXAMPLE_FILE: &str = ".env.example";
 const GITIGNORE_FILE: &str = ".gitignore";
 const EXAMPLE_BEGIN: &str = "# --- BEGIN LOCKET MANAGED ---";
 const EXAMPLE_END: &str = "# --- END LOCKET MANAGED ---";
+const HOOK_BEGIN: &str = "# --- BEGIN LOCKET PRE-COMMIT ---";
+const HOOK_END: &str = "# --- END LOCKET PRE-COMMIT ---";
 const GITIGNORE_ENTRIES: [&str; 4] = [".env", ".env.*", ".locket.local", ".locketignore"];
 const DEFAULT_MAX_GRACE_TTL_SECONDS: u64 = 7 * 24 * 60 * 60;
 const NANOS_PER_SECOND: i64 = 1_000_000_000;
@@ -442,7 +444,10 @@ fn run_with_context(
         Command::History(args) => history_command(context, output, &args)?,
         Command::Diff(args) => diff_command(context, output, &args)?,
         Command::Audit { command } => audit_command(context, output, command)?,
+        Command::Lock => lock_command(context, output)?,
+        Command::Unlock(args) => unlock_command(context, output, &args)?,
         Command::EmitExample => emit_example_command(context, output)?,
+        Command::InstallHooks => install_hooks_command(context, output)?,
         Command::Profile { command } => profile_command(context, output, command)?,
         Command::Project { command } => project_command(context, output, command)?,
         Command::Agent { command } => agent_command(context, output, command)?,
@@ -451,9 +456,6 @@ fn run_with_context(
         Command::Redact(args) => redact_command(context, output, args)?,
         Command::Context(args) => context_command(context, output, args)?,
         Command::AiSafe(args) => ai_safe_command(context, output, &args)?,
-        _ => {
-            writeln!(output, "locket: command parsed but not implemented yet")?;
-        }
     }
 
     Ok(())
@@ -1382,6 +1384,187 @@ fn emit_example_command(context: &RuntimeContext, output: &mut impl Write) -> Re
     let resolved = require_project(context)?;
     refresh_example_for_project(context)?;
     writeln!(output, "updated {}", resolved.root.join(EXAMPLE_FILE).display())?;
+    Ok(())
+}
+
+fn lock_command(context: &RuntimeContext, output: &mut impl Write) -> Result<(), CliError> {
+    writeln!(output, "lock: no agent-held keys to clear")?;
+    writeln!(output, "agent: unavailable")?;
+    writeln!(output, "metadata_only: yes")?;
+    if let Some(project) = resolve_project(&context.cwd)? {
+        writeln!(output, "project_id: {}", project.config.project_id)?;
+    }
+    Ok(())
+}
+
+fn unlock_command(
+    context: &RuntimeContext,
+    output: &mut impl Write,
+    args: &UnlockArgs,
+) -> Result<(), CliError> {
+    let resolved = require_project(context)?;
+    let store = open_store(context)?;
+    ensure_project_exists(&store, resolved.config.project_id.as_str())?;
+    let profile = default_profile(&store, &resolved.config)?;
+    let _master_key = context.key_store.load_master_key(resolved.config.project_id.as_str())?;
+    load_project_key(context, &store, resolved.config.project_id.as_str(), KeyPurpose::Audit)?;
+
+    writeln!(output, "unlock: metadata-only direct CLI unlock succeeded")?;
+    writeln!(output, "project_id: {}", resolved.config.project_id)?;
+    writeln!(output, "active_profile: {} ({})", resolved.config.default_profile, profile.id)?;
+    writeln!(output, "agent: unavailable")?;
+    writeln!(output, "cached_keys: no")?;
+    if args.verify_user {
+        writeln!(
+            output,
+            "verify_user: requested, but platform user verification is not implemented in this build; no interactive verification was performed"
+        )?;
+    } else {
+        writeln!(output, "verify_user: not requested")?;
+    }
+    Ok(())
+}
+
+fn install_hooks_command(
+    context: &RuntimeContext,
+    output: &mut impl Write,
+) -> Result<(), CliError> {
+    let resolved = require_project(context)?;
+    let git_dir = git_dir_for_worktree(&resolved.root)?;
+    let hooks_dir = git_dir.join("hooks");
+    fs::create_dir_all(&hooks_dir)?;
+    let hook_path = hooks_dir.join("pre-commit");
+    let existing = match fs::read_to_string(&hook_path) {
+        Ok(existing) => existing,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => String::new(),
+        Err(error) => return Err(error.into()),
+    };
+    let updated = upsert_pre_commit_hook(&existing)?;
+    if updated != existing {
+        fs::write(&hook_path, updated)?;
+    }
+    make_executable(&hook_path)?;
+    write_hook_install_audit_if_available(context, &resolved)?;
+
+    writeln!(output, "installed {}", hook_path.display())?;
+    writeln!(output, "hook: locket scan --staged")?;
+    writeln!(output, "secrets: not written")?;
+    Ok(())
+}
+
+fn managed_pre_commit_block() -> String {
+    format!("{HOOK_BEGIN}\nlocket scan --staged\n{HOOK_END}\n")
+}
+
+fn upsert_pre_commit_hook(existing: &str) -> Result<String, CliError> {
+    let block = managed_pre_commit_block();
+    if existing.is_empty() {
+        return Ok(format!("#!/bin/sh\n\n{block}"));
+    }
+    if let Some(begin) = existing.find(HOOK_BEGIN) {
+        let Some(relative_end) = existing[begin..].find(HOOK_END) else {
+            return Err(CliError::Config(
+                ".git/hooks/pre-commit has an unterminated Locket pre-commit block".to_owned(),
+            ));
+        };
+        let end = begin + relative_end + HOOK_END.len();
+        let replace_end =
+            if existing[end..].starts_with('\n') { end + '\n'.len_utf8() } else { end };
+        let mut updated = String::new();
+        updated.push_str(&existing[..begin]);
+        updated.push_str(&block);
+        updated.push_str(&existing[replace_end..]);
+        return Ok(updated);
+    }
+
+    if let Some(rest) = existing.strip_prefix("#!") {
+        let Some(newline_index) = rest.find('\n') else {
+            return Ok(format!("{existing}\n\n{block}"));
+        };
+        let shebang_end = "#!".len() + newline_index + 1;
+        let mut updated = String::new();
+        updated.push_str(&existing[..shebang_end]);
+        updated.push('\n');
+        updated.push_str(&block);
+        updated.push('\n');
+        updated.push_str(&existing[shebang_end..]);
+        Ok(updated)
+    } else {
+        Ok(format!("{block}\n{existing}"))
+    }
+}
+
+fn git_dir_for_worktree(start: &Path) -> Result<PathBuf, CliError> {
+    let mut current = start.canonicalize()?;
+    loop {
+        let dot_git = current.join(".git");
+        if let Ok(metadata) = fs::metadata(&dot_git) {
+            if metadata.is_dir() {
+                return Ok(dot_git);
+            }
+
+            let pointer = fs::read_to_string(&dot_git)?;
+            let Some(path) = pointer.trim().strip_prefix("gitdir:") else {
+                return Err(CliError::Config("unsupported .git worktree pointer".to_owned()));
+            };
+            let path = path.trim();
+            return Ok(if Path::new(path).is_absolute() {
+                PathBuf::from(path)
+            } else {
+                current.join(path)
+            });
+        }
+
+        if !current.pop() {
+            return Err(CliError::Config("git worktree required for install-hooks".to_owned()));
+        }
+    }
+}
+
+#[cfg(unix)]
+fn make_executable(path: &Path) -> Result<(), CliError> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let metadata = fs::metadata(path)?;
+    let mut permissions = metadata.permissions();
+    permissions.set_mode(permissions.mode() | 0o700);
+    fs::set_permissions(path, permissions)?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn make_executable(_path: &Path) -> Result<(), CliError> {
+    Ok(())
+}
+
+fn write_hook_install_audit_if_available(
+    context: &RuntimeContext,
+    resolved: &ResolvedProject,
+) -> Result<(), CliError> {
+    let mut store = open_store(context)?;
+    if store.get_project(resolved.config.project_id.as_str())?.is_none() {
+        return Ok(());
+    }
+    let audit_key =
+        load_project_key(context, &store, resolved.config.project_id.as_str(), KeyPurpose::Audit)?;
+    let metadata = json!({
+        "schema_version": 1,
+        "action": "HOOK_INSTALL",
+        "status": "SUCCESS",
+        "hook": "pre-commit",
+        "command": "locket scan --staged",
+    });
+    let audit = AuditWrite {
+        project_id: resolved.config.project_id.as_str(),
+        profile_id: None,
+        action: "HOOK_INSTALL",
+        status: "SUCCESS",
+        secret_name: None,
+        command: Some("install-hooks"),
+        metadata_json: &metadata,
+        timestamp: now_unix_nanos()?,
+    };
+    store.append_audit(audit_key.as_ref(), &audit)?;
     Ok(())
 }
 
@@ -2974,6 +3157,8 @@ mod tests {
             &["locket", "rm", "DATABASE_URL"],
             &["locket", "purge", "DATABASE_URL", "--all-versions"],
             &["locket", "rotate", "DATABASE_URL", "--grace-ttl", "24h"],
+            &["locket", "lock"],
+            &["locket", "unlock", "--verify-user"],
             &["locket", "meta", "DATABASE_URL", "--owner", "platform", "--required"],
             &["locket", "history", "DATABASE_URL"],
             &["locket", "diff", "dev", "staging"],
@@ -3008,6 +3193,7 @@ mod tests {
             &["locket", "redact", "--stdin", "--redact-names"],
             &["locket", "context", "--redact-names"],
             &["locket", "ai-safe", "--pattern-only", "--", "npm", "test"],
+            &["locket", "install-hooks"],
         ] {
             assert!(Cli::try_parse_from(args).is_ok(), "{args:?}");
         }
@@ -3231,6 +3417,97 @@ mod tests {
         assert!(logs_output.contains("\"action\":\"start\""));
         assert!(logs_output.contains("\"action\":\"stop\""));
         assert!(!logs_output.contains("secret"));
+        Ok(())
+    }
+
+    #[test]
+    fn lock_and_unlock_use_direct_metadata_only_mode() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+
+        let mut lock_output = Vec::new();
+        run_with_context(Cli::try_parse_from(["locket", "lock"])?, &context, &mut lock_output)?;
+        let lock_output = String::from_utf8(lock_output)?;
+        assert!(lock_output.contains("no agent-held keys"));
+        assert!(lock_output.contains("metadata_only: yes"));
+
+        let mut init_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut init_output,
+        )?;
+        let mut unlock_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "unlock", "--verify-user"])?,
+            &context,
+            &mut unlock_output,
+        )?;
+        let unlock_output = String::from_utf8(unlock_output)?;
+        assert!(unlock_output.contains("metadata-only direct CLI unlock succeeded"));
+        assert!(unlock_output.contains("cached_keys: no"));
+        assert!(unlock_output.contains("platform user verification is not implemented"));
+        Ok(())
+    }
+
+    #[test]
+    fn install_hooks_prepends_managed_block_and_preserves_existing_hook()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        let hooks_dir = directory.path().join(".git/hooks");
+        std::fs::create_dir_all(&hooks_dir)?;
+        std::fs::write(hooks_dir.join("pre-commit"), "echo existing\n")?;
+
+        let mut init_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut init_output,
+        )?;
+
+        let mut install_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "install-hooks"])?,
+            &context,
+            &mut install_output,
+        )?;
+        let install_output = String::from_utf8(install_output)?;
+        assert!(install_output.contains("hook: locket scan --staged"));
+        assert!(install_output.contains("secrets: not written"));
+
+        let hook = std::fs::read_to_string(hooks_dir.join("pre-commit"))?;
+        assert!(hook.starts_with(super::HOOK_BEGIN));
+        assert!(hook.contains("locket scan --staged"));
+        assert!(hook.contains(super::HOOK_END));
+        assert!(hook.contains("echo existing"));
+        assert!(!hook.contains("secret-value"));
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(hooks_dir.join("pre-commit"))?.permissions().mode();
+            assert_eq!(mode & 0o700, 0o700);
+        }
+
+        let mut reinstall_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "install-hooks"])?,
+            &context,
+            &mut reinstall_output,
+        )?;
+        let reinstalled_hook = std::fs::read_to_string(hooks_dir.join("pre-commit"))?;
+        assert_eq!(reinstalled_hook, hook);
+        assert_eq!(reinstalled_hook.matches(super::HOOK_BEGIN).count(), 1);
+        assert_eq!(reinstalled_hook.matches(super::HOOK_END).count(), 1);
+
+        let store = locket_store::Store::open(directory.path().join("store.db"))?;
+        let hook_installs: u32 = store.connection().query_row(
+            "SELECT COUNT(*) FROM audit_log WHERE action = 'HOOK_INSTALL'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(hook_installs, 2);
         Ok(())
     }
 
