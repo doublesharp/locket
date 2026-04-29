@@ -4,6 +4,7 @@ pub mod audit;
 pub mod env;
 pub mod error;
 pub mod id;
+pub mod metadata;
 pub mod policy;
 pub mod profile_name;
 pub mod project;
@@ -25,6 +26,7 @@ pub use id::{
     ClientId, DeviceId, IdGenerationError, InvalidId, KdfProfileId, KeyId, PasskeyId, ProfileId,
     ProjectId, SecretId, SessionId,
 };
+pub use metadata::{MetadataPrivacyFinding, MetadataValidationError, validate_metadata_field};
 pub use policy::{
     CommandPolicy, CommandSpec, ExternalEnvSource, MAX_COMMAND_POLICY_TTL_SECONDS, PolicyDocument,
     PolicyParseError,

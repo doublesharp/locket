@@ -20,6 +20,12 @@ pub enum LocketError {
     /// Environment variable conflict under `override = \"error\"`.
     #[error("environment conflict")]
     EnvironmentConflict,
+    /// Metadata contains invalid display characters.
+    #[error("metadata invalid")]
+    MetadataInvalid,
+    /// Metadata looks like secret material.
+    #[error("metadata looks like secret")]
+    MetadataLooksLikeSecret,
     /// Typed-string confirmation prompt rejected by the user input.
     #[error("confirmation did not match")]
     ConfirmationFailed,
@@ -111,9 +117,9 @@ impl LocketError {
     #[must_use]
     pub const fn exit_code(&self) -> ExitCode {
         match self {
-            Self::InvalidReference | Self::GitWorktreeRequired => 64,
+            Self::InvalidReference | Self::GitWorktreeRequired | Self::MetadataInvalid => 64,
             Self::PolicyValidationIncomplete => 65,
-            Self::EnvironmentConflict => 66,
+            Self::EnvironmentConflict | Self::MetadataLooksLikeSecret => 66,
             Self::SecretAlreadyExists => 67,
             Self::ConfirmationFailed => 68,
             Self::ScanFindingBlocked => 69,
@@ -162,6 +168,8 @@ mod tests {
         assert_eq!(LocketError::GitWorktreeRequired.exit_code(), 64);
         assert_eq!(LocketError::PolicyValidationIncomplete.exit_code(), 65);
         assert_eq!(LocketError::EnvironmentConflict.exit_code(), 66);
+        assert_eq!(LocketError::MetadataInvalid.exit_code(), 64);
+        assert_eq!(LocketError::MetadataLooksLikeSecret.exit_code(), 66);
         assert_eq!(LocketError::SecretAlreadyExists.exit_code(), 67);
         assert_eq!(LocketError::ConfirmationFailed.exit_code(), 68);
         assert_eq!(LocketError::ScanFindingBlocked.exit_code(), 69);
@@ -217,6 +225,8 @@ mod tests {
         let cases = [
             (LocketError::InvalidReference, "invalid locket reference"),
             (LocketError::EnvironmentConflict, "environment conflict"),
+            (LocketError::MetadataInvalid, "metadata invalid"),
+            (LocketError::MetadataLooksLikeSecret, "metadata looks like secret"),
             (LocketError::SecretAlreadyExists, "secret already exists"),
             (LocketError::UnrecoverableVault, "vault unrecoverable"),
             (LocketError::DeviceRevoked, "device revoked"),

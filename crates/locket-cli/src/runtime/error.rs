@@ -109,6 +109,14 @@ pub fn scan_finding_blocked_error(message: impl Into<String>) -> CliError {
     typed_cli_error(LocketError::ScanFindingBlocked, message)
 }
 
+pub fn metadata_invalid_error(message: impl Into<String>) -> CliError {
+    typed_cli_error(LocketError::MetadataInvalid, message)
+}
+
+pub fn metadata_looks_like_secret_error(message: impl Into<String>) -> CliError {
+    typed_cli_error(LocketError::MetadataLooksLikeSecret, message)
+}
+
 pub fn bundle_verification_error(message: impl Into<String>) -> CliError {
     typed_cli_error(LocketError::BundleVerificationFailed, message)
 }

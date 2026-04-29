@@ -65,6 +65,32 @@ fn exec_prepare_environment_conflict_exits_66() -> Result<(), Box<dyn std::error
 }
 
 #[test]
+fn metadata_invalid_errors_exit_64() {
+    let error = crate::metadata_invalid_error(
+        "metadata field tag contains control characters; refusing to store it",
+    );
+
+    assert_eq!(error.exit_code(), 64);
+    assert_eq!(
+        error.to_string(),
+        "metadata field tag contains control characters; refusing to store it"
+    );
+}
+
+#[test]
+fn metadata_looks_like_secret_errors_exit_66() {
+    let error = crate::metadata_looks_like_secret_error(
+        "metadata field description looks like a secret; refusing to store it",
+    );
+
+    assert_eq!(error.exit_code(), 66);
+    assert_eq!(
+        error.to_string(),
+        "metadata field description looks like a secret; refusing to store it"
+    );
+}
+
+#[test]
 fn secret_deleted_errors_exit_76() {
     let error = crate::secret_deleted_error("secret source is deleted");
 

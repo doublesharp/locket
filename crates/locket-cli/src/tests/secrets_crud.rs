@@ -500,7 +500,11 @@ fn meta_rejects_secret_like_metadata_without_storing_value()
         &context,
         &mut Vec::new(),
     );
-    assert_error_contains(result, "metadata field description looks like a secret");
+    let Err(error) = result else {
+        return Err("secret-like metadata should fail".into());
+    };
+    assert_eq!(error.exit_code(), locket_core::LocketError::MetadataLooksLikeSecret.exit_code());
+    assert!(error.to_string().contains("metadata field description looks like a secret"));
 
     let store = locket_store::Store::open(directory.path().join("store.db"))?;
     let row = store.connection().query_row(
@@ -546,7 +550,11 @@ fn meta_rejects_known_secret_value_metadata() -> Result<(), Box<dyn std::error::
         &context,
         &mut Vec::new(),
     );
-    assert_error_contains(result, "metadata field owner matches an existing secret value");
+    let Err(error) = result else {
+        return Err("known-secret metadata should fail".into());
+    };
+    assert_eq!(error.exit_code(), locket_core::LocketError::MetadataLooksLikeSecret.exit_code());
+    assert!(error.to_string().contains("metadata field owner matches an existing secret value"));
 
     let store = locket_store::Store::open(directory.path().join("store.db"))?;
     let owner: Option<String> = store.connection().query_row(
@@ -584,7 +592,11 @@ fn meta_rejects_control_character_metadata() -> Result<(), Box<dyn std::error::E
         &context,
         &mut Vec::new(),
     );
-    assert_error_contains(result, "metadata field tag contains control characters");
+    let Err(error) = result else {
+        return Err("control-character metadata should fail".into());
+    };
+    assert_eq!(error.exit_code(), locket_core::LocketError::MetadataInvalid.exit_code());
+    assert!(error.to_string().contains("metadata field tag contains control characters"));
     Ok(())
 }
 

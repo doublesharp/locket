@@ -6,9 +6,10 @@ mod support;
 
 pub(crate) use runtime::context::RuntimeContext;
 pub(crate) use runtime::error::{
-    CliError, bundle_verification_error, confirmation_failed_error, profile_not_found_error,
-    project_root_untrusted_error, scan_finding_blocked_error, secret_already_exists_error,
-    secret_deleted_error, secret_not_found_error, unimplemented_in_build_error,
+    CliError, bundle_verification_error, confirmation_failed_error, metadata_invalid_error,
+    metadata_looks_like_secret_error, profile_not_found_error, project_root_untrusted_error,
+    scan_finding_blocked_error, secret_already_exists_error, secret_deleted_error,
+    secret_not_found_error, unimplemented_in_build_error,
 };
 pub(crate) use runtime::key_access::{
     MasterKeySource, default_profile, ensure_project_exists, load_master_key,
@@ -70,7 +71,8 @@ use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::Shell as CompletionShell;
 use locket_core::{
     CommandPolicy, CommandSpec, Duration as LocketDuration, ExternalEnvSource, KeyId,
-    PROJECT_CONFIG_SCHEMA_VERSION, PolicyDocument, ProfileId, ProjectConfig, SecretId, SecretName,
+    MetadataPrivacyFinding, MetadataValidationError, PROJECT_CONFIG_SCHEMA_VERSION, PolicyDocument,
+    ProfileId, ProjectConfig, SecretId, SecretName, validate_metadata_field,
 };
 use locket_crypto::{
     EncryptedSecretValue, HkdfWrapInfo, KeyPurpose, KeyWrapAad, KeyWrapPurpose,
@@ -2250,20 +2252,18 @@ fn validate_secret_metadata_update(
     timestamp: i64,
 ) -> Result<(), CliError> {
     let fields = secret_metadata_text_fields(metadata);
-    for (field, value) in &fields {
-        validate_secret_metadata_field(field, value)?;
-    }
+    let known_values = collect_known_secret_values(context, &resolved_secret.project, timestamp)
+        .unwrap_or_default();
+    let known_values =
+        known_values.iter().map(|known_value| known_value.as_str()).collect::<Vec<_>>();
 
-    if let Ok(known_values) =
-        collect_known_secret_values(context, &resolved_secret.project, timestamp)
-    {
-        for (field, value) in fields {
-            if known_values.iter().any(|known_value| known_value.as_str() == value) {
-                return Err(CliError::Config(format!(
-                    "metadata field {field} matches an existing secret value; refusing to store it"
-                )));
-            }
-        }
+    for (field, value) in fields {
+        let findings = scan_text(&format!("metadata:{field}"), value)
+            .iter()
+            .filter_map(metadata_privacy_finding)
+            .collect::<Vec<_>>();
+        validate_metadata_field(field, value, known_values.iter().copied(), findings)
+            .map_err(|error| metadata_validation_error(&error))?;
     }
 
     Ok(())
@@ -2283,21 +2283,22 @@ fn secret_metadata_text_fields(metadata: &SecretMetadataFlags) -> Vec<(&'static 
     fields
 }
 
-fn validate_secret_metadata_field(field: &str, value: &str) -> Result<(), CliError> {
-    if value.chars().any(char::is_control) {
-        return Err(CliError::Config(format!(
-            "metadata field {field} contains control characters; refusing to store it"
-        )));
+const fn metadata_privacy_finding(
+    finding: &locket_scan::ScanFinding,
+) -> Option<MetadataPrivacyFinding> {
+    match finding.kind {
+        FindingKind::HighEntropy => Some(MetadataPrivacyFinding::HighEntropy),
+        FindingKind::ProviderTokenPattern => Some(MetadataPrivacyFinding::ProviderToken),
+        FindingKind::EnvFileMarker | FindingKind::KnownSecretValue => None,
     }
-    let secret_like = scan_text(&format!("metadata:{field}"), value).iter().any(|finding| {
-        matches!(finding.kind, FindingKind::HighEntropy | FindingKind::ProviderTokenPattern)
-    });
-    if secret_like {
-        return Err(CliError::Config(format!(
-            "metadata field {field} looks like a secret; refusing to store it"
-        )));
+}
+
+fn metadata_validation_error(error: &MetadataValidationError) -> CliError {
+    if error.is_secret_like() {
+        metadata_looks_like_secret_error(error.to_string())
+    } else {
+        metadata_invalid_error(error.to_string())
     }
-    Ok(())
 }
 
 fn write_secret_meta_update_failure_audit_if_available(
