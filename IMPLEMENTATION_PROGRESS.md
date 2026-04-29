@@ -679,56 +679,23 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
   - Errors: `RecoveryUnavailable` (101).
   - Files: `crates/locket-crypto/src/recovery.rs`.
 - [ ] Sealed-bundle plaintext manifest minimization: no profile, secret,
-  policy names; no member/device labels. Manifest carries only digest,
-  recipients, project id, schema, `created_at`, profile count.
-  - Spec: `docs/specs/team-sync-recovery.md`.
-  - Files: `crates/locket-cli/src/commands/team/bundle.rs`,
-    `crates/locket-crypto/src/` sealing module.
+  policy names; no member/device labels (only digest, recipients,
+  project id, schema, `created_at`, profile count).
 - [ ] `imported_audit_chains` structural verifier (monotonic sequence,
   prev-HMAC linkage, checkpoint HMAC match) used by
   `import-bundle`/`team accept` and surfaced via `audit verify`.
-  - Spec: `docs/specs/team-sync-recovery.md`,
-    `docs/specs/audit.md`.
-  - Errors: `IntegrityFailure` (93), `BundleInvalid` (110).
-  - Audit: extend `BACKUP_IMPORT`/`TEAM_ACCEPT` with chain-status
-    metadata.
-  - Files: `crates/locket-store/src/audit.rs`,
-    `crates/locket-cli/src/commands/team/bundle.rs`.
 - [ ] `import-bundle`/`team accept` apply rotate-with-no-grace lifecycle
-  when importing a newer version over an active target (deprecate prior,
-  set `last_rotated_at`).
-  - Spec: `docs/specs/team-sync-recovery.md`.
-  - Audit: `SECRET_ROTATE` rows for each affected target.
-  - Files: `crates/locket-cli/src/commands/team/bundle.rs`.
+  when importing a newer version over an active target.
 - [ ] `locket device init --force` rekey: atomic
-  `DEVICE_REVOKE`+`DEVICE_ADD`, recovery-envelope update, rollback if
-  the envelope update fails.
-  - Spec: `docs/specs/team-sync-recovery.md` Team Local Development
-    Bootstrap.
-  - Errors: `KeychainEntryMissing` (100), `RecoveryUnavailable` (101).
-  - Audit: paired `DEVICE_REVOKE` + `DEVICE_ADD`.
-  - Files: `crates/locket-cli/src/commands/team/device.rs`.
+  `DEVICE_REVOKE`+`DEVICE_ADD` with recovery-envelope update and
+  rollback on envelope failure.
 - [ ] `locket recover` restores Locket-managed automation-client private
-  keys from the recovery envelope to their original
-  `OsKeychain`/`WrappedLocalFile` destinations; `--force` rotates intact
-  keychain entries with explicit override metadata in the `RECOVER`
-  audit row.
-  - Spec: `docs/specs/team-sync-recovery.md`.
-  - Errors: `KeychainEntryMissing` (100), `RecoveryUnavailable` (101).
-  - Files: `crates/locket-cli/src/commands/vault/recovery.rs`,
-    `crates/locket-store/src/automation_client*`.
-- [ ] Audit-chain HMAC verification recomputes each row using the row's
-  stored `schema_version`, not the binary's current version.
-  - Spec: `docs/specs/audit.md`.
-  - Errors: `IntegrityFailure` (93), `SchemaMismatch` (91).
-  - Files: `crates/locket-store/src/audit.rs`.
+  keys from the envelope; `--force` rotates intact keychain entries and
+  records the override in the `RECOVER` audit row.
+- [ ] Audit-chain HMAC verification uses each row's stored
+  `schema_version` instead of the binary's current version.
 - [ ] Typed `metadata_json` shape validator per audit action family
-  enforcing required fields and rejecting unknown fields without a
-  schema bump.
-  - Spec: `docs/specs/audit.md` Audit Metadata Shapes.
-  - Errors: `IntegrityFailure` (93).
-  - Files: `crates/locket-store/src/audit.rs` writer plus per-action
-    metadata builders.
+  (required fields, no unknown fields without a schema bump).
 
 ### App/UI
 
@@ -841,8 +808,8 @@ editing — they drift. Severity: **blocker** (security/correctness),
     Claim: branch agent-6e4d05db/typed-secret-overflow, worktree .worktrees/agent-6e4d05db-typed-secret-overflow.
     (3 sites) to a new `LocketError::SecretVersionOverflow` variant (input or
     integrity band, per spec). Regression covers a stubbed overflow path.
-  - [~] [b67f47d6] **subtask** — typed-config-value-validation: migrate the per-value
-    Claim: branch agent-b67f47d6/typed-config-values, worktree .worktrees/agent-b67f47d6-typed-config-values. Scope: map config value validators to typed metadata errors and add per-class regressions.
+  - [~] [b67f47d6] ready: agent-b67f47d6/typed-config-values @ 5c4c3d4 — config value validators now return typed `MetadataInvalid`/`MetadataLooksLikeSecret`; per-class regressions landed.
+    **subtask** — typed-config-value-validation: migrate the per-value
     config validators in `crates/locket-cli/src/commands/config/spec.rs`
     (`config value must be true or false`, `invalid config duration`,
     `config section is not a table`, `invalid stored config value for {key}`,
