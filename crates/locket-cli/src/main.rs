@@ -7542,13 +7542,10 @@ require_user_verification = true
 "#,
             )?;
 
-        let locked_context = RuntimeContext {
-            cwd: context.cwd.clone(),
-            store_path: context.store_path.clone(),
-            config_path: context.config_path.clone(),
-            template_dir: context.template_dir.clone(),
-            key_store: std::sync::Arc::new(MemoryMasterKeyStore::default()),
-        };
+        let locked_context = test_context_with_key_store(
+            &directory,
+            std::sync::Arc::new(MemoryMasterKeyStore::default()),
+        );
         let mut context_output = Vec::new();
         run_with_context(
             Cli::try_parse_from(["locket", "context"])?,
