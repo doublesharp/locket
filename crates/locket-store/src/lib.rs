@@ -260,6 +260,23 @@ impl Store {
         &mut self.connection
     }
 
+    /// Appends one metadata-only audit row to the project audit chain.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] when the audit row cannot be canonicalized, signed,
+    /// or inserted.
+    pub fn append_audit(
+        &mut self,
+        audit_key: &[u8],
+        audit: &AuditWrite<'_>,
+    ) -> Result<(), StoreError> {
+        let transaction = self.connection.transaction()?;
+        append_audit(&transaction, audit_key, audit)?;
+        transaction.commit()?;
+        Ok(())
+    }
+
     /// Inserts a project metadata row when `id` does not already exist.
     ///
     /// Returns `true` when the project was inserted and `false` when a project
