@@ -38,7 +38,7 @@ use std::io::{self, IsTerminal, Read, Write};
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command as ProcessCommand, ExitCode as ProcessExitCode};
+use std::process::{Command as ProcessCommand, ExitCode as ProcessExitCode, Stdio};
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -252,6 +252,9 @@ struct GetArgs {
     /// Reveal the value to stdout after policy gates.
     #[arg(long, conflicts_with = "copy")]
     reveal: bool,
+    /// Allow reveal when stdout is not an interactive terminal.
+    #[arg(long, requires = "reveal")]
+    force: bool,
     /// Copy the value to clipboard after policy gates.
     #[arg(long)]
     copy: bool,
@@ -1175,12 +1178,66 @@ fn get_command(
     output: &mut impl Write,
     args: &GetArgs,
 ) -> Result<(), CliError> {
+    get_command_with_clipboard(context, output, args, copy_secret_to_clipboard)
+}
+
+fn get_command_with_clipboard(
+    context: &RuntimeContext,
+    output: &mut impl Write,
+    args: &GetArgs,
+    copy_to_clipboard: impl FnOnce(&str) -> Result<(), String>,
+) -> Result<(), CliError> {
     let resolved_secret = resolve_active_secret(context, &args.key)?;
     if args.copy {
-        return Err(CliError::Config("clipboard copy is not wired in this build yet".to_owned()));
+        let ttl_seconds = reveal_ttl_seconds(context)?;
+        writeln!(output, "warning: clipboard TTL clearing is unsupported in this direct CLI path")?;
+        let value = decrypt_current_secret(context, &resolved_secret)?;
+        let result = copy_to_clipboard(value.as_str());
+        let status = if result.is_ok() { "SUCCESS" } else { "FAILURE" };
+        let unsupported_reason = result.as_ref().err().map(String::as_str);
+        write_value_access_audit_if_available(&ValueAccessAudit {
+            context,
+            resolved: &resolved_secret,
+            action: "COPY",
+            status,
+            access_mode: "clipboard",
+            ttl_seconds: Some(ttl_seconds),
+            force: false,
+            clipboard_supported: Some(result.is_ok()),
+            clipboard_clear_supported: Some(false),
+            unsupported_reason,
+        })?;
+        result.map_err(CliError::Config)?;
+        writeln!(
+            output,
+            "copied {} source={} version={} ttl_seconds={} clipboard_clear_supported=no metadata_only=yes",
+            resolved_secret.secret.name,
+            resolved_secret.secret.source,
+            resolved_secret.secret.current_version,
+            ttl_seconds
+        )?;
+        return Ok(());
     }
     if args.reveal {
+        if !args.force && !io::stdout().is_terminal() {
+            return Err(CliError::Config(
+                "get --reveal requires an interactive terminal; pass --force for noninteractive stdout"
+                    .to_owned(),
+            ));
+        }
         let value = decrypt_current_secret(context, &resolved_secret)?;
+        write_value_access_audit_if_available(&ValueAccessAudit {
+            context,
+            resolved: &resolved_secret,
+            action: "REVEAL",
+            status: "SUCCESS",
+            access_mode: "stdout",
+            ttl_seconds: None,
+            force: args.force,
+            clipboard_supported: None,
+            clipboard_clear_supported: None,
+            unsupported_reason: None,
+        })?;
         writeln!(output, "{}", value.as_str())?;
         return Ok(());
     }
@@ -3816,6 +3873,155 @@ fn secret_audit_metadata(
     })
 }
 
+struct ValueAccessAudit<'a> {
+    context: &'a RuntimeContext,
+    resolved: &'a ResolvedSecret,
+    action: &'static str,
+    status: &'static str,
+    access_mode: &'static str,
+    ttl_seconds: Option<u64>,
+    force: bool,
+    clipboard_supported: Option<bool>,
+    clipboard_clear_supported: Option<bool>,
+    unsupported_reason: Option<&'a str>,
+}
+
+fn write_value_access_audit_if_available(request: &ValueAccessAudit<'_>) -> Result<(), CliError> {
+    let mut store = open_store(request.context)?;
+    let project_id = request.resolved.project.config.project_id.as_str();
+    if store.get_project(project_id)?.is_none() {
+        return Ok(());
+    }
+    let Ok(audit_key) = load_project_key(request.context, &store, project_id, KeyPurpose::Audit)
+    else {
+        return Ok(());
+    };
+    let metadata = json!({
+        "schema_version": 1,
+        "action": request.action,
+        "status": request.status,
+        "secret_name": &request.resolved.secret.name,
+        "profile": &request.resolved.profile.name,
+        "profile_id": &request.resolved.profile.id,
+        "source": &request.resolved.secret.source,
+        "version": request.resolved.secret.current_version,
+        "access_mode": request.access_mode,
+        "ttl_seconds": request.ttl_seconds,
+        "force": request.force,
+        "clipboard_supported": request.clipboard_supported,
+        "clipboard_clear_supported": request.clipboard_clear_supported,
+        "unsupported_reason": request.unsupported_reason,
+    });
+    let audit = AuditWrite {
+        project_id,
+        profile_id: Some(&request.resolved.profile.id),
+        action: request.action,
+        status: request.status,
+        secret_name: Some(&request.resolved.secret.name),
+        command: Some("get"),
+        metadata_json: &metadata,
+        timestamp: now_unix_nanos()?,
+    };
+    store.append_audit(audit_key.as_ref(), &audit)?;
+    Ok(())
+}
+
+fn reveal_ttl_seconds(context: &RuntimeContext) -> Result<u64, CliError> {
+    let config = read_user_config(context)?;
+    let Some(value) = config_get_value(&config, "reveal.ttl") else {
+        return Ok(60);
+    };
+    let Some(value) = value.as_str() else {
+        return Err(CliError::Config("reveal.ttl must be a duration".to_owned()));
+    };
+    let duration = LocketDuration::from_str(value)
+        .map_err(|_| CliError::Config("invalid reveal.ttl duration".to_owned()))?;
+    Ok(duration.as_secs().min(300))
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct ClipboardCommand {
+    program: &'static str,
+    args: &'static [&'static str],
+}
+
+const CLIPBOARD_COMMANDS: &[ClipboardCommand] = if cfg!(target_os = "macos") {
+    &[ClipboardCommand { program: "pbcopy", args: &[] }]
+} else if cfg!(target_os = "windows") {
+    &[ClipboardCommand { program: "clip", args: &[] }]
+} else {
+    &[
+        ClipboardCommand { program: "wl-copy", args: &[] },
+        ClipboardCommand { program: "xclip", args: &["-selection", "clipboard"] },
+        ClipboardCommand { program: "xsel", args: &["--clipboard", "--input"] },
+    ]
+};
+
+fn copy_secret_to_clipboard(value: &str) -> Result<(), String> {
+    copy_secret_to_clipboard_with(value, CLIPBOARD_COMMANDS, command_exists)
+}
+
+fn copy_secret_to_clipboard_with(
+    value: &str,
+    commands: &'static [ClipboardCommand],
+    exists: impl FnMut(&str) -> bool,
+) -> Result<(), String> {
+    let Some(command) = select_clipboard_command(commands, exists) else {
+        return Err("clipboard command unavailable".to_owned());
+    };
+    let mut child = ProcessCommand::new(command.program)
+        .args(command.args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|_| "clipboard command failed to start".to_owned())?;
+    {
+        let Some(mut stdin) = child.stdin.take() else {
+            return Err("clipboard command stdin unavailable".to_owned());
+        };
+        stdin
+            .write_all(value.as_bytes())
+            .map_err(|_| "clipboard command rejected stdin".to_owned())?;
+    }
+    let status = child.wait().map_err(|_| "clipboard command did not finish".to_owned())?;
+    if !status.success() {
+        return Err("clipboard command failed".to_owned());
+    }
+    Ok(())
+}
+
+fn select_clipboard_command(
+    commands: &'static [ClipboardCommand],
+    mut exists: impl FnMut(&str) -> bool,
+) -> Option<&'static ClipboardCommand> {
+    commands.iter().find(|command| exists(command.program))
+}
+
+fn command_exists(program: &str) -> bool {
+    let Some(paths) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&paths).any(|directory| command_exists_in_directory(&directory, program))
+}
+
+fn command_exists_in_directory(directory: &Path, program: &str) -> bool {
+    let candidate = directory.join(program);
+    if candidate.is_file() {
+        return true;
+    }
+    if cfg!(target_os = "windows") {
+        let Some(pathext) = std::env::var_os("PATHEXT") else {
+            return false;
+        };
+        return std::env::split_paths(&pathext).any(|extension| {
+            let extension = extension.to_string_lossy();
+            directory.join(format!("{program}{extension}")).is_file()
+        });
+    }
+    false
+}
+
 struct PolicySecretSelection {
     name: String,
     required: bool,
@@ -5598,7 +5804,10 @@ mod tests {
             .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?
             .collect::<Result<Vec<_>, _>>()?;
         let actions = rows.iter().map(|(action, _)| action.as_str()).collect::<Vec<_>>();
-        assert_eq!(actions, ["SET", "ROTATE", "PURGE", "DELETE", "PURGE", "AUDIT_VERIFY"]);
+        assert_eq!(
+            actions,
+            ["SET", "ROTATE", "REVEAL", "PURGE", "DELETE", "PURGE", "AUDIT_VERIFY"]
+        );
         for (_, metadata) in rows {
             assert!(!metadata.contains("postgres://localhost/old"));
             assert!(!metadata.contains("postgres://localhost/new"));
@@ -5683,6 +5892,7 @@ mod tests {
             &["locket", "set", "DATABASE_URL", "--source", "user-local"],
             &["locket", "import", ".env", "--source", "user-local"],
             &["locket", "get", "DATABASE_URL", "--copy"],
+            &["locket", "get", "DATABASE_URL", "--reveal", "--force"],
             &["locket", "rm", "DATABASE_URL"],
             &["locket", "purge", "DATABASE_URL", "--all-versions"],
             &["locket", "rotate", "DATABASE_URL", "--grace-ttl", "24h"],
@@ -5722,6 +5932,38 @@ mod tests {
         ] {
             assert!(Cli::try_parse_from(args).is_ok(), "{args:?}");
         }
+    }
+
+    #[test]
+    fn get_force_requires_reveal() {
+        assert!(Cli::try_parse_from(["locket", "get", "DATABASE_URL", "--force"]).is_err());
+    }
+
+    #[test]
+    fn clipboard_command_selection_uses_first_available_candidate() {
+        static COMMANDS: &[super::ClipboardCommand] = &[
+            super::ClipboardCommand { program: "missing", args: &[] },
+            super::ClipboardCommand { program: "present", args: &["--clipboard"] },
+        ];
+
+        let selected = super::select_clipboard_command(COMMANDS, |program| program == "present");
+
+        assert_eq!(selected.map(|command| command.program), Some("present"));
+        assert_eq!(selected.map(|command| command.args), Some(["--clipboard"].as_slice()));
+    }
+
+    #[test]
+    fn clipboard_copy_reports_unavailable_without_value_leakage()
+    -> Result<(), Box<dyn std::error::Error>> {
+        static COMMANDS: &[super::ClipboardCommand] = &[];
+
+        let result =
+            super::copy_secret_to_clipboard_with("postgres://localhost/app", COMMANDS, |_| false);
+        let error = result.err().ok_or("expected unavailable clipboard command")?;
+
+        assert_eq!(error, "clipboard command unavailable");
+        assert!(!error.contains("postgres://localhost/app"));
+        Ok(())
     }
 
     #[test]
@@ -7073,7 +7315,7 @@ argv = []
 
         let mut reveal_output = Vec::new();
         run_with_context(
-            Cli::try_parse_from(["locket", "get", "DATABASE_URL", "--reveal"])?,
+            Cli::try_parse_from(["locket", "get", "DATABASE_URL", "--reveal", "--force"])?,
             &context,
             &mut reveal_output,
         )?;
@@ -7088,6 +7330,135 @@ argv = []
         let mut list_after_rm = Vec::new();
         run_with_context(Cli::try_parse_from(["locket", "list"])?, &context, &mut list_after_rm)?;
         assert!(String::from_utf8(list_after_rm)?.contains("no secrets"));
+        Ok(())
+    }
+
+    #[test]
+    fn get_copy_writes_metadata_only_audit_without_value_leakage()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        let mut output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut output,
+        )?;
+        let args = test_secret_write_args("DATABASE_URL");
+        super::set_secret_value(&context, &args, "postgres://localhost/app", "manual", 1_000)?;
+
+        let copy_args = super::GetArgs {
+            key: "DATABASE_URL".to_owned(),
+            reveal: false,
+            force: false,
+            copy: true,
+        };
+        let mut copy_output = Vec::new();
+        super::get_command_with_clipboard(&context, &mut copy_output, &copy_args, |value| {
+            assert_eq!(value, "postgres://localhost/app");
+            Ok(())
+        })?;
+        let copy_output = String::from_utf8(copy_output)?;
+        assert!(copy_output.contains("metadata_only=yes"));
+        assert!(copy_output.contains("clipboard_clear_supported=no"));
+        assert!(!copy_output.contains("postgres://localhost/app"));
+
+        let store = locket_store::Store::open(directory.path().join("store.db"))?;
+        let metadata: String = store.connection().query_row(
+            "SELECT metadata_json FROM audit_log WHERE action = 'COPY'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert!(metadata.contains("\"access_mode\":\"clipboard\""));
+        assert!(metadata.contains("\"ttl_seconds\":60"));
+        assert!(metadata.contains("\"clipboard_clear_supported\":false"));
+        assert!(metadata.contains("\"secret_name\":\"DATABASE_URL\""));
+        assert!(!metadata.contains("postgres://localhost/app"));
+        Ok(())
+    }
+
+    #[test]
+    fn get_copy_unavailable_audits_unsupported_state_without_value_leakage()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        let mut output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut output,
+        )?;
+        let args = test_secret_write_args("DATABASE_URL");
+        super::set_secret_value(&context, &args, "postgres://localhost/app", "manual", 1_000)?;
+
+        let copy_args = super::GetArgs {
+            key: "DATABASE_URL".to_owned(),
+            reveal: false,
+            force: false,
+            copy: true,
+        };
+        let mut copy_output = Vec::new();
+        let result =
+            super::get_command_with_clipboard(&context, &mut copy_output, &copy_args, |_value| {
+                Err("clipboard command unavailable".to_owned())
+            });
+        assert_error_contains(result, "clipboard command unavailable");
+        let copy_output = String::from_utf8(copy_output)?;
+        assert!(copy_output.contains("clipboard TTL clearing is unsupported"));
+        assert!(!copy_output.contains("postgres://localhost/app"));
+
+        let store = locket_store::Store::open(directory.path().join("store.db"))?;
+        let metadata: String = store.connection().query_row(
+            "SELECT metadata_json FROM audit_log WHERE action = 'COPY'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert!(metadata.contains("\"status\":\"FAILURE\""));
+        assert!(metadata.contains("\"clipboard_supported\":false"));
+        assert!(metadata.contains("\"unsupported_reason\":\"clipboard command unavailable\""));
+        assert!(!metadata.contains("postgres://localhost/app"));
+        Ok(())
+    }
+
+    #[test]
+    fn reveal_requires_force_for_noninteractive_stdout_and_audits_force()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        let mut output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut output,
+        )?;
+        let args = test_secret_write_args("DATABASE_URL");
+        super::set_secret_value(&context, &args, "postgres://localhost/app", "manual", 1_000)?;
+
+        let mut reveal_output = Vec::new();
+        let result = run_with_context(
+            Cli::try_parse_from(["locket", "get", "DATABASE_URL", "--reveal"])?,
+            &context,
+            &mut reveal_output,
+        );
+        assert_error_contains(result.map(|_| ()), "requires an interactive terminal");
+
+        let mut forced_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "get", "DATABASE_URL", "--reveal", "--force"])?,
+            &context,
+            &mut forced_output,
+        )?;
+        assert_eq!(String::from_utf8(forced_output)?, "postgres://localhost/app\n");
+
+        let store = locket_store::Store::open(directory.path().join("store.db"))?;
+        let metadata: String = store.connection().query_row(
+            "SELECT metadata_json FROM audit_log WHERE action = 'REVEAL'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert!(metadata.contains("\"force\":true"));
+        assert!(metadata.contains("\"access_mode\":\"stdout\""));
+        assert!(!metadata.contains("postgres://localhost/app"));
         Ok(())
     }
 
@@ -7311,7 +7682,7 @@ argv = []
         )?;
         let mut reveal_output = Vec::new();
         run_with_context(
-            Cli::try_parse_from(["locket", "get", "DATABASE_URL", "--reveal"])?,
+            Cli::try_parse_from(["locket", "get", "DATABASE_URL", "--reveal", "--force"])?,
             &context,
             &mut reveal_output,
         )?;
@@ -7415,7 +7786,7 @@ argv = []
 
         let mut reveal_output = Vec::new();
         run_with_context(
-            Cli::try_parse_from(["locket", "get", "DATABASE_URL", "--reveal"])?,
+            Cli::try_parse_from(["locket", "get", "DATABASE_URL", "--reveal", "--force"])?,
             &context,
             &mut reveal_output,
         )?;
@@ -7460,7 +7831,7 @@ argv = []
 
         let mut reveal_output = Vec::new();
         run_with_context(
-            Cli::try_parse_from(["locket", "get", "DATABASE_URL", "--reveal"])?,
+            Cli::try_parse_from(["locket", "get", "DATABASE_URL", "--reveal", "--force"])?,
             &context,
             &mut reveal_output,
         )?;
@@ -7525,7 +7896,7 @@ argv = []
             &context,
             &mut audit_output,
         )?;
-        assert!(String::from_utf8(audit_output)?.contains("verified 5 row(s)"));
+        assert!(String::from_utf8(audit_output)?.contains("verified 6 row(s)"));
 
         assert_lifecycle_audit_log(&directory)?;
         Ok(())
@@ -7576,7 +7947,7 @@ argv = []
 
         let mut reveal_output = Vec::new();
         run_with_context(
-            Cli::try_parse_from(["locket", "get", "DATABASE_URL", "--reveal"])?,
+            Cli::try_parse_from(["locket", "get", "DATABASE_URL", "--reveal", "--force"])?,
             &context,
             &mut reveal_output,
         )?;
