@@ -287,17 +287,11 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
 
 ### Runtime/DX
 
-- [ ] Local agent daemon: socket/pipe server, peer validation, unlock cache,
-  TTL grants, grant revocation, status streaming. Decomposed into subtasks
-  below; pick any open one (later subtasks depend on `agent-socket-server` —
-  note the dependency on the claim line if you take a downstream task).
-  - Spec: `docs/specs/agent.md` (whole file). RPC method list at `:81-96`.
-  - Errors: `AgentUnavailable` (80), `AgentSocketInUse` (81),
-    `ProtocolError` (82), `GrantRequired` (72).
-  - Audit actions: `LOCK`, `UNLOCK`, `AGENT_REVOKE`, `GRANT_EXPIRED`,
-    `CLIENT_ADD`, `CLIENT_REVOKE`.
-  - Files: `crates/locket-agent/src/` (daemon, socket, IPC); CLI client wiring
-    in `crates/locket-cli/src/commands/agent.rs`.
+- [ ] Local agent daemon (`docs/specs/agent.md`): socket/pipe server,
+  peer validation, unlock cache, TTL grants, grant revocation, status
+  streaming. Decomposed below; later subtasks depend on
+  `agent-socket-server` — note the dependency on the claim line if you
+  take a downstream task.
   - [ ] **subtask** — agent-socket-server: bind a per-user Unix domain
     socket on Linux/macOS (and a named pipe on Windows) with 0600/equivalent
     permissions, accept connections in a loop, decode the existing
