@@ -769,14 +769,10 @@ editing — they drift. Severity: **blocker** (security/correctness),
   `e6e2447`, `52c14ce`, `49bb397`, `7a17462`. Highest-frequency callsites and
   ISO-date / config-key migrations are done. Remaining sweep is decomposed
   below; pick any open subtask:
-  - [~] [723116e9] **subtask** — typed-recovery-format: migrate the 5 recovery file
-    Claim: branch agent-723116e9/typed-recovery-format, worktree .worktrees/agent-723116e9-typed-recovery-format.
-    `format!`-ed errors in `crates/locket-cli/src/commands/vault/recovery.rs`
-    (`recovery/kdf.toml: {error}` 2x, `recovery/envelope.bin: {error}` 2x,
-    `recovery kdf salt: {error}` 2x, `save recovery kdf: {error}`,
-    `save recovery envelope: {error}`) to a typed `MetadataInvalid` or new
-    `RecoveryEnvelopeInvalid` variant. Add a regression test that a corrupted
-    `recovery/envelope.bin` exits in the documented band.
+  - [x] **subtask** — typed-recovery-format: 8 recovery `format!`-ed
+    callsites in `commands/vault/recovery.rs` migrated to
+    `metadata_invalid_error(...)` (exit 64) in `8013f25`. Regression covers
+    a corrupted `recovery/kdf.toml` exiting 64.
   - [~] [bec7ddfc] **subtask** — typed-policy-not-found: migrate `command policy not
     Claim: branch agent-bec7ddfc/typed-policy-not-found, worktree .worktrees/agent-bec7ddfc-typed-policy-not-found. Scope: add a typed PolicyNotFound variant, migrate command-policy and automation-client not-found callsites, update the quick-index, and add exit-code regressions.
     found: {name}` (3 sites in `main.rs`/`commands/policy.rs`) and
