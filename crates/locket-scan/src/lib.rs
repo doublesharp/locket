@@ -46,6 +46,15 @@ pub struct RedactionResult {
     pub counts: BTreeMap<FindingKind, usize>,
 }
 
+/// A plaintext known secret value and the label that should replace it.
+#[derive(Debug, Clone, Copy)]
+pub struct KnownRedaction<'a> {
+    /// Secret value to match exactly.
+    pub value: &'a str,
+    /// Redaction label to emit in place of the value.
+    pub marker: &'a str,
+}
+
 /// Returns true when `token` matches the default high-entropy fallback rule.
 #[must_use]
 pub fn is_default_high_entropy_token(token: &str) -> bool {
@@ -118,13 +127,22 @@ pub fn scan_text(path_label: &str, text: &str) -> Vec<ScanFinding> {
 /// Redacts provider-looking and high-entropy tokens from text.
 #[must_use]
 pub fn redact_text(text: &str) -> RedactionResult {
+    redact_text_with_known_values(text, &[])
+}
+
+/// Redacts known secret values, provider-looking tokens, and high-entropy tokens from text.
+#[must_use]
+pub fn redact_text_with_known_values(
+    text: &str,
+    known_values: &[KnownRedaction<'_>],
+) -> RedactionResult {
     let mut redacted = String::with_capacity(text.len());
     let mut counts = BTreeMap::<FindingKind, usize>::new();
     let mut cursor = 0;
 
-    for detection in sensitive_detections(text) {
+    for detection in redaction_detections(text, known_values) {
         redacted.push_str(&text[cursor..detection.start]);
-        redacted.push_str(redaction_marker(detection.kind));
+        redacted.push_str(detection.marker.unwrap_or_else(|| redaction_marker(detection.kind)));
         cursor = detection.end;
         *counts.entry(detection.kind).or_default() += 1;
     }
@@ -134,7 +152,37 @@ pub fn redact_text(text: &str) -> RedactionResult {
     RedactionResult { text: redacted, counts }
 }
 
-fn sensitive_detections(text: &str) -> Vec<Detection> {
+fn redaction_detections<'a>(text: &str, known_values: &[KnownRedaction<'a>]) -> Vec<Detection<'a>> {
+    let mut detections = sensitive_detections(text);
+    detections.extend(known_value_detections(text, known_values));
+    detections.sort_by(|left, right| {
+        left.start
+            .cmp(&right.start)
+            .then_with(|| detection_priority(right).cmp(&detection_priority(left)))
+            .then_with(|| (right.end - right.start).cmp(&(left.end - left.start)))
+    });
+
+    let mut non_overlapping = Vec::new();
+    let mut cursor = 0;
+    for detection in detections {
+        if detection.start >= cursor {
+            cursor = detection.end;
+            non_overlapping.push(detection);
+        }
+    }
+    non_overlapping
+}
+
+const fn detection_priority(detection: &Detection<'_>) -> u8 {
+    match detection.kind {
+        FindingKind::KnownSecretValue => 3,
+        FindingKind::ProviderTokenPattern => 2,
+        FindingKind::HighEntropy => 1,
+        FindingKind::EnvFileMarker => 0,
+    }
+}
+
+fn sensitive_detections(text: &str) -> Vec<Detection<'static>> {
     let mut detections = Vec::new();
 
     for token in printable_tokens(text) {
@@ -146,6 +194,7 @@ fn sensitive_detections(text: &str) -> Vec<Detection> {
                     line: token.line,
                     column: token.column + token.value[..candidate.relative_start].chars().count(),
                     kind: FindingKind::ProviderTokenPattern,
+                    marker: None,
                 });
             } else if is_default_high_entropy_token(candidate.value) {
                 detections.push(Detection {
@@ -154,12 +203,56 @@ fn sensitive_detections(text: &str) -> Vec<Detection> {
                     line: token.line,
                     column: token.column + token.value[..candidate.relative_start].chars().count(),
                     kind: FindingKind::HighEntropy,
+                    marker: None,
                 });
             }
         }
     }
 
     detections
+}
+
+fn known_value_detections<'a>(
+    text: &str,
+    known_values: &[KnownRedaction<'a>],
+) -> Vec<Detection<'a>> {
+    let mut detections = Vec::new();
+    for known_value in known_values {
+        if known_value.value.is_empty() {
+            continue;
+        }
+
+        let mut cursor = 0;
+        while let Some(relative_start) = text[cursor..].find(known_value.value) {
+            let start = cursor + relative_start;
+            let end = start + known_value.value.len();
+            let (line, column) = line_column(text, start);
+            detections.push(Detection {
+                start,
+                end,
+                line,
+                column,
+                kind: FindingKind::KnownSecretValue,
+                marker: Some(known_value.marker),
+            });
+            cursor = end;
+        }
+    }
+    detections
+}
+
+fn line_column(text: &str, byte_index: usize) -> (usize, usize) {
+    let mut line = 1;
+    let mut column = 1;
+    for character in text[..byte_index].chars() {
+        if character == '\n' {
+            line += 1;
+            column = 1;
+        } else {
+            column += 1;
+        }
+    }
+    (line, column)
 }
 
 const fn redaction_marker(kind: FindingKind) -> &'static str {
@@ -172,12 +265,13 @@ const fn redaction_marker(kind: FindingKind) -> &'static str {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct Detection {
+struct Detection<'a> {
     start: usize,
     end: usize,
     line: usize,
     column: usize,
     kind: FindingKind,
+    marker: Option<&'a str>,
 }
 
 /// Returns true when `token` matches a built-in provider prefix rule.
@@ -300,8 +394,8 @@ fn is_env_file_label(path_label: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        FindingKind, is_default_high_entropy_token, is_high_entropy_token, redact_text, scan_text,
-        shannon_entropy,
+        FindingKind, KnownRedaction, is_default_high_entropy_token, is_high_entropy_token,
+        redact_text, redact_text_with_known_values, scan_text, shannon_entropy,
     };
 
     #[test]
@@ -378,5 +472,35 @@ mod tests {
         assert!(result.text.contains("lk_redacted_HIGH_ENTROPY"));
         assert_eq!(result.counts.get(&FindingKind::ProviderTokenPattern), Some(&1));
         assert_eq!(result.counts.get(&FindingKind::HighEntropy), Some(&1));
+    }
+
+    #[test]
+    fn redact_text_replaces_known_values_with_specific_markers() {
+        let result = redact_text_with_known_values(
+            "db=postgres://localhost/app token=sk_test_sampleTokenValue123\n",
+            &[KnownRedaction {
+                value: "postgres://localhost/app",
+                marker: "lk_redacted_DATABASE_URL",
+            }],
+        );
+
+        assert!(!result.text.contains("postgres://localhost/app"));
+        assert!(result.text.contains("db=lk_redacted_DATABASE_URL"));
+        assert!(result.text.contains("token=lk_redacted_PROVIDER_TOKEN"));
+        assert_eq!(result.counts.get(&FindingKind::KnownSecretValue), Some(&1));
+        assert_eq!(result.counts.get(&FindingKind::ProviderTokenPattern), Some(&1));
+    }
+
+    #[test]
+    fn known_value_redaction_wins_over_pattern_redaction() {
+        let provider = "sk_test_sampleTokenValue123";
+        let result = redact_text_with_known_values(
+            &format!("token={provider}\n"),
+            &[KnownRedaction { value: provider, marker: "lk_redacted_OPENAI_API_KEY" }],
+        );
+
+        assert_eq!(result.text, "token=lk_redacted_OPENAI_API_KEY\n");
+        assert_eq!(result.counts.get(&FindingKind::KnownSecretValue), Some(&1));
+        assert_eq!(result.counts.get(&FindingKind::ProviderTokenPattern), None);
     }
 }
