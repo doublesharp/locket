@@ -123,6 +123,39 @@ fn confirmation_failed_errors_exit_68() {
 }
 
 #[test]
+fn tty_required_errors_exit_68() {
+    let error = crate::runtime::error::tty_required_error(
+        "passphrase fallback setup requires an interactive TTY",
+    );
+
+    assert_eq!(error.exit_code(), 68);
+    assert_eq!(error.to_string(), "passphrase fallback setup requires an interactive TTY");
+}
+
+#[test]
+fn prompt_tty_required_paths_exit_68() -> Result<(), Box<dyn std::error::Error>> {
+    use crate::ConfirmationReader;
+
+    let confirmation_error =
+        crate::runtime::prompts::StdinConfirmationReader.read_confirmation("profile deletion");
+    let Err(confirmation_error) = confirmation_error else {
+        return Err("stdin confirmation should require an interactive TTY in tests".into());
+    };
+    assert_eq!(confirmation_error.exit_code(), 68);
+    assert!(confirmation_error.to_string().contains("requires interactive confirmation"));
+
+    let passphrase_error =
+        crate::runtime::prompts::require_interactive_passphrase("passphrase fallback setup");
+    let Err(passphrase_error) = passphrase_error else {
+        return Err("passphrase setup should require an interactive TTY in tests".into());
+    };
+    assert_eq!(passphrase_error.exit_code(), 68);
+    assert!(passphrase_error.to_string().contains("requires an interactive TTY"));
+
+    Ok(())
+}
+
+#[test]
 fn secret_not_found_errors_exit_77() {
     let error = crate::secret_not_found_error("secret not found");
 

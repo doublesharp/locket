@@ -2,7 +2,7 @@
 
 use std::io::{self, IsTerminal, Read};
 
-use crate::runtime::error::CliError;
+use crate::runtime::error::{CliError, tty_required_error};
 
 pub trait ConfirmationReader {
     fn read_confirmation(&self, prompt: &str) -> Result<String, CliError>;
@@ -14,7 +14,7 @@ pub struct StdinConfirmationReader;
 impl ConfirmationReader for StdinConfirmationReader {
     fn read_confirmation(&self, prompt: &str) -> Result<String, CliError> {
         if !io::stdin().is_terminal() {
-            return Err(CliError::Config(format!("{prompt} requires interactive confirmation")));
+            return Err(tty_required_error(format!("{prompt} requires interactive confirmation")));
         }
         let mut confirmation = String::new();
         io::stdin().read_line(&mut confirmation)?;
@@ -65,7 +65,7 @@ pub fn require_interactive_passphrase(reason: &str) -> Result<(), CliError> {
     if io::stdin().is_terminal() && io::stderr().is_terminal() {
         Ok(())
     } else {
-        Err(CliError::Config(format!("{reason} requires an interactive TTY")))
+        Err(tty_required_error(format!("{reason} requires an interactive TTY")))
     }
 }
 

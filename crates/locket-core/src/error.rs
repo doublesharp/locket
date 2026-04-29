@@ -35,6 +35,9 @@ pub enum LocketError {
     /// Typed-string confirmation prompt rejected by the user input.
     #[error("confirmation did not match")]
     ConfirmationFailed,
+    /// Interactive terminal input was required but unavailable.
+    #[error("interactive TTY required")]
+    TtyRequired,
     /// `locket scan` found one or more blocking findings.
     #[error("scan blocked by findings")]
     ScanFindingBlocked,
@@ -134,7 +137,7 @@ impl LocketError {
             Self::PolicyValidationIncomplete => 65,
             Self::EnvironmentConflict | Self::MetadataLooksLikeSecret => 66,
             Self::SecretAlreadyExists => 67,
-            Self::ConfirmationFailed => 68,
+            Self::ConfirmationFailed | Self::TtyRequired => 68,
             Self::ScanFindingBlocked => 69,
             Self::AccessDenied => 70,
             Self::ProjectRootUntrusted => 71,
@@ -188,6 +191,7 @@ mod tests {
         assert_eq!(LocketError::MetadataLooksLikeSecret.exit_code(), 66);
         assert_eq!(LocketError::SecretAlreadyExists.exit_code(), 67);
         assert_eq!(LocketError::ConfirmationFailed.exit_code(), 68);
+        assert_eq!(LocketError::TtyRequired.exit_code(), 68);
         assert_eq!(LocketError::ScanFindingBlocked.exit_code(), 69);
     }
 
@@ -224,6 +228,7 @@ mod tests {
             (LocketError::InviteExpired, 111),
             (LocketError::TeamBundleConflict, 112),
             (LocketError::DeviceRevoked, 113),
+            (LocketError::TtyRequired, 68),
         ];
 
         for (error, code) in cases {
@@ -248,6 +253,7 @@ mod tests {
             (LocketError::UnrecoverableVault, "vault unrecoverable"),
             (LocketError::DeviceRevoked, "device revoked"),
             (LocketError::ConfirmationFailed, "confirmation did not match"),
+            (LocketError::TtyRequired, "interactive TTY required"),
             (LocketError::SecretNotFound, "secret not found"),
             (LocketError::ProfileNotFound, "profile not found"),
             (LocketError::InvalidSecretName, "invalid secret name"),

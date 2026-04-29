@@ -20,6 +20,7 @@ Exit-code ranges:
 | Input/config/reference | Git worktree required | `locket scan --staged` is not running inside a Git worktree and fails with `ConfigError` | 64 | Run inside a Git worktree or scan an explicit path instead |
 | Input/config/reference | Policy validation incomplete | `policy doctor` could not validate agent-required references | 65 | Start or unlock the agent and rerun `locket policy doctor` |
 | Input/config/reference | Environment conflict | Refuse spawn when `override = "error"` detects a name conflict | 66 | Change policy to `locket`, `preserve`, or rename the conflicting variable |
+| Input/config/reference | Interactive TTY required | Refuse flows that require no-echo input or typed confirmation when no interactive terminal is available | 68 | Retry from an interactive terminal or use a non-interactive flow explicitly allowed by policy |
 | Authorization/trust/access | Access denied | Refuse action because policy explicitly denies it | 70 | Update policy or request an appropriate team role/profile grant |
 | Authorization/trust/access | Project root untrusted | Refuse secret access for that root | 71 | Run `locket project trust-root` from the intended project path |
 | Authorization/trust/access | Unlock required | Refuse action until vault is unlocked | 72 | Run `locket unlock` or use an approved agent grant |
