@@ -407,15 +407,29 @@ fn lock_and_unlock_use_direct_metadata_only_mode() -> Result<(), Box<dyn std::er
         &context,
         &mut init_output,
     )?;
-    let mut unlock_output = Vec::new();
-    run_with_context(
+
+    let mut unlock_with_verify = Vec::new();
+    let verify_result = run_with_context(
         Cli::try_parse_from(["locket", "unlock", "--verify-user"])?,
         &context,
-        &mut unlock_output,
-    )?;
+        &mut unlock_with_verify,
+    );
+    let verify_error = verify_result.expect_err("--verify-user must hard-error");
+    assert_eq!(
+        verify_error.exit_code(),
+        locket_core::LocketError::PolicyValidationIncomplete.exit_code(),
+    );
+    assert_error_contains(
+        Err::<(), _>(verify_error),
+        "platform user verification is not implemented",
+    );
+    assert!(unlock_with_verify.is_empty());
+
+    let mut unlock_output = Vec::new();
+    run_with_context(Cli::try_parse_from(["locket", "unlock"])?, &context, &mut unlock_output)?;
     let unlock_output = String::from_utf8(unlock_output)?;
     assert!(unlock_output.contains("metadata-only direct CLI unlock succeeded"));
     assert!(unlock_output.contains("cached_keys: no"));
-    assert!(unlock_output.contains("platform user verification is not implemented"));
+    assert!(unlock_output.contains("verify_user: not requested"));
     Ok(())
 }
