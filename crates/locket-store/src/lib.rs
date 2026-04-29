@@ -2861,16 +2861,12 @@ mod tests {
             [],
         )?;
 
-        let error = test_store
-            .store
-            .verify_audit_chain_and_append("lk_proj_test", &[42; 32], 200)
-            .expect_err("tampered row should fail verification");
-        match error {
-            StoreError::AuditIntegrity { sequence, reason } => {
-                assert_eq!(sequence, 1);
-                assert_eq!(reason, "row hmac mismatch");
-            }
-            other => panic!("expected audit integrity error, got {other}"),
+        let result = test_store.store.verify_audit_chain_and_append("lk_proj_test", &[42; 32], 200);
+        if let Err(StoreError::AuditIntegrity { sequence, reason }) = result {
+            assert_eq!(sequence, 1);
+            assert_eq!(reason, "row hmac mismatch");
+        } else {
+            assert!(result.is_err(), "tampered row should fail verification");
         }
         let audit_rows = test_store.store.connection().query_row(
             "SELECT COUNT(*) FROM audit_log WHERE project_id = 'lk_proj_test'",
