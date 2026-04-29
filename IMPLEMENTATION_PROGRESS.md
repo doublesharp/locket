@@ -212,14 +212,10 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
 - [x] `locket redact` spec coverage.
 - [x] `locket context` spec coverage.
 - [x] `locket ai-safe` spec coverage.
-- [ ] Replace metadata-only `locket lock` and `locket unlock` with spec-complete
-  direct CLI and agent-backed behavior.
-  - Spec: `docs/specs/agent.md:81-95` (`Lock`, `Unlock` RPCs); `docs/specs/runtime.md:5-50`.
-  - Errors: `UnlockRequired` (70), `KeychainEntryMissing` (100), `RecoveryUnavailable` (101), `AgentUnavailable` (80).
-  - Audit actions: `UNLOCK`, `LOCK`. Both must record method (`OsKeychain` |
-    `Passphrase` | `RecoveryEnvelope`) and TTL where applicable.
-  - Files: `crates/locket-cli/src/lock.rs` (currently metadata-only at lines
-    15 and 38); add agent client wiring once daemon ships.
+- [ ] Replace metadata-only `locket lock`/`locket unlock` with
+  spec-complete direct CLI and agent-backed behavior; record unlock
+  method and TTL on `UNLOCK`/`LOCK` audit rows
+  (`docs/specs/agent.md:81-95`).
 - [x] Trusted-root management.
 - [x] Dangerous-profile flow.
 - [x] `locket meta`.
@@ -242,13 +238,9 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
   - Files: `crates/locket-scan/src/rules.rs` (severity table),
     `crates/locket-cli/src/scan.rs` (exit-code mapping by max severity).
 - [x] Secure interactive secret input for `set`/`rotate`.
-- [ ] Destructive confirmation flows. `purge`, dangerous-profile, root untrust
-  done. Remaining: policy deletion and other sensitive surfaces.
-  - Spec: `docs/specs/policy.md:26` (`policy delete`); also any future
-    UI/editor-driven sensitive flows.
-  - Errors: `ConfirmationFailed` (66).
-  - Audit actions: `POLICY_UPDATE` with deletion metadata.
-  - Files: future `crates/locket-cli/src/policy_authoring.rs` deletion path.
+- [~] Destructive confirmation flows: `purge`, dangerous-profile, and
+  root untrust shipped. Remaining: policy deletion and other sensitive
+  surfaces (`docs/specs/policy.md:26`).
 - [~] [70c448c4] ready: agent-70c448c4/source-precedence @ f20dfcb — run audit records selected source by precedence; set tombstone preflight returns typed SecretDeleted.
   Claim: branch agent-70c448c4/source-precedence, worktree .worktrees/agent-70c448c4-source-precedence.
   `rotate`, `rm`, `purge`, `history`, `diff`, `copy`, reveal/copy, and execution.
@@ -267,17 +259,11 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
   - Spec: `docs/specs/project-cli.md` CLI Contract.
   - Errors: `StorageError` (90), `KeychainEntryMissing` (100).
   - Files: `crates/locket-cli/src/commands/project/init.rs`.
-- [ ] Dotenv import: name-level migration parity check (never run user
-  app) and explicit post-import confirmation prompt to delete `.env`.
-  - Spec: `docs/specs/project-cli.md` Onboarding Flows.
-  - Errors: `ConfirmationFailed` (68).
-  - Audit: `IMPORT` plus an explicit deletion audit when accepted.
-  - Files: `crates/locket-cli/src/commands/secrets/import.rs`.
+- [ ] Dotenv import: name-level parity check (never run user app) and
+  explicit post-import confirmation to delete `.env`.
 - [ ] `.env.example` Locket-managed block markers
-  (`# --- BEGIN/END LOCKET MANAGED ---`) with rewrite-only-between-markers
-  semantics; tombstoned secrets excluded from the cross-profile union.
-  - Spec: `docs/specs/integrations.md` Git Integration & Pre-Commit.
-  - Files: `crates/locket-cli/src/` example-emitter.
+  (`# --- BEGIN/END LOCKET MANAGED ---`); rewrite only between markers;
+  tombstoned secrets excluded from the cross-profile union.
 - [~] `example.auto_refresh` config key (default `true`, project-override-wins)
   is wired through the shared `refresh_example_for_project_if_enabled` gate at
   the `set`/`rotate`/`rm`/`purge`/`copy`/`import` command call sites with
@@ -292,13 +278,9 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
   - Errors: `ConfirmationFailed` (68).
   - Audit: `HOOK_INSTALL`.
   - Files: `crates/locket-cli/src/commands/project/install_hooks.rs`.
-- [ ] `locket scan --no-gitignore` flag and `--require-known` pre-commit
-  mode (fails with `UnlockRequired` when locked, `ProjectNotFound`
-  outside any project).
-  - Spec: `docs/specs/integrations.md`,
-    `docs/specs/scan-redaction.md`.
-  - Errors: `UnlockRequired` (72), `ProjectRootUntrusted` (71).
-  - Files: `crates/locket-cli/src/commands/scan/scanner.rs`.
+- [ ] `locket scan --no-gitignore` flag and `--require-known`
+  pre-commit mode (locked → `UnlockRequired`; outside project →
+  `ProjectNotFound`).
 - [x] Store/schema coverage for the full required-tables set
   (automation/teams/passkey/imported-audit tables + indexes/triggers,
   with `SCHEMA_MIGRATE` audit on migrations).
@@ -685,7 +667,8 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
   `agent start`, `device init`).
   - Spec: `docs/specs/desktop.md` UX Requirements.
   - Files: `crates/locket-app/ui/`.
-- [ ] Denial UX differentiates locked vault, missing grant, policy
+- [~] [4efea70d] Denial UX differentiates locked vault, missing grant, policy
+  Claim: branch agent-4efea70d/denial-ux-descriptors, worktree .worktrees/agent-4efea70d-denial-ux-descriptors.
   denial, dangerous-profile, revoked device, and expired invite with
   distinct copy and recovery affordances.
   - Spec: `docs/specs/desktop.md` UX Requirements.
