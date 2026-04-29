@@ -259,6 +259,71 @@ CREATE TABLE IF NOT EXISTS passkey_credentials (
 CREATE INDEX IF NOT EXISTS passkey_credentials_project_revoked_idx
   ON passkey_credentials(project_id, revoked_at);
 
+CREATE TABLE IF NOT EXISTS teams (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  UNIQUE (project_id, name)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS teams_one_per_project_idx
+  ON teams(project_id);
+
+CREATE TABLE IF NOT EXISTS team_members (
+  id TEXT PRIMARY KEY,
+  team_id TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+  device_id TEXT REFERENCES devices(id) ON DELETE SET NULL,
+  display_name TEXT NOT NULL,
+  role TEXT NOT NULL CHECK (role IN ('owner', 'maintainer', 'developer', 'read-only')),
+  joined_at INTEGER NOT NULL,
+  removed_at INTEGER,
+  CHECK (removed_at IS NULL OR removed_at >= joined_at),
+  UNIQUE (team_id, display_name)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS team_members_active_device_idx
+  ON team_members(team_id, device_id)
+  WHERE device_id IS NOT NULL AND removed_at IS NULL;
+
+CREATE INDEX IF NOT EXISTS team_members_team_role_idx
+  ON team_members(team_id, role)
+  WHERE removed_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS team_invites (
+  id TEXT PRIMARY KEY,
+  team_id TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+  issuer_member_id TEXT REFERENCES team_members(id) ON DELETE SET NULL,
+  recipient_device_fingerprint TEXT NOT NULL,
+  role TEXT NOT NULL CHECK (role IN ('owner', 'maintainer', 'developer', 'read-only')),
+  profiles_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(profiles_json)),
+  nonce BLOB NOT NULL CHECK (length(nonce) = 24),
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL,
+  accepted_at INTEGER,
+  revoked_at INTEGER,
+  CHECK (expires_at > created_at),
+  CHECK (accepted_at IS NULL OR accepted_at >= created_at),
+  CHECK (revoked_at IS NULL OR revoked_at >= created_at)
+);
+
+CREATE INDEX IF NOT EXISTS team_invites_team_status_idx
+  ON team_invites(team_id, expires_at, accepted_at, revoked_at);
+
+CREATE TABLE IF NOT EXISTS command_policies (
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  policy_json TEXT NOT NULL CHECK (json_valid(policy_json)),
+  normalized_json TEXT NOT NULL CHECK (json_valid(normalized_json)),
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (project_id, name)
+);
+
+CREATE INDEX IF NOT EXISTS command_policies_project_updated_idx
+  ON command_policies(project_id, updated_at);
+
 CREATE TABLE IF NOT EXISTS audit_log (
   project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   sequence INTEGER NOT NULL CHECK (sequence >= 1),
@@ -274,6 +339,23 @@ CREATE TABLE IF NOT EXISTS audit_log (
   hmac BLOB NOT NULL CHECK (length(hmac) = 32),
   PRIMARY KEY (project_id, sequence)
 );
+
+CREATE TABLE IF NOT EXISTS imported_audit_chains (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  source_device_fingerprint TEXT NOT NULL,
+  bundle_digest BLOB NOT NULL CHECK (length(bundle_digest) = 32),
+  checkpoint_sequence INTEGER NOT NULL CHECK (checkpoint_sequence >= 1),
+  checkpoint_hmac BLOB NOT NULL CHECK (length(checkpoint_hmac) = 32),
+  encrypted_rows BLOB NOT NULL,
+  nonce BLOB NOT NULL CHECK (length(nonce) = 24),
+  aad_schema_version INTEGER NOT NULL CHECK (aad_schema_version >= 1),
+  imported_at INTEGER NOT NULL,
+  UNIQUE (project_id, source_device_fingerprint, bundle_digest)
+);
+
+CREATE INDEX IF NOT EXISTS imported_audit_chains_conflict_idx
+  ON imported_audit_chains(project_id, bundle_digest, checkpoint_sequence);
 
 CREATE TABLE IF NOT EXISTS runtime_sessions (
   id TEXT PRIMARY KEY,
@@ -324,6 +406,32 @@ CREATE TABLE IF NOT EXISTS automation_clients (
 CREATE INDEX IF NOT EXISTS automation_clients_project_active_idx
   ON automation_clients(project_id, name)
   WHERE revoked_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS automation_client_private_key_refs (
+  client_id TEXT PRIMARY KEY REFERENCES automation_clients(id) ON DELETE CASCADE,
+  storage TEXT NOT NULL CHECK (storage IN ('os-keychain', 'wrapped-local-file')),
+  keychain_service TEXT,
+  keychain_account TEXT,
+  local_path_hash TEXT,
+  metadata_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(metadata_json)),
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  CHECK (
+    (
+      storage = 'os-keychain'
+      AND keychain_service IS NOT NULL
+      AND keychain_account IS NOT NULL
+      AND local_path_hash IS NULL
+    )
+    OR
+    (
+      storage = 'wrapped-local-file'
+      AND keychain_service IS NULL
+      AND keychain_account IS NULL
+      AND local_path_hash IS NOT NULL
+    )
+  )
+);
 
 CREATE TABLE IF NOT EXISTS automation_client_nonces (
   client_id TEXT NOT NULL REFERENCES automation_clients(id) ON DELETE CASCADE,

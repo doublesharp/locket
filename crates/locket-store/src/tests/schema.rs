@@ -20,13 +20,20 @@ fn creates_schema_and_records_migration() -> Result<(), Box<dyn Error>> {
         "keys",
         "devices",
         "passkey_credentials",
+        "automation_clients",
+        "automation_client_private_key_refs",
+        "automation_client_nonces",
+        "teams",
+        "team_members",
+        "team_invites",
+        "command_policies",
         "project_roots",
         "directory_grants",
         "audit_log",
+        "imported_audit_chains",
         "fingerprints",
         "runtime_sessions",
         "schema_migrations",
-        "automation_client_nonces",
     ] {
         let exists = connection.query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
@@ -45,6 +52,159 @@ fn creates_schema_and_records_migration() -> Result<(), Box<dyn Error>> {
         connection.query_row("PRAGMA foreign_keys", [], |row| row.get::<_, i64>(0))?;
     assert_eq!(foreign_keys, 1);
 
+    Ok(())
+}
+
+#[test]
+fn automation_private_key_refs_enforce_metadata_only_storage() -> Result<(), Box<dyn Error>> {
+    let test_store = open_initialized_store()?;
+    let connection = test_store.store.connection();
+
+    insert_schema_project(connection)?;
+    insert_schema_automation_client(connection)?;
+    connection.execute(
+        "INSERT INTO automation_client_private_key_refs(
+           client_id, storage, keychain_service, keychain_account, metadata_json, created_at,
+           updated_at
+         )
+         VALUES (
+           'lk_client_schema', 'os-keychain', 'locket', 'lk_client_schema', '{}', 1, 1
+         )",
+        [],
+    )?;
+
+    let bad_key_ref = connection.execute(
+        "INSERT INTO automation_client_private_key_refs(
+           client_id, storage, keychain_service, keychain_account, local_path_hash, created_at,
+           updated_at
+         )
+         VALUES (
+           'lk_client_missing', 'os-keychain', 'locket', 'missing', 'path-hash', 1, 1
+         )",
+        [],
+    );
+    assert!(bad_key_ref.is_err());
+
+    Ok(())
+}
+
+#[test]
+fn team_required_tables_enforce_metadata_constraints() -> Result<(), Box<dyn Error>> {
+    let test_store = open_initialized_store()?;
+    let connection = test_store.store.connection();
+
+    insert_schema_project(connection)?;
+    connection.execute(
+        "INSERT INTO teams(id, project_id, name, created_at, updated_at)
+         VALUES ('lk_team_schema', 'lk_proj_schema', 'app-team', 1, 1)",
+        [],
+    )?;
+    connection.execute(
+        "INSERT INTO team_members(id, team_id, display_name, role, joined_at)
+         VALUES ('lk_member_schema', 'lk_team_schema', 'Alice', 'owner', 1)",
+        [],
+    )?;
+    connection.execute(
+        "INSERT INTO team_invites(
+           id, team_id, issuer_member_id, recipient_device_fingerprint, role, profiles_json,
+           nonce, created_at, expires_at
+         )
+         VALUES (
+           'lk_invite_schema', 'lk_team_schema', 'lk_member_schema', 'recipient-fp',
+           'developer', '[\"dev\"]', zeroblob(24), 1, 2
+         )",
+        [],
+    )?;
+
+    let bad_invite_json = connection.execute(
+        "INSERT INTO team_invites(
+           id, team_id, recipient_device_fingerprint, role, profiles_json, nonce, created_at,
+           expires_at
+         )
+         VALUES (
+           'lk_invite_bad_json', 'lk_team_schema', 'recipient-fp', 'developer',
+           'not-json', zeroblob(24), 1, 2
+         )",
+        [],
+    );
+    assert!(bad_invite_json.is_err());
+
+    Ok(())
+}
+
+#[test]
+fn policy_and_imported_audit_tables_enforce_metadata_constraints() -> Result<(), Box<dyn Error>> {
+    let test_store = open_initialized_store()?;
+    let connection = test_store.store.connection();
+
+    insert_schema_project(connection)?;
+    connection.execute(
+        "INSERT INTO command_policies(
+           project_id, name, policy_json, normalized_json, created_at, updated_at
+         )
+         VALUES ('lk_proj_schema', 'dev', '{\"argv\":[\"true\"]}', '{\"argv\":[\"true\"]}', 1, 1)",
+        [],
+    )?;
+
+    let bad_policy_json = connection.execute(
+        "INSERT INTO command_policies(
+           project_id, name, policy_json, normalized_json, created_at, updated_at
+         )
+         VALUES ('lk_proj_schema', 'bad', 'not-json', '{}', 1, 1)",
+        [],
+    );
+    assert!(bad_policy_json.is_err());
+
+    connection.execute(
+        "INSERT INTO imported_audit_chains(
+           id, project_id, source_device_fingerprint, bundle_digest, checkpoint_sequence,
+           checkpoint_hmac, encrypted_rows, nonce, aad_schema_version, imported_at
+         )
+         VALUES (
+           'lk_chain_schema', 'lk_proj_schema', 'device-fp', zeroblob(32), 1, zeroblob(32),
+           zeroblob(16), zeroblob(24), 1, 1
+         )",
+        [],
+    )?;
+
+    let bad_imported_chain = connection.execute(
+        "INSERT INTO imported_audit_chains(
+           id, project_id, source_device_fingerprint, bundle_digest, checkpoint_sequence,
+           checkpoint_hmac, encrypted_rows, nonce, aad_schema_version, imported_at
+         )
+         VALUES (
+           'lk_chain_bad', 'lk_proj_schema', 'device-fp', zeroblob(16), 1, zeroblob(32),
+           zeroblob(16), zeroblob(24), 1, 1
+         )",
+        [],
+    );
+    assert!(bad_imported_chain.is_err());
+
+    Ok(())
+}
+
+fn insert_schema_project(connection: &rusqlite::Connection) -> Result<(), Box<dyn Error>> {
+    connection.execute(
+        "INSERT INTO projects(id, name, created_at) VALUES ('lk_proj_schema', 'app', 1)",
+        [],
+    )?;
+    Ok(())
+}
+
+fn insert_schema_automation_client(
+    connection: &rusqlite::Connection,
+) -> Result<(), Box<dyn Error>> {
+    connection.execute(
+        "INSERT INTO automation_clients(
+           id, project_id, name, public_key, fingerprint, storage, allowed_actions_json,
+           allowed_policies_json, created_at
+         )
+         VALUES (
+           'lk_client_schema', 'lk_proj_schema', 'ci', zeroblob(32), 'fp',
+           'external', '[]', '[]', 1
+         )",
+        [],
+    )?;
     Ok(())
 }
 
