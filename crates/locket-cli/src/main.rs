@@ -1288,6 +1288,10 @@ pub(crate) fn bundle_verification_error(message: impl Into<String>) -> CliError 
     typed_cli_error(LocketError::BundleVerificationFailed, message)
 }
 
+pub(crate) fn unimplemented_in_build_error(message: impl Into<String>) -> CliError {
+    typed_cli_error(LocketError::PolicyValidationIncomplete, message)
+}
+
 fn exec_prepare_error(error: locket_exec::ExecError) -> CliError {
     match error {
         locket_exec::ExecError::Environment(error) => {
@@ -2405,21 +2409,21 @@ fn run_command(
 
     if matches!(policy.command, CommandSpec::Shell(_)) {
         writeln!(output, "policy {}: shell execution is not implemented", policy.name)?;
-        return Err(CliError::Config(
-            "shell policy execution is not wired in this build".to_owned(),
+        return Err(unimplemented_in_build_error(
+            "shell policy execution is not wired in this build",
         ));
     }
     if policy.confirm {
-        return Err(CliError::Config("policy confirmation is not wired in this build".to_owned()));
+        return Err(unimplemented_in_build_error("policy confirmation is not wired in this build"));
     }
     if policy.require_user_verification {
-        return Err(CliError::Config(
-            "policy user verification is not wired in this build".to_owned(),
+        return Err(unimplemented_in_build_error(
+            "policy user verification is not wired in this build",
         ));
     }
     if !policy.external_env_sources.is_empty() {
-        return Err(CliError::Config(
-            "policy external environment sources are not wired in this build".to_owned(),
+        return Err(unimplemented_in_build_error(
+            "policy external environment sources are not wired in this build",
         ));
     }
 
@@ -2786,21 +2790,21 @@ fn prepare_docker_helper_policy_execution(
 
 fn ensure_runtime_policy_supported(policy: &CommandPolicy) -> Result<(), CliError> {
     if matches!(policy.command, CommandSpec::Shell(_)) {
-        return Err(CliError::Config(
-            "shell policy execution is not wired in this build".to_owned(),
+        return Err(unimplemented_in_build_error(
+            "shell policy execution is not wired in this build",
         ));
     }
     if policy.confirm {
-        return Err(CliError::Config("policy confirmation is not wired in this build".to_owned()));
+        return Err(unimplemented_in_build_error("policy confirmation is not wired in this build"));
     }
     if policy.require_user_verification {
-        return Err(CliError::Config(
-            "policy user verification is not wired in this build".to_owned(),
+        return Err(unimplemented_in_build_error(
+            "policy user verification is not wired in this build",
         ));
     }
     if !policy.external_env_sources.is_empty() {
-        return Err(CliError::Config(
-            "policy external environment sources are not wired in this build".to_owned(),
+        return Err(unimplemented_in_build_error(
+            "policy external environment sources are not wired in this build",
         ));
     }
     Ok(())

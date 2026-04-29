@@ -9,7 +9,7 @@ use serde_json::json;
 use crate::{
     CliError, PasskeyCommand, PasskeyListArgs, ResolvedProject, RuntimeContext,
     ensure_project_exists, format_hex, format_unix_nanos, load_project_key, now_unix_nanos,
-    open_store, require_project, yes_no,
+    open_store, require_project, unimplemented_in_build_error, yes_no,
 };
 
 pub fn passkey_command(
@@ -18,9 +18,8 @@ pub fn passkey_command(
     command: PasskeyCommand,
 ) -> Result<(), CliError> {
     match command {
-        PasskeyCommand::Register => Err(CliError::Config(
-            "passkey registration is not available in this build; no credential metadata was written"
-                .to_owned(),
+        PasskeyCommand::Register => Err(unimplemented_in_build_error(
+            "passkey registration is not available in this build; no credential metadata was written",
         )),
         PasskeyCommand::List(args) => passkey_list_command(context, output, &args),
         PasskeyCommand::Remove { passkey } => passkey_remove_command(context, output, &passkey),
