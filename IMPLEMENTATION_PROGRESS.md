@@ -131,13 +131,6 @@ id from your claim file) · `[x]` merged and verified.
 - Never overwrite or revert another agent's committed work; if `main`
   conflicts with your expectations, stop and surface it.
 
-### Audit-row discipline
-
-Before merging, confirm: success path writes the documented action with
-metadata-only fields; failure paths write the spec-required denial/failure
-rows; no secret values or high-entropy strings in metadata;
-`make leak-canary` passes.
-
 ### Conflict policy
 
 - Prefer rebase over merge for worker branches.
@@ -151,10 +144,6 @@ This file is the source of truth for open / claimed / done.
 Don't record who-did-what — `git log` is authoritative.
 
 ## Active Plan
-
-Items with a live claim file under `.agents/active/`. Move to `[x]` in the
-relevant TODO section once merged, then remove from this list. Drop entries
-whose claim is stale.
 
 _(no active claims)_
 
