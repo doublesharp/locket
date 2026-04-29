@@ -16,6 +16,9 @@ fuzz_target!(|data: &[u8]| {
             FindingKind::HighEntropy | FindingKind::ProviderTokenPattern => {
                 assert!(finding.token_length > 0);
             }
+            FindingKind::KnownSecretValue => {
+                assert!(finding.token_length > 0);
+            }
             FindingKind::EnvFileMarker => {
                 assert_eq!(finding.token_length, 0);
             }

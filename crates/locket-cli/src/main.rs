@@ -1122,7 +1122,8 @@ fn scan_command(
         ));
     }
 
-    if args.require_known && resolve_project(&context.cwd)?.is_none() {
+    let project = resolve_project(&context.cwd)?;
+    if args.require_known && project.is_none() {
         return Err(CliError::Config(
             "known-value scanning requires a Locket project and unlocked vault".to_owned(),
         ));
@@ -1131,14 +1132,21 @@ fn scan_command(
         writeln!(output, "scan: gitignore rules disabled")?;
     }
 
-    let scan_root = match args.path {
-        Some(path) => absolutize(&context.cwd, Path::new(&path)),
-        None => resolve_project(&context.cwd)?
-            .map_or_else(|| context.cwd.clone(), |project| project.root),
+    let scan_root = args.path.map_or_else(
+        || project.as_ref().map_or_else(|| context.cwd.clone(), |project| project.root.clone()),
+        |path| absolutize(&context.cwd, Path::new(&path)),
+    );
+    let known_values = if args.require_known {
+        let project = project.as_ref().ok_or_else(|| {
+            CliError::Config("known-value scanning requires a project".to_owned())
+        })?;
+        collect_known_secret_values(context, project, now_unix_nanos()?)?
+    } else {
+        Vec::new()
     };
 
     let mut findings = Vec::new();
-    scan_path(&scan_root, &scan_root, &mut findings)?;
+    scan_path(&scan_root, &scan_root, &known_values, &mut findings)?;
     for finding in &findings {
         writeln!(output, "{}", format_finding(finding))?;
     }
@@ -1150,7 +1158,7 @@ fn scan_command(
     }
 
     if args.require_known {
-        writeln!(output, "scan: known-value coverage is not wired in this build yet")?;
+        writeln!(output, "scan: known-value coverage checked {} value(s)", known_values.len())?;
     }
     Ok(())
 }
@@ -1698,28 +1706,41 @@ fn decrypt_current_secret(
     resolved: &ResolvedSecret,
 ) -> Result<zeroize::Zeroizing<String>, CliError> {
     let store = open_store(context)?;
-    let profile_secret_key = load_profile_key(
+    decrypt_secret_version(
         context,
         &store,
         resolved.project.config.project_id.as_str(),
         &resolved.profile.id,
-        KeyPurpose::ProfileSecret,
-    )?;
+        &resolved.secret,
+        resolved.secret.current_version,
+    )
+}
+
+fn decrypt_secret_version(
+    context: &RuntimeContext,
+    store: &Store,
+    project_id: &str,
+    profile_id: &str,
+    secret: &SecretRecord,
+    version: u32,
+) -> Result<zeroize::Zeroizing<String>, CliError> {
+    let profile_secret_key =
+        load_profile_key(context, store, project_id, profile_id, KeyPurpose::ProfileSecret)?;
     let blob = store
-        .get_blob(&resolved.secret.id, resolved.secret.current_version)?
+        .get_blob(&secret.id, version)?
         .ok_or_else(|| CliError::Config("secret blob is missing".to_owned()))?;
     let value_aad = secret_blob_aad_v1(&locket_crypto::SecretBlobAad::new(
-        resolved.project.config.project_id.as_str(),
-        &resolved.profile.id,
-        &resolved.secret.id,
-        &resolved.secret.name,
-        resolved.secret.current_version,
+        project_id,
+        profile_id,
+        &secret.id,
+        &secret.name,
+        version,
     ))?;
     let wrap_aad = key_wrap_aad_v1(&KeyWrapAad::new(
-        resolved.project.config.project_id.as_str(),
-        &resolved.secret.id,
-        Some(&resolved.profile.id),
-        resolved.secret.current_version,
+        project_id,
+        &secret.id,
+        Some(profile_id),
+        version,
         KeyWrapPurpose::SecretDek,
     ))?;
     let encrypted = EncryptedSecretValue {
@@ -1729,6 +1750,48 @@ fn decrypt_current_secret(
         aad_schema_version: blob.aad_schema_version,
     };
     Ok(decrypt_secret_value_v1(&profile_secret_key, &encrypted, &value_aad, &wrap_aad)?)
+}
+
+fn collect_known_secret_values(
+    context: &RuntimeContext,
+    project: &ResolvedProject,
+    timestamp: i64,
+) -> Result<Vec<zeroize::Zeroizing<String>>, CliError> {
+    let store = open_store(context)?;
+    let mut values = Vec::new();
+    for profile in store.list_profiles(project.config.project_id.as_str())? {
+        for secret in
+            store.list_secrets_by_profile(project.config.project_id.as_str(), &profile.id)?
+        {
+            for version in store.list_secret_versions(&secret.id)? {
+                if should_scan_known_version(&secret, &version, timestamp)
+                    && store.get_blob(&secret.id, version.version)?.is_some()
+                {
+                    values.push(decrypt_secret_version(
+                        context,
+                        &store,
+                        project.config.project_id.as_str(),
+                        &profile.id,
+                        &secret,
+                        version.version,
+                    )?);
+                }
+            }
+        }
+    }
+    Ok(values)
+}
+
+fn should_scan_known_version(
+    secret: &SecretRecord,
+    version: &SecretVersionRecord,
+    timestamp: i64,
+) -> bool {
+    match version.state.as_str() {
+        "current" => secret.state == "active" || version.version == secret.current_version,
+        "deprecated" => version.grace_until.is_some_and(|grace_until| grace_until > timestamp),
+        _ => false,
+    }
 }
 
 fn trust_root(
@@ -1913,7 +1976,12 @@ fn managed_example_block(names: &BTreeSet<String>) -> String {
     block
 }
 
-fn scan_path(root: &Path, path: &Path, findings: &mut Vec<ScanFinding>) -> Result<(), CliError> {
+fn scan_path(
+    root: &Path,
+    path: &Path,
+    known_values: &[zeroize::Zeroizing<String>],
+    findings: &mut Vec<ScanFinding>,
+) -> Result<(), CliError> {
     if path.is_dir() {
         for entry in fs::read_dir(path)? {
             let entry = entry?;
@@ -1921,7 +1989,7 @@ fn scan_path(root: &Path, path: &Path, findings: &mut Vec<ScanFinding>) -> Resul
             if should_skip_scan_path(&child) {
                 continue;
             }
-            scan_path(root, &child, findings)?;
+            scan_path(root, &child, known_values, findings)?;
         }
         return Ok(());
     }
@@ -1932,7 +2000,10 @@ fn scan_path(root: &Path, path: &Path, findings: &mut Vec<ScanFinding>) -> Resul
 
     let label = path_label(root, path);
     match fs::read_to_string(path) {
-        Ok(text) => findings.extend(scan_text(&label, &text)),
+        Ok(text) => {
+            findings.extend(scan_text(&label, &text));
+            findings.extend(scan_known_values(&label, &text, known_values));
+        }
         Err(error) if error.kind() == io::ErrorKind::InvalidData => {
             findings.extend(scan_text(&label, ""));
         }
@@ -1940,6 +2011,50 @@ fn scan_path(root: &Path, path: &Path, findings: &mut Vec<ScanFinding>) -> Resul
     }
 
     Ok(())
+}
+
+fn scan_known_values(
+    path_label: &str,
+    text: &str,
+    known_values: &[zeroize::Zeroizing<String>],
+) -> Vec<ScanFinding> {
+    let mut findings = Vec::new();
+    for known_value in known_values {
+        if known_value.is_empty() {
+            continue;
+        }
+        let mut cursor = 0;
+        while let Some(relative) = text[cursor..].find(known_value.as_str()) {
+            let start = cursor + relative;
+            let (line, column) = line_column_for_byte(text, start);
+            findings.push(ScanFinding {
+                path_label: path_label.to_owned(),
+                line,
+                column,
+                token_length: known_value.len(),
+                kind: FindingKind::KnownSecretValue,
+            });
+            cursor = start + known_value.len();
+        }
+    }
+    findings
+}
+
+fn line_column_for_byte(text: &str, byte_index: usize) -> (usize, usize) {
+    let mut line = 1;
+    let mut column = 1;
+    for (index, character) in text.char_indices() {
+        if index >= byte_index {
+            break;
+        }
+        if character == '\n' {
+            line += 1;
+            column = 1;
+        } else {
+            column += 1;
+        }
+    }
+    (line, column)
 }
 
 fn should_skip_scan_path(path: &Path) -> bool {
@@ -1973,6 +2088,7 @@ const fn finding_kind_label(kind: FindingKind) -> &'static str {
         FindingKind::HighEntropy => "high-entropy",
         FindingKind::ProviderTokenPattern => "provider-token-pattern",
         FindingKind::EnvFileMarker => "env-file",
+        FindingKind::KnownSecretValue => "known-secret",
     }
 }
 
@@ -2537,6 +2653,35 @@ mod tests {
         let output = String::from_utf8(output)?;
         assert!(output.contains("provider-token-pattern"));
         assert!(!output.contains("sk_test_sampleTokenValue123"));
+        Ok(())
+    }
+
+    #[test]
+    fn scan_require_known_matches_vault_values_without_printing_them()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        let mut output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut output,
+        )?;
+        let args = test_secret_write_args("DATABASE_URL");
+        super::set_secret_value(&context, &args, "known-secret-value", "manual", 1_000)?;
+        std::fs::write(directory.path().join("sample.txt"), "db=known-secret-value\n")?;
+
+        let mut scan_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "scan", "--require-known", "sample.txt"])?,
+            &context,
+            &mut scan_output,
+        )?;
+
+        let scan_output = String::from_utf8(scan_output)?;
+        assert!(scan_output.contains("known-secret"));
+        assert!(scan_output.contains("known-value coverage checked 1 value(s)"));
+        assert!(!scan_output.contains("known-secret-value"));
         Ok(())
     }
 

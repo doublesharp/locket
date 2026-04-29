@@ -18,6 +18,8 @@ pub enum FindingKind {
     ProviderTokenPattern,
     /// Path label identifies an environment file.
     EnvFileMarker,
+    /// Text exactly matched a known vault secret value.
+    KnownSecretValue,
 }
 
 /// Metadata-only scanner finding.
@@ -165,6 +167,7 @@ const fn redaction_marker(kind: FindingKind) -> &'static str {
         FindingKind::HighEntropy => "lk_redacted_HIGH_ENTROPY",
         FindingKind::ProviderTokenPattern => "lk_redacted_PROVIDER_TOKEN",
         FindingKind::EnvFileMarker => "",
+        FindingKind::KnownSecretValue => "lk_redacted_KNOWN_SECRET",
     }
 }
 
