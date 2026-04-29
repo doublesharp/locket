@@ -2,6 +2,7 @@
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use directories::ProjectDirs;
+use ignore::{WalkBuilder, gitignore::GitignoreBuilder};
 use locket_core::{
     Duration as LocketDuration, KeyId, ProfileId, ProfileName, ProjectConfig, ProjectId, SecretId,
     SecretName,
@@ -25,6 +26,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
+use std::ffi::OsStr;
 use std::fmt::{self, Display};
 use std::fs;
 use std::io::{self, IsTerminal, Read, Write};
@@ -40,6 +42,7 @@ const LOCKET_TOML: &str = "locket.toml";
 const CONFIG_TOML: &str = "config.toml";
 const EXAMPLE_FILE: &str = ".env.example";
 const GITIGNORE_FILE: &str = ".gitignore";
+const LOCKETIGNORE_FILE: &str = ".locketignore";
 const EXAMPLE_BEGIN: &str = "# --- BEGIN LOCKET MANAGED ---";
 const EXAMPLE_END: &str = "# --- END LOCKET MANAGED ---";
 const HOOK_BEGIN: &str = "# --- BEGIN LOCKET PRE-COMMIT ---";
@@ -1987,14 +1990,12 @@ fn scan_command(
     output: &mut impl Write,
     args: ScanArgs,
 ) -> Result<(), CliError> {
-    if args.staged {
-        ensure_git_worktree(&context.cwd)?;
-        return Err(CliError::Config(
-            "staged scan content is not wired in this build yet".to_owned(),
-        ));
-    }
-
     let project = resolve_project(&context.cwd)?;
+    let git_root = if args.staged {
+        Some(ensure_git_worktree(project.as_ref().map_or(&context.cwd, |project| &project.root))?)
+    } else {
+        None
+    };
     if args.require_known && project.is_none() {
         return Err(CliError::Config(
             "known-value scanning requires a Locket project and unlocked vault".to_owned(),
@@ -2018,7 +2019,11 @@ fn scan_command(
     };
 
     let mut findings = Vec::new();
-    scan_path(&scan_root, &scan_root, &known_values, &mut findings)?;
+    if let Some(git_root) = git_root {
+        scan_staged_path(&git_root, &known_values, &mut findings)?;
+    } else {
+        scan_path(&scan_root, &scan_root, &known_values, !args.no_gitignore, &mut findings)?;
+    }
     for finding in &findings {
         writeln!(output, "{}", format_finding(finding))?;
     }
@@ -3268,20 +3273,38 @@ fn scan_path(
     root: &Path,
     path: &Path,
     known_values: &[zeroize::Zeroizing<String>],
+    use_gitignore: bool,
     findings: &mut Vec<ScanFinding>,
 ) -> Result<(), CliError> {
     if path.is_dir() {
-        for entry in fs::read_dir(path)? {
-            let entry = entry?;
+        let mut builder = WalkBuilder::new(path);
+        builder
+            .add_custom_ignore_filename(LOCKETIGNORE_FILE)
+            .filter_entry(|entry| !should_skip_scan_path(entry.path()))
+            .hidden(false)
+            .git_ignore(use_gitignore)
+            .git_global(use_gitignore)
+            .git_exclude(use_gitignore);
+        for entry in builder.build() {
+            let entry = entry.map_err(|error| CliError::Config(error.to_string()))?;
             let child = entry.path();
-            if should_skip_scan_path(&child) {
+            if child == path || !child.is_file() {
                 continue;
             }
-            scan_path(root, &child, known_values, findings)?;
+            scan_file(root, child, known_values, findings)?;
         }
         return Ok(());
     }
 
+    scan_file(root, path, known_values, findings)
+}
+
+fn scan_file(
+    root: &Path,
+    path: &Path,
+    known_values: &[zeroize::Zeroizing<String>],
+    findings: &mut Vec<ScanFinding>,
+) -> Result<(), CliError> {
     if !path.is_file() {
         return Ok(());
     }
@@ -3299,6 +3322,57 @@ fn scan_path(
     }
 
     Ok(())
+}
+
+fn scan_staged_path(
+    git_root: &Path,
+    known_values: &[zeroize::Zeroizing<String>],
+    findings: &mut Vec<ScanFinding>,
+) -> Result<(), CliError> {
+    let locket_ignore = locket_ignore(git_root)?;
+    let staged_paths =
+        git_output(git_root, ["diff", "--cached", "--name-only", "-z", "--diff-filter=ACMRT"])?;
+
+    for path_bytes in staged_paths.split(|byte| *byte == 0).filter(|path| !path.is_empty()) {
+        let path = String::from_utf8_lossy(path_bytes);
+        if locket_ignore.matched_path_or_any_parents(path.as_ref(), false).is_ignore() {
+            continue;
+        }
+        if should_skip_scan_path(Path::new(path.as_ref())) {
+            continue;
+        }
+
+        let spec = format!(":{path}");
+        let object_type =
+            String::from_utf8_lossy(&git_output(git_root, ["cat-file", "-t", &spec])?)
+                .trim()
+                .to_owned();
+        if object_type != "blob" {
+            continue;
+        }
+
+        let contents = git_output(git_root, ["cat-file", "-p", &spec])?;
+        match String::from_utf8(contents) {
+            Ok(text) => {
+                findings.extend(scan_text(&path, &text));
+                findings.extend(scan_known_values(&path, &text, known_values));
+            }
+            Err(_) => findings.extend(scan_text(&path, "")),
+        }
+    }
+
+    Ok(())
+}
+
+fn locket_ignore(git_root: &Path) -> Result<ignore::gitignore::Gitignore, CliError> {
+    let mut builder = GitignoreBuilder::new(git_root);
+    let path = git_root.join(LOCKETIGNORE_FILE);
+    if path.exists()
+        && let Some(error) = builder.add(path)
+    {
+        return Err(CliError::Config(error.to_string()));
+    }
+    builder.build().map_err(|error| CliError::Config(error.to_string()))
 }
 
 fn scan_known_values(
@@ -3380,16 +3454,30 @@ const fn finding_kind_label(kind: FindingKind) -> &'static str {
     }
 }
 
-fn ensure_git_worktree(start: &Path) -> Result<(), CliError> {
+fn ensure_git_worktree(start: &Path) -> Result<PathBuf, CliError> {
     let mut current = start.canonicalize()?;
     loop {
         if current.join(".git").exists() {
-            return Ok(());
+            return Ok(current);
         }
         if !current.pop() {
             return Err(CliError::Config("git worktree required for --staged".to_owned()));
         }
     }
+}
+
+fn git_output<I, S>(git_root: &Path, args: I) -> Result<Vec<u8>, CliError>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    let output = ProcessCommand::new("git").arg("-C").arg(git_root).args(args).output()?;
+    if output.status.success() {
+        return Ok(output.stdout);
+    }
+
+    let message = String::from_utf8_lossy(&output.stderr);
+    Err(CliError::Config(format!("git command failed: {}", message.trim())))
 }
 
 fn absolutize(cwd: &Path, path: &Path) -> PathBuf {
@@ -3714,6 +3802,8 @@ fn now_unix_nanos() -> Result<i64, CliError> {
 mod tests {
     use clap::Parser;
     use locket_platform::MemoryMasterKeyStore;
+    use std::path::Path;
+    use std::process::Command as TestCommand;
     use tempfile::tempdir;
 
     use super::{Cli, RuntimeContext, run_with_context};
@@ -3754,6 +3844,12 @@ mod tests {
             },
             grace_ttl: grace_ttl.map(ToOwned::to_owned),
         }
+    }
+
+    fn run_git(directory: &Path, args: &[&str]) -> Result<(), Box<dyn std::error::Error>> {
+        let output = TestCommand::new("git").arg("-C").arg(directory).args(args).output()?;
+        assert!(output.status.success(), "git failed: {}", String::from_utf8_lossy(&output.stderr));
+        Ok(())
     }
 
     fn assert_lifecycle_audit_log(
@@ -4943,6 +5039,57 @@ mod tests {
     }
 
     #[test]
+    fn scan_staged_requires_git_worktree() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        let mut output = Vec::new();
+
+        let result = run_with_context(
+            Cli::try_parse_from(["locket", "scan", "--staged"])?,
+            &context,
+            &mut output,
+        );
+
+        assert!(result.is_err());
+        if let Err(error) = result {
+            assert_eq!(error.exit_code(), 64);
+            assert!(error.to_string().contains("git worktree required"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn scan_respects_locketignore_for_project_scan() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        let mut init_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut init_output,
+        )?;
+        std::fs::write(directory.path().join(".locketignore"), "ignored.txt\n")?;
+        std::fs::write(
+            directory.path().join("ignored.txt"),
+            "token=sk_test_sampleTokenValue123\n",
+        )?;
+        std::fs::write(
+            directory.path().join("visible.txt"),
+            "token=sk_test_visibleTokenValue123\n",
+        )?;
+
+        let mut scan_output = Vec::new();
+        run_with_context(Cli::try_parse_from(["locket", "scan"])?, &context, &mut scan_output)?;
+
+        let scan_output = String::from_utf8(scan_output)?;
+        assert!(scan_output.contains("visible.txt:1:7: provider-token-pattern"));
+        assert!(!scan_output.contains("ignored.txt"));
+        assert!(!scan_output.contains("sk_test_sampleTokenValue123"));
+        assert!(!scan_output.contains("sk_test_visibleTokenValue123"));
+        Ok(())
+    }
+
+    #[test]
     fn scan_require_known_matches_vault_values_without_printing_them()
     -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempdir()?;
@@ -4968,6 +5115,40 @@ mod tests {
         assert!(scan_output.contains("known-secret"));
         assert!(scan_output.contains("known-value coverage checked 1 value(s)"));
         assert!(!scan_output.contains("known-secret-value"));
+        Ok(())
+    }
+
+    #[test]
+    fn scan_staged_uses_index_content_without_printing_known_values()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        run_git(directory.path(), &["init"])?;
+        let context = test_context(&directory);
+        let mut init_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut init_output,
+        )?;
+        let args = test_secret_write_args("DATABASE_URL");
+        super::set_secret_value(&context, &args, "known-secret-value", "manual", 1_000)?;
+        let sample_path = directory.path().join("sample.txt");
+        std::fs::write(&sample_path, "db=known-secret-value\n")?;
+        run_git(directory.path(), &["add", "sample.txt"])?;
+        std::fs::write(&sample_path, "db=redacted-in-working-tree\n")?;
+
+        let mut scan_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "scan", "--staged", "--require-known"])?,
+            &context,
+            &mut scan_output,
+        )?;
+
+        let scan_output = String::from_utf8(scan_output)?;
+        assert!(scan_output.contains("sample.txt:1:4: known-secret"));
+        assert!(scan_output.contains("known-value coverage checked 1 value(s)"));
+        assert!(!scan_output.contains("known-secret-value"));
+        assert!(!scan_output.contains("redacted-in-working-tree"));
         Ok(())
     }
 
