@@ -469,6 +469,7 @@ dependencies = [
  "clap",
  "directories",
  "locket-core",
+ "locket-scan",
  "locket-store",
  "sha2",
  "tempfile",

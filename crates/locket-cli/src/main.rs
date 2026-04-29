@@ -3,12 +3,13 @@
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use directories::ProjectDirs;
 use locket_core::{ProfileId, ProfileName, ProjectConfig, ProjectId};
+use locket_scan::{FindingKind, ScanFinding, redact_text, scan_text};
 use locket_store::{Store, StoreError};
 use sha2::{Digest, Sha256};
 use std::error::Error;
 use std::fmt::{self, Display};
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode as ProcessExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -364,6 +365,9 @@ fn run_with_context(
         Command::Init(args) => init(context, output, args)?,
         Command::EmitExample => emit_example_command(context, output)?,
         Command::Profile { command } => profile_command(context, output, command)?,
+        Command::Scan(args) => scan_command(context, output, args)?,
+        Command::Redact(args) => redact_command(context, output, args)?,
+        Command::Context(args) => context_command(context, output, args)?,
         _ => {
             writeln!(output, "locket: command parsed but not implemented yet")?;
         }
@@ -604,6 +608,85 @@ fn emit_example_command(context: &RuntimeContext, output: &mut impl Write) -> Re
     Ok(())
 }
 
+fn scan_command(
+    context: &RuntimeContext,
+    output: &mut impl Write,
+    args: ScanArgs,
+) -> Result<(), CliError> {
+    if args.staged {
+        ensure_git_worktree(&context.cwd)?;
+        return Err(CliError::Config(
+            "staged scan content is not wired in this build yet".to_owned(),
+        ));
+    }
+
+    if args.require_known && resolve_project(&context.cwd)?.is_none() {
+        return Err(CliError::Config(
+            "known-value scanning requires a Locket project and unlocked vault".to_owned(),
+        ));
+    }
+    if args.no_gitignore {
+        writeln!(output, "scan: gitignore rules disabled")?;
+    }
+
+    let scan_root = match args.path {
+        Some(path) => absolutize(&context.cwd, Path::new(&path)),
+        None => resolve_project(&context.cwd)?
+            .map_or_else(|| context.cwd.clone(), |project| project.root),
+    };
+
+    let mut findings = Vec::new();
+    scan_path(&scan_root, &scan_root, &mut findings)?;
+    for finding in &findings {
+        writeln!(output, "{}", format_finding(finding))?;
+    }
+
+    if findings.is_empty() {
+        writeln!(output, "scan: no findings")?;
+    } else {
+        writeln!(output, "scan: {} finding(s)", findings.len())?;
+    }
+
+    if args.require_known {
+        writeln!(output, "scan: known-value coverage is not wired in this build yet")?;
+    }
+    Ok(())
+}
+
+fn redact_command(
+    context: &RuntimeContext,
+    output: &mut impl Write,
+    args: RedactArgs,
+) -> Result<(), CliError> {
+    let input = if args.stdin {
+        let mut input = String::new();
+        io::stdin().read_to_string(&mut input)?;
+        input
+    } else if let Some(file) = args.file {
+        fs::read_to_string(absolutize(&context.cwd, Path::new(&file)))?
+    } else {
+        return Err(CliError::Config("redact requires a file path or --stdin".to_owned()));
+    };
+
+    let result = redact_text(&input);
+    write!(output, "{}", result.text)?;
+    Ok(())
+}
+
+fn context_command(
+    context: &RuntimeContext,
+    output: &mut impl Write,
+    _args: RedactNamesArgs,
+) -> Result<(), CliError> {
+    let resolved = require_project(context)?;
+    let store = open_store(context)?;
+    let profiles = store.list_profiles(resolved.config.project_id.as_str())?;
+    writeln!(output, "Secrets used:")?;
+    writeln!(output, "profiles: {}", profiles.len())?;
+    writeln!(output, "values: hidden")?;
+    Ok(())
+}
+
 fn ensure_project_metadata(
     store: &Store,
     config: &ProjectConfig,
@@ -753,6 +836,85 @@ fn managed_example_block() -> String {
     format!("{EXAMPLE_BEGIN}\n{EXAMPLE_END}\n")
 }
 
+fn scan_path(root: &Path, path: &Path, findings: &mut Vec<ScanFinding>) -> Result<(), CliError> {
+    if path.is_dir() {
+        for entry in fs::read_dir(path)? {
+            let entry = entry?;
+            let child = entry.path();
+            if should_skip_scan_path(&child) {
+                continue;
+            }
+            scan_path(root, &child, findings)?;
+        }
+        return Ok(());
+    }
+
+    if !path.is_file() {
+        return Ok(());
+    }
+
+    let label = path_label(root, path);
+    match fs::read_to_string(path) {
+        Ok(text) => findings.extend(scan_text(&label, &text)),
+        Err(error) if error.kind() == io::ErrorKind::InvalidData => {
+            findings.extend(scan_text(&label, ""));
+        }
+        Err(error) => return Err(error.into()),
+    }
+
+    Ok(())
+}
+
+fn should_skip_scan_path(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| matches!(name, ".git" | "target"))
+}
+
+fn path_label(root: &Path, path: &Path) -> String {
+    path.strip_prefix(root)
+        .ok()
+        .filter(|relative| !relative.as_os_str().is_empty())
+        .unwrap_or(path)
+        .to_string_lossy()
+        .into_owned()
+}
+
+fn format_finding(finding: &ScanFinding) -> String {
+    format!(
+        "{}:{}:{}: {} token_length={}",
+        finding.path_label,
+        finding.line,
+        finding.column,
+        finding_kind_label(finding.kind),
+        finding.token_length
+    )
+}
+
+const fn finding_kind_label(kind: FindingKind) -> &'static str {
+    match kind {
+        FindingKind::HighEntropy => "high-entropy",
+        FindingKind::ProviderTokenPattern => "provider-token-pattern",
+        FindingKind::EnvFileMarker => "env-file",
+    }
+}
+
+fn ensure_git_worktree(start: &Path) -> Result<(), CliError> {
+    let mut current = start.canonicalize()?;
+    loop {
+        if current.join(".git").exists() {
+            return Ok(());
+        }
+        if !current.pop() {
+            return Err(CliError::Config("git worktree required for --staged".to_owned()));
+        }
+    }
+}
+
+fn absolutize(cwd: &Path, path: &Path) -> PathBuf {
+    if path.is_absolute() { path.to_path_buf() } else { cwd.join(path) }
+}
+
 fn fallback_project_name(root: &Path) -> String {
     root.file_name()
         .and_then(|name| name.to_str())
@@ -869,6 +1031,52 @@ mod tests {
         )?;
         let profiles_output = String::from_utf8(profiles_output)?;
         assert!(profiles_output.contains("* dev"));
+        Ok(())
+    }
+
+    #[test]
+    fn scan_reports_metadata_only_provider_findings() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let sample_path = directory.path().join("sample.txt");
+        std::fs::write(&sample_path, "token=sk_test_sampleTokenValue123\n")?;
+        let context = RuntimeContext {
+            cwd: directory.path().to_path_buf(),
+            store_path: directory.path().join("store.db"),
+        };
+        let mut output = Vec::new();
+
+        run_with_context(
+            Cli::try_parse_from(["locket", "scan", "sample.txt"])?,
+            &context,
+            &mut output,
+        )?;
+
+        let output = String::from_utf8(output)?;
+        assert!(output.contains("provider-token-pattern"));
+        assert!(!output.contains("sk_test_sampleTokenValue123"));
+        Ok(())
+    }
+
+    #[test]
+    fn redact_replaces_provider_tokens() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let sample_path = directory.path().join("sample.log");
+        std::fs::write(&sample_path, "token=ghp_sampleTokenValue123\n")?;
+        let context = RuntimeContext {
+            cwd: directory.path().to_path_buf(),
+            store_path: directory.path().join("store.db"),
+        };
+        let mut output = Vec::new();
+
+        run_with_context(
+            Cli::try_parse_from(["locket", "redact", "sample.log"])?,
+            &context,
+            &mut output,
+        )?;
+
+        let output = String::from_utf8(output)?;
+        assert!(output.contains("lk_redacted_PROVIDER_TOKEN"));
+        assert!(!output.contains("ghp_sampleTokenValue123"));
         Ok(())
     }
 }
