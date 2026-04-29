@@ -870,8 +870,8 @@ editing — they drift. Severity: **blocker** (security/correctness),
     `{prompt} requires interactive confirmation` and `{reason} requires an
     interactive TTY` callsites to a new `LocketError::TtyRequired` variant
     (or reuse `ConfirmationFailed` if the spec treats them equivalently).
-  - [~] [b67f47d6] **subtask** — typed-template-validation: migrate the
-    Claim: branch agent-b67f47d6/typed-template-validation, worktree .worktrees/agent-b67f47d6-typed-template-validation. Scope: map onboarding template validators to typed metadata errors and add focused CLI regressions.
+  - [~] [b67f47d6] ready: agent-b67f47d6/typed-template-validation @ cd002be — onboarding template validators now return typed `MetadataInvalid`; focused CLI regressions landed.
+    **subtask** — typed-template-validation: migrate the
     `commands/project/onboarding.rs` template validators (`template profile
     name is invalid`, `template expected secret name is invalid`, `invalid
     template command policy: {error}`, `{field} must be an array`) to typed
