@@ -753,12 +753,14 @@ editing — they drift. Severity: **blocker** (security/correctness),
     `save recovery envelope: {error}`) to a typed `MetadataInvalid` or new
     `RecoveryEnvelopeInvalid` variant. Add a regression test that a corrupted
     `recovery/envelope.bin` exits in the documented band.
-  - [ ] **subtask** — typed-policy-not-found: migrate `command policy not
+  - [~] [bec7ddfc] **subtask** — typed-policy-not-found: migrate `command policy not
+    Claim: branch agent-bec7ddfc/typed-policy-not-found, worktree .worktrees/agent-bec7ddfc-typed-policy-not-found. Scope: add a typed PolicyNotFound variant, migrate command-policy and automation-client not-found callsites, update the quick-index, and add exit-code regressions.
     found: {name}` (3 sites in `main.rs`/`commands/policy.rs`) and
     `automation client not found: {client_ref}` (1 site) to a new
     `LocketError::PolicyNotFound` typed variant (band 64-69). Update the
     Reference Quick-Index. Add per-site exit-code regression.
-  - [ ] **subtask** — typed-project-not-found: migrate `project not found`
+  - [~] [70c448c4] **subtask** — typed-project-not-found: migrate `project not found`
+    Claim: branch agent-70c448c4/typed-project-not-found, worktree .worktrees/agent-70c448c4-typed-project-not-found.
     (2 sites: `main.rs`, `commands/scan/redact.rs`) to a new
     `LocketError::ProjectNotFound` typed variant (input band) — semantically
     distinct from `ProjectRootUntrusted`. Regression covers both callers.
