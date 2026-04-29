@@ -14,6 +14,7 @@ mod device;
 pub(crate) mod diagnostics;
 mod diff;
 mod emit_example;
+mod env;
 mod exec;
 mod get;
 mod import;
@@ -442,51 +443,56 @@ pub struct RunArgs {
     pub policy: String,
 }
 
+/// Subcommands for `locket env`.
 #[derive(Debug, Subcommand)]
-enum EnvCommand {
+pub enum EnvCommand {
     /// Show metadata-only policy environment decisions.
     Inspect(EnvInspectArgs),
     /// Execute docker run with policy-backed environment injection.
     Docker(EnvDockerArgs),
 }
 
+/// Arguments for the `locket env inspect` command.
 #[derive(Debug, Args)]
-struct EnvInspectArgs {
+pub struct EnvInspectArgs {
     /// Command policy name from [commands.<policy>].
     #[arg(long)]
-    policy: String,
+    pub policy: String,
 }
 
+/// Arguments for the `locket env docker` command.
 #[derive(Debug, Args)]
-struct EnvDockerArgs {
+pub struct EnvDockerArgs {
     /// Command policy name from [commands.<policy>].
     #[arg(long)]
-    policy: String,
+    pub policy: String,
     /// Docker command and arguments after `--`.
     #[arg(last = true, required = true)]
-    command: Vec<String>,
+    pub command: Vec<String>,
 }
 
+/// Subcommands for `locket compose`.
 #[derive(Debug, Subcommand)]
-enum ComposeCommand {
+pub enum ComposeCommand {
     /// Execute docker compose with policy-backed environment injection.
     Run(ComposeRunArgs),
 }
 
+/// Arguments for the `locket compose run` command.
 #[derive(Debug, Args)]
-struct ComposeRunArgs {
+pub struct ComposeRunArgs {
     /// Command policy name from [commands.<policy>].
     #[arg(long)]
-    policy: String,
+    pub policy: String,
     /// Compose project directory to pass to docker compose.
     #[arg(long)]
-    project_directory: Option<PathBuf>,
+    pub project_directory: Option<PathBuf>,
     /// Compose profile to pass to docker compose. May be repeated.
     #[arg(long)]
-    profile: Vec<String>,
+    pub profile: Vec<String>,
     /// Docker Compose command and arguments after `--`.
     #[arg(last = true, required = true)]
-    command: Vec<String>,
+    pub command: Vec<String>,
 }
 
 #[derive(Debug, Args)]
@@ -1064,7 +1070,7 @@ fn run_with_context(
         Command::List(args) => secrets_cmd::list_command(context, output, &args)?,
         Command::Exec(args) => exec::exec_command(context, output, &args)?,
         Command::Run(args) => run::run_command(context, output, &args)?,
-        Command::Env { command } => env_command(context, output, command)?,
+        Command::Env { command } => env::env_command(context, output, command)?,
         Command::Compose { command } => compose_command(context, output, command)?,
         Command::Rotate(args) => secrets_cmd::rotate_command(context, output, &args)?,
         Command::Meta(args) => meta::meta_command(context, output, &args)?,
@@ -1171,17 +1177,6 @@ pub(crate) fn active_profile_secret_names(
         .collect())
 }
 
-fn env_command(
-    context: &RuntimeContext,
-    output: &mut impl Write,
-    command: EnvCommand,
-) -> Result<(), CliError> {
-    match command {
-        EnvCommand::Inspect(args) => env_inspect_command(context, output, &args),
-        EnvCommand::Docker(args) => docker_policy_command(context, output, &args),
-    }
-}
-
 fn compose_command(
     context: &RuntimeContext,
     output: &mut impl Write,
@@ -1190,73 +1185,6 @@ fn compose_command(
     match command {
         ComposeCommand::Run(args) => compose_policy_command(context, output, &args),
     }
-}
-
-fn env_inspect_command(
-    context: &RuntimeContext,
-    output: &mut impl Write,
-    args: &EnvInspectArgs,
-) -> Result<(), CliError> {
-    let resolved = require_project(context)?;
-    let policy = load_command_policy(&resolved, &args.policy)?;
-    let store = open_store(context)?;
-    ensure_trusted_project_root(&store, &resolved)?;
-    let profile = default_profile(&store, &resolved.config)?;
-    let selections = policy_secret_selections(&store, &resolved, &profile, &policy)?;
-    let parent_env = std::env::vars().collect::<locket_exec::EnvMap>();
-
-    writeln!(output, "policy {}", policy.name)?;
-    writeln!(output, "command_type={}", command_type(&policy.command))?;
-    writeln!(output, "env_mode={}", policy.env_mode)?;
-    writeln!(output, "override={}", policy.override_behavior)?;
-    for source in &policy.external_env_sources {
-        writeln!(
-            output,
-            "external_source {} decision=not-implemented",
-            external_env_source_label(source)
-        )?;
-    }
-
-    for selection in &selections {
-        let sources = if selection.sources.is_empty() {
-            "none".to_owned()
-        } else {
-            selection.sources.join(",")
-        };
-        let selected = selection.selected.as_ref().map_or("none", |secret| secret.source.as_str());
-        let conflicts = inspect_conflicts(selection, &parent_env, &policy);
-        let decision = inspect_decision(selection, &parent_env, &policy);
-        writeln!(
-            output,
-            "secret {} kind={} sources={} selected={} conflicts={} decision={}",
-            selection.name,
-            if selection.required { "required" } else { "optional" },
-            sources,
-            selected,
-            conflicts,
-            decision
-        )?;
-    }
-    Ok(())
-}
-
-fn docker_policy_command(
-    context: &RuntimeContext,
-    output: &mut impl Write,
-    args: &EnvDockerArgs,
-) -> Result<(), CliError> {
-    let parent_env = std::env::vars().collect::<locket_exec::EnvMap>();
-    let prepared =
-        prepare_docker_policy_execution(context, &args.policy, &args.command, parent_env)?;
-    let status = prepared.execution.command().current_dir(&context.cwd).status()?;
-    let audit_status = if status.success() { "SUCCESS" } else { "FAILED" };
-    write_docker_policy_audit_if_available(context, &prepared, audit_status)?;
-    if status.success() {
-        return Ok(());
-    }
-
-    writeln!(output, "child exited with status {status}")?;
-    Err(child_exit_error(status))
 }
 
 fn compose_policy_command(
@@ -1283,23 +1211,33 @@ fn compose_policy_command(
     Err(child_exit_error(status))
 }
 
+/// Indicates whether a docker helper invocation targets `docker run` or `docker compose`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum DockerHelperKind {
+pub enum DockerHelperKind {
+    /// `docker run`.
     DockerRun,
+    /// `docker compose`.
     Compose,
 }
 
+/// Prepared state for invoking a docker helper under a command policy.
 #[derive(Debug)]
-struct PreparedDockerPolicyExecution {
-    resolved: ResolvedProject,
-    profile: ProfileRecord,
-    policy: CommandPolicy,
-    execution: locket_exec::PreparedExecution,
-    plan: locket_docker::DockerInjectionPlan,
-    helper_kind: DockerHelperKind,
+pub struct PreparedDockerPolicyExecution {
+    /// Project resolved for the active working directory.
+    pub resolved: ResolvedProject,
+    /// Profile whose secrets are being injected.
+    pub profile: ProfileRecord,
+    /// The command policy controlling the execution.
+    pub policy: CommandPolicy,
+    /// The prepared execution plan ready to spawn.
+    pub execution: locket_exec::PreparedExecution,
+    /// Plan describing how the docker helper will inject secrets.
+    pub plan: locket_docker::DockerInjectionPlan,
+    /// Which docker helper this prepared execution targets.
+    pub helper_kind: DockerHelperKind,
 }
 
-fn prepare_docker_policy_execution(
+pub(crate) fn prepare_docker_policy_execution(
     context: &RuntimeContext,
     policy_name: &str,
     argv: &[String],
@@ -1314,7 +1252,7 @@ fn prepare_docker_policy_execution(
     )
 }
 
-fn prepare_compose_policy_execution(
+pub(crate) fn prepare_compose_policy_execution(
     context: &RuntimeContext,
     policy_name: &str,
     argv: &[String],
@@ -1436,7 +1374,7 @@ fn resolve_policy_locket_env(
     Ok((profile, selections, locket_env))
 }
 
-fn compose_argv_with_options(
+pub(crate) fn compose_argv_with_options(
     argv: Vec<String>,
     project_directory: Option<&Path>,
     profiles: &[String],
@@ -1465,7 +1403,7 @@ fn compose_argv_with_options(
     Ok(prepared)
 }
 
-fn docker_error(error: locket_docker::DockerError) -> CliError {
+pub(crate) fn docker_error(error: locket_docker::DockerError) -> CliError {
     match error {
         locket_docker::DockerError::RemoteContextDenied => CliError::Config(
             "remote Docker context is denied by default; policy allow_remote_docker support is default-deny unless explicitly enabled"
@@ -2015,59 +1953,6 @@ fn copied_secret_records(
     )
 }
 
-fn inspect_conflicts(
-    selection: &PolicySecretSelection,
-    parent_env: &locket_exec::EnvMap,
-    policy: &CommandPolicy,
-) -> String {
-    let mut conflicts = Vec::new();
-    if selection.sources.len() > 1 {
-        conflicts.push("multiple-active-sources");
-    }
-    if parent_env_conflicts_with_secret(parent_env, policy, &selection.name) {
-        conflicts.push("environment");
-    }
-    if conflicts.is_empty() { "none".to_owned() } else { conflicts.join(",") }
-}
-
-fn inspect_decision(
-    selection: &PolicySecretSelection,
-    parent_env: &locket_exec::EnvMap,
-    policy: &CommandPolicy,
-) -> &'static str {
-    if selection.selected.is_none() {
-        return if selection.required { "missing-required" } else { "skip-missing" };
-    }
-    if parent_env_conflicts_with_secret(parent_env, policy, &selection.name) {
-        return match policy.override_behavior {
-            locket_exec::EnvOverrideMode::Error => "error-conflict",
-            locket_exec::EnvOverrideMode::Preserve => "preserve-existing",
-            locket_exec::EnvOverrideMode::Locket => "inject-overwrite",
-        };
-    }
-    "inject"
-}
-
-fn parent_env_conflicts_with_secret(
-    parent_env: &locket_exec::EnvMap,
-    policy: &CommandPolicy,
-    name: &str,
-) -> bool {
-    if !parent_env.contains_key(name) {
-        return false;
-    }
-    match policy.env_mode {
-        locket_exec::EnvMode::Strict => {
-            policy.inherit_env.iter().any(|inherited| inherited == name)
-        }
-        locket_exec::EnvMode::Minimal => {
-            locket_exec::DEFAULT_SAFE_ALLOWLIST.contains(&name)
-                || policy.inherit_env.iter().any(|inherited| inherited == name)
-        }
-        locket_exec::EnvMode::Merge | locket_exec::EnvMode::Passthrough => true,
-    }
-}
-
 pub(crate) fn collect_known_secret_values(
     context: &RuntimeContext,
     project: &ResolvedProject,
@@ -2434,7 +2319,7 @@ pub(crate) const fn command_type(command: &CommandSpec) -> &'static str {
     }
 }
 
-fn external_env_source_label(source: &ExternalEnvSource) -> String {
+pub(crate) fn external_env_source_label(source: &ExternalEnvSource) -> String {
     match source {
         ExternalEnvSource::Parent => "parent".to_owned(),
         ExternalEnvSource::File(path) => format!("file:{}", path.display()),
@@ -2498,7 +2383,7 @@ pub(crate) fn write_runtime_policy_audit_if_available(
     Ok(())
 }
 
-fn write_docker_policy_audit_if_available(
+pub(crate) fn write_docker_policy_audit_if_available(
     context: &RuntimeContext,
     prepared: &PreparedDockerPolicyExecution,
     status: &str,
@@ -2530,7 +2415,10 @@ fn write_docker_policy_audit_if_available(
     Ok(())
 }
 
-fn docker_policy_audit_metadata(prepared: &PreparedDockerPolicyExecution, status: &str) -> Value {
+pub(crate) fn docker_policy_audit_metadata(
+    prepared: &PreparedDockerPolicyExecution,
+    status: &str,
+) -> Value {
     json!({
         "schema_version": 1,
         "action": "RUN",
