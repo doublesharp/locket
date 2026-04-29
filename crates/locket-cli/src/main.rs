@@ -1809,13 +1809,15 @@ fn copy_command(
     refresh_example_for_project_if_enabled(context)?;
     writeln!(
         output,
-        "copied {} from={} source={} to={} target_source={} version={} operation={} metadata_only=yes",
+        "copied {} from={} source={} from_version={} to={} target_source={} version={} prior_target_version={} operation={} metadata_only=yes",
         args.key,
         result.from_profile,
         result.from_source,
+        result.from_version,
         result.to_profile,
         result.to_source,
         result.target_version,
+        result.prior_target_version.map_or_else(|| "-".to_owned(), |v| v.to_string()),
         result.operation,
     )?;
     Ok(())
@@ -5051,7 +5053,9 @@ struct CopySecretResult {
     to_profile: String,
     from_source: String,
     to_source: String,
+    from_version: u32,
     target_version: u32,
+    prior_target_version: Option<u32>,
     operation: &'static str,
 }
 
@@ -5186,7 +5190,9 @@ fn copy_secret_value(
         to_profile: selection.to_profile.name,
         from_source: selection.from_source,
         to_source: selection.to_source,
+        from_version: selection.source_secret.current_version,
         target_version: target.version,
+        prior_target_version: target.prior_version,
         operation,
     })
 }
@@ -12192,6 +12198,391 @@ required_secrets = ["DATABASE_URL"]
             &mut reveal_output,
         )?;
         assert_eq!(String::from_utf8(reveal_output)?, "postgres://localhost/source\n");
+        Ok(())
+    }
+
+    #[test]
+    fn copy_picks_highest_precedence_source_when_unambiguous()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut Vec::new(),
+        )?;
+        let user_local_args = test_secret_write_args("API_KEY");
+        super::set_secret_value(&context, &user_local_args, "user-value", "manual", 1_000)?;
+        let machine_local_args = super::SecretWriteArgs {
+            key: "API_KEY".to_owned(),
+            source: super::SourceArg { source: Some(super::SecretSourceArg::MachineLocal) },
+            metadata: super::SecretMetadataFlags {
+                description: None,
+                owner: None,
+                tags: Vec::new(),
+                required: false,
+                optional: false,
+            },
+        };
+        super::set_secret_value(&context, &machine_local_args, "machine-value", "manual", 1_500)?;
+        run_with_context(
+            Cli::try_parse_from(["locket", "profile", "create", "staging"])?,
+            &context,
+            &mut Vec::new(),
+        )?;
+
+        let copy_args = super::CopyArgs {
+            key: "API_KEY".to_owned(),
+            from: "dev".to_owned(),
+            to: "staging".to_owned(),
+            from_source: None,
+            to_source: None,
+        };
+        let result = super::copy_secret_value(&context, &copy_args, 2_000)?;
+        assert_eq!(result.from_source, "machine-local");
+        // Spec: when --to-source omitted and the from-source is absent in the target profile,
+        // copy falls back to user-local.
+        assert_eq!(result.to_source, "user-local");
+        assert_eq!(result.operation, "create");
+        assert_eq!(result.target_version, 1);
+        assert_eq!(result.prior_target_version, None);
+        Ok(())
+    }
+
+    #[test]
+    fn copy_resolves_explicit_from_source_over_default_precedence()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut Vec::new(),
+        )?;
+        let user_local_args = test_secret_write_args("API_KEY");
+        super::set_secret_value(&context, &user_local_args, "user-value", "manual", 1_000)?;
+        let machine_local_args = super::SecretWriteArgs {
+            key: "API_KEY".to_owned(),
+            source: super::SourceArg { source: Some(super::SecretSourceArg::MachineLocal) },
+            metadata: super::SecretMetadataFlags {
+                description: None,
+                owner: None,
+                tags: Vec::new(),
+                required: false,
+                optional: false,
+            },
+        };
+        super::set_secret_value(&context, &machine_local_args, "machine-value", "manual", 1_500)?;
+        run_with_context(
+            Cli::try_parse_from(["locket", "profile", "create", "staging"])?,
+            &context,
+            &mut Vec::new(),
+        )?;
+
+        let copy_args = super::CopyArgs {
+            key: "API_KEY".to_owned(),
+            from: "dev".to_owned(),
+            to: "staging".to_owned(),
+            from_source: Some(super::SecretSourceArg::UserLocal),
+            to_source: None,
+        };
+        let result = super::copy_secret_value(&context, &copy_args, 2_000)?;
+        assert_eq!(result.from_source, "user-local");
+        assert_eq!(result.to_source, "user-local");
+        assert_eq!(result.from_version, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn copy_to_source_falls_back_to_user_local_when_target_missing()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut Vec::new(),
+        )?;
+        let machine_local_args = super::SecretWriteArgs {
+            key: "API_KEY".to_owned(),
+            source: super::SourceArg { source: Some(super::SecretSourceArg::MachineLocal) },
+            metadata: super::SecretMetadataFlags {
+                description: None,
+                owner: None,
+                tags: Vec::new(),
+                required: false,
+                optional: false,
+            },
+        };
+        super::set_secret_value(&context, &machine_local_args, "machine-value", "manual", 1_000)?;
+        run_with_context(
+            Cli::try_parse_from(["locket", "profile", "create", "staging"])?,
+            &context,
+            &mut Vec::new(),
+        )?;
+
+        let copy_args = super::CopyArgs {
+            key: "API_KEY".to_owned(),
+            from: "dev".to_owned(),
+            to: "staging".to_owned(),
+            from_source: None,
+            to_source: None,
+        };
+        let result = super::copy_secret_value(&context, &copy_args, 2_000)?;
+        assert_eq!(result.from_source, "machine-local");
+        assert_eq!(result.to_source, "user-local");
+        assert_eq!(result.operation, "create");
+        Ok(())
+    }
+
+    #[test]
+    fn copy_rejects_same_profile_and_same_source() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut Vec::new(),
+        )?;
+        let args = test_secret_write_args("API_KEY");
+        super::set_secret_value(&context, &args, "value", "manual", 1_000)?;
+
+        let copy_args = super::CopyArgs {
+            key: "API_KEY".to_owned(),
+            from: "dev".to_owned(),
+            to: "dev".to_owned(),
+            from_source: Some(super::SecretSourceArg::UserLocal),
+            to_source: Some(super::SecretSourceArg::UserLocal),
+        };
+        assert_error_contains(super::copy_secret_value(&context, &copy_args, 2_000), "use rotate");
+        Ok(())
+    }
+
+    #[test]
+    fn copy_within_same_profile_to_different_source_is_allowed()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut Vec::new(),
+        )?;
+        let args = test_secret_write_args("API_KEY");
+        super::set_secret_value(&context, &args, "value", "manual", 1_000)?;
+
+        let copy_args = super::CopyArgs {
+            key: "API_KEY".to_owned(),
+            from: "dev".to_owned(),
+            to: "dev".to_owned(),
+            from_source: Some(super::SecretSourceArg::UserLocal),
+            to_source: Some(super::SecretSourceArg::MachineLocal),
+        };
+        let result = super::copy_secret_value(&context, &copy_args, 2_000)?;
+        assert_eq!(result.from_source, "user-local");
+        assert_eq!(result.to_source, "machine-local");
+        assert_eq!(result.operation, "create");
+        Ok(())
+    }
+
+    #[test]
+    fn copy_to_deleted_target_source_fails_with_secret_deleted()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut Vec::new(),
+        )?;
+        let args = test_secret_write_args("API_KEY");
+        super::set_secret_value(&context, &args, "source-value", "manual", 1_000)?;
+        run_with_context(
+            Cli::try_parse_from(["locket", "profile", "create", "staging"])?,
+            &context,
+            &mut Vec::new(),
+        )?;
+        run_with_context(
+            Cli::try_parse_from(["locket", "use", "staging"])?,
+            &context,
+            &mut Vec::new(),
+        )?;
+        super::set_secret_value(&context, &args, "target-value", "manual", 1_500)?;
+        run_with_context(
+            Cli::try_parse_from(["locket", "rm", "API_KEY"])?,
+            &context,
+            &mut Vec::new(),
+        )?;
+        run_with_context(
+            Cli::try_parse_from(["locket", "use", "dev"])?,
+            &context,
+            &mut Vec::new(),
+        )?;
+
+        let copy_args = super::CopyArgs {
+            key: "API_KEY".to_owned(),
+            from: "dev".to_owned(),
+            to: "staging".to_owned(),
+            from_source: None,
+            to_source: None,
+        };
+        assert_error_contains(
+            super::copy_secret_value(&context, &copy_args, 2_000),
+            "SecretDeleted",
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn copy_from_deleted_source_secret_fails() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut Vec::new(),
+        )?;
+        let args = test_secret_write_args("API_KEY");
+        super::set_secret_value(&context, &args, "value", "manual", 1_000)?;
+        run_with_context(
+            Cli::try_parse_from(["locket", "rm", "API_KEY"])?,
+            &context,
+            &mut Vec::new(),
+        )?;
+        run_with_context(
+            Cli::try_parse_from(["locket", "profile", "create", "staging"])?,
+            &context,
+            &mut Vec::new(),
+        )?;
+
+        let copy_args = super::CopyArgs {
+            key: "API_KEY".to_owned(),
+            from: "dev".to_owned(),
+            to: "staging".to_owned(),
+            from_source: Some(super::SecretSourceArg::UserLocal),
+            to_source: None,
+        };
+        assert_error_contains(
+            super::copy_secret_value(&context, &copy_args, 2_000),
+            "secret source is deleted",
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn copy_refreshes_env_example_after_creating_secret_in_target_profile()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut Vec::new(),
+        )?;
+        let args = test_secret_write_args("API_KEY");
+        super::set_secret_value(&context, &args, "initial-value", "manual", 1_000)?;
+        // Mirror the `set` CLI's example-refresh side-effect.
+        super::refresh_example_for_project_if_enabled(&context)?;
+        run_with_context(
+            Cli::try_parse_from(["locket", "profile", "create", "staging"])?,
+            &context,
+            &mut Vec::new(),
+        )?;
+
+        // Confirm the project example contains the source secret name before copy.
+        let example_path = directory.path().join(".env.example");
+        let before = fs::read_to_string(&example_path)?;
+        assert!(before.contains("API_KEY="), "before-copy example missing API_KEY: {before}");
+
+        run_with_context(
+            Cli::try_parse_from(["locket", "copy", "API_KEY", "--from", "dev", "--to", "staging"])?,
+            &context,
+            &mut Vec::new(),
+        )?;
+
+        let after = fs::read_to_string(&example_path)?;
+        // The example collects names from all profiles in the project, so API_KEY remains.
+        assert!(after.contains("API_KEY="));
+        // No plaintext value leaks into the example file.
+        assert!(!after.contains("initial-value"));
+        Ok(())
+    }
+
+    #[test]
+    fn copy_command_output_includes_prior_target_version_on_rotate()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut Vec::new(),
+        )?;
+        let args = test_secret_write_args("API_KEY");
+        super::set_secret_value(&context, &args, "source-value", "manual", 1_000)?;
+        run_with_context(
+            Cli::try_parse_from(["locket", "profile", "create", "staging"])?,
+            &context,
+            &mut Vec::new(),
+        )?;
+        run_with_context(
+            Cli::try_parse_from(["locket", "use", "staging"])?,
+            &context,
+            &mut Vec::new(),
+        )?;
+        super::set_secret_value(&context, &args, "target-value", "manual", 1_500)?;
+        run_with_context(
+            Cli::try_parse_from(["locket", "use", "dev"])?,
+            &context,
+            &mut Vec::new(),
+        )?;
+
+        let mut output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "copy", "API_KEY", "--from", "dev", "--to", "staging"])?,
+            &context,
+            &mut output,
+        )?;
+        let output = String::from_utf8(output)?;
+        assert!(output.contains("operation=rotate"));
+        assert!(output.contains("prior_target_version=1"));
+        assert!(output.contains("version=2"));
+        assert!(output.contains("from_version=1"));
+        // Ensure no plaintext leaks.
+        assert!(!output.contains("source-value"));
+        assert!(!output.contains("target-value"));
+        Ok(())
+    }
+
+    #[test]
+    fn copy_command_output_uses_dash_for_prior_target_version_on_create()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut Vec::new(),
+        )?;
+        let args = test_secret_write_args("API_KEY");
+        super::set_secret_value(&context, &args, "value", "manual", 1_000)?;
+        run_with_context(
+            Cli::try_parse_from(["locket", "profile", "create", "staging"])?,
+            &context,
+            &mut Vec::new(),
+        )?;
+
+        let mut output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "copy", "API_KEY", "--from", "dev", "--to", "staging"])?,
+            &context,
+            &mut output,
+        )?;
+        let output = String::from_utf8(output)?;
+        assert!(output.contains("operation=create"));
+        assert!(output.contains("prior_target_version=-"));
+        assert!(output.contains("version=1"));
+        assert!(output.contains("from_version=1"));
         Ok(())
     }
 
