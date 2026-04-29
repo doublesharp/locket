@@ -6,6 +6,7 @@ mod bootstrap;
 mod bundle;
 mod cli_error;
 mod client;
+mod compose;
 mod config_cmd;
 mod config_validation;
 mod context;
@@ -43,7 +44,7 @@ mod status;
 mod time_helpers;
 
 pub(crate) use cli_error::{
-    CliError, bundle_verification_error, child_exit_error, exec_prepare_error,
+    CliError, bundle_verification_error, exec_prepare_error,
     project_root_untrusted_error, secret_deleted_error, unimplemented_in_build_error,
 };
 pub(crate) use config_validation::{
@@ -1071,7 +1072,7 @@ fn run_with_context(
         Command::Exec(args) => exec::exec_command(context, output, &args)?,
         Command::Run(args) => run::run_command(context, output, &args)?,
         Command::Env { command } => env::env_command(context, output, command)?,
-        Command::Compose { command } => compose_command(context, output, command)?,
+        Command::Compose { command } => compose::compose_command(context, output, command)?,
         Command::Rotate(args) => secrets_cmd::rotate_command(context, output, &args)?,
         Command::Meta(args) => meta::meta_command(context, output, &args)?,
         Command::History(args) => secrets_cmd::history_command(context, output, &args)?,
@@ -1175,40 +1176,6 @@ pub(crate) fn active_profile_secret_names(
         .into_iter()
         .map(|secret| secret.name)
         .collect())
-}
-
-fn compose_command(
-    context: &RuntimeContext,
-    output: &mut impl Write,
-    command: ComposeCommand,
-) -> Result<(), CliError> {
-    match command {
-        ComposeCommand::Run(args) => compose_policy_command(context, output, &args),
-    }
-}
-
-fn compose_policy_command(
-    context: &RuntimeContext,
-    output: &mut impl Write,
-    args: &ComposeRunArgs,
-) -> Result<(), CliError> {
-    let parent_env = std::env::vars().collect::<locket_exec::EnvMap>();
-    let compose_args = compose_argv_with_options(
-        args.command.clone(),
-        args.project_directory.as_deref(),
-        &args.profile,
-    )?;
-    let prepared =
-        prepare_compose_policy_execution(context, &args.policy, &compose_args, parent_env)?;
-    let status = prepared.execution.command().current_dir(&context.cwd).status()?;
-    let audit_status = if status.success() { "SUCCESS" } else { "FAILED" };
-    write_docker_policy_audit_if_available(context, &prepared, audit_status)?;
-    if status.success() {
-        return Ok(());
-    }
-
-    writeln!(output, "child exited with status {status}")?;
-    Err(child_exit_error(status))
 }
 
 /// Indicates whether a docker helper invocation targets `docker run` or `docker compose`.
