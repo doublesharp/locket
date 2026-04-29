@@ -135,6 +135,75 @@ argv = []
 }
 
 #[test]
+fn profile_create_writes_metadata_only_audit_row() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+
+    let mut output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "profile", "create", "staging"])?,
+        &context,
+        &mut output,
+    )?;
+    assert!(String::from_utf8(output)?.contains("created profile staging"));
+
+    let store = crate::open_store(&context)?;
+    let (profile_id, metadata): (String, String) = store.connection().query_row(
+        "SELECT profile_id, metadata_json FROM audit_log WHERE action = 'PROFILE_CREATE'
+         ORDER BY sequence DESC LIMIT 1",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    assert!(profile_id.starts_with("lk_prof_"));
+    assert!(metadata.contains("\"action\":\"PROFILE_CREATE\""));
+    assert!(metadata.contains("\"status\":\"SUCCESS\""));
+    assert!(metadata.contains("\"profile_name\":\"staging\""));
+    assert!(metadata.contains("\"dangerous\":false"));
+    assert!(
+        metadata
+            .contains("\"key_purposes_initialized\":[\"profile-secret\",\"profile-fingerprint\"]")
+    );
+    Ok(())
+}
+
+#[test]
+fn profile_create_existing_profile_errors_without_audit_row()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+
+    let result = run_with_context(
+        Cli::try_parse_from(["locket", "profile", "create", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    );
+    let Err(error) = result else {
+        return Err("duplicate profile create should fail".into());
+    };
+    assert_eq!(error.exit_code(), 67);
+    assert!(error.to_string().contains("profile already exists"));
+
+    let store = crate::open_store(&context)?;
+    let count: i64 = store.connection().query_row(
+        "SELECT COUNT(*) FROM audit_log WHERE action = 'PROFILE_CREATE'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(count, 0);
+    Ok(())
+}
+
+#[test]
 fn profile_mark_dangerous_writes_profile_change_audit_with_prior_flags()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempdir()?;

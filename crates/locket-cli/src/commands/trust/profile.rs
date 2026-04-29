@@ -54,33 +54,40 @@ fn create_profile(
     let resolved = require_project(context)?;
     let profile_name = ProfileName::new(args.profile)
         .map_err(|_| CliError::Config("invalid profile name".to_owned()))?;
-    let store = open_store(context)?;
+    let mut store = open_store(context)?;
+    let project_id = resolved.config.project_id.as_str();
 
-    if store
-        .get_profile_by_name(resolved.config.project_id.as_str(), profile_name.as_str())?
-        .is_some()
-    {
+    if store.get_profile_by_name(project_id, profile_name.as_str())?.is_some() {
         return Err(secret_already_exists_error("profile already exists"));
     }
 
     let profile_id = ProfileId::generate().map_err(|_| CliError::Time)?;
+    let timestamp = now_unix_nanos()?;
     let inserted = store.insert_profile_if_absent(
         profile_id.as_str(),
-        resolved.config.project_id.as_str(),
+        project_id,
         profile_name.as_str(),
         false,
-        now_unix_nanos()?,
+        timestamp,
     )?;
     if !inserted {
         return Err(secret_already_exists_error("profile already exists"));
     }
-    initialize_profile_keys(
-        context,
-        &store,
-        &resolved.config,
-        profile_id.as_str(),
-        now_unix_nanos()?,
-    )?;
+    initialize_profile_keys(context, &store, &resolved.config, profile_id.as_str(), timestamp)?;
+    let metadata =
+        profile_create_audit_metadata(project_id, profile_id.as_str(), profile_name.as_str());
+    let audit_key = load_project_key(context, &store, project_id, KeyPurpose::Audit)?;
+    let audit = AuditWrite {
+        project_id,
+        profile_id: Some(profile_id.as_str()),
+        action: "PROFILE_CREATE",
+        status: "SUCCESS",
+        secret_name: None,
+        command: None,
+        metadata_json: &metadata,
+        timestamp,
+    };
+    store.append_audit(audit_key.as_ref(), &audit)?;
 
     writeln!(output, "created profile {profile_name} ({profile_id})")?;
     Ok(())
@@ -180,6 +187,19 @@ fn confirm_profile_dangerous_change(
         return Err(CliError::Config("confirmation did not match".to_owned()));
     }
     Ok(())
+}
+
+fn profile_create_audit_metadata(project_id: &str, profile_id: &str, profile_name: &str) -> Value {
+    json!({
+        "schema_version": 1,
+        "action": "PROFILE_CREATE",
+        "status": "SUCCESS",
+        "project_id": project_id,
+        "profile_id": profile_id,
+        "profile_name": profile_name,
+        "dangerous": false,
+        "key_purposes_initialized": ["profile-secret", "profile-fingerprint"],
+    })
 }
 
 fn profile_dangerous_audit_metadata(profile: &ProfileRecord, prior: bool, new: bool) -> Value {
