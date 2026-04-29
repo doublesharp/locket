@@ -10249,6 +10249,54 @@ expected_secrets = ["database-url"]
             |row| row.get::<_, i64>(0),
         )?;
         assert_eq!(device_audits, 3);
+        drop(local_device_id);
+        Ok(())
+    }
+
+    #[test]
+    fn device_init_force_replaces_active_local_device() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        let mut output = Vec::new();
+
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut output,
+        )?;
+        output.clear();
+
+        run_with_context(
+            Cli::try_parse_from(["locket", "device", "init"])?,
+            &context,
+            &mut output,
+        )?;
+        let init_output = String::from_utf8(output.clone())?;
+        let local_device_id = init_output
+            .lines()
+            .find_map(|line| line.strip_prefix("device_id: "))
+            .ok_or("missing device id")?
+            .to_owned();
+
+        output.clear();
+        run_with_context(
+            Cli::try_parse_from(["locket", "device", "init", "--force"])?,
+            &context,
+            &mut output,
+        )?;
+        let forced_init_output = String::from_utf8(output.clone())?;
+        assert!(forced_init_output.contains("device: initialized"));
+        assert!(forced_init_output.contains("metadata_only: yes"));
+        assert!(!forced_init_output.contains(&local_device_id));
+
+        let store = locket_store::Store::open(directory.path().join("store.db"))?;
+        let project_id: String =
+            store
+                .connection()
+                .query_row("SELECT id FROM projects LIMIT 1", [], |row| row.get(0))?;
+        let active_devices = store.list_devices(&project_id, false)?;
+        assert_eq!(active_devices.len(), 1);
+        assert_ne!(active_devices[0].id, local_device_id);
         Ok(())
     }
 

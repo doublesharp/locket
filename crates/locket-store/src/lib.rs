@@ -2627,10 +2627,16 @@ CREATE TABLE IF NOT EXISTS devices (
   local INTEGER NOT NULL CHECK (local IN (0, 1)),
   created_at INTEGER NOT NULL,
   last_seen_at INTEGER,
-  revoked_at INTEGER,
-  UNIQUE (project_id, name),
-  UNIQUE (project_id, fingerprint)
+  revoked_at INTEGER
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS devices_active_name_unique_idx
+  ON devices(project_id, name)
+  WHERE revoked_at IS NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS devices_active_fingerprint_unique_idx
+  ON devices(project_id, fingerprint)
+  WHERE revoked_at IS NULL;
 
 CREATE UNIQUE INDEX IF NOT EXISTS devices_one_active_local_idx
   ON devices(project_id)
@@ -2980,6 +2986,29 @@ mod tests {
         let all = test_store.store.list_devices("lk_proj_test", true)?;
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].revoked_at, Some(200));
+        Ok(())
+    }
+
+    #[test]
+    fn devices_allow_name_and_fingerprint_reuse_after_revocation() -> Result<(), Box<dyn Error>> {
+        let test_store = open_initialized_store()?;
+        insert_project_profile(&test_store.store)?;
+        let device = test_device();
+        test_store.store.insert_device(&device)?;
+
+        let mut duplicate = device;
+        duplicate.id = "lk_dev_duplicate".to_owned();
+        assert!(
+            test_store.store.insert_device(&duplicate).is_err(),
+            "active duplicate name/fingerprint must be rejected"
+        );
+
+        assert!(test_store.store.revoke_device("lk_proj_test", "lk_dev_test", 200)?);
+        test_store.store.insert_device(&duplicate)?;
+
+        let active = test_store.store.list_devices("lk_proj_test", false)?;
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].id, "lk_dev_duplicate");
         Ok(())
     }
 
