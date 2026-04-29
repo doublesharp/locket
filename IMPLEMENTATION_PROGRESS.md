@@ -775,6 +775,31 @@ to touch. Items marked `[x]` are merged to `main` and verified.
 - [ ] Tray notification policy: no secret values, no secret names by default
   (use generic "secret"/"policy"/"project" labels until the user opens the app).
   - Spec: `docs/specs/desktop.md:94-96`.
+- [ ] Tauri hardening: restrictive CSP, devtools disabled in release,
+  scoped Tauri commands, deny-by-default capabilities for filesystem,
+  shell, network, updater, and clipboard.
+  - Spec: `docs/specs/desktop.md`.
+  - Files: `crates/locket-app/src-tauri/`.
+- [ ] Search and filter UI across projects, profiles, secrets,
+  policies, audit events, scan findings, devices, and members
+  (privacy-aware: never reveals values).
+  - Spec: `docs/specs/desktop.md`.
+  - Files: `crates/locket-app/ui/`.
+- [ ] Accessibility baseline: keyboard nav, visible focus, screen-reader
+  labels, contrast, reduced-motion, no post-TTL value exposure via
+  accessibility metadata.
+  - Spec: `docs/specs/desktop.md`.
+  - Files: `crates/locket-app/ui/`.
+- [ ] Empty-state guidance for unbootstrapped surfaces (`locket init`,
+  `team accept`, `profile create dev`, `set`, `import`, `policy add`,
+  `agent start`, `device init`).
+  - Spec: `docs/specs/desktop.md` UX Requirements.
+  - Files: `crates/locket-app/ui/`.
+- [ ] Denial UX differentiates locked vault, missing grant, policy
+  denial, dangerous-profile, revoked device, and expired invite with
+  distinct copy and recovery affordances.
+  - Spec: `docs/specs/desktop.md` UX Requirements.
+  - Files: `crates/locket-app/ui/` error views.
 
 ### Code Health and Bug Fixes
 
