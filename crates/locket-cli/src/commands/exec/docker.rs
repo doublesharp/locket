@@ -7,7 +7,7 @@
 use std::path::Path;
 
 use locket_crypto::KeyPurpose;
-use locket_store::{AuditWrite, ProfileRecord};
+use locket_store::{AuditWrite, ProfileRecord, Store};
 use serde_json::{Value, json};
 
 use crate::ResolvedProject;
@@ -35,6 +35,8 @@ pub enum DockerHelperKind {
 /// Prepared state for invoking a docker helper under a command policy.
 #[derive(Debug)]
 pub struct PreparedDockerPolicyExecution {
+    /// The opened backing store used for policy resolution and audit append.
+    pub store: Store,
     /// Project resolved for the active working directory.
     pub resolved: ResolvedProject,
     /// Profile whose secrets are being injected.
@@ -89,7 +91,9 @@ fn prepare_docker_helper_policy_execution(
     let resolved = require_project(context)?;
     let policy = load_command_policy(&resolved, policy_name)?;
     ensure_runtime_policy_supported(&policy)?;
-    let (profile, selections, locket_env) = resolve_policy_locket_env(context, &resolved, &policy)?;
+    let store = open_store(context)?;
+    let (profile, selections, locket_env) =
+        resolve_policy_locket_env(context, &store, &resolved, &policy)?;
     let endpoint = parent_env.get("DOCKER_HOST").map(|value| value.as_str());
     let plan = match helper_kind {
         DockerHelperKind::DockerRun => locket_docker::prepare_docker_run(
@@ -123,7 +127,15 @@ fn prepare_docker_helper_policy_execution(
         selections.iter().filter(|s| s.selected.is_some()).count()
     );
 
-    Ok(PreparedDockerPolicyExecution { resolved, profile, policy, execution, plan, helper_kind })
+    Ok(PreparedDockerPolicyExecution {
+        store,
+        resolved,
+        profile,
+        policy,
+        execution,
+        plan,
+        helper_kind,
+    })
 }
 
 pub fn ensure_runtime_policy_supported(policy: &CommandPolicy) -> Result<(), CliError> {
@@ -150,13 +162,13 @@ pub fn ensure_runtime_policy_supported(policy: &CommandPolicy) -> Result<(), Cli
 
 pub fn resolve_policy_locket_env(
     context: &RuntimeContext,
+    store: &Store,
     resolved: &ResolvedProject,
     policy: &CommandPolicy,
 ) -> Result<(ProfileRecord, Vec<PolicySecretSelection>, locket_exec::EnvMap), CliError> {
-    let store = open_store(context)?;
-    ensure_trusted_project_root(&store, resolved)?;
-    let profile = default_profile(&store, &resolved.config)?;
-    let selections = policy_secret_selections(&store, resolved, &profile, policy)?;
+    ensure_trusted_project_root(store, resolved)?;
+    let profile = default_profile(store, &resolved.config)?;
+    let selections = policy_secret_selections(store, resolved, &profile, policy)?;
     let missing_required = selections
         .iter()
         .filter(|selection| selection.required && selection.selected.is_none())
@@ -174,7 +186,7 @@ pub fn resolve_policy_locket_env(
         if let Some(secret) = &selection.selected {
             let value = decrypt_secret_version(
                 context,
-                &store,
+                store,
                 resolved.config.project_id.as_str(),
                 &profile.id,
                 secret,
@@ -227,16 +239,15 @@ pub fn docker_error(error: locket_docker::DockerError) -> CliError {
 
 pub fn write_docker_policy_audit_if_available(
     context: &RuntimeContext,
-    prepared: &PreparedDockerPolicyExecution,
+    prepared: &mut PreparedDockerPolicyExecution,
     status: &str,
 ) -> Result<(), CliError> {
-    let mut store = open_store(context)?;
-    if store.get_project(prepared.resolved.config.project_id.as_str())?.is_none() {
+    if prepared.store.get_project(prepared.resolved.config.project_id.as_str())?.is_none() {
         return Ok(());
     }
     let Ok(audit_key) = load_project_key(
         context,
-        &store,
+        &prepared.store,
         prepared.resolved.config.project_id.as_str(),
         KeyPurpose::Audit,
     ) else {
@@ -253,7 +264,7 @@ pub fn write_docker_policy_audit_if_available(
         metadata_json: &metadata,
         timestamp: now_unix_nanos()?,
     };
-    store.append_audit(audit_key.as_ref(), &audit)?;
+    prepared.store.append_audit(audit_key.as_ref(), &audit)?;
     Ok(())
 }
 

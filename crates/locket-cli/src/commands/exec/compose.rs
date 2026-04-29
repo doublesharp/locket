@@ -33,11 +33,11 @@ pub fn compose_run_command(
         args.project_directory.as_deref(),
         &args.profile,
     )?;
-    let prepared =
+    let mut prepared =
         prepare_compose_policy_execution(context, &args.policy, &compose_args, parent_env)?;
     let status = prepared.execution.command().current_dir(&context.cwd).status()?;
     let audit_status = if status.success() { "SUCCESS" } else { "FAILED" };
-    write_docker_policy_audit_if_available(context, &prepared, audit_status)?;
+    write_docker_policy_audit_if_available(context, &mut prepared, audit_status)?;
     if status.success() {
         return Ok(());
     }

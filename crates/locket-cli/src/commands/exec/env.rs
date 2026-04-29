@@ -83,11 +83,11 @@ pub fn env_docker_command(
     let parent_env = std::env::vars()
         .map(|(name, value)| (name, locket_exec::env_value(value)))
         .collect::<locket_exec::EnvMap>();
-    let prepared =
+    let mut prepared =
         prepare_docker_policy_execution(context, &args.policy, &args.command, parent_env)?;
     let status = prepared.execution.command().current_dir(&context.cwd).status()?;
     let audit_status = if status.success() { "SUCCESS" } else { "FAILED" };
-    write_docker_policy_audit_if_available(context, &prepared, audit_status)?;
+    write_docker_policy_audit_if_available(context, &mut prepared, audit_status)?;
     if status.success() {
         return Ok(());
     }

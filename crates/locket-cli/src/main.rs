@@ -2123,18 +2123,18 @@ pub(crate) fn write_project_config(path: &Path, config: &ProjectConfig) -> Resul
 
 pub(crate) fn write_runtime_policy_audit_if_available(
     context: &RuntimeContext,
+    store: &mut Store,
     resolved: &ResolvedProject,
     profile: &ProfileRecord,
     policy: &CommandPolicy,
     status: &str,
     selections: &[PolicySecretSelection],
 ) -> Result<(), CliError> {
-    let mut store = open_store(context)?;
     if store.get_project(resolved.config.project_id.as_str())?.is_none() {
         return Ok(());
     }
     let Ok(audit_key) =
-        load_project_key(context, &store, resolved.config.project_id.as_str(), KeyPurpose::Audit)
+        load_project_key(context, store, resolved.config.project_id.as_str(), KeyPurpose::Audit)
     else {
         return Ok(());
     };

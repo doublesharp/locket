@@ -68,7 +68,7 @@ pub fn run_command(
         ));
     }
 
-    let store = open_store(context)?;
+    let mut store = open_store(context)?;
     ensure_trusted_project_root(&store, &resolved)?;
     let profile = default_profile(&store, &resolved.config)?;
     let selections = policy_secret_selections(&store, &resolved, &profile, &policy)?;
@@ -134,6 +134,7 @@ pub fn run_command(
     let audit_status = if status.success() { "SUCCESS" } else { "FAILED" };
     write_runtime_policy_audit_if_available(
         context,
+        &mut store,
         &resolved,
         &profile,
         &policy,

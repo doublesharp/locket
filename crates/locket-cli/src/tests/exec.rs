@@ -316,7 +316,7 @@ inherit_env = ["PATH"]
 
     let parent_env = std::iter::once(("PATH".to_owned(), locket_exec::env_value("/bin"))).collect();
     let docker_argv = vec!["docker".to_owned(), "run".to_owned(), "alpine".to_owned()];
-    let prepared =
+    let mut prepared =
         crate::prepare_docker_policy_execution(&context, "docker_app", &docker_argv, parent_env)?;
     assert_eq!(prepared.execution.program, "docker");
     assert!(prepared.plan.argv.windows(2).any(|pair| pair == ["--env", "API_KEY"]));
@@ -334,7 +334,7 @@ inherit_env = ["PATH"]
     assert!(!metadata_text.contains("postgres://localhost/app"));
     assert!(!metadata_text.contains("sk_test_docker_value"));
 
-    crate::write_docker_policy_audit_if_available(&context, &prepared, "SUCCESS")?;
+    crate::write_docker_policy_audit_if_available(&context, &mut prepared, "SUCCESS")?;
     let store = locket_store::Store::open(directory.path().join("store.db"))?;
     let audit_metadata: String = store.connection().query_row(
         "SELECT metadata_json FROM audit_log WHERE action = 'RUN'",
