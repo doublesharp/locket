@@ -699,34 +699,17 @@ editing — they drift. Severity: **blocker** (security/correctness),
   recovery, bundles, team invite accept, and UI/editor smoke flows.
 - [x] Required fuzz targets landed under `fuzz/fuzz_targets/` (cadence
   and sanitizer gates tracked under the fuzz tooling TODO below).
-- [~] Bench harnesses and performance gates. Local bench smoke/report scaffolding
-  exists. Remaining: full spec fixtures (metadata: 3 profiles / 150 secret
-  metadata rows / 50 active secrets / 10 policies / 5 trusted roots / valid
-  audit chain; runtime: 50 active secrets 16 B–4 KiB; reference: 500+ `lk://`
-  refs across current/pinned/grace/expired/missing/unauthorized; staged-scan:
-  1.5–2 MB deterministic corpus; full-scan: ≥250 MB PR / ≥1 GB release; Argon2
-  fixture with deterministic salts/passphrases). Hard budgets: metadata p95
-  <100 ms, `run` prep p95 <150 ms (≤50 secrets), `lk://` resolution p95 <25 ms,
-  `scan --staged` p95 <500 ms, full-repo scan ≥25 MB/s. Wire `make bench`,
-  `make bench-ci`, `make bench-report` with PR-tolerance vs. release-strict
-  modes.
-  - Spec: `docs/specs/performance.md:1-67`.
-  - Files: `Makefile` targets, new `benches/` per crate, fixture builders
-    under `crates/locket-cli/src/tests/fixtures/`.
-- [~] Branch coverage and mutation gates (`make coverage-branch`, `make mutation`).
-  Commands and local fallbacks exist; current line coverage remains below the
-  90% gate.
-  - Spec: `docs/specs/testing.md` (90% line + branch gates).
-  - Files: `Makefile`, `scripts/coverage*`.
-- [~] Supply-chain tooling. Offline-safe local commands and strict-mode hooks
-  exist. Remaining: enforced `cargo deny`, `cargo audit`, cargo-vet records,
+- [~] Bench harnesses and performance gates. Local smoke/report
+  scaffolding exists. Remaining: full spec fixtures, hard p95/throughput
+  budgets, and `make bench`/`bench-ci`/`bench-report` PR vs release
+  modes (`docs/specs/performance.md`).
+- [~] Branch coverage and mutation gates (`make coverage-branch`,
+  `make mutation`). Local fallbacks exist; line coverage still below 90%.
+- [~] Supply-chain tooling. Offline-safe local commands and strict-mode
+  hooks exist. Remaining: enforced `cargo deny`/`audit`, cargo-vet,
   unsafe inventory, SBOM, auditable builds, provenance, signing.
-  - Spec: `docs/specs/engineering.md`.
-  - Files: `deny.toml` (already present), `Makefile`, CI workflow definitions.
-- [~] Leak canary harness. Scanner/redactor canary tests and `make leak-canary`
+- [~] Leak canary harness. Scanner/redactor tests and `make leak-canary`
   exist. Remaining: broader CLI/agent/UI artifact scanning.
-  - Spec: `docs/specs/testing.md` leak-canary section.
-  - Files: `scripts/leak-canary*` and the canary test harness.
 - [~] [b67f47d6] ready: agent-b67f47d6/update-manifest-verifier @ ed8dfde — offline signed update-manifest verifier and typed `UpdateManifestInvalid` landed; package builders/signing workflows remain.
   Signed distribution packaging and opt-in update-check verification
   (Homebrew, signed macOS package, signed Windows MSI, Linux package, signed
