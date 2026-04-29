@@ -561,38 +561,10 @@ to touch. Items marked `[x]` are merged to `main` and verified.
 
 ### Code Health and Bug Fixes
 
-This bucket exists outside spec coverage. Items here address bugs, missing
-audit rows, and structural debt that already-`[x]` slices missed. Each
-sub-bullet is independently claimable — an agent may take any subset, but
-should re-verify file:line references before editing because line numbers
-drift. Severity tags: **blocker** (security/correctness; ship-stoppers),
-**important** (real defect or risk that should land soon), **nit**
-(consistency/cleanup).
-
-**Recently closed in this bucket** (see `git log` for details):
-
-- `CliError::BundleVerification(String)` duplicate variant removed; bundle
-  verification now uses `bundle_verification_error()` →
-  `LocketError::BundleVerificationFailed`.
-- Most extracted commands now consistently take `args: &SomeArgs` (`set`,
-  `get`, `import`, `rotate`, `copy`, `redact`, `ai_safe`, `diff`, `device`,
-  `client`, etc.).
-- `get --copy` clipboard-TTL warning routes to stderr instead of stdout.
-- `unlock --verify-user` flag now hard-errors via
-  `unimplemented_in_build_error()` (`PolicyValidationIncomplete`, exit 65)
-  instead of silently no-op'ing.
-- `unimplemented_in_build_error()` helper introduced and wired into
-  ~9 callsites that previously returned `CliError::Config` for
-  policy-not-implemented branches (shell policies, agent start, recover
-  --force, etc.).
-- `crates/locket-cli/src/main.rs` extracted from 6,684 → ~2,700 lines via
-  the `commands/`, `runtime/`, `support/` reorganization. Remaining in
-  `main.rs`: `new_command`, docker-policy helpers
-  (`prepare_docker_helper_policy_execution`, `resolve_policy_locket_env`,
-  `ensure_runtime_policy_supported`), `copy_secret_value`/`rotate_secret_value`
-  helpers, agent path helpers, and `write_runtime_policy_audit_if_available`/
-  `write_docker_policy_audit_if_available`. Continue extraction toward
-  empty-shell `main.rs`.
+Bugs, missing audit rows, and structural debt outside spec coverage. Each
+item is independently claimable; re-verify file:line references before
+editing — they drift. Severity: **blocker** (security/correctness),
+**important** (real defect), **nit** (cleanup).
 
 - [x] **blocker** — String-matched error detection in `import --overwrite`.
   - Where: `crates/locket-cli/src/commands/secrets/import.rs:78` and `:94`
