@@ -277,8 +277,13 @@ fn get_copy_writes_metadata_only_audit_without_value_leakage()
     let args = test_secret_write_args("DATABASE_URL");
     crate::set_secret_value(&context, &args, "postgres://localhost/app", "manual", 1_000)?;
 
-    let copy_args =
-        crate::GetArgs { key: "DATABASE_URL".to_owned(), reveal: false, force: false, copy: true };
+    let copy_args = crate::GetArgs {
+        key: "DATABASE_URL".to_owned(),
+        reveal: false,
+        force: false,
+        copy: true,
+        verify_user: false,
+    };
     let mut copy_output = Vec::new();
     let mut copy_stderr = Vec::new();
     crate::get_command_with_clipboard(
@@ -327,8 +332,13 @@ fn get_copy_unavailable_audits_unsupported_state_without_value_leakage()
     let args = test_secret_write_args("DATABASE_URL");
     crate::set_secret_value(&context, &args, "postgres://localhost/app", "manual", 1_000)?;
 
-    let copy_args =
-        crate::GetArgs { key: "DATABASE_URL".to_owned(), reveal: false, force: false, copy: true };
+    let copy_args = crate::GetArgs {
+        key: "DATABASE_URL".to_owned(),
+        reveal: false,
+        force: false,
+        copy: true,
+        verify_user: false,
+    };
     let mut copy_output = Vec::new();
     let mut copy_stderr = Vec::new();
     let result = crate::get_command_with_clipboard(
@@ -356,6 +366,61 @@ fn get_copy_unavailable_audits_unsupported_state_without_value_leakage()
     assert!(metadata.contains("\"clipboard_supported\":false"));
     assert!(metadata.contains("\"unsupported_reason\":\"clipboard command unavailable\""));
     assert!(!metadata.contains("postgres://localhost/app"));
+    Ok(())
+}
+
+#[test]
+fn get_copy_verify_user_denial_audits_without_decrypting_or_copying()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    let context =
+        context_with_user_verifier(&context, Arc::new(MemoryLocalUserVerifier::denying()));
+    let mut output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut output,
+    )?;
+    let args = test_secret_write_args("DATABASE_URL");
+    crate::set_secret_value(&context, &args, "postgres://localhost/app", "manual", 1_000)?;
+
+    let copy_args = crate::GetArgs {
+        key: "DATABASE_URL".to_owned(),
+        reveal: false,
+        force: false,
+        copy: true,
+        verify_user: true,
+    };
+    let mut copy_output = Vec::new();
+    let mut copy_stderr = Vec::new();
+    let result = crate::get_command_with_clipboard(
+        &context,
+        &mut copy_output,
+        &mut copy_stderr,
+        &copy_args,
+        |_value| Ok(()),
+    );
+    let Err(error) = result else {
+        return Err("verification denial must fail".into());
+    };
+    assert_eq!(error.exit_code(), locket_core::LocketError::UserVerificationFailed.exit_code());
+    assert!(String::from_utf8(copy_output)?.is_empty());
+    assert!(!String::from_utf8(copy_stderr)?.contains("postgres://localhost/app"));
+
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let metadata: String = store.connection().query_row(
+        "SELECT metadata_json FROM audit_log WHERE action = 'COPY'",
+        [],
+        |row| row.get(0),
+    )?;
+    let metadata: serde_json::Value = serde_json::from_str(&metadata)?;
+    assert_eq!(metadata["status"], "DENIED");
+    assert_eq!(metadata["denial_reason"], "user_verification_failed");
+    assert_eq!(metadata["user_verification"]["required"], true);
+    assert_eq!(metadata["user_verification"]["satisfied"], false);
+    assert!(metadata["user_verification"].get("method").is_none());
+    assert!(!metadata.to_string().contains("postgres://localhost/app"));
     Ok(())
 }
 
@@ -413,6 +478,86 @@ fn reveal_requires_force_for_noninteractive_stdout_and_audits_force()
     assert!(success_metadata.contains("\"force\":true"));
     assert!(success_metadata.contains("\"access_mode\":\"stdout\""));
     assert!(!success_metadata.contains("postgres://localhost/app"));
+    Ok(())
+}
+
+#[test]
+fn reveal_verify_user_success_audits_method_without_value_leakage()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    let mut output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut output,
+    )?;
+    let args = test_secret_write_args("DATABASE_URL");
+    crate::set_secret_value(&context, &args, "postgres://localhost/app", "manual", 1_000)?;
+
+    let mut reveal_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from([
+            "locket",
+            "get",
+            "DATABASE_URL",
+            "--reveal",
+            "--force",
+            "--verify-user",
+        ])?,
+        &context,
+        &mut reveal_output,
+    )?;
+    assert_eq!(String::from_utf8(reveal_output)?, "postgres://localhost/app\n");
+
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let metadata: String = store.connection().query_row(
+        "SELECT metadata_json FROM audit_log WHERE action = 'REVEAL'",
+        [],
+        |row| row.get(0),
+    )?;
+    let metadata: serde_json::Value = serde_json::from_str(&metadata)?;
+    assert_eq!(metadata["status"], "SUCCESS");
+    assert_eq!(metadata["user_verification"]["required"], true);
+    assert_eq!(metadata["user_verification"]["satisfied"], true);
+    assert_eq!(metadata["user_verification"]["method"], "test");
+    assert!(!metadata.to_string().contains("postgres://localhost/app"));
+    Ok(())
+}
+
+#[test]
+fn reveal_verify_user_still_requires_unlocked_vault() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    let mut output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut output,
+    )?;
+    let args = test_secret_write_args("DATABASE_URL");
+    crate::set_secret_value(&context, &args, "postgres://localhost/app", "manual", 1_000)?;
+    let (project_id, _) = test_project_id_and_master_key(&context)?;
+    context.key_store.delete_master_key(&project_id)?;
+
+    let mut reveal_output = Vec::new();
+    let result = run_with_context(
+        Cli::try_parse_from([
+            "locket",
+            "get",
+            "DATABASE_URL",
+            "--reveal",
+            "--force",
+            "--verify-user",
+        ])?,
+        &context,
+        &mut reveal_output,
+    );
+    let Err(error) = result else {
+        return Err("locked vault must fail before reveal".into());
+    };
+    assert_eq!(error.exit_code(), locket_core::LocketError::UnlockRequired.exit_code());
+    assert!(String::from_utf8(reveal_output)?.is_empty());
     Ok(())
 }
 

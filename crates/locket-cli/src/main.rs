@@ -338,6 +338,7 @@ struct ImportArgs {
 }
 
 #[derive(Debug, Args)]
+#[allow(clippy::struct_excessive_bools)]
 struct GetArgs {
     /// Secret key name.
     key: String,
@@ -350,6 +351,9 @@ struct GetArgs {
     /// Copy the value to clipboard after policy gates.
     #[arg(long)]
     copy: bool,
+    /// Require local user verification before reveal or copy.
+    #[arg(long)]
+    verify_user: bool,
 }
 
 #[derive(Debug, Args)]

@@ -199,8 +199,13 @@ fn diff_since_ignores_access_audit_rows() -> Result<(), Box<dyn std::error::Erro
     let db_args = test_secret_write_args("DATABASE_URL");
     crate::set_secret_value(&context, &db_args, "postgres://localhost/dev", "manual", 1_000)?;
 
-    let copy_args =
-        crate::GetArgs { key: "DATABASE_URL".to_owned(), reveal: false, force: false, copy: true };
+    let copy_args = crate::GetArgs {
+        key: "DATABASE_URL".to_owned(),
+        reveal: false,
+        force: false,
+        copy: true,
+        verify_user: false,
+    };
     let mut copy_output = Vec::new();
     let mut copy_stderr = Vec::new();
     crate::get_command_with_clipboard(

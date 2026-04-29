@@ -2,7 +2,8 @@
 
 pub(super) use clap::Parser;
 pub(super) use locket_platform::{
-    MasterKeyStore, MemoryMasterKeyStore, PassphraseFallbackMasterKeyStore, PlatformError,
+    LocalUserVerifier, MasterKeyStore, MemoryLocalUserVerifier, MemoryMasterKeyStore,
+    PassphraseFallbackMasterKeyStore, PlatformError,
 };
 pub(super) use serde_json::json;
 pub(super) use std::collections::BTreeSet;
@@ -234,7 +235,15 @@ pub(super) fn test_context_with_key_store_confirmation_and_secret(
         recovery_code_reader: Arc::new(StaticRecoveryCodeReader::new("")),
         confirmation_reader: Arc::new(StaticConfirmationReader::new(confirmation)),
         secret_value_reader: Arc::new(StaticSecretValueReader::new(secret_value)),
+        user_verifier: Arc::new(MemoryLocalUserVerifier::allowing()),
     }
+}
+
+pub(super) fn context_with_user_verifier(
+    context: &RuntimeContext,
+    verifier: Arc<dyn LocalUserVerifier + Send + Sync>,
+) -> RuntimeContext {
+    RuntimeContext { user_verifier: verifier, ..context.clone() }
 }
 
 pub(super) fn context_with_confirmation(

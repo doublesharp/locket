@@ -19,6 +19,7 @@ use crate::runtime::error::{
     CliError, invalid_secret_name_error, secret_deleted_error, secret_not_found_error,
 };
 use crate::runtime::key_access::{default_profile, load_profile_key, load_project_key};
+use crate::runtime::user_verification::UserVerificationAudit;
 use crate::{
     CopyArgs, CopySelection, ResolvedProject, SecretSourceArg, active_secrets_by_name,
     ensure_trusted_project_root, now_unix_nanos, open_store, require_project, source_arg_to_str,
@@ -50,6 +51,7 @@ pub struct ValueAccessAudit<'a> {
     pub clipboard_clear_supported: Option<bool>,
     pub unsupported_reason: Option<&'a str>,
     pub denial_reason: Option<&'static str>,
+    pub user_verification: UserVerificationAudit,
 }
 
 #[derive(Clone, Copy)]
@@ -360,6 +362,7 @@ pub fn write_value_access_audit_if_available(
         "clipboard_clear_supported": request.clipboard_clear_supported,
         "unsupported_reason": request.unsupported_reason,
         "denial_reason": request.denial_reason,
+        "user_verification": &request.user_verification,
     });
     let audit = AuditWrite {
         project_id,

@@ -5,7 +5,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use directories::{BaseDirs, ProjectDirs};
-use locket_platform::{KeyringMasterKeyStore, MasterKeyStore, PassphraseFallbackMasterKeyStore};
+use locket_platform::{
+    KeyringMasterKeyStore, LocalUserVerifier, MasterKeyStore, PassphraseFallbackMasterKeyStore,
+    UnavailableLocalUserVerifier,
+};
 
 use crate::CONFIG_TOML;
 use crate::runtime::error::CliError;
@@ -27,6 +30,7 @@ pub struct RuntimeContext {
     pub recovery_code_reader: Arc<dyn RecoveryCodeReader + Send + Sync>,
     pub confirmation_reader: Arc<dyn ConfirmationReader + Send + Sync>,
     pub secret_value_reader: Arc<dyn SecretValueReader + Send + Sync>,
+    pub user_verifier: Arc<dyn LocalUserVerifier + Send + Sync>,
 }
 
 impl RuntimeContext {
@@ -55,6 +59,7 @@ impl RuntimeContext {
             recovery_code_reader: Arc::new(TtyRecoveryCodeReader),
             confirmation_reader: Arc::new(StdinConfirmationReader),
             secret_value_reader: Arc::new(StdinOrPromptSecretValueReader),
+            user_verifier: Arc::new(UnavailableLocalUserVerifier),
         })
     }
 }

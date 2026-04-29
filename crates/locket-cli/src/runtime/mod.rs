@@ -4,5 +4,6 @@ pub mod context;
 pub mod error;
 pub mod key_access;
 pub mod prompts;
+pub mod user_verification;
 
 pub use context::RuntimeContext;
