@@ -8,8 +8,8 @@ use directories::{BaseDirs, ProjectDirs};
 use locket_platform::{KeyringMasterKeyStore, MasterKeyStore, PassphraseFallbackMasterKeyStore};
 
 use crate::CONFIG_TOML;
-use crate::cli_error::CliError;
-use crate::prompts::{
+use crate::runtime::error::CliError;
+use crate::runtime::prompts::{
     ConfirmationReader, EnvOrPromptPassphraseReader, PassphraseReader, RecoveryCodeReader,
     SecretValueReader, StdinConfirmationReader, StdinOrPromptSecretValueReader,
     TtyRecoveryCodeReader,

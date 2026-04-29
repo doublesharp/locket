@@ -7,8 +7,8 @@ use locket_crypto::{
 };
 use locket_store::{ProfileRecord, Store};
 
-use crate::cli_error::CliError;
 use crate::runtime::RuntimeContext;
+use crate::runtime::error::CliError;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MasterKeySource {

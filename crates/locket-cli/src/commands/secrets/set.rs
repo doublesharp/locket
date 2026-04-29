@@ -9,11 +9,13 @@ use locket_store::{
     SecretRecord, SecretVersionRecord, Store,
 };
 
-use crate::cli_error::CliError;
-use crate::key_access::{default_profile, load_project_key};
-use crate::project_files::refresh_example_for_project_if_enabled;
 use crate::runtime::RuntimeContext;
-use crate::secret_helpers::{SecretEncryptRequest, encrypt_secret_version, secret_audit_metadata};
+use crate::runtime::error::CliError;
+use crate::runtime::key_access::{default_profile, load_project_key};
+use crate::support::project_files::refresh_example_for_project_if_enabled;
+use crate::support::secret_helpers::{
+    SecretEncryptRequest, encrypt_secret_version, secret_audit_metadata,
+};
 use crate::{
     ResolvedProject, SecretSourceArg, SecretWriteArgs, ensure_trusted_project_root, now_unix_nanos,
     open_store, require_project, secret_deleted_error, source_arg_to_str,

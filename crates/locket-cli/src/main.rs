@@ -4,16 +4,6 @@ mod commands;
 mod runtime;
 mod support;
 
-// Legacy module-path aliases at crate root so existing intra-crate `crate::foo`
-// references resolve through the new layout. Each alias is a thin re-export of
-// its new home.
-pub(crate) use runtime::error as cli_error;
-pub(crate) use runtime::key_access;
-pub(crate) use runtime::prompts;
-pub(crate) use support::config_validation;
-pub(crate) use support::project_files;
-pub(crate) use support::secret_helpers;
-
 pub(crate) use runtime::context::RuntimeContext;
 pub(crate) use runtime::error::{
     CliError, bundle_verification_error, exec_prepare_error, project_root_untrusted_error,
@@ -1085,7 +1075,7 @@ fn run_with_context(
         Command::Bundle { command } => team::bundle::bundle_command(context, output, command)?,
         Command::Recover(args) => vault::recovery::recover_command(context, output, &args)?,
         Command::Recovery { command } => {
-            vault::recovery::recovery_command(context, output, command)?
+            vault::recovery::recovery_command(context, output, command)?;
         }
     }
 

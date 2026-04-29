@@ -15,11 +15,11 @@ use locket_store::{
 use serde_json::json;
 
 use super::set::{SecretWriteRequest, set_secret_value_in_profile};
-use crate::cli_error::CliError;
-use crate::key_access::load_project_key;
-use crate::project_files::{ensure_gitignore, refresh_example_for_project_if_enabled};
 use crate::runtime::RuntimeContext;
-use crate::secret_helpers::{SecretEncryptRequest, encrypt_secret_version};
+use crate::runtime::error::CliError;
+use crate::runtime::key_access::load_project_key;
+use crate::support::project_files::{ensure_gitignore, refresh_example_for_project_if_enabled};
+use crate::support::secret_helpers::{SecretEncryptRequest, encrypt_secret_version};
 use crate::{
     ImportArgs, ResolvedProject, SecretSourceArg, absolutize, active_profile_secret_names,
     ensure_trusted_project_root, now_unix_nanos, open_store, require_project, secret_deleted_error,

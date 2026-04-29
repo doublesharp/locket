@@ -2,8 +2,8 @@
 
 use std::io::Write;
 
-use crate::cli_error::{CliError, child_exit_error};
 use crate::runtime::RuntimeContext;
+use crate::runtime::error::{CliError, child_exit_error};
 use crate::{
     ComposeCommand, ComposeRunArgs, compose_argv_with_options, prepare_compose_policy_execution,
     write_docker_policy_audit_if_available,

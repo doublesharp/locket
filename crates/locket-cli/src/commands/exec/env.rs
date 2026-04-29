@@ -4,10 +4,10 @@ use std::io::Write;
 
 use locket_core::CommandPolicy;
 
-use crate::cli_error::{CliError, child_exit_error};
-use crate::key_access::default_profile;
 use crate::runtime::RuntimeContext;
-use crate::secret_helpers::{PolicySecretSelection, policy_secret_selections};
+use crate::runtime::error::{CliError, child_exit_error};
+use crate::runtime::key_access::default_profile;
+use crate::support::secret_helpers::{PolicySecretSelection, policy_secret_selections};
 use crate::{
     EnvCommand, EnvDockerArgs, EnvInspectArgs, command_type, ensure_trusted_project_root,
     external_env_source_label, load_command_policy, open_store, prepare_docker_policy_execution,

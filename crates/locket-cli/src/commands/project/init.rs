@@ -19,13 +19,15 @@ use locket_platform::{
 use locket_store::{AuditWrite, Store};
 use serde_json::json;
 
-use crate::cli_error::CliError;
-use crate::key_access::{
+use crate::runtime::RuntimeContext;
+use crate::runtime::error::CliError;
+use crate::runtime::key_access::{
     MasterKeySource, default_profile, load_master_key_verified_by_project_key, load_project_key,
     store_master_key_with_fallback,
 };
-use crate::project_files::{EXAMPLE_FILE, GITIGNORE_FILE, ensure_example_file, ensure_gitignore};
-use crate::runtime::RuntimeContext;
+use crate::support::project_files::{
+    EXAMPLE_FILE, GITIGNORE_FILE, ensure_example_file, ensure_gitignore,
+};
 use crate::{
     InitArgs, LOCKET_TOML, ensure_project_metadata, fallback_project_name, format_hex,
     formatted_recovery_code, insert_wrapped_key, now_unix_nanos, open_store, resolve_project,

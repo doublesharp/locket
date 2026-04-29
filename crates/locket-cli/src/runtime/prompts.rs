@@ -2,7 +2,7 @@
 
 use std::io::{self, IsTerminal, Read};
 
-use crate::cli_error::CliError;
+use crate::runtime::error::CliError;
 
 pub trait ConfirmationReader {
     fn read_confirmation(&self, prompt: &str) -> Result<String, CliError>;
