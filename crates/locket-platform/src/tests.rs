@@ -1,9 +1,11 @@
+use locket_crypto::{KEY_LEN, NONCE_LEN};
+
 use super::{
-    KEY_LEN, LocalUserVerificationMethod, LocalUserVerificationRequest, LocalUserVerifier,
-    MasterKeyStore, MemoryLocalUserVerifier, MemoryMasterKeyStore, NONCE_LEN,
-    PassphraseFallbackMasterKeyStore, PlatformError, RecoveryEnvelope, RecoveryEnvelopeEntry,
-    RecoveryKdfToml, UnavailableLocalUserVerifier, decode_key, encode_key, load_recovery_envelope,
-    load_recovery_kdf_toml, master_key_account, save_recovery_envelope, save_recovery_kdf_toml,
+    LocalUserVerificationMethod, LocalUserVerificationRequest, LocalUserVerifier, MasterKeyStore,
+    MemoryLocalUserVerifier, MemoryMasterKeyStore, PassphraseFallbackMasterKeyStore, PlatformError,
+    RecoveryEnvelope, RecoveryEnvelopeEntry, RecoveryKdfToml, UnavailableLocalUserVerifier,
+    decode_key, encode_key, load_recovery_envelope, load_recovery_kdf_toml, master_key_account,
+    save_recovery_envelope, save_recovery_kdf_toml,
 };
 
 const PROJECT_ID: &str = "lk_proj_test";
