@@ -633,7 +633,8 @@ editing — they drift. Severity: **blocker** (security/correctness),
     `updates.manifest_url must be an HTTPS URL` 3x, enum-message strings,
     `config value looks like a secret`) to typed `MetadataInvalid` or
     `MetadataLooksLikeSecret`. Regression per validator class.
-  - [ ] **subtask** — typed-tty-confirmation: migrate the two `format!`-ed
+  - [~] [4efea70d] **subtask** — typed-tty-confirmation: migrate the two `format!`-ed
+    Claim: branch agent-4efea70d/typed-tty-confirmation, worktree .worktrees/agent-4efea70d-typed-tty-confirmation.
     `{prompt} requires interactive confirmation` and `{reason} requires an
     interactive TTY` callsites to a new `LocketError::TtyRequired` variant
     (or reuse `ConfirmationFailed` if the spec treats them equivalently).
