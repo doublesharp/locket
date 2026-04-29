@@ -1193,7 +1193,7 @@ fn get_command_with_clipboard(
         writeln!(output, "warning: clipboard TTL clearing is unsupported in this direct CLI path")?;
         let value = decrypt_current_secret(context, &resolved_secret)?;
         let result = copy_to_clipboard(value.as_str());
-        let status = if result.is_ok() { "SUCCESS" } else { "FAILURE" };
+        let status = if result.is_ok() { "SUCCESS" } else { "FAILED" };
         let unsupported_reason = result.as_ref().err().map(String::as_str);
         write_value_access_audit_if_available(&ValueAccessAudit {
             context,
@@ -1624,7 +1624,7 @@ fn run_command(
     let prepared = locket_exec::prepare_execution(&request)
         .map_err(|error| CliError::Config(error.to_string()))?;
     let status = prepared.command().current_dir(&context.cwd).status()?;
-    let audit_status = if status.success() { "SUCCESS" } else { "FAILURE" };
+    let audit_status = if status.success() { "SUCCESS" } else { "FAILED" };
     write_runtime_policy_audit_if_available(
         context,
         &resolved,
@@ -1718,7 +1718,7 @@ fn docker_policy_command(
     let prepared =
         prepare_docker_policy_execution(context, &args.policy, &args.command, parent_env)?;
     let status = prepared.execution.command().current_dir(&context.cwd).status()?;
-    let audit_status = if status.success() { "SUCCESS" } else { "FAILURE" };
+    let audit_status = if status.success() { "SUCCESS" } else { "FAILED" };
     write_docker_policy_audit_if_available(context, &prepared, audit_status)?;
     if status.success() {
         return Ok(());
@@ -1742,7 +1742,7 @@ fn compose_policy_command(
     let prepared =
         prepare_compose_policy_execution(context, &args.policy, &compose_args, parent_env)?;
     let status = prepared.execution.command().current_dir(&context.cwd).status()?;
-    let audit_status = if status.success() { "SUCCESS" } else { "FAILURE" };
+    let audit_status = if status.success() { "SUCCESS" } else { "FAILED" };
     write_docker_policy_audit_if_available(context, &prepared, audit_status)?;
     if status.success() {
         return Ok(());
@@ -7204,7 +7204,7 @@ argv = []
         super::set_secret_value(&context, &args, "postgres://localhost/app", "manual", 1_000)?;
         let mut reveal_output = Vec::new();
         run_with_context(
-            Cli::try_parse_from(["locket", "get", "DATABASE_URL", "--reveal"])?,
+            Cli::try_parse_from(["locket", "get", "DATABASE_URL", "--reveal", "--force"])?,
             &context,
             &mut reveal_output,
         )?;
@@ -7413,7 +7413,7 @@ argv = []
             [],
             |row| row.get(0),
         )?;
-        assert!(metadata.contains("\"status\":\"FAILURE\""));
+        assert!(metadata.contains("\"status\":\"FAILED\""));
         assert!(metadata.contains("\"clipboard_supported\":false"));
         assert!(metadata.contains("\"unsupported_reason\":\"clipboard command unavailable\""));
         assert!(!metadata.contains("postgres://localhost/app"));
