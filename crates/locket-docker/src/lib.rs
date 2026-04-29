@@ -106,13 +106,16 @@ pub fn prepare_docker_run(
 ) -> Result<DockerInjectionPlan, DockerError> {
     validate_remote(endpoint, allow_remote)?;
     validate_program(argv, "docker")?;
+    validate_subcommand(argv, "run")?;
 
-    let mut prepared_argv = argv.to_vec();
+    let mut prepared_argv = Vec::with_capacity(argv.len() + locket_env.len() * 2);
+    prepared_argv.extend(argv.iter().take(2).cloned());
     let injected_names = sorted_names(locket_env);
     for name in &injected_names {
         prepared_argv.push("--env".to_owned());
         prepared_argv.push(name.clone());
     }
+    prepared_argv.extend(argv.iter().skip(2).cloned());
 
     Ok(DockerInjectionPlan {
         argv: prepared_argv,
@@ -141,6 +144,7 @@ pub fn prepare_compose(
 ) -> Result<DockerInjectionPlan, DockerError> {
     validate_remote(endpoint, allow_remote)?;
     validate_program(argv, "docker")?;
+    validate_subcommand(argv, "compose")?;
     let injected_names = sorted_names(locket_env);
 
     Ok(DockerInjectionPlan {
@@ -165,6 +169,18 @@ fn validate_program(argv: &[String], expected: &str) -> Result<(), DockerError> 
     };
     if program != expected {
         return Err(DockerError::UnexpectedCommand { program: program.clone() });
+    }
+    Ok(())
+}
+
+fn validate_subcommand(argv: &[String], expected: &str) -> Result<(), DockerError> {
+    let Some(subcommand) = argv.get(1) else {
+        return Err(DockerError::UnexpectedCommand { program: argv[0].clone() });
+    };
+    if subcommand != expected {
+        return Err(DockerError::UnexpectedCommand {
+            program: format!("{} {subcommand}", argv[0]),
+        });
     }
     Ok(())
 }
