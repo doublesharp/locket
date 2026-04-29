@@ -18,8 +18,8 @@ use locket_scan::{
 };
 use locket_store::{
     AuditContext, AuditWrite, DirectoryGrantRecord, KeyRecord, ProfileRecord, SecretBlobRecord,
-    SecretFingerprintRecord, SecretRecord, SecretVersionRecord, Store, StoreError,
-    VersionDeprecation,
+    SecretCopyTarget, SecretFingerprintRecord, SecretRecord, SecretVersionRecord, Store,
+    StoreError, VersionDeprecation,
 };
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -124,6 +124,8 @@ enum Command {
     History(HistoryArgs),
     /// Show metadata-only differences.
     Diff(DiffArgs),
+    /// Copy a secret between profiles without revealing its value.
+    Copy(CopyArgs),
     /// Audit log operations.
     Audit {
         /// Audit command.
@@ -405,6 +407,24 @@ struct DiffArgs {
     since: Option<String>,
 }
 
+#[derive(Debug, Args)]
+struct CopyArgs {
+    /// Secret key name.
+    key: String,
+    /// Source profile name.
+    #[arg(long)]
+    from: String,
+    /// Target profile name.
+    #[arg(long)]
+    to: String,
+    /// Runtime source to copy from.
+    #[arg(long, value_enum)]
+    from_source: Option<SecretSourceArg>,
+    /// Runtime source to copy to.
+    #[arg(long, value_enum)]
+    to_source: Option<SecretSourceArg>,
+}
+
 #[derive(Clone, Copy, Debug, Subcommand)]
 enum AgentCommand {
     /// Start the local agent.
@@ -548,6 +568,7 @@ fn run_with_context(
         Command::Meta(args) => meta_command(context, output, &args)?,
         Command::History(args) => history_command(context, output, &args)?,
         Command::Diff(args) => diff_command(context, output, &args)?,
+        Command::Copy(args) => copy_command(context, output, &args)?,
         Command::Audit { command } => audit_command(context, output, command)?,
         Command::Lock => lock_command(context, output)?,
         Command::Unlock(args) => unlock_command(context, output, &args)?,
@@ -935,6 +956,27 @@ fn rotate_command(
     let (source, version) = rotate_secret_value(context, args, &value, timestamp, grace_until)?;
     refresh_example_for_project(context)?;
     writeln!(output, "rotated {} ({source}) version={version}", args.key)?;
+    Ok(())
+}
+
+fn copy_command(
+    context: &RuntimeContext,
+    output: &mut impl Write,
+    args: &CopyArgs,
+) -> Result<(), CliError> {
+    let result = copy_secret_value(context, args, now_unix_nanos()?)?;
+    refresh_example_for_project(context)?;
+    writeln!(
+        output,
+        "copied {} from={} source={} to={} target_source={} version={} operation={} metadata_only=yes",
+        args.key,
+        result.from_profile,
+        result.from_source,
+        result.to_profile,
+        result.to_source,
+        result.target_version,
+        result.operation,
+    )?;
     Ok(())
 }
 
@@ -2514,6 +2556,308 @@ fn rotate_secret_value(
     Ok((source, new_version))
 }
 
+struct CopySecretResult {
+    from_profile: String,
+    to_profile: String,
+    from_source: String,
+    to_source: String,
+    target_version: u32,
+    operation: &'static str,
+}
+
+struct CopyTargetPlan {
+    secret_id: String,
+    version: u32,
+    prior_version: Option<u32>,
+    existing: Option<SecretRecord>,
+}
+
+struct CopySelection {
+    from_profile: ProfileRecord,
+    to_profile: ProfileRecord,
+    source_secret: SecretRecord,
+    from_source: String,
+    to_source: String,
+}
+
+#[derive(Clone, Copy)]
+struct CopyAuditMetadata<'a> {
+    name: &'a str,
+    from_profile: &'a ProfileRecord,
+    from_source: &'a str,
+    from_version: u32,
+    to_profile: &'a ProfileRecord,
+    to_source: &'a str,
+    prior_target_version: Option<u32>,
+    target_version: u32,
+}
+
+#[derive(Clone, Copy)]
+struct CopyWriteRequest<'a> {
+    target: &'a CopyTargetPlan,
+    project_id: &'a str,
+    to_profile_id: &'a str,
+    name: &'a str,
+    to_source: &'a str,
+    timestamp: i64,
+    version: &'a SecretVersionRecord,
+    blob: &'a SecretBlobRecord,
+    fingerprint: &'a SecretFingerprintRecord,
+    audit: AuditContext<'a>,
+}
+
+fn copy_secret_value(
+    context: &RuntimeContext,
+    args: &CopyArgs,
+    timestamp: i64,
+) -> Result<CopySecretResult, CliError> {
+    let name = SecretName::new(args.key.clone())
+        .map_err(|_| CliError::Config("invalid secret name".to_owned()))?;
+    let resolved = require_project(context)?;
+    let mut store = open_store(context)?;
+    let project_id = resolved.config.project_id.as_str();
+    let selection = select_copy_profiles_and_sources(&store, project_id, name.as_str(), args)?;
+
+    let target = plan_copy_target(
+        &store,
+        project_id,
+        &selection.to_profile.id,
+        name.as_str(),
+        &selection.to_source,
+    )?;
+    let value = decrypt_secret_version(
+        context,
+        &store,
+        project_id,
+        &selection.from_profile.id,
+        &selection.source_secret,
+        selection.source_secret.current_version,
+    )?;
+    let audit_key = load_project_key(context, &store, project_id, KeyPurpose::Audit)?;
+    let (encrypted, fingerprint) = encrypt_secret_version(
+        context,
+        &store,
+        SecretEncryptRequest {
+            project_id,
+            profile_id: &selection.to_profile.id,
+            secret_id: &target.secret_id,
+            secret_name: name.as_str(),
+            version: target.version,
+            value: value.as_str(),
+        },
+    )?;
+    let metadata = copy_audit_metadata(CopyAuditMetadata {
+        name: name.as_str(),
+        from_profile: &selection.from_profile,
+        from_source: &selection.from_source,
+        from_version: selection.source_secret.current_version,
+        to_profile: &selection.to_profile,
+        to_source: &selection.to_source,
+        prior_target_version: target.prior_version,
+        target_version: target.version,
+    });
+    let audit = AuditWrite {
+        project_id,
+        profile_id: Some(&selection.to_profile.id),
+        action: "SECRET_COPY",
+        status: "SUCCESS",
+        secret_name: Some(name.as_str()),
+        command: None,
+        metadata_json: &metadata,
+        timestamp,
+    };
+    let (version, blob, fingerprint) = copied_secret_records(
+        &target.secret_id,
+        target.version,
+        &selection.to_source,
+        encrypted,
+        fingerprint,
+        timestamp,
+    );
+    let operation = write_copied_secret(
+        &mut store,
+        CopyWriteRequest {
+            target: &target,
+            project_id,
+            to_profile_id: &selection.to_profile.id,
+            name: name.as_str(),
+            to_source: &selection.to_source,
+            timestamp,
+            version: &version,
+            blob: &blob,
+            fingerprint: &fingerprint,
+            audit: AuditContext { key: audit_key.as_ref(), write: &audit },
+        },
+    )?;
+
+    Ok(CopySecretResult {
+        from_profile: selection.from_profile.name,
+        to_profile: selection.to_profile.name,
+        from_source: selection.from_source,
+        to_source: selection.to_source,
+        target_version: target.version,
+        operation,
+    })
+}
+
+fn select_copy_profiles_and_sources(
+    store: &Store,
+    project_id: &str,
+    name: &str,
+    args: &CopyArgs,
+) -> Result<CopySelection, CliError> {
+    let from_profile_name = ProfileName::new(args.from.clone())
+        .map_err(|_| CliError::Config("invalid source profile name".to_owned()))?;
+    let to_profile_name = ProfileName::new(args.to.clone())
+        .map_err(|_| CliError::Config("invalid target profile name".to_owned()))?;
+    let from_profile = store
+        .get_profile_by_name(project_id, from_profile_name.as_str())?
+        .ok_or_else(|| CliError::Config("source profile not found".to_owned()))?;
+    let to_profile = store
+        .get_profile_by_name(project_id, to_profile_name.as_str())?
+        .ok_or_else(|| CliError::Config("target profile not found".to_owned()))?;
+    let source_secret =
+        select_copy_source_secret(store, project_id, &from_profile.id, name, args.from_source)?;
+    let from_source = source_secret.source.clone();
+    let to_source = select_copy_target_source(
+        store,
+        project_id,
+        &to_profile.id,
+        name,
+        &from_source,
+        args.to_source,
+    )?;
+    if from_profile.id == to_profile.id && from_source == to_source {
+        return Err(CliError::Config(
+            "copy source and target are the same profile and source; use rotate".to_owned(),
+        ));
+    }
+    Ok(CopySelection { from_profile, to_profile, source_secret, from_source, to_source })
+}
+
+fn copy_audit_metadata(request: CopyAuditMetadata<'_>) -> Value {
+    json!({
+        "schema_version": 1,
+        "action": "SECRET_COPY",
+        "status": "SUCCESS",
+        "secret_name": request.name,
+        "from_profile": &request.from_profile.name,
+        "from_profile_id": &request.from_profile.id,
+        "from_source": request.from_source,
+        "from_version": request.from_version,
+        "to_profile": &request.to_profile.name,
+        "to_profile_id": &request.to_profile.id,
+        "to_source": request.to_source,
+        "prior_target_version": request.prior_target_version,
+        "target_version": request.target_version,
+    })
+}
+
+fn write_copied_secret(
+    store: &mut Store,
+    request: CopyWriteRequest<'_>,
+) -> Result<&'static str, CliError> {
+    if let Some(target_secret) = request.target.existing.as_ref() {
+        store.copy_secret_with_audit(
+            SecretCopyTarget::Rotate {
+                secret: target_secret,
+                deprecation: VersionDeprecation {
+                    deprecated_at: request.timestamp,
+                    grace_until: None,
+                },
+            },
+            request.version,
+            request.blob,
+            request.fingerprint,
+            Some(request.audit),
+        )?;
+        return Ok("rotate");
+    }
+
+    let secret = SecretRecord {
+        id: request.target.secret_id.clone(),
+        project_id: request.project_id.to_owned(),
+        profile_id: request.to_profile_id.to_owned(),
+        name: request.name.to_owned(),
+        source: request.to_source.to_owned(),
+        origin: "profile-copy".to_owned(),
+        current_version: request.target.version,
+        state: "active".to_owned(),
+        created_at: request.timestamp,
+        updated_at: request.timestamp,
+        last_rotated_at: None,
+        deleted_at: None,
+    };
+    store.copy_secret_with_audit(
+        SecretCopyTarget::Create(&secret),
+        request.version,
+        request.blob,
+        request.fingerprint,
+        Some(request.audit),
+    )?;
+    Ok("create")
+}
+
+fn plan_copy_target(
+    store: &Store,
+    project_id: &str,
+    profile_id: &str,
+    name: &str,
+    source: &str,
+) -> Result<CopyTargetPlan, CliError> {
+    let existing = store.get_secret_by_source(project_id, profile_id, name, source)?;
+    if existing.as_ref().is_some_and(|secret| secret.state == "deleted") {
+        return Err(CliError::Config("SecretDeleted: target secret source is deleted".to_owned()));
+    }
+    let prior_version = existing.as_ref().map(|secret| secret.current_version);
+    let version = prior_version.map_or(Ok(1), |version| {
+        version.checked_add(1).ok_or_else(|| CliError::Config("secret version overflow".to_owned()))
+    })?;
+    let secret_id = existing.as_ref().map_or_else(
+        || SecretId::generate().map(SecretId::into_string).map_err(|_| CliError::Time),
+        |secret| Ok(secret.id.clone()),
+    )?;
+    Ok(CopyTargetPlan { secret_id, version, prior_version, existing })
+}
+
+fn copied_secret_records(
+    secret_id: &str,
+    version: u32,
+    source: &str,
+    encrypted: EncryptedSecretValue,
+    fingerprint: Vec<u8>,
+    timestamp: i64,
+) -> (SecretVersionRecord, SecretBlobRecord, SecretFingerprintRecord) {
+    (
+        SecretVersionRecord {
+            secret_id: secret_id.to_owned(),
+            version,
+            source: source.to_owned(),
+            origin: "profile-copy".to_owned(),
+            state: "current".to_owned(),
+            created_at: timestamp,
+            deprecated_at: None,
+            grace_until: None,
+            purged_at: None,
+        },
+        SecretBlobRecord {
+            secret_id: secret_id.to_owned(),
+            version,
+            encrypted_dek: encrypted.encrypted_dek,
+            ciphertext: encrypted.ciphertext,
+            value_nonce: encrypted.value_nonce,
+            aad_schema_version: encrypted.aad_schema_version,
+            created_at: timestamp,
+        },
+        SecretFingerprintRecord {
+            secret_id: secret_id.to_owned(),
+            version,
+            fingerprint,
+            created_at: timestamp,
+        },
+    )
+}
+
 #[derive(Clone, Copy)]
 struct SecretEncryptRequest<'a> {
     project_id: &'a str,
@@ -2701,6 +3045,63 @@ fn resolve_secret_for_source(
         }
     };
     Ok(ResolvedSecret { project, profile, secret })
+}
+
+fn select_copy_source_secret(
+    store: &Store,
+    project_id: &str,
+    profile_id: &str,
+    name: &str,
+    source: Option<SecretSourceArg>,
+) -> Result<SecretRecord, CliError> {
+    if let Some(source) = source {
+        let source = source_arg_to_str(source);
+        let secret = store
+            .get_secret_by_source(project_id, profile_id, name, source)?
+            .ok_or_else(|| CliError::Config("secret not found".to_owned()))?;
+        if secret.state == "deleted" {
+            return Err(CliError::Config("secret source is deleted".to_owned()));
+        }
+        return Ok(secret);
+    }
+
+    let active = store
+        .list_secrets_by_name(project_id, profile_id, name)?
+        .into_iter()
+        .filter(|secret| secret.state == "active")
+        .collect::<Vec<_>>();
+    let highest = active
+        .iter()
+        .map(|secret| source_precedence(&secret.source))
+        .max()
+        .ok_or_else(|| CliError::Config("secret not found".to_owned()))?;
+    let selected = active
+        .iter()
+        .filter(|secret| source_precedence(&secret.source) == highest)
+        .collect::<Vec<_>>();
+    match selected.as_slice() {
+        [secret] => Ok((*secret).clone()),
+        _ => Err(CliError::Config(
+            "multiple source candidates have ambiguous precedence; pass --from-source".to_owned(),
+        )),
+    }
+}
+
+fn select_copy_target_source(
+    store: &Store,
+    project_id: &str,
+    profile_id: &str,
+    name: &str,
+    from_source: &str,
+    to_source: Option<SecretSourceArg>,
+) -> Result<String, CliError> {
+    if let Some(to_source) = to_source {
+        return Ok(source_arg_to_str(to_source).to_owned());
+    }
+    if store.get_secret_by_source(project_id, profile_id, name, from_source)?.is_some() {
+        return Ok(from_source.to_owned());
+    }
+    Ok(source_arg_to_str(SecretSourceArg::UserLocal).to_owned())
 }
 
 fn decrypt_current_secret(
@@ -3803,6 +4204,19 @@ mod tests {
             &["locket", "meta", "DATABASE_URL", "--owner", "platform", "--required"],
             &["locket", "history", "DATABASE_URL"],
             &["locket", "diff", "dev", "staging"],
+            &[
+                "locket",
+                "copy",
+                "DATABASE_URL",
+                "--from",
+                "dev",
+                "--to",
+                "staging",
+                "--from-source",
+                "user-local",
+                "--to-source",
+                "machine-local",
+            ],
             &["locket", "audit", "verify"],
             &["locket", "exec", "--secret", "DATABASE_URL", "--", "/bin/sh", "-c", "true"],
             &["locket", "config", "list"],
@@ -4715,6 +5129,199 @@ mod tests {
             &mut empty_diff_output,
         )?;
         assert_eq!(String::from_utf8(empty_diff_output)?, "no differences\n");
+        Ok(())
+    }
+
+    #[test]
+    fn copy_creates_missing_target_profile_secret_without_leaking_value()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        let mut output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut output,
+        )?;
+        let set_args = test_secret_write_args("DATABASE_URL");
+        super::set_secret_value(
+            &context,
+            &set_args,
+            "postgres://localhost/dev-copy",
+            "manual",
+            1_000,
+        )?;
+        let mut create_profile_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "profile", "create", "staging"])?,
+            &context,
+            &mut create_profile_output,
+        )?;
+
+        let mut copy_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from([
+                "locket",
+                "copy",
+                "DATABASE_URL",
+                "--from",
+                "dev",
+                "--to",
+                "staging",
+            ])?,
+            &context,
+            &mut copy_output,
+        )?;
+        let copy_output = String::from_utf8(copy_output)?;
+        assert!(copy_output.contains("operation=create"));
+        assert!(copy_output.contains("version=1"));
+        assert!(copy_output.contains("metadata_only=yes"));
+        assert!(!copy_output.contains("postgres://localhost/dev-copy"));
+
+        let store = locket_store::Store::open(directory.path().join("store.db"))?;
+        let project_id: String =
+            store
+                .connection()
+                .query_row("SELECT id FROM projects LIMIT 1", [], |row| row.get(0))?;
+        let staging = store
+            .get_profile_by_name(&project_id, "staging")?
+            .ok_or("staging profile should exist")?;
+        let secret = store
+            .get_secret_by_source(&staging.project_id, &staging.id, "DATABASE_URL", "user-local")?
+            .ok_or("target secret should exist")?;
+        assert_eq!(secret.current_version, 1);
+        assert_eq!(secret.origin, "profile-copy");
+        assert_eq!(secret.last_rotated_at, None);
+        let versions = store.list_secret_versions(&secret.id)?;
+        assert_eq!(versions.len(), 1);
+        assert_eq!(versions[0].state, "current");
+        assert_eq!(versions[0].origin, "profile-copy");
+
+        let metadata: String = store.connection().query_row(
+            "SELECT metadata_json FROM audit_log WHERE action = 'SECRET_COPY'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert!(metadata.contains("\"target_version\":1"));
+        assert!(!metadata.contains("postgres://localhost/dev-copy"));
+
+        let mut use_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "use", "staging"])?,
+            &context,
+            &mut use_output,
+        )?;
+        let mut reveal_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "get", "DATABASE_URL", "--reveal"])?,
+            &context,
+            &mut reveal_output,
+        )?;
+        assert_eq!(String::from_utf8(reveal_output)?, "postgres://localhost/dev-copy\n");
+        Ok(())
+    }
+
+    #[test]
+    fn copy_rotates_existing_target_with_no_grace_and_no_value_leakage()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        let mut output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut output,
+        )?;
+        let set_args = test_secret_write_args("DATABASE_URL");
+        super::set_secret_value(
+            &context,
+            &set_args,
+            "postgres://localhost/source",
+            "manual",
+            1_000,
+        )?;
+        let mut create_profile_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "profile", "create", "staging"])?,
+            &context,
+            &mut create_profile_output,
+        )?;
+        let mut use_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "use", "staging"])?,
+            &context,
+            &mut use_output,
+        )?;
+        super::set_secret_value(
+            &context,
+            &set_args,
+            "postgres://localhost/target-old",
+            "manual",
+            2_000,
+        )?;
+
+        let copy_args = super::CopyArgs {
+            key: "DATABASE_URL".to_owned(),
+            from: "dev".to_owned(),
+            to: "staging".to_owned(),
+            from_source: None,
+            to_source: None,
+        };
+        let result = super::copy_secret_value(&context, &copy_args, 3_000)?;
+        assert_eq!(result.operation, "rotate");
+        assert_eq!(result.target_version, 2);
+
+        let store = locket_store::Store::open(directory.path().join("store.db"))?;
+        let project_id: String =
+            store
+                .connection()
+                .query_row("SELECT id FROM projects LIMIT 1", [], |row| row.get(0))?;
+        let staging = store
+            .get_profile_by_name(&project_id, "staging")?
+            .ok_or("staging profile should exist")?;
+        let secret = store
+            .get_secret_by_source(&project_id, &staging.id, "DATABASE_URL", "user-local")?
+            .ok_or("target secret should exist")?;
+        assert_eq!(secret.current_version, 2);
+        assert_eq!(secret.last_rotated_at, Some(3_000));
+        let versions = store.list_secret_versions(&secret.id)?;
+        assert_eq!(versions.len(), 2);
+        assert_eq!(versions[0].state, "deprecated");
+        assert_eq!(versions[0].deprecated_at, Some(3_000));
+        assert_eq!(versions[0].grace_until, None);
+        assert_eq!(versions[1].state, "current");
+        assert_eq!(versions[1].origin, "profile-copy");
+
+        let mut history_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "history", "DATABASE_URL", "--profile", "staging"])?,
+            &context,
+            &mut history_output,
+        )?;
+        let history_output = String::from_utf8(history_output)?;
+        assert!(history_output.contains("v1 state=deprecated"));
+        assert!(history_output.contains("grace_until=-"));
+        assert!(history_output.contains("v2 state=current"));
+        assert!(!history_output.contains("postgres://localhost/source"));
+        assert!(!history_output.contains("postgres://localhost/target-old"));
+
+        let metadata: String = store.connection().query_row(
+            "SELECT metadata_json FROM audit_log WHERE action = 'SECRET_COPY'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert!(metadata.contains("\"prior_target_version\":1"));
+        assert!(metadata.contains("\"target_version\":2"));
+        assert!(!metadata.contains("postgres://localhost/source"));
+        assert!(!metadata.contains("postgres://localhost/target-old"));
+
+        let mut reveal_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "get", "DATABASE_URL", "--reveal"])?,
+            &context,
+            &mut reveal_output,
+        )?;
+        assert_eq!(String::from_utf8(reveal_output)?, "postgres://localhost/source\n");
         Ok(())
     }
 

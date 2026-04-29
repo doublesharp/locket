@@ -201,6 +201,20 @@ pub struct VersionDeprecation {
     pub grace_until: Option<i64>,
 }
 
+/// Target lifecycle operation for a profile copy.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SecretCopyTarget<'a> {
+    /// Create a new target secret row at version 1.
+    Create(&'a SecretRecord),
+    /// Rotate an existing active target secret.
+    Rotate {
+        /// Existing active target secret.
+        secret: &'a SecretRecord,
+        /// Metadata to apply to the superseded target version.
+        deprecation: VersionDeprecation,
+    },
+}
+
 /// HMAC-covered audit row to append.
 #[derive(Debug)]
 pub struct AuditWrite<'a> {
@@ -1106,6 +1120,119 @@ impl Store {
              WHERE id = ?1 AND state = 'active'",
             params![secret.id.as_str(), new_version.version, new_version.created_at],
         )?;
+        append_optional_audit(&transaction, audit)?;
+        transaction.commit()?;
+
+        Ok(())
+    }
+
+    /// Copies secret material into a target source by creating or rotating it.
+    ///
+    /// The copied plaintext is supplied only as already-encrypted target material. The secret
+    /// lifecycle update and optional `SECRET_COPY` audit append happen in one transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] when `SQLite` rejects a row or audit canonicalization fails.
+    pub fn copy_secret_with_audit(
+        &mut self,
+        target: SecretCopyTarget<'_>,
+        new_version: &SecretVersionRecord,
+        blob: &SecretBlobRecord,
+        fingerprint: &SecretFingerprintRecord,
+        audit: Option<AuditContext<'_>>,
+    ) -> Result<(), StoreError> {
+        let transaction = self.connection.transaction()?;
+        match target {
+            SecretCopyTarget::Create(secret) => {
+                transaction.execute(
+                    "INSERT INTO secrets(
+                       id, project_id, profile_id, name, source, origin, required,
+                       current_version, state, created_at, updated_at, last_rotated_at, deleted_at
+                     )
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?7, ?8, ?9, ?10, ?11, ?12)",
+                    params![
+                        secret.id.as_str(),
+                        secret.project_id.as_str(),
+                        secret.profile_id.as_str(),
+                        secret.name.as_str(),
+                        secret.source.as_str(),
+                        secret.origin.as_str(),
+                        secret.current_version,
+                        secret.state.as_str(),
+                        secret.created_at,
+                        secret.updated_at,
+                        secret.last_rotated_at,
+                        secret.deleted_at,
+                    ],
+                )?;
+            }
+            SecretCopyTarget::Rotate { secret, deprecation } => {
+                transaction.execute(
+                    "UPDATE secret_versions
+                     SET state = 'deprecated', deprecated_at = ?3, grace_until = ?4
+                     WHERE secret_id = ?1 AND version = ?2 AND state = 'current'",
+                    params![
+                        secret.id.as_str(),
+                        secret.current_version,
+                        deprecation.deprecated_at,
+                        deprecation.grace_until,
+                    ],
+                )?;
+            }
+        }
+        transaction.execute(
+            "INSERT INTO secret_versions(
+               secret_id, version, source, origin, state, created_at,
+               deprecated_at, grace_until, purged_at
+             )
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                new_version.secret_id.as_str(),
+                new_version.version,
+                new_version.source.as_str(),
+                new_version.origin.as_str(),
+                new_version.state.as_str(),
+                new_version.created_at,
+                new_version.deprecated_at,
+                new_version.grace_until,
+                new_version.purged_at,
+            ],
+        )?;
+        transaction.execute(
+            "INSERT INTO blobs(
+               secret_id, version, encrypted_dek, ciphertext, value_nonce,
+               aad_schema_version, created_at
+             )
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                blob.secret_id.as_str(),
+                blob.version,
+                blob.encrypted_dek.as_slice(),
+                blob.ciphertext.as_slice(),
+                blob.value_nonce.as_slice(),
+                blob.aad_schema_version,
+                blob.created_at,
+            ],
+        )?;
+        transaction.execute(
+            "INSERT INTO fingerprints(secret_id, version, fingerprint, created_at)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![
+                fingerprint.secret_id.as_str(),
+                fingerprint.version,
+                fingerprint.fingerprint.as_slice(),
+                fingerprint.created_at,
+            ],
+        )?;
+        if let SecretCopyTarget::Rotate { secret, .. } = target {
+            transaction.execute(
+                "UPDATE secrets
+                 SET current_version = ?2, updated_at = ?3, last_rotated_at = ?3
+                 WHERE id = ?1 AND state = 'active'",
+                params![secret.id.as_str(), new_version.version, new_version.created_at],
+            )?;
+        }
         append_optional_audit(&transaction, audit)?;
         transaction.commit()?;
 
