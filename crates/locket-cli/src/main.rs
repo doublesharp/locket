@@ -1119,67 +1119,68 @@ fn import_command(
     output: &mut impl Write,
     args: &ImportArgs,
 ) -> Result<(), CliError> {
-    if let Some(profile) = &args.profile {
-        let resolved = require_project(context)?;
-        if profile != resolved.config.default_profile.as_str() {
-            return Err(CliError::Config(
-                "import --profile currently supports only the active default profile".to_owned(),
-            ));
-        }
+    let resolved = require_project(context)?;
+    let mut store = open_store(context)?;
+    let profile = import_target_profile(&store, &resolved, args.profile.as_deref())?;
+    if args.overwrite && profile.dangerous {
+        confirm_dangerous_import_overwrite(output, &profile)?;
     }
-
     let path = absolutize(&context.cwd, Path::new(&args.file));
-    let env_file_text = fs::read_to_string(path)?;
+    let env_file_text = fs::read_to_string(&path)?;
     let source = args.source.unwrap_or(SecretSourceArg::UserLocal);
+    let source_name = source_arg_to_str(source);
     let parsed = parse_env_import(&env_file_text);
+    let env_names = parsed
+        .iter()
+        .filter_map(|entry| match entry {
+            EnvImportEntry::Secret { key, .. } => Some(key.clone()),
+            EnvImportEntry::Invalid => None,
+        })
+        .collect::<BTreeSet<_>>();
     let mut imported = 0_u32;
     let mut overwritten = 0_u32;
     let mut skipped = 0_u32;
     let mut invalid = 0_u32;
+    let mut skipped_names = BTreeSet::new();
 
     for entry in parsed {
         match entry {
             EnvImportEntry::Secret { key, value } => {
-                let write_args = SecretWriteArgs {
-                    key: key.clone(),
-                    source: SourceArg { source: Some(source) },
-                    metadata: SecretMetadataFlags {
-                        description: None,
-                        owner: None,
-                        tags: Vec::new(),
-                        required: false,
-                        optional: false,
+                match set_secret_value_in_profile(
+                    context,
+                    &mut store,
+                    SecretWriteRequest {
+                        resolved: &resolved,
+                        profile: &profile,
+                        key: &key,
+                        source: source_name,
+                        value: &value,
+                        origin: "imported",
+                        audit_action: "IMPORT",
+                        timestamp: now_unix_nanos()?,
                     },
-                };
-                match set_secret_value(context, &write_args, &value, "imported", now_unix_nanos()?)
-                {
+                ) {
                     Ok(()) => imported += 1,
                     Err(CliError::Config(message))
                         if message.contains("already exists") && args.overwrite =>
                     {
-                        let rotate_args = RotateArgs {
-                            key,
-                            source: SourceArg { source: Some(source) },
-                            metadata: SecretMetadataFlags {
-                                description: None,
-                                owner: None,
-                                tags: Vec::new(),
-                                required: false,
-                                optional: false,
-                            },
-                            grace_ttl: None,
-                        };
-                        rotate_secret_value(
+                        rotate_import_secret_value_in_profile(
                             context,
-                            &rotate_args,
-                            &value,
-                            now_unix_nanos()?,
-                            None,
+                            &mut store,
+                            ImportRotateRequest {
+                                resolved: &resolved,
+                                profile: &profile,
+                                key: &key,
+                                source: source_name,
+                                value: &value,
+                                timestamp: now_unix_nanos()?,
+                            },
                         )?;
                         overwritten += 1;
                     }
                     Err(CliError::Config(message)) if message.contains("already exists") => {
                         skipped += 1;
+                        skipped_names.insert(key);
                     }
                     Err(error) => return Err(error),
                 }
@@ -1189,11 +1190,100 @@ fn import_command(
     }
 
     refresh_example_for_project_if_enabled(context)?;
-    ensure_gitignore(&require_project(context)?.root)?;
+    ensure_gitignore(&resolved.root)?;
+    let profile_names =
+        active_profile_secret_names(&store, resolved.config.project_id.as_str(), &profile.id)?;
+    let missing_in_profile = env_names.difference(&profile_names).cloned().collect::<BTreeSet<_>>();
+    let extra_in_profile = profile_names.difference(&env_names).cloned().collect::<BTreeSet<_>>();
     writeln!(output, "imported: {imported}")?;
     writeln!(output, "overwritten: {overwritten}")?;
     writeln!(output, "skipped: {skipped}")?;
     writeln!(output, "invalid: {invalid}")?;
+    writeln!(output, "profile: {}", profile.name)?;
+    writeln!(output, "source: {source_name}")?;
+    writeln!(output, "env_names: {}", env_names.len())?;
+    writeln!(output, "profile_names: {}", profile_names.len())?;
+    writeln!(output, "skipped_names: {}", format_name_set(&skipped_names))?;
+    writeln!(output, "missing_in_profile: {}", format_name_set(&missing_in_profile))?;
+    writeln!(output, "extra_in_profile: {}", format_name_set(&extra_in_profile))?;
+    write_env_delete_prompt(output, &path)?;
+    writeln!(output, "metadata_only: yes")?;
+    Ok(())
+}
+
+fn import_target_profile(
+    store: &Store,
+    resolved: &ResolvedProject,
+    profile_name: Option<&str>,
+) -> Result<ProfileRecord, CliError> {
+    let profile_name = profile_name.unwrap_or(resolved.config.default_profile.as_str());
+    let profile_name = ProfileName::new(profile_name.to_owned())
+        .map_err(|_| CliError::Config("invalid profile name".to_owned()))?;
+    store
+        .get_profile_by_name(resolved.config.project_id.as_str(), profile_name.as_str())?
+        .ok_or_else(|| CliError::Config("profile not found".to_owned()))
+}
+
+fn confirm_dangerous_import_overwrite(
+    output: &mut impl Write,
+    profile: &ProfileRecord,
+) -> Result<(), CliError> {
+    writeln!(output, "dangerous_profile: {}", profile.name)?;
+    writeln!(output, "metadata_only: yes")?;
+    if !io::stdin().is_terminal() {
+        return Err(CliError::Config(
+            "import --overwrite targets a dangerous profile and requires interactive confirmation"
+                .to_owned(),
+        ));
+    }
+    writeln!(output, "type '{}' to confirm dangerous import overwrite", profile.name)?;
+    let mut confirmation = String::new();
+    io::stdin().read_line(&mut confirmation)?;
+    if confirmation.trim_end() != profile.name {
+        return Err(CliError::Config("confirmation did not match".to_owned()));
+    }
+    Ok(())
+}
+
+fn active_profile_secret_names(
+    store: &Store,
+    project_id: &str,
+    profile_id: &str,
+) -> Result<BTreeSet<String>, CliError> {
+    Ok(store
+        .list_active_secrets_by_profile(project_id, profile_id)?
+        .into_iter()
+        .map(|secret| secret.name)
+        .collect())
+}
+
+fn format_name_set(names: &BTreeSet<String>) -> String {
+    if names.is_empty() {
+        "none".to_owned()
+    } else {
+        names.iter().cloned().collect::<Vec<_>>().join(",")
+    }
+}
+
+fn write_env_delete_prompt(output: &mut impl Write, path: &Path) -> Result<(), CliError> {
+    if path.file_name().and_then(OsStr::to_str) != Some(".env") {
+        writeln!(output, "delete_env_prompt: not_applicable")?;
+        return Ok(());
+    }
+    if !io::stdin().is_terminal() {
+        writeln!(output, "delete_env_prompt: skipped_noninteractive")?;
+        writeln!(output, "delete_env: kept")?;
+        return Ok(());
+    }
+    writeln!(output, "delete_env_prompt: type 'delete .env' to remove the plaintext .env file")?;
+    let mut confirmation = String::new();
+    io::stdin().read_line(&mut confirmation)?;
+    if confirmation.trim_end() == "delete .env" {
+        fs::remove_file(path)?;
+        writeln!(output, "delete_env: deleted")?;
+    } else {
+        writeln!(output, "delete_env: kept")?;
+    }
     Ok(())
 }
 
@@ -3552,18 +3642,50 @@ fn set_secret_value(
     origin: &str,
     timestamp: i64,
 ) -> Result<(), CliError> {
-    let name = SecretName::new(args.key.clone())
-        .map_err(|_| CliError::Config("invalid secret name".to_owned()))?;
     let source = source_arg_to_str(args.source.source.unwrap_or(SecretSourceArg::UserLocal));
     let resolved = require_project(context)?;
     let mut store = open_store(context)?;
     let profile = default_profile(&store, &resolved.config)?;
-    let profile_id = profile.id;
+    set_secret_value_in_profile(
+        context,
+        &mut store,
+        SecretWriteRequest {
+            resolved: &resolved,
+            profile: &profile,
+            key: &args.key,
+            source,
+            value,
+            origin,
+            audit_action: "SET",
+            timestamp,
+        },
+    )
+}
+
+#[derive(Clone, Copy)]
+struct SecretWriteRequest<'a> {
+    resolved: &'a ResolvedProject,
+    profile: &'a ProfileRecord,
+    key: &'a str,
+    source: &'a str,
+    value: &'a str,
+    origin: &'a str,
+    audit_action: &'a str,
+    timestamp: i64,
+}
+
+fn set_secret_value_in_profile(
+    context: &RuntimeContext,
+    store: &mut Store,
+    request: SecretWriteRequest<'_>,
+) -> Result<(), CliError> {
+    let name = SecretName::new(request.key.to_owned())
+        .map_err(|_| CliError::Config("invalid secret name".to_owned()))?;
     if let Some(existing) = store.get_secret_by_source(
-        resolved.config.project_id.as_str(),
-        &profile_id,
+        request.resolved.config.project_id.as_str(),
+        &request.profile.id,
         name.as_str(),
-        source,
+        request.source,
     )? {
         if existing.state == "deleted" {
             return Err(CliError::Config(
@@ -3575,55 +3697,65 @@ fn set_secret_value(
 
     let secret_id = SecretId::generate().map_err(|_| CliError::Time)?;
     let version = 1;
-    let audit_key =
-        load_project_key(context, &store, resolved.config.project_id.as_str(), KeyPurpose::Audit)?;
+    let audit_key = load_project_key(
+        context,
+        store,
+        request.resolved.config.project_id.as_str(),
+        KeyPurpose::Audit,
+    )?;
     let (encrypted, fingerprint) = encrypt_secret_version(
         context,
-        &store,
+        store,
         SecretEncryptRequest {
-            project_id: resolved.config.project_id.as_str(),
-            profile_id: &profile_id,
+            project_id: request.resolved.config.project_id.as_str(),
+            profile_id: &request.profile.id,
             secret_id: secret_id.as_str(),
             secret_name: name.as_str(),
             version,
-            value,
+            value: request.value,
         },
     )?;
     let secret_id_string = secret_id.into_string();
-    let metadata = secret_audit_metadata("SET", name.as_str(), &profile_id, source, Some(version));
+    let metadata = secret_audit_metadata(
+        request.audit_action,
+        name.as_str(),
+        &request.profile.id,
+        request.source,
+        Some(version),
+    );
     let audit = AuditWrite {
-        project_id: resolved.config.project_id.as_str(),
-        profile_id: Some(&profile_id),
-        action: "SET",
+        project_id: request.resolved.config.project_id.as_str(),
+        profile_id: Some(&request.profile.id),
+        action: request.audit_action,
         status: "SUCCESS",
         secret_name: Some(name.as_str()),
         command: None,
         metadata_json: &metadata,
-        timestamp,
+        timestamp: request.timestamp,
     };
 
     store.create_active_secret_with_audit(
         &SecretRecord {
             id: secret_id_string.clone(),
-            project_id: resolved.config.project_id.as_str().to_owned(),
-            profile_id: profile_id.clone(),
+            project_id: request.resolved.config.project_id.as_str().to_owned(),
+            profile_id: request.profile.id.clone(),
             name: name.as_str().to_owned(),
-            source: source.to_owned(),
-            origin: origin.to_owned(),
+            source: request.source.to_owned(),
+            origin: request.origin.to_owned(),
             current_version: version,
             state: "active".to_owned(),
-            created_at: timestamp,
-            updated_at: timestamp,
+            created_at: request.timestamp,
+            updated_at: request.timestamp,
             last_rotated_at: None,
             deleted_at: None,
         },
         &SecretVersionRecord {
             secret_id: secret_id_string.clone(),
             version,
-            source: source.to_owned(),
-            origin: origin.to_owned(),
+            source: request.source.to_owned(),
+            origin: request.origin.to_owned(),
             state: "current".to_owned(),
-            created_at: timestamp,
+            created_at: request.timestamp,
             deprecated_at: None,
             grace_until: None,
             purged_at: None,
@@ -3635,13 +3767,13 @@ fn set_secret_value(
             ciphertext: encrypted.ciphertext,
             value_nonce: encrypted.value_nonce,
             aad_schema_version: encrypted.aad_schema_version,
-            created_at: timestamp,
+            created_at: request.timestamp,
         },
         &SecretFingerprintRecord {
             secret_id: secret_id_string,
             version,
             fingerprint,
-            created_at: timestamp,
+            created_at: request.timestamp,
         },
         Some(AuditContext { key: audit_key.as_ref(), write: &audit }),
     )?;
@@ -3742,6 +3874,113 @@ fn rotate_secret_value(
     )?;
 
     Ok((source, new_version))
+}
+
+#[derive(Clone, Copy)]
+struct ImportRotateRequest<'a> {
+    resolved: &'a ResolvedProject,
+    profile: &'a ProfileRecord,
+    key: &'a str,
+    source: &'a str,
+    value: &'a str,
+    timestamp: i64,
+}
+
+fn rotate_import_secret_value_in_profile(
+    context: &RuntimeContext,
+    store: &mut Store,
+    request: ImportRotateRequest<'_>,
+) -> Result<u32, CliError> {
+    let name = SecretName::new(request.key.to_owned())
+        .map_err(|_| CliError::Config("invalid secret name".to_owned()))?;
+    let secret = store
+        .get_secret_by_source(
+            request.resolved.config.project_id.as_str(),
+            &request.profile.id,
+            name.as_str(),
+            request.source,
+        )?
+        .ok_or_else(|| CliError::Config("secret does not exist".to_owned()))?;
+    if secret.state == "deleted" {
+        return Err(CliError::Config("secret source is deleted".to_owned()));
+    }
+    let new_version = secret
+        .current_version
+        .checked_add(1)
+        .ok_or_else(|| CliError::Config("secret version overflow".to_owned()))?;
+    let audit_key = load_project_key(
+        context,
+        store,
+        request.resolved.config.project_id.as_str(),
+        KeyPurpose::Audit,
+    )?;
+    let (encrypted, fingerprint) = encrypt_secret_version(
+        context,
+        store,
+        SecretEncryptRequest {
+            project_id: request.resolved.config.project_id.as_str(),
+            profile_id: &request.profile.id,
+            secret_id: &secret.id,
+            secret_name: &secret.name,
+            version: new_version,
+            value: request.value,
+        },
+    )?;
+    let metadata = json!({
+        "schema_version": 1,
+        "action": "ROTATE",
+        "status": "SUCCESS",
+        "secret_name": &secret.name,
+        "profile_id": &request.profile.id,
+        "source": &secret.source,
+        "prior_version": secret.current_version,
+        "deprecated_version": secret.current_version,
+        "target_version": new_version,
+        "deprecated_at": request.timestamp,
+        "grace_until": null,
+    });
+    let audit = AuditWrite {
+        project_id: request.resolved.config.project_id.as_str(),
+        profile_id: Some(&request.profile.id),
+        action: "ROTATE",
+        status: "SUCCESS",
+        secret_name: Some(&secret.name),
+        command: None,
+        metadata_json: &metadata,
+        timestamp: request.timestamp,
+    };
+    store.rotate_secret_with_audit(
+        &secret,
+        &SecretVersionRecord {
+            secret_id: secret.id.clone(),
+            version: new_version,
+            source: secret.source.clone(),
+            origin: "imported".to_owned(),
+            state: "current".to_owned(),
+            created_at: request.timestamp,
+            deprecated_at: None,
+            grace_until: None,
+            purged_at: None,
+        },
+        &SecretBlobRecord {
+            secret_id: secret.id.clone(),
+            version: new_version,
+            encrypted_dek: encrypted.encrypted_dek,
+            ciphertext: encrypted.ciphertext,
+            value_nonce: encrypted.value_nonce,
+            aad_schema_version: encrypted.aad_schema_version,
+            created_at: request.timestamp,
+        },
+        &SecretFingerprintRecord {
+            secret_id: secret.id.clone(),
+            version: new_version,
+            fingerprint,
+            created_at: request.timestamp,
+        },
+        VersionDeprecation { deprecated_at: request.timestamp, grace_until: None },
+        Some(AuditContext { key: audit_key.as_ref(), write: &audit }),
+    )?;
+    Ok(new_version)
 }
 
 struct CopySecretResult {
@@ -5775,11 +6014,21 @@ fn parse_env_line(line: &str) -> EnvImportEntry {
     if SecretName::new(key.to_owned()).is_err() {
         return EnvImportEntry::Invalid;
     }
-    let value = unquote_env_value(value.trim());
+    let raw_value = value.trim();
+    if has_unmatched_env_quote(raw_value) {
+        return EnvImportEntry::Invalid;
+    }
+    let value = unquote_env_value(raw_value);
     if value.contains('\0') {
         return EnvImportEntry::Invalid;
     }
     EnvImportEntry::Secret { key: key.to_owned(), value }
+}
+
+const fn has_unmatched_env_quote(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    matches!(bytes.first(), Some(b'"')) && !matches!(bytes.last(), Some(b'"'))
+        || matches!(bytes.first(), Some(b'\'')) && !matches!(bytes.last(), Some(b'\''))
 }
 
 fn unquote_env_value(value: &str) -> String {
@@ -6284,10 +6533,12 @@ mod tests {
              OPENAI_API_KEY=\"sk_test_sample\"\n\
              INVALID-NAME=value\n\
              MISSING_EQUALS\n\
-             NULL_BYTE=bad\0value\n",
+             NULL_BYTE=bad\0value\n\
+             MULTILINE=\"first\n\
+             second\"\n",
         );
 
-        assert_eq!(entries.len(), 5);
+        assert_eq!(entries.len(), 7);
         let first = match &entries[0] {
             super::EnvImportEntry::Secret { key, value } => Some((key.as_str(), value.as_str())),
             super::EnvImportEntry::Invalid => None,
@@ -6301,6 +6552,8 @@ mod tests {
         assert!(matches!(&entries[2], super::EnvImportEntry::Invalid));
         assert!(matches!(&entries[3], super::EnvImportEntry::Invalid));
         assert!(matches!(&entries[4], super::EnvImportEntry::Invalid));
+        assert!(matches!(&entries[5], super::EnvImportEntry::Invalid));
+        assert!(matches!(&entries[6], super::EnvImportEntry::Invalid));
     }
 
     #[test]
@@ -8607,6 +8860,12 @@ argv = []
         let import_output = String::from_utf8(import_output)?;
         assert!(import_output.contains("imported: 2"));
         assert!(import_output.contains("invalid: 1"));
+        assert!(import_output.contains("profile: dev"));
+        assert!(import_output.contains("source: user-local"));
+        assert!(import_output.contains("missing_in_profile: none"));
+        assert!(import_output.contains("delete_env_prompt: skipped_noninteractive"));
+        assert!(import_output.contains("delete_env: kept"));
+        assert!(import_output.contains("metadata_only: yes"));
         assert!(!import_output.contains("postgres://localhost/app"));
 
         let example = std::fs::read_to_string(directory.path().join(".env.example"))?;
@@ -8632,6 +8891,133 @@ argv = []
             &mut reveal_output,
         )?;
         assert_eq!(String::from_utf8(reveal_output)?, "postgres://localhost/new\n");
+        Ok(())
+    }
+
+    #[test]
+    fn import_env_targets_named_profile_and_reports_parity()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        let mut output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut output,
+        )?;
+        run_with_context(
+            Cli::try_parse_from(["locket", "profile", "create", "staging"])?,
+            &context,
+            &mut Vec::new(),
+        )?;
+        std::fs::write(directory.path().join(".env"), "API_KEY=sk_test_stagingImport123\n")?;
+
+        let mut import_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "import", ".env", "--profile", "staging"])?,
+            &context,
+            &mut import_output,
+        )?;
+
+        let import_output = String::from_utf8(import_output)?;
+        assert!(import_output.contains("imported: 1"));
+        assert!(import_output.contains("profile: staging"));
+        assert!(import_output.contains("env_names: 1"));
+        assert!(import_output.contains("profile_names: 1"));
+        assert!(import_output.contains("missing_in_profile: none"));
+        assert!(import_output.contains("extra_in_profile: none"));
+        assert!(import_output.contains("delete_env_prompt: skipped_noninteractive"));
+        assert!(!import_output.contains("sk_test_stagingImport123"));
+
+        let resolved = super::resolve_project(&context.cwd)?.ok_or("project should resolve")?;
+        let store = locket_store::Store::open(directory.path().join("store.db"))?;
+        let staging = store
+            .get_profile_by_name(resolved.config.project_id.as_str(), "staging")?
+            .ok_or("staging profile should exist")?;
+        let secret = store
+            .get_secret_by_source(
+                resolved.config.project_id.as_str(),
+                &staging.id,
+                "API_KEY",
+                "user-local",
+            )?
+            .ok_or("imported secret should exist")?;
+        assert_eq!(secret.origin, "imported");
+        assert_eq!(secret.current_version, 1);
+        let audit_metadata: String = store.connection().query_row(
+            "SELECT metadata_json FROM audit_log WHERE action = 'IMPORT'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert!(audit_metadata.contains("\"secret_name\":\"API_KEY\""));
+        assert!(audit_metadata.contains(&staging.id));
+        assert!(!audit_metadata.contains("sk_test_stagingImport123"));
+        Ok(())
+    }
+
+    #[test]
+    fn import_overwrite_to_dangerous_profile_requires_confirmation_before_rotation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        let mut output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut output,
+        )?;
+        run_with_context(
+            Cli::try_parse_from(["locket", "profile", "create", "prod"])?,
+            &context,
+            &mut Vec::new(),
+        )?;
+        run_with_context(
+            Cli::try_parse_from(["locket", "profile", "mark-dangerous", "prod"])?,
+            &context,
+            &mut Vec::new(),
+        )?;
+        std::fs::write(directory.path().join(".env"), "API_KEY=sk_test_prodOriginal123\n")?;
+        run_with_context(
+            Cli::try_parse_from(["locket", "import", ".env", "--profile", "prod"])?,
+            &context,
+            &mut Vec::new(),
+        )?;
+
+        std::fs::write(directory.path().join(".env"), "API_KEY=sk_test_prodRotated123\n")?;
+        let mut overwrite_output = Vec::new();
+        assert_error_contains(
+            run_with_context(
+                Cli::try_parse_from([
+                    "locket",
+                    "import",
+                    ".env",
+                    "--profile",
+                    "prod",
+                    "--overwrite",
+                ])?,
+                &context,
+                &mut overwrite_output,
+            ),
+            "dangerous profile",
+        );
+        let overwrite_output = String::from_utf8(overwrite_output)?;
+        assert!(overwrite_output.contains("dangerous_profile: prod"));
+        assert!(!overwrite_output.contains("sk_test_prodRotated123"));
+
+        let resolved = super::resolve_project(&context.cwd)?.ok_or("project should resolve")?;
+        let store = locket_store::Store::open(directory.path().join("store.db"))?;
+        let prod = store
+            .get_profile_by_name(resolved.config.project_id.as_str(), "prod")?
+            .ok_or("prod profile should exist")?;
+        let secret = store
+            .get_secret_by_source(
+                resolved.config.project_id.as_str(),
+                &prod.id,
+                "API_KEY",
+                "user-local",
+            )?
+            .ok_or("prod import should exist")?;
+        assert_eq!(secret.current_version, 1);
         Ok(())
     }
 
