@@ -110,6 +110,12 @@ enum Command {
         #[command(subcommand)]
         command: EnvCommand,
     },
+    /// Execute Docker Compose with scoped policy injection.
+    Compose {
+        /// Compose command.
+        #[command(subcommand)]
+        command: ComposeCommand,
+    },
     /// Lock local agent-held keys.
     Lock,
     /// Unlock the local vault.
@@ -303,6 +309,8 @@ struct RunArgs {
 enum EnvCommand {
     /// Show metadata-only policy environment decisions.
     Inspect(EnvInspectArgs),
+    /// Execute docker run with policy-backed environment injection.
+    Docker(EnvDockerArgs),
 }
 
 #[derive(Debug, Args)]
@@ -310,6 +318,38 @@ struct EnvInspectArgs {
     /// Command policy name from [commands.<policy>].
     #[arg(long)]
     policy: String,
+}
+
+#[derive(Debug, Args)]
+struct EnvDockerArgs {
+    /// Command policy name from [commands.<policy>].
+    #[arg(long)]
+    policy: String,
+    /// Docker command and arguments after `--`.
+    #[arg(last = true, required = true)]
+    command: Vec<String>,
+}
+
+#[derive(Debug, Subcommand)]
+enum ComposeCommand {
+    /// Execute docker compose with policy-backed environment injection.
+    Run(ComposeRunArgs),
+}
+
+#[derive(Debug, Args)]
+struct ComposeRunArgs {
+    /// Command policy name from [commands.<policy>].
+    #[arg(long)]
+    policy: String,
+    /// Compose project directory to pass to docker compose.
+    #[arg(long)]
+    project_directory: Option<PathBuf>,
+    /// Compose profile to pass to docker compose. May be repeated.
+    #[arg(long)]
+    profile: Vec<String>,
+    /// Docker Compose command and arguments after `--`.
+    #[arg(last = true, required = true)]
+    command: Vec<String>,
 }
 
 #[derive(Debug, Args)]
@@ -676,6 +716,7 @@ fn run_with_context(
         Command::Exec(args) => exec_command(context, output, &args)?,
         Command::Run(args) => run_command(context, output, &args)?,
         Command::Env { command } => env_command(context, output, command)?,
+        Command::Compose { command } => compose_command(context, output, command)?,
         Command::Rotate(args) => rotate_command(context, output, &args)?,
         Command::Meta(args) => meta_command(context, output, &args)?,
         Command::History(args) => history_command(context, output, &args)?,
@@ -1550,6 +1591,17 @@ fn env_command(
 ) -> Result<(), CliError> {
     match command {
         EnvCommand::Inspect(args) => env_inspect_command(context, output, &args),
+        EnvCommand::Docker(args) => docker_policy_command(context, output, &args),
+    }
+}
+
+fn compose_command(
+    context: &RuntimeContext,
+    output: &mut impl Write,
+    command: ComposeCommand,
+) -> Result<(), CliError> {
+    match command {
+        ComposeCommand::Run(args) => compose_policy_command(context, output, &args),
     }
 }
 
@@ -1598,6 +1650,241 @@ fn env_inspect_command(
         )?;
     }
     Ok(())
+}
+
+fn docker_policy_command(
+    context: &RuntimeContext,
+    output: &mut impl Write,
+    args: &EnvDockerArgs,
+) -> Result<(), CliError> {
+    let parent_env = std::env::vars().collect::<locket_exec::EnvMap>();
+    let prepared =
+        prepare_docker_policy_execution(context, &args.policy, &args.command, parent_env)?;
+    let status = prepared.execution.command().current_dir(&context.cwd).status()?;
+    let audit_status = if status.success() { "SUCCESS" } else { "FAILURE" };
+    write_docker_policy_audit_if_available(context, &prepared, audit_status)?;
+    if status.success() {
+        return Ok(());
+    }
+
+    writeln!(output, "child exited with status {status}")?;
+    Err(CliError::ChildExit(status.code().and_then(|code| u8::try_from(code).ok()).unwrap_or(1)))
+}
+
+fn compose_policy_command(
+    context: &RuntimeContext,
+    output: &mut impl Write,
+    args: &ComposeRunArgs,
+) -> Result<(), CliError> {
+    let parent_env = std::env::vars().collect::<locket_exec::EnvMap>();
+    let compose_args = compose_argv_with_options(
+        args.command.clone(),
+        args.project_directory.as_deref(),
+        &args.profile,
+    )?;
+    let prepared =
+        prepare_compose_policy_execution(context, &args.policy, &compose_args, parent_env)?;
+    let status = prepared.execution.command().current_dir(&context.cwd).status()?;
+    let audit_status = if status.success() { "SUCCESS" } else { "FAILURE" };
+    write_docker_policy_audit_if_available(context, &prepared, audit_status)?;
+    if status.success() {
+        return Ok(());
+    }
+
+    writeln!(output, "child exited with status {status}")?;
+    Err(CliError::ChildExit(status.code().and_then(|code| u8::try_from(code).ok()).unwrap_or(1)))
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DockerHelperKind {
+    DockerRun,
+    Compose,
+}
+
+#[derive(Debug)]
+struct PreparedDockerPolicyExecution {
+    resolved: ResolvedProject,
+    profile: ProfileRecord,
+    policy: CommandPolicy,
+    execution: locket_exec::PreparedExecution,
+    plan: locket_docker::DockerInjectionPlan,
+    helper_kind: DockerHelperKind,
+}
+
+fn prepare_docker_policy_execution(
+    context: &RuntimeContext,
+    policy_name: &str,
+    argv: &[String],
+    parent_env: locket_exec::EnvMap,
+) -> Result<PreparedDockerPolicyExecution, CliError> {
+    prepare_docker_helper_policy_execution(
+        context,
+        policy_name,
+        argv,
+        parent_env,
+        DockerHelperKind::DockerRun,
+    )
+}
+
+fn prepare_compose_policy_execution(
+    context: &RuntimeContext,
+    policy_name: &str,
+    argv: &[String],
+    parent_env: locket_exec::EnvMap,
+) -> Result<PreparedDockerPolicyExecution, CliError> {
+    prepare_docker_helper_policy_execution(
+        context,
+        policy_name,
+        argv,
+        parent_env,
+        DockerHelperKind::Compose,
+    )
+}
+
+fn prepare_docker_helper_policy_execution(
+    context: &RuntimeContext,
+    policy_name: &str,
+    argv: &[String],
+    parent_env: locket_exec::EnvMap,
+    helper_kind: DockerHelperKind,
+) -> Result<PreparedDockerPolicyExecution, CliError> {
+    let resolved = require_project(context)?;
+    let policy = load_command_policy(&resolved, policy_name)?;
+    ensure_runtime_policy_supported(&policy)?;
+    let (profile, selections, locket_env) = resolve_policy_locket_env(context, &resolved, &policy)?;
+    let endpoint = parent_env.get("DOCKER_HOST").map(String::as_str);
+    let plan = match helper_kind {
+        DockerHelperKind::DockerRun => locket_docker::prepare_docker_run(
+            argv,
+            &locket_exec::EnvMap::new(),
+            &locket_env,
+            endpoint,
+            policy.allow_remote_docker,
+        ),
+        DockerHelperKind::Compose => locket_docker::prepare_compose(
+            argv,
+            &locket_exec::EnvMap::new(),
+            &locket_env,
+            endpoint,
+            policy.allow_remote_docker,
+        ),
+    }
+    .map_err(docker_error)?;
+    let request = locket_exec::ExecutionRequest {
+        argv: plan.argv.clone(),
+        parent_env,
+        inherit_env: policy.inherit_env.clone(),
+        external_env: locket_exec::EnvMap::new(),
+        locket_env,
+        env_mode: policy.env_mode,
+        override_mode: policy.override_behavior,
+    };
+    let execution = locket_exec::prepare_execution(&request)
+        .map_err(|error| CliError::Config(error.to_string()))?;
+    debug_assert_eq!(
+        plan.injected_names.len(),
+        selections.iter().filter(|s| s.selected.is_some()).count()
+    );
+
+    Ok(PreparedDockerPolicyExecution { resolved, profile, policy, execution, plan, helper_kind })
+}
+
+fn ensure_runtime_policy_supported(policy: &CommandPolicy) -> Result<(), CliError> {
+    if matches!(policy.command, CommandSpec::Shell(_)) {
+        return Err(CliError::Config(
+            "shell policy execution is not wired in this build".to_owned(),
+        ));
+    }
+    if policy.confirm {
+        return Err(CliError::Config("policy confirmation is not wired in this build".to_owned()));
+    }
+    if policy.require_user_verification {
+        return Err(CliError::Config(
+            "policy user verification is not wired in this build".to_owned(),
+        ));
+    }
+    if !policy.external_env_sources.is_empty() {
+        return Err(CliError::Config(
+            "policy external environment sources are not wired in this build".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn resolve_policy_locket_env(
+    context: &RuntimeContext,
+    resolved: &ResolvedProject,
+    policy: &CommandPolicy,
+) -> Result<(ProfileRecord, Vec<PolicySecretSelection>, locket_exec::EnvMap), CliError> {
+    let store = open_store(context)?;
+    let profile = default_profile(&store, &resolved.config)?;
+    let selections = policy_secret_selections(&store, resolved, &profile, policy)?;
+    let missing_required = selections
+        .iter()
+        .filter(|selection| selection.required && selection.selected.is_none())
+        .map(|selection| selection.name.as_str())
+        .collect::<Vec<_>>();
+    if !missing_required.is_empty() {
+        return Err(CliError::Config(format!(
+            "required secret(s) missing: {}",
+            missing_required.join(",")
+        )));
+    }
+
+    let mut locket_env = locket_exec::EnvMap::new();
+    for selection in &selections {
+        if let Some(secret) = &selection.selected {
+            let value = decrypt_secret_version(
+                context,
+                &store,
+                resolved.config.project_id.as_str(),
+                &profile.id,
+                secret,
+                secret.current_version,
+            )?;
+            locket_env.insert(secret.name.clone(), value.as_str().to_owned());
+        }
+    }
+    Ok((profile, selections, locket_env))
+}
+
+fn compose_argv_with_options(
+    argv: Vec<String>,
+    project_directory: Option<&Path>,
+    profiles: &[String],
+) -> Result<Vec<String>, CliError> {
+    if argv.len() < 2
+        || argv.first().map(String::as_str) != Some("docker")
+        || argv.get(1).map(String::as_str) != Some("compose")
+    {
+        return Ok(argv);
+    }
+    let mut prepared = Vec::with_capacity(argv.len() + 2 + profiles.len() * 2);
+    prepared.push(argv[0].clone());
+    prepared.push(argv[1].clone());
+    if let Some(project_directory) = project_directory {
+        prepared.push("--project-directory".to_owned());
+        prepared.push(project_directory.to_string_lossy().into_owned());
+    }
+    for profile in profiles {
+        if profile.is_empty() {
+            return Err(CliError::Config("compose profile must not be empty".to_owned()));
+        }
+        prepared.push("--profile".to_owned());
+        prepared.push(profile.clone());
+    }
+    prepared.extend(argv.into_iter().skip(2));
+    Ok(prepared)
+}
+
+fn docker_error(error: locket_docker::DockerError) -> CliError {
+    match error {
+        locket_docker::DockerError::RemoteContextDenied => CliError::Config(
+            "remote Docker context is denied by default; policy allow_remote_docker support is default-deny unless explicitly enabled"
+                .to_owned(),
+        ),
+        other => CliError::Config(other.to_string()),
+    }
 }
 
 fn audit_command(
@@ -3987,7 +4274,7 @@ fn append_agent_log(
     Ok(())
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct ResolvedProject {
     root: PathBuf,
     config: ProjectConfig,
@@ -4275,6 +4562,75 @@ fn write_runtime_policy_audit_if_available(
     };
     store.append_audit(audit_key.as_ref(), &audit)?;
     Ok(())
+}
+
+fn write_docker_policy_audit_if_available(
+    context: &RuntimeContext,
+    prepared: &PreparedDockerPolicyExecution,
+    status: &str,
+) -> Result<(), CliError> {
+    let mut store = open_store(context)?;
+    if store.get_project(prepared.resolved.config.project_id.as_str())?.is_none() {
+        return Ok(());
+    }
+    let Ok(audit_key) = load_project_key(
+        context,
+        &store,
+        prepared.resolved.config.project_id.as_str(),
+        KeyPurpose::Audit,
+    ) else {
+        return Ok(());
+    };
+    let metadata = docker_policy_audit_metadata(prepared, status);
+    let audit = AuditWrite {
+        project_id: prepared.resolved.config.project_id.as_str(),
+        profile_id: Some(&prepared.profile.id),
+        action: "RUN",
+        status,
+        secret_name: None,
+        command: Some(docker_helper_command_label(prepared.helper_kind)),
+        metadata_json: &metadata,
+        timestamp: now_unix_nanos()?,
+    };
+    store.append_audit(audit_key.as_ref(), &audit)?;
+    Ok(())
+}
+
+fn docker_policy_audit_metadata(prepared: &PreparedDockerPolicyExecution, status: &str) -> Value {
+    json!({
+        "schema_version": 1,
+        "action": "RUN",
+        "status": status,
+        "policy": prepared.policy.name,
+        "helper": docker_helper_command_label(prepared.helper_kind),
+        "delivery_mode": docker_delivery_mode_label(prepared.plan.delivery_mode),
+        "docker_context_class": docker_context_class_label(prepared.plan.context_class),
+        "argv_program": prepared.plan.argv.first().map_or("", String::as_str),
+        "arg_count": prepared.plan.argv.len(),
+        "secret_names": prepared.plan.injected_names,
+    })
+}
+
+const fn docker_helper_command_label(kind: DockerHelperKind) -> &'static str {
+    match kind {
+        DockerHelperKind::DockerRun => "env docker",
+        DockerHelperKind::Compose => "compose run",
+    }
+}
+
+const fn docker_delivery_mode_label(mode: locket_docker::DockerDeliveryMode) -> &'static str {
+    match mode {
+        locket_docker::DockerDeliveryMode::EnvironmentNames => "environment_names",
+        locket_docker::DockerDeliveryMode::EphemeralEnvFile => "ephemeral_env_file",
+    }
+}
+
+const fn docker_context_class_label(class: locket_docker::DockerContextClass) -> &'static str {
+    match class {
+        locket_docker::DockerContextClass::Local => "local",
+        locket_docker::DockerContextClass::Remote => "remote",
+        locket_docker::DockerContextClass::Unknown => "unknown",
+    }
 }
 
 fn write_example_emit_audit(
@@ -7325,6 +7681,182 @@ inherit_env = ["PATH"]
         assert_eq!(presence, "DATABASE_URL=present\nOPENAI_API_KEY=present\n");
         assert!(!presence.contains("postgres://localhost/app"));
         assert!(!presence.contains("sk_test_policy_value"));
+        Ok(())
+    }
+
+    #[test]
+    fn docker_policy_plan_and_audit_are_metadata_only() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        let mut output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut output,
+        )?;
+        let db_args = test_secret_write_args("DATABASE_URL");
+        super::set_secret_value(&context, &db_args, "postgres://localhost/app", "manual", 1_000)?;
+        let api_args = test_secret_write_args("API_KEY");
+        super::set_secret_value(&context, &api_args, "sk_test_docker_value", "manual", 2_000)?;
+
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(directory.path().join("locket.toml"))?
+            .write_all(
+                br#"
+[commands.docker_app]
+argv = ["docker", "run", "app"]
+required_secrets = ["DATABASE_URL"]
+optional_secrets = ["API_KEY"]
+env_mode = "strict"
+inherit_env = ["PATH"]
+"#,
+            )?;
+
+        let parsed = Cli::try_parse_from([
+            "locket",
+            "env",
+            "docker",
+            "--policy",
+            "docker_app",
+            "--",
+            "docker",
+            "run",
+            "alpine",
+        ])?;
+        assert!(matches!(
+            parsed.command,
+            Some(super::Command::Env { command: super::EnvCommand::Docker(_) })
+        ));
+
+        let parent_env = std::iter::once(("PATH".to_owned(), "/bin".to_owned())).collect();
+        let docker_argv = vec!["docker".to_owned(), "run".to_owned(), "alpine".to_owned()];
+        let prepared = super::prepare_docker_policy_execution(
+            &context,
+            "docker_app",
+            &docker_argv,
+            parent_env,
+        )?;
+        assert_eq!(prepared.execution.program, "docker");
+        assert!(prepared.plan.argv.windows(2).any(|pair| pair == ["--env", "API_KEY"]));
+        assert!(prepared.plan.argv.windows(2).any(|pair| pair == ["--env", "DATABASE_URL"]));
+        let argv_text = prepared.plan.argv.join(" ");
+        assert!(!argv_text.contains("postgres://localhost/app"));
+        assert!(!argv_text.contains("sk_test_docker_value"));
+
+        let metadata = super::docker_policy_audit_metadata(&prepared, "SUCCESS");
+        let metadata_text = metadata.to_string();
+        assert!(metadata_text.contains("DATABASE_URL"));
+        assert!(metadata_text.contains("API_KEY"));
+        assert!(metadata_text.contains("environment_names"));
+        assert!(metadata_text.contains("\"argv_program\":\"docker\""));
+        assert!(!metadata_text.contains("postgres://localhost/app"));
+        assert!(!metadata_text.contains("sk_test_docker_value"));
+
+        super::write_docker_policy_audit_if_available(&context, &prepared, "SUCCESS")?;
+        let store = locket_store::Store::open(directory.path().join("store.db"))?;
+        let audit_metadata: String = store.connection().query_row(
+            "SELECT metadata_json FROM audit_log WHERE action = 'RUN'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert!(audit_metadata.contains("DATABASE_URL"));
+        assert!(audit_metadata.contains("API_KEY"));
+        assert!(!audit_metadata.contains("postgres://localhost/app"));
+        assert!(!audit_metadata.contains("sk_test_docker_value"));
+        Ok(())
+    }
+
+    #[test]
+    fn compose_policy_plan_supports_options_and_denies_remote_by_default()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        let mut output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut output,
+        )?;
+        let api_args = test_secret_write_args("API_KEY");
+        super::set_secret_value(&context, &api_args, "sk_test_compose_value", "manual", 1_000)?;
+
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(directory.path().join("locket.toml"))?
+            .write_all(
+                br#"
+[commands.compose_app]
+argv = ["docker", "compose", "up"]
+required_secrets = ["API_KEY"]
+env_mode = "strict"
+inherit_env = ["PATH"]
+"#,
+            )?;
+
+        let parsed = Cli::try_parse_from([
+            "locket",
+            "compose",
+            "run",
+            "--policy",
+            "compose_app",
+            "--project-directory",
+            ".",
+            "--profile",
+            "web",
+            "--",
+            "docker",
+            "compose",
+            "up",
+        ])?;
+        assert!(matches!(
+            parsed.command,
+            Some(super::Command::Compose { command: super::ComposeCommand::Run(_) })
+        ));
+
+        let argv = super::compose_argv_with_options(
+            vec!["docker".to_owned(), "compose".to_owned(), "up".to_owned()],
+            Some(Path::new(".")),
+            &["web".to_owned()],
+        )?;
+        assert_eq!(
+            argv,
+            ["docker", "compose", "--project-directory", ".", "--profile", "web", "up"]
+        );
+        let parent_env = std::iter::once(("PATH".to_owned(), "/bin".to_owned())).collect();
+        let prepared =
+            super::prepare_compose_policy_execution(&context, "compose_app", &argv, parent_env)?;
+        assert_eq!(
+            prepared.plan.argv,
+            prepared.execution.args.iter().fold(
+                vec![prepared.execution.program.clone()],
+                |mut values, arg| {
+                    values.push(arg.clone());
+                    values
+                }
+            )
+        );
+        assert_eq!(prepared.plan.injected_names, ["API_KEY"]);
+        assert!(!prepared.plan.argv.join(" ").contains("sk_test_compose_value"));
+        assert_eq!(
+            prepared.execution.env.get("API_KEY").map(String::as_str),
+            Some("sk_test_compose_value")
+        );
+
+        let remote_env =
+            std::iter::once(("DOCKER_HOST".to_owned(), "ssh://builder".to_owned())).collect();
+        let remote_argv = vec!["docker".to_owned(), "compose".to_owned(), "up".to_owned()];
+        let Err(error) = super::prepare_compose_policy_execution(
+            &context,
+            "compose_app",
+            &remote_argv,
+            remote_env,
+        ) else {
+            return Err("remote Docker context should be denied".into());
+        };
+        let message = error.to_string();
+        assert!(message.contains("remote Docker context is denied by default"));
+        assert!(!message.contains("sk_test_compose_value"));
         Ok(())
     }
 
