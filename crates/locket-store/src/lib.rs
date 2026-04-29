@@ -51,6 +51,29 @@ pub struct ProjectRootRecord {
     pub last_seen_at: Option<i64>,
 }
 
+/// Durable metadata-only directory consent for shell/editor integrations.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DirectoryGrantRecord {
+    /// Stable metadata identifier for this consent row.
+    pub grant_id: String,
+    /// Parent project identifier.
+    pub project_id: String,
+    /// Profile this durable consent applies to.
+    pub profile_id: String,
+    /// Trusted project root hash.
+    pub root_hash: [u8; 32],
+    /// Granted directory hash.
+    pub directory_hash: [u8; 32],
+    /// Persisted grant scope string.
+    pub grant_scope: String,
+    /// Last known display path for the granted directory.
+    pub display_path: Option<String>,
+    /// Creation timestamp in nanoseconds since the Unix epoch.
+    pub created_at: i64,
+    /// Last update timestamp in nanoseconds since the Unix epoch.
+    pub updated_at: i64,
+}
+
 /// Metadata for a stored profile.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProfileRecord {
@@ -489,6 +512,119 @@ impl Store {
         )?;
 
         Ok(self.connection.changes() == 1)
+    }
+
+    /// Records or refreshes durable directory consent for a project/profile.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Sqlite`] when `SQLite` rejects the write.
+    pub fn allow_directory_grant(&self, grant: &DirectoryGrantRecord) -> Result<(), StoreError> {
+        self.connection.execute(
+            "INSERT INTO directory_grants(
+               grant_id, project_id, profile_id, root_hash, directory_hash, grant_scope,
+               display_path, created_at, updated_at
+             )
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+             ON CONFLICT(project_id, profile_id, root_hash, directory_hash, grant_scope)
+             DO UPDATE SET
+               display_path = excluded.display_path,
+               updated_at = excluded.updated_at",
+            params![
+                grant.grant_id.as_str(),
+                grant.project_id.as_str(),
+                grant.profile_id.as_str(),
+                grant.root_hash.as_slice(),
+                grant.directory_hash.as_slice(),
+                grant.grant_scope.as_str(),
+                grant.display_path.as_deref(),
+                grant.created_at,
+                grant.updated_at,
+            ],
+        )?;
+
+        Ok(())
+    }
+
+    /// Returns a durable directory grant for an exact scope.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Sqlite`] when `SQLite` cannot query the grant row.
+    pub fn get_directory_grant(
+        &self,
+        project_id: &str,
+        profile_id: &str,
+        root_hash: &[u8; 32],
+        directory_hash: &[u8; 32],
+        grant_scope: &str,
+    ) -> Result<Option<DirectoryGrantRecord>, StoreError> {
+        Ok(self
+            .connection
+            .query_row(
+                "SELECT grant_id, project_id, profile_id, root_hash, directory_hash,
+                        grant_scope, display_path, created_at, updated_at
+                 FROM directory_grants
+                 WHERE project_id = ?1
+                   AND profile_id = ?2
+                   AND root_hash = ?3
+                   AND directory_hash = ?4
+                   AND grant_scope = ?5",
+                params![
+                    project_id,
+                    profile_id,
+                    root_hash.as_slice(),
+                    directory_hash.as_slice(),
+                    grant_scope,
+                ],
+                directory_grant_record_from_row,
+            )
+            .optional()?)
+    }
+
+    /// Removes a durable directory grant for an exact project/profile/root scope.
+    ///
+    /// Returns `true` when a grant was removed and `false` when no matching grant existed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Sqlite`] when `SQLite` rejects the delete.
+    pub fn deny_directory_grant(
+        &self,
+        project_id: &str,
+        profile_id: &str,
+        root_hash: &[u8; 32],
+        directory_hash: &[u8; 32],
+        grant_scope: &str,
+    ) -> Result<bool, StoreError> {
+        self.connection.execute(
+            "DELETE FROM directory_grants
+             WHERE project_id = ?1
+               AND profile_id = ?2
+               AND root_hash = ?3
+               AND directory_hash = ?4
+               AND grant_scope = ?5",
+            params![
+                project_id,
+                profile_id,
+                root_hash.as_slice(),
+                directory_hash.as_slice(),
+                grant_scope,
+            ],
+        )?;
+
+        Ok(self.connection.changes() == 1)
+    }
+
+    /// Removes every durable directory grant for a project.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Sqlite`] when `SQLite` rejects the delete.
+    pub fn deny_all_directory_grants(&self, project_id: &str) -> Result<usize, StoreError> {
+        self.connection
+            .execute("DELETE FROM directory_grants WHERE project_id = ?1", [project_id])
+            .map_err(StoreError::from)
     }
 
     /// Inserts wrapped key material.
@@ -1211,6 +1347,22 @@ fn project_root_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Pro
     })
 }
 
+fn directory_grant_record_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<DirectoryGrantRecord> {
+    Ok(DirectoryGrantRecord {
+        grant_id: row.get(0)?,
+        project_id: row.get(1)?,
+        profile_id: row.get(2)?,
+        root_hash: root_hash_from_row(row, 3, "directory_grants.root_hash")?,
+        directory_hash: root_hash_from_row(row, 4, "directory_grants.directory_hash")?,
+        grant_scope: row.get(5)?,
+        display_path: row.get(6)?,
+        created_at: row.get(7)?,
+        updated_at: row.get(8)?,
+    })
+}
+
 fn profile_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProfileRecord> {
     Ok(ProfileRecord {
         id: row.get(0)?,
@@ -1600,6 +1752,22 @@ CREATE TABLE IF NOT EXISTS project_roots (
 CREATE INDEX IF NOT EXISTS project_roots_root_hash_idx
   ON project_roots(root_hash);
 
+CREATE TABLE IF NOT EXISTS directory_grants (
+  grant_id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  profile_id TEXT NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+  root_hash BLOB NOT NULL CHECK (length(root_hash) = 32),
+  directory_hash BLOB NOT NULL CHECK (length(directory_hash) = 32),
+  grant_scope TEXT NOT NULL CHECK (grant_scope IN ('project-root')),
+  display_path TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  UNIQUE (project_id, profile_id, root_hash, directory_hash, grant_scope)
+);
+
+CREATE INDEX IF NOT EXISTS directory_grants_project_root_idx
+  ON directory_grants(project_id, root_hash);
+
 CREATE TABLE IF NOT EXISTS secrets (
   id TEXT PRIMARY KEY,
   project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -1747,8 +1915,8 @@ mod tests {
     use tempfile::{TempDir, tempdir};
 
     use super::{
-        AuditContext, AuditWrite, KeyRecord, ProfileRecord, ProjectRecord, ProjectRootRecord,
-        SCHEMA_VERSION, SecretBlobRecord, SecretFingerprintRecord, SecretRecord,
+        AuditContext, AuditWrite, DirectoryGrantRecord, KeyRecord, ProfileRecord, ProjectRecord,
+        ProjectRootRecord, SCHEMA_VERSION, SecretBlobRecord, SecretFingerprintRecord, SecretRecord,
         SecretVersionRecord, Store,
     };
 
@@ -1867,6 +2035,7 @@ mod tests {
             "blobs",
             "keys",
             "project_roots",
+            "directory_grants",
             "audit_log",
             "fingerprints",
             "schema_migrations",
@@ -2102,6 +2271,97 @@ mod tests {
         assert!(test_store.store.untrust_project_root("lk_proj_test", &root_hash)?);
         assert!(!test_store.store.untrust_project_root("lk_proj_test", &root_hash)?);
         assert!(!test_store.store.project_root_is_trusted("lk_proj_test", &root_hash)?);
+
+        Ok(())
+    }
+
+    #[test]
+    fn directory_grants_are_profile_scoped_and_revocable() -> Result<(), Box<dyn Error>> {
+        let test_store = open_initialized_store()?;
+        test_store.store.insert_project_if_absent("lk_proj_test", "test", 100)?;
+        test_store.store.insert_profile_if_absent(
+            "lk_prof_dev",
+            "lk_proj_test",
+            "dev",
+            false,
+            100,
+        )?;
+        test_store.store.insert_profile_if_absent(
+            "lk_prof_prod",
+            "lk_proj_test",
+            "prod",
+            false,
+            100,
+        )?;
+
+        let root_hash = [1_u8; 32];
+        let directory_hash = [2_u8; 32];
+        let grant = DirectoryGrantRecord {
+            grant_id: "lk_dgrant_dev".to_owned(),
+            project_id: "lk_proj_test".to_owned(),
+            profile_id: "lk_prof_dev".to_owned(),
+            root_hash,
+            directory_hash,
+            grant_scope: "project-root".to_owned(),
+            display_path: Some("/tmp/app".to_owned()),
+            created_at: 200,
+            updated_at: 200,
+        };
+
+        test_store.store.allow_directory_grant(&grant)?;
+        assert_eq!(
+            test_store.store.get_directory_grant(
+                "lk_proj_test",
+                "lk_prof_dev",
+                &root_hash,
+                &directory_hash,
+                "project-root",
+            )?,
+            Some(grant.clone())
+        );
+        assert_eq!(
+            test_store.store.get_directory_grant(
+                "lk_proj_test",
+                "lk_prof_prod",
+                &root_hash,
+                &directory_hash,
+                "project-root",
+            )?,
+            None
+        );
+
+        let mut refreshed = grant;
+        refreshed.display_path = Some("/tmp/app-renamed".to_owned());
+        refreshed.updated_at = 300;
+        test_store.store.allow_directory_grant(&refreshed)?;
+        let refreshed_row = test_store
+            .store
+            .get_directory_grant(
+                "lk_proj_test",
+                "lk_prof_dev",
+                &root_hash,
+                &directory_hash,
+                "project-root",
+            )?
+            .ok_or("grant should exist")?;
+        assert_eq!(refreshed_row.created_at, 200);
+        assert_eq!(refreshed_row.updated_at, 300);
+        assert_eq!(refreshed_row.display_path.as_deref(), Some("/tmp/app-renamed"));
+
+        assert!(test_store.store.deny_directory_grant(
+            "lk_proj_test",
+            "lk_prof_dev",
+            &root_hash,
+            &directory_hash,
+            "project-root",
+        )?);
+        assert!(!test_store.store.deny_directory_grant(
+            "lk_proj_test",
+            "lk_prof_dev",
+            &root_hash,
+            &directory_hash,
+            "project-root",
+        )?);
 
         Ok(())
     }
