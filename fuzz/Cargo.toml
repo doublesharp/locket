@@ -1,0 +1,26 @@
+[package]
+name = "locket-core-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+locket-core = { path = "../crates/locket-core" }
+
+[[bin]]
+name = "fuzz_secret_name"
+path = "fuzz_targets/fuzz_secret_name.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_env_merge"
+path = "fuzz_targets/fuzz_env_merge.rs"
+test = false
+doc = false
+bench = false

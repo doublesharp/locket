@@ -1,0 +1,17 @@
+/target/
+/coverage/
+/fuzz/artifacts/
+/fuzz/corpus/
+/.DS_Store
+/.idea/
+/.vscode/*
+!/.vscode/extensions.json
+
+# Locket must never use plaintext env files as source of truth.
+.env
+.env.*
+.locket.local
+
+# Local diagnostic output must be generated explicitly and reviewed before sharing.
+*.redacted-debug.tar
+*.lcov

@@ -1,0 +1,64 @@
+[workspace]
+members = ["crates/locket-core"]
+exclude = ["fuzz"]
+resolver = "2"
+
+[workspace.package]
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/doublesharp/locket"
+rust-version = "1.94"
+version = "0.1.0"
+
+[workspace.lints.rust]
+missing_docs = "warn"
+unsafe_code = "forbid"
+unused_crate_dependencies = "warn"
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+cargo = { level = "warn", priority = -1 }
+dbg_macro = "deny"
+expect_used = "deny"
+panic = "deny"
+print_stderr = "warn"
+print_stdout = "warn"
+todo = "deny"
+unimplemented = "deny"
+unwrap_used = "deny"
+
+[workspace.dependencies]
+anyhow = "1"
+argon2 = "0.5"
+arboard = "3"
+chacha20poly1305 = "0.10"
+clap = { version = "4", features = ["derive", "env"] }
+data-encoding = "2"
+directories = "6"
+dotenvy = "0.15"
+ed25519-dalek = "2"
+hkdf = "0.12"
+hmac = "0.12"
+ignore = "0.4"
+interprocess = "2"
+keyring = "3"
+libc = "0.2"
+passkey = "0.4"
+rand = "0.9"
+regex = "1"
+rpassword = "7"
+rusqlite = { version = "0.32", features = ["bundled"] }
+secrecy = "0.10"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tempfile = "3"
+thiserror = "2"
+time = { version = "0.3", features = ["serde", "formatting"] }
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
+toml = "0.8"
+tracing = "0.1"
+x25519-dalek = "2"
+zeroize = "1"

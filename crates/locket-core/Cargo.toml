@@ -1,0 +1,17 @@
+[package]
+name = "locket-core"
+description = "Core policy and validation primitives for Locket"
+edition.workspace = true
+categories = ["command-line-utilities", "config", "development-tools"]
+keywords = ["secrets", "env", "local-first", "security", "cli"]
+license.workspace = true
+readme = "../../README.md"
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+thiserror = { workspace = true }
