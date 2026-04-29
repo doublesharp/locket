@@ -414,7 +414,8 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
   - Errors: `InvalidPolicy` (65), `EnvironmentConflict` (66).
   - Files: `crates/locket-exec/src/`,
     `crates/locket-core/src/policy/`.
-- [ ] Conservative env allowlist
+- [~] [70c448c4] Conservative env allowlist
+  Claim: branch agent-70c448c4/conservative-env-allowlist, worktree .worktrees/agent-70c448c4-conservative-env-allowlist.
   (`PATH HOME USER SHELL TMPDIR LANG LC_* TERM CI`) applied in `minimal`
   mode and surfaced in `policy doctor`.
   - Spec: `docs/specs/runtime.md` Runtime Execution.
@@ -815,65 +816,41 @@ editing — they drift. Severity: **blocker** (security/correctness),
   - Files: `scripts/release/`, signing config in `Cargo.toml` workspace
     metadata once tooling is chosen.
 - [x] Markdown/spec link checks via `make docs-check`.
-- [ ] `agent logs` retention: JSON Lines format, 1 MiB rotation, 5
-  retained files, default 200 lines, `--lines` cap 10000, RFC 3339 /
-  Unix `--since`, `--follow` streaming.
-  - Spec: `docs/specs/operations.md` Local Diagnostics.
-  - Files: `crates/locket-agent/src/` log writer,
-    `crates/locket-cli/src/commands/agent/logs.rs`.
+- [ ] `agent logs` retention: JSON Lines, 1 MiB rotation, 5 files,
+  default 200 lines, `--lines` cap 10000, RFC 3339 / Unix `--since`,
+  `--follow` streaming (`docs/specs/operations.md`).
 - [ ] Update-manifest fetch keyed only by channel/platform/arch/version
-  (no project/profile/secret/policy/device/member/path/host/user/install
-  id) plus dual-signed manifest required for release-key rotation.
-  - Spec: `docs/specs/operations.md` Distribution.
-  - Errors: `UpdateManifestInvalid` (89).
-  - Files: update-check client and manifest verifier.
-- [ ] Performance reference-runner specification (≥4 physical cores,
-  16 GB RAM, local SSD/NVMe), required report fields, and sampling rules
-  (≥5 warmup, ≥50 CLI samples, ≥100 microbench, p95 index
-  `ceil(0.95*n)-1`, throughput formula).
-  - Spec: `docs/specs/performance.md` Benchmark Methodology.
-  - Files: `benches/`, `scripts/bench*`.
+  (no project/device/host/user/install ids); release-key rotation
+  requires a dual-signed manifest (`docs/specs/operations.md`).
+- [ ] Performance reference-runner spec, required report fields, and
+  sampling rules (warmup, sample counts, p95 index, throughput formula)
+  (`docs/specs/performance.md`).
 - [ ] Cold-start budgets: passphrase fallback unlock <300 ms,
-  recovery-envelope unlock <2 s, agent idle memory <50 MB excluding UI.
-  - Spec: `docs/specs/performance.md` Performance Budgets.
-  - Files: bench fixtures + assertion harness.
+  recovery-envelope unlock <2 s, agent idle memory <50 MB
+  (`docs/specs/performance.md`).
 - [ ] Production-crate clippy denies (`unwrap_used`, `expect_used`,
   `panic`, `todo`, `unimplemented`, `dbg_macro`, `print_stdout`,
   `print_stderr`); security-critical crates additionally deny
-  undocumented `unsafe`.
-  - Spec: `docs/specs/engineering.md` Engineering Standards.
-  - Files: per-crate `lib.rs` lint attributes, `clippy.toml`,
-    workspace `Cargo.toml`.
-- [ ] Dependency hygiene gates: `cargo machete` and `cargo udeps` in
-  CI/local hooks; OpenSSF Scorecard once the repo/CI is public; keyless
-  signing with transparency logs for CI-built public artifacts;
-  frontend `pnpm lint`/`typecheck`/`test`/`build` once `locket-app`
-  exists.
-  - Spec: `docs/specs/engineering.md`.
-  - Files: `Makefile`, CI workflow definitions,
-    `crates/locket-app/package.json` (future).
+  undocumented `unsafe` (`docs/specs/engineering.md`).
+- [ ] Dependency hygiene gates: `cargo machete`/`udeps` in CI; OpenSSF
+  Scorecard once public; keyless signing with transparency logs for CI
+  artifacts; frontend `pnpm lint`/`typecheck`/`test`/`build` once
+  `locket-app` exists.
 - [ ] Property tests for `.env` parsing, policy TOML normalization,
   `lk://` parsing, canonical JSON, device descriptors, and bundle
   manifests.
-  - Spec: `docs/specs/testing.md` Test Pyramid.
-  - Files: per-crate `proptest` harnesses.
-- [ ] Cross-platform test mocks for OS keychain, local user
-  verification, peer credentials, memory locking, sockets/named pipes,
-  clipboard clearing, and Docker/Compose; mutation/negative-path tests
-  for deny-by-default policy, malformed AAD/nonces, replayed nonces,
-  audit tampering, locked-vault scans, expired versions, and
+- [ ] Cross-platform test mocks for OS keychain, user verification,
+  peer credentials, memory locking, sockets/named pipes, clipboard
+  clearing, and Docker/Compose; mutation/negative-path tests for
+  deny-by-default policy, malformed AAD/nonces, replayed nonces, audit
+  tampering, locked-vault scans, expired versions, and
   dangerous-profile.
-  - Spec: `docs/specs/testing.md` Required Test Coverage.
-  - Files: per-crate `tests/` modules; mock layers in
-    `crates/locket-platform/`.
-- [ ] Fuzz tooling and gates: `make fuzz-list`, `make fuzz-smoke`,
-  `make fuzz FUZZ_TARGET=… FUZZ_TIME=…`, `make fuzz-nightly`; PR gate
-  ≥60 s/target on touched fuzzed paths; nightly ≥15 min/target with
-  ASan+UBSan; pre-public-release ≥8 cumulative CPU-hours/target since
-  prior release; deterministic per-target resource limits and codified
-  finding workflow.
-  - Spec: `docs/specs/fuzzing.md`.
-  - Files: `Makefile`, `fuzz/fuzz_targets/`, CI fuzz workflow.
+- [ ] Fuzz tooling and gates: `make fuzz-list`/`fuzz-smoke`/`fuzz`/
+  `fuzz-nightly`; PR gate ≥60 s/target on touched fuzzed paths;
+  nightly ≥15 min/target with ASan+UBSan; pre-public-release
+  ≥8 cumulative CPU-hours/target since prior release; deterministic
+  per-target resource limits and codified finding workflow
+  (`docs/specs/fuzzing.md`).
 
 ## Spec-by-Spec Completion Gates
 
