@@ -769,9 +769,10 @@ disagrees with the spec, the spec wins — fix the table and open a PR.
 
 ### Canonical typed errors (`crates/locket-core/src/error.rs`)
 
-Input/config band (64-69): `InvalidReference` / `GitWorktreeRequired` (64),
-`PolicyValidationIncomplete` (65), `EnvironmentConflict` (66),
-`SecretAlreadyExists` (67), `ConfirmationFailed` (68).
+Input/config band (64-69): `InvalidReference` / `GitWorktreeRequired` /
+`MetadataInvalid` (64), `PolicyValidationIncomplete` (65),
+`EnvironmentConflict` / `MetadataLooksLikeSecret` (66), `SecretAlreadyExists`
+(67), `ConfirmationFailed` (68).
 
 Auth/trust/secret-access band (70-79): `AccessDenied` (70),
 `ProjectRootUntrusted` (71), `UnlockRequired` (72), `GrantRequired` (73),
