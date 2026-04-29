@@ -277,11 +277,12 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
     spawn path in `commands/exec/run.rs`. Errors: `InvalidPolicy` (65). Audit:
     extend `RUN` metadata with `shape: "argv" | "shell"`. Tests cover argv
     success, shell success, mixed/invalid policy rejection.
-  - [~] [723116e9] **subtask** — run-confirm-gate: implement `confirm = true` policy
-    gate via `RuntimeContext::confirmation_reader` with the documented
-    typed-string format. Audit: `RUN`/`DENIED` with
-    `denial_reason: "confirmation_required"` on rejection; `RUN` with
-    `confirmation_source` on success. Errors: `ConfirmationFailed` (68).
+  - [x] **subtask** — run-confirm-gate: `confirm = true` policies now
+    require a typed `run <policy-name>` confirmation; mismatch returns
+    `ConfirmationFailed` (68) and writes no `RUN_POLICY` row, success
+    records `confirmation_source = "interactive"` (`7dda131`). A
+    `RUN/DENIED` denial-row pass remains a follow-up under
+    audit-coverage.
   - [ ] **subtask** — run-user-verification-gate: implement
     `require_user_verification = true` gate via
     `crates/locket-platform/src/user_verification.rs`. Audit: `RUN` records
@@ -302,8 +303,8 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
     Depends on the `Local agent daemon` item below. Surface
     `AgentUnavailable` (80) when the daemon is down and the policy declares
     `require_agent = true`.
-- [~] [70c448c4] ready: agent-70c448c4/external-env-parent @ 829b571 — `ExternalEnvSource::Parent` re-injects only policy-allowed parent names for `locket run`.
-  Claim: branch agent-70c448c4/external-env-parent, worktree .worktrees/agent-70c448c4-external-env-parent.
+- [x] `ExternalEnvSource::Parent` re-injects only policy-allowed
+  parent names for `locket run`.
 - [ ] External env source resolution: `::File` (canonical, in-project,
   non-symlink-escape; `policy doctor` warns), `::Compose` (shell out to
   `docker compose config --format json`, names-only audit), `::Ide`
@@ -536,13 +537,9 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
 - [ ] Empty-state guidance for `locket init`/`team accept`/
   `profile create dev`/`set`/`import`/`policy add`/`agent start`/
   `device init`.
-- [~] [4efea70d] Denial UX differentiates locked vault, missing grant, policy
-  Claim: branch agent-4efea70d/denial-ux-descriptors, worktree .worktrees/agent-4efea70d-denial-ux-descriptors.
-  Status: in progress; `crates/locket-app/src/lib.rs` has uncommitted denial
-  descriptor changes in the worktree. Focused `cargo test -p locket-app`
-  passed; full DoD gate and merge not run.
-  denial, dangerous-profile, revoked device, and expired invite with
-  distinct copy and recovery affordances.
+- [x] Denial UX differentiates locked vault, missing grant, policy denial,
+  dangerous-profile, revoked device, and expired invite with distinct copy and
+  recovery affordances.
   - Spec: `docs/specs/desktop.md` UX Requirements.
   - Files: `crates/locket-app/ui/` error views.
 
