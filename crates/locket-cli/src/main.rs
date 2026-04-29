@@ -4,6 +4,7 @@ mod agent;
 mod audit;
 mod bootstrap;
 mod bundle;
+mod cli_error;
 mod client;
 mod config_cmd;
 mod config_validation;
@@ -11,6 +12,7 @@ mod debug_cmd;
 mod device;
 pub(crate) mod diagnostics;
 mod diff;
+mod key_access;
 mod lock;
 mod meta;
 mod onboarding;
@@ -19,13 +21,19 @@ mod policy_authoring;
 mod profile;
 mod project;
 mod project_files;
+mod prompts;
 mod recovery;
 mod redact;
+mod runtime;
 mod scan;
 mod secrets_cmd;
 mod shell;
 mod time_helpers;
 
+pub(crate) use cli_error::{
+    CliError, bundle_verification_error, child_exit_error, exec_prepare_error,
+    project_root_untrusted_error, secret_deleted_error, unimplemented_in_build_error,
+};
 pub(crate) use config_validation::{
     CONFIG_KEY_SPECS, config_get_value, config_set_value, config_unset_value, format_config_value,
     parse_config_value, read_user_config, split_config_key, validate_config_key,
@@ -34,6 +42,17 @@ pub(crate) use config_validation::{
 };
 #[cfg(test)]
 pub(crate) use device::{device_fingerprint_hex, encode_device_descriptor};
+pub(crate) use key_access::{
+    MasterKeySource, default_profile, ensure_project_exists, load_master_key,
+    load_master_key_verified_by_project_key, load_profile_key, load_project_key,
+    load_project_key_with_source, store_master_key_with_fallback,
+};
+#[cfg(test)]
+pub(crate) use prompts::{
+    ConfirmationReader, PassphraseReader, RecoveryCodeReader, SecretValueReader,
+    read_secret_value_from_reader, validate_secret_value,
+};
+pub(crate) use runtime::RuntimeContext;
 pub(crate) use project_files::{
     EXAMPLE_FILE, GITIGNORE_ENTRIES, GITIGNORE_FILE, collect_example_secret_names,
     config_bool_value, ensure_example_file, ensure_gitignore,
@@ -56,22 +75,21 @@ pub(crate) use time_helpers::{
 
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::Shell as CompletionShell;
-use directories::{BaseDirs, ProjectDirs};
 use locket_core::{
-    CommandPolicy, CommandSpec, Duration as LocketDuration, ExternalEnvSource, KeyId, LocketError,
+    CommandPolicy, CommandSpec, Duration as LocketDuration, ExternalEnvSource, KeyId,
     PROJECT_CONFIG_SCHEMA_VERSION, PolicyDocument, ProfileId, ProfileName, ProjectConfig,
     ProjectId, SecretId, SecretName, SessionId,
 };
 use locket_crypto::{
-    EncryptedSecretValue, HkdfWrapInfo, KeyPurpose, KeyWrapAad, KeyWrapPurpose, WrappedKeyMaterial,
+    EncryptedSecretValue, HkdfWrapInfo, KeyPurpose, KeyWrapAad, KeyWrapPurpose,
     decrypt_secret_value_v1, derive_recovery_key_v1, derive_wrapping_key_v1,
     encrypt_secret_value_v1, generate_key, generate_recovery_code_bytes, generate_recovery_salt,
     key_wrap_aad_v1, recovery_code_decode, recovery_code_encode, seal_recovery_entry_v1,
-    secret_blob_aad_v1, secret_fingerprint_v1, unwrap_key_material_v1, wrap_key_material_v1,
+    secret_blob_aad_v1, secret_fingerprint_v1, wrap_key_material_v1,
 };
 use locket_platform::{
-    KeyringMasterKeyStore, MasterKeyStore, PassphraseFallbackMasterKeyStore, RecoveryEnvelope,
-    RecoveryEnvelopeEntry, RecoveryKdfToml, save_recovery_envelope, save_recovery_kdf_toml,
+    RecoveryEnvelope, RecoveryEnvelopeEntry, RecoveryKdfToml, save_recovery_envelope,
+    save_recovery_kdf_toml,
 };
 #[cfg(test)]
 use locket_platform::{load_recovery_envelope, load_recovery_kdf_toml};
@@ -81,22 +99,19 @@ use locket_store::DeviceRecord;
 use locket_store::{
     AuditContext, AuditWrite, KeyRecord, ProfileRecord, RuntimeSessionRecord,
     RuntimeSessionSecretNameRetention, SecretBlobRecord, SecretCopyTarget, SecretFingerprintRecord,
-    SecretRecord, SecretVersionRecord, Store, StoreError, VersionDeprecation,
+    SecretRecord, SecretVersionRecord, Store, VersionDeprecation,
 };
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
-use std::error::Error;
 use std::ffi::OsStr;
-use std::fmt::{self, Display};
 use std::fs;
-use std::io::{self, IsTerminal, Read, Write};
+use std::io::{self, IsTerminal, Write};
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command as ProcessCommand, ExitCode as ProcessExitCode, ExitStatus, Stdio};
 use std::str::FromStr;
-use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use policy_authoring::PolicyCommand;
@@ -1069,301 +1084,6 @@ fn completion_command(output: &mut impl Write, shell: CompletionShell) -> Result
     clap_complete::generate(shell, &mut command, "locket", &mut buffer);
     output.write_all(&buffer)?;
     Ok(())
-}
-
-#[derive(Clone)]
-pub(crate) struct RuntimeContext {
-    cwd: PathBuf,
-    store_path: PathBuf,
-    config_path: PathBuf,
-    template_dir: PathBuf,
-    key_store: Arc<dyn MasterKeyStore + Send + Sync>,
-    passphrase_store: PassphraseFallbackMasterKeyStore,
-    passphrase_reader: Arc<dyn PassphraseReader + Send + Sync>,
-    recovery_code_reader: Arc<dyn RecoveryCodeReader + Send + Sync>,
-    confirmation_reader: Arc<dyn ConfirmationReader + Send + Sync>,
-    secret_value_reader: Arc<dyn SecretValueReader + Send + Sync>,
-}
-
-impl RuntimeContext {
-    fn default() -> Result<Self, CliError> {
-        let cwd = std::env::current_dir()?;
-        let Some(project_dirs) = ProjectDirs::from("dev", "0xdoublesharp", "Locket") else {
-            return Err(CliError::Config("could not resolve a local data directory".to_owned()));
-        };
-        let Some(base_dirs) = BaseDirs::new() else {
-            return Err(CliError::Config("could not resolve a local home directory".to_owned()));
-        };
-        let data_dir = project_dirs.data_dir();
-        let config_dir = project_dirs.config_dir();
-        fs::create_dir_all(data_dir)?;
-        fs::create_dir_all(config_dir)?;
-        Ok(Self {
-            cwd,
-            store_path: data_dir.join("store.db"),
-            config_path: config_dir.join(CONFIG_TOML),
-            template_dir: base_dirs.home_dir().join(".locket").join("templates"),
-            key_store: Arc::new(KeyringMasterKeyStore),
-            passphrase_store: PassphraseFallbackMasterKeyStore::new(
-                data_dir.join("passphrase-fallback"),
-            ),
-            passphrase_reader: Arc::new(EnvOrPromptPassphraseReader),
-            recovery_code_reader: Arc::new(TtyRecoveryCodeReader),
-            confirmation_reader: Arc::new(StdinConfirmationReader),
-            secret_value_reader: Arc::new(StdinOrPromptSecretValueReader),
-        })
-    }
-}
-
-trait ConfirmationReader {
-    fn read_confirmation(&self, prompt: &str) -> Result<String, CliError>;
-}
-
-#[derive(Debug, Clone, Copy)]
-struct StdinConfirmationReader;
-
-impl ConfirmationReader for StdinConfirmationReader {
-    fn read_confirmation(&self, prompt: &str) -> Result<String, CliError> {
-        if !io::stdin().is_terminal() {
-            return Err(CliError::Config(format!("{prompt} requires interactive confirmation")));
-        }
-        let mut confirmation = String::new();
-        io::stdin().read_line(&mut confirmation)?;
-        Ok(confirmation)
-    }
-}
-
-trait PassphraseReader {
-    fn existing_passphrase(&self) -> Result<zeroize::Zeroizing<String>, CliError>;
-
-    fn new_passphrase(&self) -> Result<zeroize::Zeroizing<String>, CliError>;
-}
-
-trait RecoveryCodeReader {
-    fn read_recovery_code(&self, prompt: &str) -> Result<zeroize::Zeroizing<String>, CliError>;
-}
-
-#[derive(Debug, Clone, Copy)]
-struct TtyRecoveryCodeReader;
-
-impl RecoveryCodeReader for TtyRecoveryCodeReader {
-    fn read_recovery_code(&self, prompt: &str) -> Result<zeroize::Zeroizing<String>, CliError> {
-        read_recovery_code(prompt)
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-struct EnvOrPromptPassphraseReader;
-
-impl PassphraseReader for EnvOrPromptPassphraseReader {
-    fn existing_passphrase(&self) -> Result<zeroize::Zeroizing<String>, CliError> {
-        require_interactive_passphrase("passphrase fallback unlock")?;
-        read_hidden_passphrase("locket passphrase: ")
-    }
-
-    fn new_passphrase(&self) -> Result<zeroize::Zeroizing<String>, CliError> {
-        require_interactive_passphrase("passphrase fallback setup")?;
-        let first = read_hidden_passphrase("new locket passphrase: ")?;
-        let second = read_hidden_passphrase("confirm locket passphrase: ")?;
-        if *first != *second {
-            return Err(CliError::Config("passphrases did not match".to_owned()));
-        }
-        Ok(first)
-    }
-}
-
-fn require_interactive_passphrase(reason: &str) -> Result<(), CliError> {
-    if io::stdin().is_terminal() && io::stderr().is_terminal() {
-        Ok(())
-    } else {
-        Err(CliError::Config(format!("{reason} requires an interactive TTY")))
-    }
-}
-
-fn read_hidden_passphrase(prompt: &str) -> Result<zeroize::Zeroizing<String>, CliError> {
-    let passphrase = zeroize::Zeroizing::new(rpassword::prompt_password(prompt)?);
-    if passphrase.is_empty() {
-        return Err(CliError::Config("passphrase must not be empty".to_owned()));
-    }
-    Ok(passphrase)
-}
-
-trait SecretValueReader {
-    fn read_secret_value(&self, prompt: &str) -> Result<zeroize::Zeroizing<String>, CliError>;
-}
-
-#[derive(Debug, Clone, Copy)]
-struct StdinOrPromptSecretValueReader;
-
-impl SecretValueReader for StdinOrPromptSecretValueReader {
-    fn read_secret_value(&self, prompt: &str) -> Result<zeroize::Zeroizing<String>, CliError> {
-        if io::stdin().is_terminal() {
-            read_secret_value_from_prompt(prompt)
-        } else {
-            read_secret_value_from_stdin()
-        }
-    }
-}
-
-#[derive(Debug)]
-pub(crate) enum CliError {
-    Config(String),
-    Typed { kind: LocketError, message: String },
-    ChildExit(u8),
-    Io(io::Error),
-    Store(StoreError),
-    Json(serde_json::Error),
-    TomlDe(toml::de::Error),
-    TomlSer(toml::ser::Error),
-    Crypto(locket_crypto::CryptoError),
-    Platform(locket_platform::PlatformError),
-    Time,
-}
-
-impl CliError {
-    fn exit_code(&self) -> u8 {
-        match self {
-            Self::Config(_) | Self::Json(_) | Self::TomlDe(_) | Self::TomlSer(_) => {
-                LocketError::InvalidReference.exit_code()
-            }
-            Self::Typed { kind, .. } => kind.exit_code(),
-            Self::ChildExit(code) => *code,
-            Self::Io(_) | Self::Time => LocketError::CorruptDb.exit_code(),
-            Self::Store(error) => error.locket_error().exit_code(),
-            Self::Crypto(error) => crypto_error_exit_code(*error),
-            Self::Platform(error) => platform_error_exit_code(error),
-        }
-    }
-}
-
-const fn crypto_error_exit_code(error: locket_crypto::CryptoError) -> u8 {
-    match error {
-        locket_crypto::CryptoError::InvalidSecretValue => LocketError::InvalidReference.exit_code(),
-        _ => LocketError::CorruptDb.exit_code(),
-    }
-}
-
-const fn platform_error_exit_code(error: &locket_platform::PlatformError) -> u8 {
-    match error {
-        locket_platform::PlatformError::MasterKeyNotFound
-        | locket_platform::PlatformError::InvalidPassphrase => {
-            LocketError::UnlockRequired.exit_code()
-        }
-        locket_platform::PlatformError::LocalUserVerificationFailed
-        | locket_platform::PlatformError::LocalUserVerificationUnavailable => {
-            LocketError::UserVerificationFailed.exit_code()
-        }
-        locket_platform::PlatformError::RecoveryEnvelopeSchemaUnsupported(_)
-        | locket_platform::PlatformError::InvalidRecoveryEnvelope(_)
-        | locket_platform::PlatformError::InvalidPassphraseFallback
-        | locket_platform::PlatformError::InvalidMasterKey
-        | locket_platform::PlatformError::InvalidProjectId
-        | locket_platform::PlatformError::Keyring(_)
-        | locket_platform::PlatformError::Io(_)
-        | locket_platform::PlatformError::TomlDe(_)
-        | locket_platform::PlatformError::TomlSer(_)
-        | locket_platform::PlatformError::Crypto(_)
-        | locket_platform::PlatformError::MemoryPoisoned => {
-            LocketError::KeychainUnavailable.exit_code()
-        }
-    }
-}
-
-fn typed_cli_error(kind: LocketError, message: impl Into<String>) -> CliError {
-    CliError::Typed { kind, message: message.into() }
-}
-
-fn project_root_untrusted_error() -> CliError {
-    typed_cli_error(
-        LocketError::ProjectRootUntrusted,
-        "ProjectRootNotTrusted: current project root is not trusted; run locket project trust-root",
-    )
-}
-
-fn secret_deleted_error(message: impl Into<String>) -> CliError {
-    typed_cli_error(LocketError::SecretDeleted, message)
-}
-
-pub(crate) fn bundle_verification_error(message: impl Into<String>) -> CliError {
-    typed_cli_error(LocketError::BundleVerificationFailed, message)
-}
-
-pub(crate) fn unimplemented_in_build_error(message: impl Into<String>) -> CliError {
-    typed_cli_error(LocketError::PolicyValidationIncomplete, message)
-}
-
-fn exec_prepare_error(error: locket_exec::ExecError) -> CliError {
-    match error {
-        locket_exec::ExecError::Environment(error) => {
-            typed_cli_error(LocketError::EnvironmentConflict, error.to_string())
-        }
-        locket_exec::ExecError::EmptyCommand => CliError::Config("empty command".to_owned()),
-    }
-}
-
-fn child_exit_error(status: std::process::ExitStatus) -> CliError {
-    CliError::ChildExit(status.code().and_then(|code| u8::try_from(code).ok()).unwrap_or(1))
-}
-
-impl Display for CliError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Config(message) | Self::Typed { message, .. } => formatter.write_str(message),
-            Self::ChildExit(code) => write!(formatter, "child process exited with code {code}"),
-            Self::Io(error) => error.fmt(formatter),
-            Self::Store(error) => error.fmt(formatter),
-            Self::Json(error) => error.fmt(formatter),
-            Self::TomlDe(error) => error.fmt(formatter),
-            Self::TomlSer(error) => error.fmt(formatter),
-            Self::Crypto(error) => error.fmt(formatter),
-            Self::Platform(error) => error.fmt(formatter),
-            Self::Time => formatter.write_str("system time is before the Unix epoch"),
-        }
-    }
-}
-
-impl Error for CliError {}
-
-impl From<io::Error> for CliError {
-    fn from(value: io::Error) -> Self {
-        Self::Io(value)
-    }
-}
-
-impl From<StoreError> for CliError {
-    fn from(value: StoreError) -> Self {
-        Self::Store(value)
-    }
-}
-
-impl From<serde_json::Error> for CliError {
-    fn from(value: serde_json::Error) -> Self {
-        Self::Json(value)
-    }
-}
-
-impl From<toml::de::Error> for CliError {
-    fn from(value: toml::de::Error) -> Self {
-        Self::TomlDe(value)
-    }
-}
-
-impl From<toml::ser::Error> for CliError {
-    fn from(value: toml::ser::Error) -> Self {
-        Self::TomlSer(value)
-    }
-}
-
-impl From<locket_crypto::CryptoError> for CliError {
-    fn from(value: locket_crypto::CryptoError) -> Self {
-        Self::Crypto(value)
-    }
-}
-
-impl From<locket_platform::PlatformError> for CliError {
-    fn from(value: locket_platform::PlatformError) -> Self {
-        Self::Platform(value)
-    }
 }
 
 fn status(context: &RuntimeContext, output: &mut impl Write) -> Result<(), CliError> {
@@ -3372,68 +3092,6 @@ fn ensure_template_profiles(
     Ok(())
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum MasterKeySource {
-    OsKeyStore,
-    PassphraseFallback,
-}
-
-impl MasterKeySource {
-    const fn as_str(self) -> &'static str {
-        match self {
-            Self::OsKeyStore => "os-key-store",
-            Self::PassphraseFallback => "passphrase-fallback",
-        }
-    }
-}
-
-fn store_master_key_with_fallback(
-    context: &RuntimeContext,
-    project_id: &str,
-    master_key: &locket_crypto::KeyBytes,
-    timestamp: i64,
-) -> Result<MasterKeySource, CliError> {
-    match context.key_store.store_master_key(project_id, master_key) {
-        Ok(()) => Ok(MasterKeySource::OsKeyStore),
-        Err(_primary_error) => {
-            let passphrase = context.passphrase_reader.new_passphrase()?;
-            context.passphrase_store.store_master_key(
-                project_id,
-                master_key,
-                passphrase.as_bytes(),
-                timestamp,
-            )?;
-            Ok(MasterKeySource::PassphraseFallback)
-        }
-    }
-}
-
-fn load_master_key(
-    context: &RuntimeContext,
-    project_id: &str,
-) -> Result<(zeroize::Zeroizing<locket_crypto::KeyBytes>, MasterKeySource), CliError> {
-    match context.key_store.load_master_key(project_id) {
-        Ok(master_key) => Ok((master_key, MasterKeySource::OsKeyStore)),
-        Err(primary_error) => {
-            if !context.passphrase_store.contains_project(project_id)? {
-                return Err(primary_error.into());
-            }
-            Ok((
-                load_fallback_master_key(context, project_id)?,
-                MasterKeySource::PassphraseFallback,
-            ))
-        }
-    }
-}
-
-fn load_fallback_master_key(
-    context: &RuntimeContext,
-    project_id: &str,
-) -> Result<zeroize::Zeroizing<locket_crypto::KeyBytes>, CliError> {
-    let passphrase = context.passphrase_reader.existing_passphrase()?;
-    Ok(context.passphrase_store.load_master_key(project_id, passphrase.as_bytes())?)
-}
-
 fn initialize_project_keys(
     context: &RuntimeContext,
     store: &Store,
@@ -3540,12 +3198,6 @@ fn insert_wrapped_key(
         created_at: timestamp,
     })?;
     Ok(())
-}
-
-fn default_profile(store: &Store, config: &ProjectConfig) -> Result<ProfileRecord, CliError> {
-    store
-        .get_profile_by_name(config.project_id.as_str(), config.default_profile.as_str())?
-        .ok_or_else(|| CliError::Config("default profile is missing".to_owned()))
 }
 
 fn preflight_set_secret_value(
@@ -4301,143 +3953,6 @@ fn encrypt_secret_version(
     Ok((encrypted, fingerprint.to_vec()))
 }
 
-fn load_profile_key(
-    context: &RuntimeContext,
-    store: &Store,
-    project_id: &str,
-    profile_id: &str,
-    purpose: KeyPurpose,
-) -> Result<zeroize::Zeroizing<locket_crypto::KeyBytes>, CliError> {
-    let (master_key, source) = load_master_key(context, project_id)?;
-    match load_profile_key_with_master(store, project_id, profile_id, purpose, &master_key) {
-        Ok(key) => Ok(key),
-        Err(error) if should_try_passphrase_fallback(source, &error) => {
-            if !context.passphrase_store.contains_project(project_id)? {
-                return Err(error);
-            }
-            let fallback_master_key = load_fallback_master_key(context, project_id)?;
-            load_profile_key_with_master(
-                store,
-                project_id,
-                profile_id,
-                purpose,
-                &fallback_master_key,
-            )
-        }
-        Err(error) => Err(error),
-    }
-}
-
-fn load_profile_key_with_master(
-    store: &Store,
-    project_id: &str,
-    profile_id: &str,
-    purpose: KeyPurpose,
-    master_key: &locket_crypto::KeyBytes,
-) -> Result<zeroize::Zeroizing<locket_crypto::KeyBytes>, CliError> {
-    let record = store
-        .get_key_by_scope(project_id, Some(profile_id), purpose.as_str())?
-        .ok_or_else(|| CliError::Config("profile key is missing".to_owned()))?;
-    let wrapping_key = derive_wrapping_key_v1(
-        master_key,
-        &HkdfWrapInfo::new(project_id, Some(profile_id), purpose),
-    )?;
-    let aad = key_wrap_aad_v1(&KeyWrapAad::new(
-        project_id,
-        &record.id,
-        Some(profile_id),
-        0,
-        KeyWrapPurpose::from(purpose),
-    ))?;
-    let wrapped = WrappedKeyMaterial { ciphertext: record.wrapped_material, nonce: record.nonce };
-    Ok(unwrap_key_material_v1(&wrapping_key, &wrapped, &aad)?)
-}
-
-pub(crate) fn load_project_key(
-    context: &RuntimeContext,
-    store: &Store,
-    project_id: &str,
-    purpose: KeyPurpose,
-) -> Result<zeroize::Zeroizing<locket_crypto::KeyBytes>, CliError> {
-    load_project_key_with_source(context, store, project_id, purpose).map(|(key, _)| key)
-}
-
-fn load_project_key_with_source(
-    context: &RuntimeContext,
-    store: &Store,
-    project_id: &str,
-    purpose: KeyPurpose,
-) -> Result<(zeroize::Zeroizing<locket_crypto::KeyBytes>, MasterKeySource), CliError> {
-    let (master_key, source) = load_master_key(context, project_id)?;
-    match load_project_key_with_master(store, project_id, purpose, &master_key) {
-        Ok(key) => Ok((key, source)),
-        Err(error) if should_try_passphrase_fallback(source, &error) => {
-            if !context.passphrase_store.contains_project(project_id)? {
-                return Err(error);
-            }
-            let fallback_master_key = load_fallback_master_key(context, project_id)?;
-            let key =
-                load_project_key_with_master(store, project_id, purpose, &fallback_master_key)?;
-            Ok((key, MasterKeySource::PassphraseFallback))
-        }
-        Err(error) => Err(error),
-    }
-}
-
-fn load_master_key_verified_by_project_key(
-    context: &RuntimeContext,
-    store: &Store,
-    project_id: &str,
-    purpose: KeyPurpose,
-) -> Result<(zeroize::Zeroizing<locket_crypto::KeyBytes>, MasterKeySource), CliError> {
-    let (master_key, source) = load_master_key(context, project_id)?;
-    match load_project_key_with_master(store, project_id, purpose, &master_key) {
-        Ok(_) => Ok((master_key, source)),
-        Err(error) if should_try_passphrase_fallback(source, &error) => {
-            if !context.passphrase_store.contains_project(project_id)? {
-                return Err(error);
-            }
-            let fallback_master_key = load_fallback_master_key(context, project_id)?;
-            load_project_key_with_master(store, project_id, purpose, &fallback_master_key)?;
-            Ok((fallback_master_key, MasterKeySource::PassphraseFallback))
-        }
-        Err(error) => Err(error),
-    }
-}
-
-fn should_try_passphrase_fallback(source: MasterKeySource, error: &CliError) -> bool {
-    source == MasterKeySource::OsKeyStore
-        && matches!(
-            error,
-            CliError::Crypto(
-                locket_crypto::CryptoError::DecryptionFailed
-                    | locket_crypto::CryptoError::InvalidWrappedKey
-            )
-        )
-}
-
-fn load_project_key_with_master(
-    store: &Store,
-    project_id: &str,
-    purpose: KeyPurpose,
-    master_key: &locket_crypto::KeyBytes,
-) -> Result<zeroize::Zeroizing<locket_crypto::KeyBytes>, CliError> {
-    let record = store
-        .get_key_by_scope(project_id, None, purpose.as_str())?
-        .ok_or_else(|| CliError::Config("project key is missing".to_owned()))?;
-    let wrapping_key =
-        derive_wrapping_key_v1(master_key, &HkdfWrapInfo::new(project_id, None, purpose))?;
-    let aad = key_wrap_aad_v1(&KeyWrapAad::new(
-        project_id,
-        &record.id,
-        None,
-        0,
-        KeyWrapPurpose::from(purpose),
-    ))?;
-    let wrapped = WrappedKeyMaterial { ciphertext: record.wrapped_material, nonce: record.nonce };
-    Ok(unwrap_key_material_v1(&wrapping_key, &wrapped, &aad)?)
-}
-
 fn secret_audit_metadata(
     action: &str,
     secret_name: &str,
@@ -4959,15 +4474,6 @@ pub(crate) fn open_store(context: &RuntimeContext) -> Result<Store, CliError> {
     Ok(store)
 }
 
-fn ensure_project_exists(store: &Store, project_id: &str) -> Result<(), CliError> {
-    if store.get_project(project_id)?.is_some() {
-        return Ok(());
-    }
-    Err(CliError::Config(
-        "project is not present in the local store; run locket init to resume setup".to_owned(),
-    ))
-}
-
 fn ensure_trusted_project_root(store: &Store, resolved: &ResolvedProject) -> Result<(), CliError> {
     let root_hash = root_hash(&resolved.root)?;
     if store.project_root_is_trusted(resolved.config.project_id.as_str(), &root_hash)? {
@@ -5388,43 +4894,6 @@ fn absolutize(cwd: &Path, path: &Path) -> PathBuf {
     if path.is_absolute() { path.to_path_buf() } else { cwd.join(path) }
 }
 
-fn read_secret_value_from_prompt(prompt: &str) -> Result<zeroize::Zeroizing<String>, CliError> {
-    let value = rpassword::prompt_password(format!("Enter {prompt}: "))?;
-    validate_secret_value(zeroize::Zeroizing::new(value))
-}
-
-fn read_secret_value_from_stdin() -> Result<zeroize::Zeroizing<String>, CliError> {
-    read_secret_value_from_reader(io::stdin())
-}
-
-fn read_secret_value_from_reader(
-    mut reader: impl Read,
-) -> Result<zeroize::Zeroizing<String>, CliError> {
-    let mut bytes = Vec::new();
-    reader.read_to_end(&mut bytes)?;
-    let mut value = String::from_utf8(bytes)
-        .map_err(|_| CliError::Config("secret value must be valid UTF-8".to_owned()))?;
-    if value.ends_with('\n') {
-        value.pop();
-        if value.ends_with('\r') {
-            value.pop();
-        }
-    }
-    validate_secret_value(zeroize::Zeroizing::new(value))
-}
-
-fn validate_secret_value(
-    value: zeroize::Zeroizing<String>,
-) -> Result<zeroize::Zeroizing<String>, CliError> {
-    if value.is_empty() {
-        return Err(CliError::Config("secret value cannot be empty".to_owned()));
-    }
-    if value.contains('\0') {
-        return Err(CliError::Config("secret value cannot contain NUL bytes".to_owned()));
-    }
-    Ok(value)
-}
-
 enum EnvImportEntry {
     Secret { key: String, value: String },
     Invalid,
@@ -5775,16 +5244,6 @@ pub(crate) fn formatted_recovery_code(
         &code[24..32],
         &code[32..34]
     ))
-}
-
-fn read_recovery_code(prompt: &str) -> Result<zeroize::Zeroizing<String>, CliError> {
-    if io::stdin().is_terminal() {
-        let value = rpassword::prompt_password(format!("Enter {prompt}: "))?;
-        return Ok(zeroize::Zeroizing::new(value));
-    }
-    let mut value = String::new();
-    io::stdin().read_to_string(&mut value)?;
-    Ok(zeroize::Zeroizing::new(value))
 }
 
 pub(crate) fn now_unix_nanos() -> Result<i64, CliError> {
