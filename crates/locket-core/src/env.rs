@@ -1,6 +1,8 @@
 //! Environment merge semantics for child process injection.
 
 use std::collections::BTreeMap;
+use std::fmt::{self, Display};
+use std::str::FromStr;
 
 use thiserror::Error;
 
@@ -20,6 +22,44 @@ pub enum EnvMode {
     Passthrough,
 }
 
+impl EnvMode {
+    /// Returns the canonical policy TOML value for this mode.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Strict => "strict",
+            Self::Minimal => "minimal",
+            Self::Merge => "merge",
+            Self::Passthrough => "passthrough",
+        }
+    }
+}
+
+impl Display for EnvMode {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl FromStr for EnvMode {
+    type Err = InvalidEnvMode;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "strict" => Ok(Self::Strict),
+            "minimal" => Ok(Self::Minimal),
+            "merge" => Ok(Self::Merge),
+            "passthrough" => Ok(Self::Passthrough),
+            _ => Err(InvalidEnvMode),
+        }
+    }
+}
+
+/// Error returned when an environment mode string is invalid.
+#[derive(Debug, Clone, Copy, Eq, Error, PartialEq)]
+#[error("invalid environment mode")]
+pub struct InvalidEnvMode;
+
 /// Conflict policy when a Locket secret name already exists in the child environment.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum EnvOverrideMode {
@@ -30,6 +70,42 @@ pub enum EnvOverrideMode {
     /// Conflicts fail before process spawn.
     Error,
 }
+
+impl EnvOverrideMode {
+    /// Returns the canonical policy TOML value for this override behavior.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Locket => "locket",
+            Self::Preserve => "preserve",
+            Self::Error => "error",
+        }
+    }
+}
+
+impl Display for EnvOverrideMode {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl FromStr for EnvOverrideMode {
+    type Err = InvalidEnvOverrideMode;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "locket" => Ok(Self::Locket),
+            "preserve" => Ok(Self::Preserve),
+            "error" => Ok(Self::Error),
+            _ => Err(InvalidEnvOverrideMode),
+        }
+    }
+}
+
+/// Error returned when an environment override string is invalid.
+#[derive(Debug, Clone, Copy, Eq, Error, PartialEq)]
+#[error("invalid environment override mode")]
+pub struct InvalidEnvOverrideMode;
 
 /// Error returned when environment construction fails.
 #[derive(Debug, Clone, Eq, Error, PartialEq)]

@@ -4,6 +4,7 @@ pub mod audit;
 pub mod env;
 pub mod error;
 pub mod id;
+pub mod policy;
 pub mod profile_name;
 pub mod project;
 pub mod reference_uri;
@@ -15,11 +16,18 @@ pub use audit::{
     canonical_json, canonical_json_bytes, canonical_json_string, field,
     insert_convenience_metadata,
 };
-pub use env::{EnvMap, EnvMergeError, EnvMode, EnvOverrideMode, merge_environment};
+pub use env::{
+    EnvMap, EnvMergeError, EnvMode, EnvOverrideMode, InvalidEnvMode, InvalidEnvOverrideMode,
+    merge_environment,
+};
 pub use error::{ExitCode, LocketError};
 pub use id::{
     ClientId, IdGenerationError, InvalidId, KdfProfileId, KeyId, ProfileId, ProjectId, SecretId,
     SessionId,
+};
+pub use policy::{
+    CommandPolicy, CommandSpec, ExternalEnvSource, MAX_COMMAND_POLICY_TTL_SECONDS, PolicyDocument,
+    PolicyParseError,
 };
 pub use profile_name::{InvalidProfileName, MAX_PROFILE_NAME_LEN, ProfileName};
 pub use project::{PROJECT_CONFIG_SCHEMA_VERSION, ProjectConfig};
