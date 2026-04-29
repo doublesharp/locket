@@ -16,10 +16,10 @@ pub fn bootstrap_command(
     output: &mut impl Write,
 ) -> Result<(), CliError> {
     let resolved = require_project(context)?;
-    let store = open_store(context)?;
+    let mut store = open_store(context)?;
     let report = collect_bootstrap_report(&resolved, &store)?;
     write_bootstrap_report(output, &report)?;
-    write_bootstrap_audit_if_available(context, &resolved, &report)?;
+    write_bootstrap_audit_if_available(context, &mut store, &resolved, &report)?;
     Ok(())
 }
 
@@ -196,15 +196,15 @@ fn read_bootstrap_settings(path: &Path) -> Result<Option<BootstrapSettings>, Cli
 
 fn write_bootstrap_audit_if_available(
     context: &RuntimeContext,
+    store: &mut Store,
     resolved: &ResolvedProject,
     report: &BootstrapReport,
 ) -> Result<(), CliError> {
-    let mut store = open_store(context)?;
     if store.get_project(resolved.config.project_id.as_str())?.is_none() {
         return Ok(());
     }
     let Ok(audit_key) =
-        load_project_key(context, &store, resolved.config.project_id.as_str(), KeyPurpose::Audit)
+        load_project_key(context, store, resolved.config.project_id.as_str(), KeyPurpose::Audit)
     else {
         return Ok(());
     };
