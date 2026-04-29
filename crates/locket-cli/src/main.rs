@@ -1479,6 +1479,7 @@ fn import_command(
 ) -> Result<(), CliError> {
     let resolved = require_project(context)?;
     let mut store = open_store(context)?;
+    ensure_trusted_project_root(&store, &resolved)?;
     let profile = import_target_profile(&store, &resolved, args.profile.as_deref())?;
     if args.overwrite && profile.dangerous {
         confirm_dangerous_import_overwrite(output, &profile)?;
@@ -1732,6 +1733,7 @@ fn rm_command(
     let source = source_arg_to_str(args.source.source.unwrap_or(SecretSourceArg::UserLocal));
     let resolved = require_project(context)?;
     let store = open_store(context)?;
+    ensure_trusted_project_root(&store, &resolved)?;
     let profile = default_profile(&store, &resolved.config)?;
     let Some(secret) = store.get_active_secret(
         resolved.config.project_id.as_str(),
@@ -1909,6 +1911,7 @@ fn history_command(
         .map_err(|_| CliError::Config("invalid secret name".to_owned()))?;
     let resolved = require_project(context)?;
     let store = open_store(context)?;
+    ensure_trusted_project_root(&store, &resolved)?;
     let profile = if let Some(profile_name) = &args.profile {
         store
             .get_profile_by_name(resolved.config.project_id.as_str(), profile_name)?
@@ -1995,6 +1998,7 @@ fn list_command(
 ) -> Result<(), CliError> {
     let resolved = require_project(context)?;
     let store = open_store(context)?;
+    ensure_trusted_project_root(&store, &resolved)?;
     let profile = default_profile(&store, &resolved.config)?;
     let secrets = if args.all {
         store.list_secrets_by_profile(resolved.config.project_id.as_str(), &profile.id)?
@@ -2087,6 +2091,7 @@ fn run_command(
     }
 
     let store = open_store(context)?;
+    ensure_trusted_project_root(&store, &resolved)?;
     let profile = default_profile(&store, &resolved.config)?;
     let selections = policy_secret_selections(&store, &resolved, &profile, &policy)?;
     let missing_required = selections
@@ -2178,6 +2183,7 @@ fn env_inspect_command(
     let resolved = require_project(context)?;
     let policy = load_command_policy(&resolved, &args.policy)?;
     let store = open_store(context)?;
+    ensure_trusted_project_root(&store, &resolved)?;
     let profile = default_profile(&store, &resolved.config)?;
     let selections = policy_secret_selections(&store, &resolved, &profile, &policy)?;
     let parent_env = std::env::vars().collect::<locket_exec::EnvMap>();
@@ -2382,6 +2388,7 @@ fn resolve_policy_locket_env(
     policy: &CommandPolicy,
 ) -> Result<(ProfileRecord, Vec<PolicySecretSelection>, locket_exec::EnvMap), CliError> {
     let store = open_store(context)?;
+    ensure_trusted_project_root(&store, resolved)?;
     let profile = default_profile(&store, &resolved.config)?;
     let selections = policy_secret_selections(&store, resolved, &profile, policy)?;
     let missing_required = selections
@@ -2625,17 +2632,27 @@ fn project_command(
 
 fn trust_root_command(context: &RuntimeContext, output: &mut impl Write) -> Result<(), CliError> {
     let resolved = require_project(context)?;
-    let store = open_store(context)?;
+    let mut store = open_store(context)?;
     ensure_project_exists(&store, resolved.config.project_id.as_str())?;
 
     let hash = root_hash(&resolved.root)?;
     let was_trusted = store.project_root_is_trusted(resolved.config.project_id.as_str(), &hash)?;
     let timestamp = now_unix_nanos()?;
     let display_path = resolved.root.to_string_lossy();
+    confirm_trust_root(context, output, &resolved, &hash)?;
     store.trust_project_root(
         resolved.config.project_id.as_str(),
         &hash,
         Some(display_path.as_ref()),
+        timestamp,
+    )?;
+    write_trust_root_audit(
+        context,
+        &mut store,
+        &resolved,
+        &hash,
+        if was_trusted { "refresh" } else { "trust" },
+        0,
         timestamp,
     )?;
 
@@ -2677,11 +2694,23 @@ fn untrust_root_command(
     root_hash: &str,
 ) -> Result<(), CliError> {
     let resolved = require_project(context)?;
-    let store = open_store(context)?;
+    let mut store = open_store(context)?;
     ensure_project_exists(&store, resolved.config.project_id.as_str())?;
 
     let hash = parse_root_hash(root_hash)?;
+    confirm_untrust_root(context, output, &hash)?;
     let removed = store.untrust_project_root(resolved.config.project_id.as_str(), &hash)?;
+    let revoked =
+        store.deny_directory_grants_for_root(resolved.config.project_id.as_str(), &hash)?;
+    write_trust_root_audit(
+        context,
+        &mut store,
+        &resolved,
+        &hash,
+        "untrust",
+        revoked,
+        now_unix_nanos()?,
+    )?;
     writeln!(
         output,
         "{}",
@@ -2689,6 +2718,72 @@ fn untrust_root_command(
     )?;
     writeln!(output, "project_id: {}", resolved.config.project_id)?;
     writeln!(output, "root_hash: {}", format_hex(&hash))?;
+    writeln!(output, "directory_grants_revoked: {revoked}")?;
+    writeln!(output, "live_grants: unavailable")?;
+    Ok(())
+}
+
+fn confirm_trust_root(
+    context: &RuntimeContext,
+    output: &mut impl Write,
+    resolved: &ResolvedProject,
+    root_hash: &[u8; 32],
+) -> Result<(), CliError> {
+    writeln!(output, "canonical_path: {}", resolved.root.display())?;
+    writeln!(output, "root_hash: {}", format_hex(root_hash))?;
+    writeln!(output, "type project name '{}' to confirm trusted root", resolved.config.name)?;
+    let confirmation = context.confirmation_reader.read_confirmation("project trust-root")?;
+    if confirmation.trim_end_matches(['\r', '\n']) != resolved.config.name {
+        return Err(CliError::Config("confirmation did not match project name".to_owned()));
+    }
+    Ok(())
+}
+
+fn confirm_untrust_root(
+    context: &RuntimeContext,
+    output: &mut impl Write,
+    root_hash: &[u8; 32],
+) -> Result<(), CliError> {
+    let root_hash = format_hex(root_hash);
+    writeln!(output, "root_hash: {root_hash}")?;
+    writeln!(output, "type root hash '{root_hash}' to confirm removal")?;
+    let confirmation = context.confirmation_reader.read_confirmation("project untrust-root")?;
+    if confirmation.trim_end_matches(['\r', '\n']) != root_hash {
+        return Err(CliError::Config("confirmation did not match root hash".to_owned()));
+    }
+    Ok(())
+}
+
+fn write_trust_root_audit(
+    context: &RuntimeContext,
+    store: &mut Store,
+    resolved: &ResolvedProject,
+    root_hash: &[u8; 32],
+    operation: &str,
+    directory_grants_revoked: usize,
+    timestamp: i64,
+) -> Result<(), CliError> {
+    let audit_key =
+        load_project_key(context, store, resolved.config.project_id.as_str(), KeyPurpose::Audit)?;
+    let metadata = json!({
+        "schema_version": 1,
+        "action": "TRUST_ROOT",
+        "status": "SUCCESS",
+        "operation": operation,
+        "root_hash": format_hex(root_hash),
+        "directory_grants_revoked": directory_grants_revoked,
+    });
+    let audit = AuditWrite {
+        project_id: resolved.config.project_id.as_str(),
+        profile_id: None,
+        action: "TRUST_ROOT",
+        status: "SUCCESS",
+        secret_name: None,
+        command: Some("project"),
+        metadata_json: &metadata,
+        timestamp,
+    };
+    store.append_audit(audit_key.as_ref(), &audit)?;
     Ok(())
 }
 
@@ -4290,6 +4385,7 @@ fn set_secret_value(
     let source = source_arg_to_str(args.source.source.unwrap_or(SecretSourceArg::UserLocal));
     let resolved = require_project(context)?;
     let mut store = open_store(context)?;
+    ensure_trusted_project_root(&store, &resolved)?;
     let profile = default_profile(&store, &resolved.config)?;
     set_secret_value_in_profile(
         context,
@@ -4687,6 +4783,7 @@ fn copy_secret_value(
         .map_err(|_| CliError::Config("invalid secret name".to_owned()))?;
     let resolved = require_project(context)?;
     let mut store = open_store(context)?;
+    ensure_trusted_project_root(&store, &resolved)?;
     let project_id = resolved.config.project_id.as_str();
     let selection = select_copy_profiles_and_sources(&store, project_id, name.as_str(), args)?;
 
@@ -5301,6 +5398,7 @@ fn resolve_active_secret(context: &RuntimeContext, key: &str) -> Result<Resolved
         .map_err(|_| CliError::Config("invalid secret name".to_owned()))?;
     let project = require_project(context)?;
     let store = open_store(context)?;
+    ensure_trusted_project_root(&store, &project)?;
     let profile = default_profile(&store, &project.config)?;
     let secrets =
         store.list_active_secrets_by_profile(project.config.project_id.as_str(), &profile.id)?;
@@ -5333,6 +5431,7 @@ fn resolve_secret_for_source(
         .map_err(|_| CliError::Config("invalid secret name".to_owned()))?;
     let project = require_project(context)?;
     let store = open_store(context)?;
+    ensure_trusted_project_root(&store, &project)?;
     let profile = default_profile(&store, &project.config)?;
     let secret = if let Some(source) = source {
         let source = source_arg_to_str(source);
@@ -5564,6 +5663,7 @@ fn collect_known_secret_values(
     timestamp: i64,
 ) -> Result<Vec<zeroize::Zeroizing<String>>, CliError> {
     let store = open_store(context)?;
+    ensure_trusted_project_root(&store, project)?;
     let mut values = Vec::new();
     for profile in store.list_profiles(project.config.project_id.as_str())? {
         for secret in
@@ -5600,6 +5700,7 @@ fn collect_known_secret_redactions(
     timestamp: i64,
 ) -> Result<Vec<KnownSecretRedaction>, CliError> {
     let store = open_store(context)?;
+    ensure_trusted_project_root(&store, project)?;
     let profile = default_profile(&store, &project.config)?;
     let mut values = Vec::new();
     for secret in store.list_secrets_by_profile(project.config.project_id.as_str(), &profile.id)? {
@@ -5683,6 +5784,17 @@ fn ensure_project_exists(store: &Store, project_id: &str) -> Result<(), CliError
     }
     Err(CliError::Config(
         "project is not present in the local store; run locket init to resume setup".to_owned(),
+    ))
+}
+
+fn ensure_trusted_project_root(store: &Store, resolved: &ResolvedProject) -> Result<(), CliError> {
+    let root_hash = root_hash(&resolved.root)?;
+    if store.project_root_is_trusted(resolved.config.project_id.as_str(), &root_hash)? {
+        return Ok(());
+    }
+    Err(CliError::Config(
+        "ProjectRootNotTrusted: current project root is not trusted; run locket project trust-root"
+            .to_owned(),
     ))
 }
 
@@ -8099,6 +8211,13 @@ mod tests {
         }
     }
 
+    fn context_with_confirmation(context: &RuntimeContext, confirmation: &str) -> RuntimeContext {
+        RuntimeContext {
+            confirmation_reader: Arc::new(StaticConfirmationReader::new(confirmation)),
+            ..context.clone()
+        }
+    }
+
     fn test_secret_write_args(key: &str) -> super::SecretWriteArgs {
         super::SecretWriteArgs {
             key: key.to_owned(),
@@ -9148,15 +9267,41 @@ argv = []
             &context,
             &mut trust_output,
         )?;
-        assert!(String::from_utf8(trust_output)?.contains("trusted root already present"));
+        let trust_output = String::from_utf8(trust_output)?;
+        assert!(trust_output.contains("canonical_path:"));
+        assert!(trust_output.contains("trusted root already present"));
+
+        let store = locket_store::Store::open(directory.path().join("store.db"))?;
+        let trusted_row_count: u32 =
+            store
+                .connection()
+                .query_row("SELECT COUNT(*) FROM project_roots", [], |row| row.get(0))?;
+        assert_eq!(trusted_row_count, 1);
+
+        let mut failed_trust_output = Vec::new();
+        let failed_trust_context = context_with_confirmation(&context, "wrong\n");
+        let failed_trust = run_with_context(
+            Cli::try_parse_from(["locket", "project", "trust-root"])?,
+            &failed_trust_context,
+            &mut failed_trust_output,
+        );
+        assert_error_contains(failed_trust, "confirmation did not match project name");
+        let trusted_row_count_after_failed_confirm: u32 =
+            store
+                .connection()
+                .query_row("SELECT COUNT(*) FROM project_roots", [], |row| row.get(0))?;
+        assert_eq!(trusted_row_count_after_failed_confirm, 1);
 
         let mut untrust_output = Vec::new();
+        let untrust_context = context_with_confirmation(&context, &format!("{root_hash}\n"));
         run_with_context(
             Cli::try_parse_from(["locket", "project", "untrust-root", root_hash.as_str()])?,
-            &context,
+            &untrust_context,
             &mut untrust_output,
         )?;
-        assert!(String::from_utf8(untrust_output)?.contains("trusted root removed"));
+        let untrust_output = String::from_utf8(untrust_output)?;
+        assert!(untrust_output.contains("trusted root removed"));
+        assert!(untrust_output.contains("directory_grants_revoked: 0"));
 
         let mut status_output = Vec::new();
         run_with_context(Cli::try_parse_from(["locket", "status"])?, &context, &mut status_output)?;
@@ -9177,6 +9322,23 @@ argv = []
             &mut retrust_output,
         )?;
         assert!(String::from_utf8(retrust_output)?.contains("trusted root added"));
+
+        let audit_actions: Vec<String> = {
+            let mut statement = store
+                .connection()
+                .prepare("SELECT metadata_json FROM audit_log WHERE action = 'TRUST_ROOT'")?;
+            statement
+                .query_map([], |row| row.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()?
+        };
+        assert_eq!(audit_actions.len(), 3);
+        assert!(
+            audit_actions.iter().any(|metadata| metadata.contains("\"operation\":\"refresh\""))
+        );
+        assert!(
+            audit_actions.iter().any(|metadata| metadata.contains("\"operation\":\"untrust\""))
+        );
+        assert!(audit_actions.iter().any(|metadata| metadata.contains("\"operation\":\"trust\"")));
         Ok(())
     }
 
@@ -9318,6 +9480,19 @@ argv = []
             &context,
             &mut output,
         )?;
+        let args = test_secret_write_args("DATABASE_URL");
+        super::set_secret_value(&context, &args, "postgres://localhost/app", "manual", 1_000)?;
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(directory.path().join("locket.toml"))?
+            .write_all(
+                br#"
+[commands.env_check]
+argv = ["/bin/sh", "-c", "true"]
+required_secrets = ["DATABASE_URL"]
+"#,
+            )?;
+
         let mut roots_output = Vec::new();
         run_with_context(
             Cli::try_parse_from(["locket", "project", "list-roots"])?,
@@ -9330,9 +9505,10 @@ argv = []
             .ok_or("root hash should be listed")?
             .to_owned();
         let mut untrust_output = Vec::new();
+        let untrust_context = context_with_confirmation(&context, &format!("{root_hash}\n"));
         run_with_context(
             Cli::try_parse_from(["locket", "project", "untrust-root", root_hash.as_str()])?,
-            &context,
+            &untrust_context,
             &mut untrust_output,
         )?;
 
@@ -9346,12 +9522,103 @@ argv = []
         };
         assert!(error.to_string().contains("ProjectRootNotTrusted"));
 
+        let mut list_output = Vec::new();
+        let list_result =
+            run_with_context(Cli::try_parse_from(["locket", "list"])?, &context, &mut list_output);
+        assert_error_contains(list_result, "ProjectRootNotTrusted");
+
+        let mut get_output = Vec::new();
+        let get_result = run_with_context(
+            Cli::try_parse_from(["locket", "get", "DATABASE_URL", "--reveal", "--force"])?,
+            &context,
+            &mut get_output,
+        );
+        assert_error_contains(get_result, "ProjectRootNotTrusted");
+
+        let missing_args = test_secret_write_args("API_KEY");
+        assert_error_contains(
+            super::set_secret_value(&context, &missing_args, "sk_test", "manual", 2_000),
+            "ProjectRootNotTrusted",
+        );
+
+        let mut run_output = Vec::new();
+        let run_result = run_with_context(
+            Cli::try_parse_from(["locket", "run", "env_check"])?,
+            &context,
+            &mut run_output,
+        );
+        assert_error_contains(run_result, "ProjectRootNotTrusted");
+
         let store = locket_store::Store::open(directory.path().join("store.db"))?;
         let grant_count: u32 =
             store
                 .connection()
                 .query_row("SELECT COUNT(*) FROM directory_grants", [], |row| row.get(0))?;
         assert_eq!(grant_count, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn untrust_root_requires_hash_confirmation_and_revokes_directory_grants()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        let mut output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut output,
+        )?;
+
+        let mut allow_output = Vec::new();
+        run_with_context(Cli::try_parse_from(["locket", "allow"])?, &context, &mut allow_output)?;
+        let store = locket_store::Store::open(directory.path().join("store.db"))?;
+        let grant_count: u32 =
+            store
+                .connection()
+                .query_row("SELECT COUNT(*) FROM directory_grants", [], |row| row.get(0))?;
+        assert_eq!(grant_count, 1);
+
+        let mut roots_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "project", "list-roots"])?,
+            &context,
+            &mut roots_output,
+        )?;
+        let root_hash = String::from_utf8(roots_output)?
+            .lines()
+            .find_map(|line| line.strip_prefix("root_hash: "))
+            .ok_or("root hash should be listed")?
+            .to_owned();
+
+        let failed_context = context_with_confirmation(&context, "wrong\n");
+        let mut failed_output = Vec::new();
+        let failed = run_with_context(
+            Cli::try_parse_from(["locket", "project", "untrust-root", root_hash.as_str()])?,
+            &failed_context,
+            &mut failed_output,
+        );
+        assert_error_contains(failed, "confirmation did not match root hash");
+        let grant_count_after_failed_confirm: u32 =
+            store
+                .connection()
+                .query_row("SELECT COUNT(*) FROM directory_grants", [], |row| row.get(0))?;
+        assert_eq!(grant_count_after_failed_confirm, 1);
+
+        let untrust_context = context_with_confirmation(&context, &format!("{root_hash}\n"));
+        let mut untrust_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "project", "untrust-root", root_hash.as_str()])?,
+            &untrust_context,
+            &mut untrust_output,
+        )?;
+        let untrust_output = String::from_utf8(untrust_output)?;
+        assert!(untrust_output.contains("directory_grants_revoked: 1"));
+        let remaining_grants: u32 =
+            store
+                .connection()
+                .query_row("SELECT COUNT(*) FROM directory_grants", [], |row| row.get(0))?;
+        assert_eq!(remaining_grants, 0);
         Ok(())
     }
 

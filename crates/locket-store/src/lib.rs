@@ -958,6 +958,24 @@ impl Store {
             .map_err(StoreError::from)
     }
 
+    /// Removes every durable directory grant for a trusted project root.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Sqlite`] when `SQLite` rejects the delete.
+    pub fn deny_directory_grants_for_root(
+        &self,
+        project_id: &str,
+        root_hash: &[u8; 32],
+    ) -> Result<usize, StoreError> {
+        self.connection
+            .execute(
+                "DELETE FROM directory_grants WHERE project_id = ?1 AND root_hash = ?2",
+                params![project_id, root_hash.as_slice()],
+            )
+            .map_err(StoreError::from)
+    }
+
     /// Inserts wrapped key material.
     ///
     /// # Errors
@@ -3107,6 +3125,64 @@ mod tests {
             &directory_hash,
             "project-root",
         )?);
+
+        Ok(())
+    }
+
+    #[test]
+    fn directory_grants_can_be_revoked_by_root() -> Result<(), Box<dyn Error>> {
+        let test_store = open_initialized_store()?;
+        test_store.store.insert_project_if_absent("lk_proj_test", "test", 100)?;
+        test_store.store.insert_profile_if_absent(
+            "lk_prof_dev",
+            "lk_proj_test",
+            "dev",
+            false,
+            100,
+        )?;
+        test_store.store.insert_profile_if_absent(
+            "lk_prof_prod",
+            "lk_proj_test",
+            "prod",
+            false,
+            100,
+        )?;
+
+        let root_hash = [1_u8; 32];
+        let other_root_hash = [9_u8; 32];
+        let directory_hash = [2_u8; 32];
+        for (grant_id, profile_id, root_hash) in [
+            ("lk_dgrant_dev", "lk_prof_dev", root_hash),
+            ("lk_dgrant_prod", "lk_prof_prod", root_hash),
+            ("lk_dgrant_other", "lk_prof_dev", other_root_hash),
+        ] {
+            test_store.store.allow_directory_grant(&DirectoryGrantRecord {
+                grant_id: grant_id.to_owned(),
+                project_id: "lk_proj_test".to_owned(),
+                profile_id: profile_id.to_owned(),
+                root_hash,
+                directory_hash,
+                grant_scope: "project-root".to_owned(),
+                display_path: Some("/tmp/app".to_owned()),
+                created_at: 200,
+                updated_at: 200,
+            })?;
+        }
+
+        assert_eq!(
+            test_store.store.deny_directory_grants_for_root("lk_proj_test", &root_hash,)?,
+            2
+        );
+        assert_eq!(
+            test_store.store.deny_directory_grants_for_root("lk_proj_test", &root_hash,)?,
+            0
+        );
+        let remaining_count: u32 = test_store.store.connection().query_row(
+            "SELECT COUNT(*) FROM directory_grants WHERE root_hash = ?1",
+            [other_root_hash.as_slice()],
+            |row| row.get(0),
+        )?;
+        assert_eq!(remaining_count, 1);
 
         Ok(())
     }
