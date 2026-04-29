@@ -269,8 +269,7 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
   the `set`/`rotate`/`rm`/`purge`/`copy`/`import` command call sites with
   user-config and project-override regression coverage. `team accept` remains
   pending under the team-commands item.
-- [~] [6e4d05db] Pre-commit hook block markers
-  Claim: branch agent-6e4d05db/precommit-hook-markers, worktree .worktrees/agent-6e4d05db-precommit-hook-markers.
+- [x] Pre-commit hook block markers
   (`# --- BEGIN/END LOCKET PRE-COMMIT ---`), idempotent rewrite, typed
   confirmation when prepending to a non-Locket hook, and `HOOK_INSTALL`
   audit row when project context is available.
