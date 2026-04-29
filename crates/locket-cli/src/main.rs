@@ -20,7 +20,7 @@ use locket_store::{
 };
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt::{self, Display};
 use std::fs;
@@ -434,7 +434,9 @@ fn run_with_context(
         Command::List(args) => list_command(context, output, &args)?,
         Command::Exec(args) => exec_command(context, output, &args)?,
         Command::Rotate(args) => rotate_command(context, output, &args)?,
+        Command::Meta(args) => meta_command(context, output, &args)?,
         Command::History(args) => history_command(context, output, &args)?,
+        Command::Diff(args) => diff_command(context, output, &args)?,
         Command::Audit { command } => audit_command(context, output, command)?,
         Command::EmitExample => emit_example_command(context, output)?,
         Command::Profile { command } => profile_command(context, output, command)?,
@@ -1058,10 +1060,8 @@ fn profile_command(
     match command {
         ProfileCommand::List => list_profiles(context, output),
         ProfileCommand::Create(args) => create_profile(context, output, args),
-        ProfileCommand::MarkDangerous(_) | ProfileCommand::ClearDangerous(_) => {
-            writeln!(output, "locket: command parsed but not implemented yet")?;
-            Ok(())
-        }
+        ProfileCommand::MarkDangerous(args) => set_profile_dangerous(context, output, args, true),
+        ProfileCommand::ClearDangerous(args) => set_profile_dangerous(context, output, args, false),
     }
 }
 
@@ -1125,6 +1125,32 @@ fn create_profile(
     Ok(())
 }
 
+fn set_profile_dangerous(
+    context: &RuntimeContext,
+    output: &mut impl Write,
+    args: ProfileNameArgs,
+    dangerous: bool,
+) -> Result<(), CliError> {
+    let resolved = require_project(context)?;
+    let profile_name = ProfileName::new(args.profile)
+        .map_err(|_| CliError::Config("invalid profile name".to_owned()))?;
+    let store = open_store(context)?;
+    let Some(profile) =
+        store.get_profile_by_name(resolved.config.project_id.as_str(), profile_name.as_str())?
+    else {
+        return Err(CliError::Config("profile not found".to_owned()));
+    };
+
+    store.set_profile_dangerous(
+        resolved.config.project_id.as_str(),
+        profile_name.as_str(),
+        dangerous,
+    )?;
+    let state = if dangerous { "dangerous" } else { "not-dangerous" };
+    writeln!(output, "profile {} ({}) dangerous={state}", profile.name, profile.id)?;
+    Ok(())
+}
+
 fn use_profile_command(
     context: &RuntimeContext,
     output: &mut impl Write,
@@ -1140,6 +1166,122 @@ fn use_profile_command(
     resolved.config.default_profile = profile_name;
     write_project_config(&resolved.root.join(LOCKET_TOML), &resolved.config)?;
     writeln!(output, "active profile: {} ({})", profile.name, profile.id)?;
+    Ok(())
+}
+
+fn meta_command(
+    context: &RuntimeContext,
+    output: &mut impl Write,
+    args: &SecretMetaArgs,
+) -> Result<(), CliError> {
+    if !metadata_flags_have_updates(&args.metadata) {
+        return Err(CliError::Config("meta requires at least one metadata flag".to_owned()));
+    }
+
+    let resolved_secret = resolve_active_secret_for_source(context, &args.key, args.source.source)?;
+    let store = open_store(context)?;
+    let required = metadata_required_update(&args.metadata);
+    let tags =
+        if args.metadata.tags.is_empty() { None } else { Some(args.metadata.tags.as_slice()) };
+    let changed = store.update_secret_metadata(
+        &resolved_secret.secret.id,
+        args.metadata.description.as_deref(),
+        args.metadata.owner.as_deref(),
+        tags,
+        required,
+    )?;
+    if !changed {
+        return Err(CliError::Config("secret not found".to_owned()));
+    }
+
+    writeln!(
+        output,
+        "metadata updated {} source={} version={}",
+        resolved_secret.secret.name,
+        resolved_secret.secret.source,
+        resolved_secret.secret.current_version
+    )?;
+    Ok(())
+}
+
+fn diff_command(
+    context: &RuntimeContext,
+    output: &mut impl Write,
+    args: &DiffArgs,
+) -> Result<(), CliError> {
+    if args.since.is_some() {
+        return Err(CliError::Config("diff --since is not wired in this build yet".to_owned()));
+    }
+
+    let profile_a = args
+        .profile_a
+        .as_deref()
+        .ok_or_else(|| CliError::Config("diff requires two profile names".to_owned()))?;
+    let profile_b = args
+        .profile_b
+        .as_deref()
+        .ok_or_else(|| CliError::Config("diff requires two profile names".to_owned()))?;
+    let lhs = ProfileName::new(profile_a.to_owned())
+        .map_err(|_| CliError::Config("invalid profile name".to_owned()))?;
+    let rhs = ProfileName::new(profile_b.to_owned())
+        .map_err(|_| CliError::Config("invalid profile name".to_owned()))?;
+
+    let resolved = require_project(context)?;
+    let store = open_store(context)?;
+    let profile_a = store
+        .get_profile_by_name(resolved.config.project_id.as_str(), lhs.as_str())?
+        .ok_or_else(|| CliError::Config("first profile not found".to_owned()))?;
+    let profile_b = store
+        .get_profile_by_name(resolved.config.project_id.as_str(), rhs.as_str())?
+        .ok_or_else(|| CliError::Config("second profile not found".to_owned()))?;
+
+    let lhs_secrets =
+        active_secret_map(&store, resolved.config.project_id.as_str(), &profile_a.id)?;
+    let rhs_secrets =
+        active_secret_map(&store, resolved.config.project_id.as_str(), &profile_b.id)?;
+    let keys = lhs_secrets.keys().chain(rhs_secrets.keys()).cloned().collect::<BTreeSet<_>>();
+    let mut differences = 0_u32;
+
+    for key in keys {
+        match (lhs_secrets.get(&key), rhs_secrets.get(&key)) {
+            (Some(left_record), Some(right_record))
+                if left_record.current_version != right_record.current_version =>
+            {
+                differences += 1;
+                writeln!(
+                    output,
+                    "changed {} source={} {}_version={} {}_version={}",
+                    key.0,
+                    key.1,
+                    profile_a.name,
+                    left_record.current_version,
+                    profile_b.name,
+                    right_record.current_version
+                )?;
+            }
+            (Some(secret), None) => {
+                differences += 1;
+                writeln!(
+                    output,
+                    "only {}: {} source={} version={}",
+                    profile_a.name, key.0, key.1, secret.current_version
+                )?;
+            }
+            (None, Some(secret)) => {
+                differences += 1;
+                writeln!(
+                    output,
+                    "only {}: {} source={} version={}",
+                    profile_b.name, key.0, key.1, secret.current_version
+                )?;
+            }
+            _ => {}
+        }
+    }
+
+    if differences == 0 {
+        writeln!(output, "no differences")?;
+    }
     Ok(())
 }
 
@@ -2236,8 +2378,38 @@ fn optional_i64(value: Option<i64>) -> String {
     value.map_or_else(|| "-".to_owned(), |value| value.to_string())
 }
 
+const fn metadata_flags_have_updates(metadata: &SecretMetadataFlags) -> bool {
+    metadata.description.is_some()
+        || metadata.owner.is_some()
+        || !metadata.tags.is_empty()
+        || metadata.required
+        || metadata.optional
+}
+
+const fn metadata_required_update(metadata: &SecretMetadataFlags) -> Option<bool> {
+    if metadata.required {
+        Some(true)
+    } else if metadata.optional {
+        Some(false)
+    } else {
+        None
+    }
+}
+
 fn format_versions(versions: &[u32]) -> String {
     versions.iter().map(u32::to_string).collect::<Vec<_>>().join(",")
+}
+
+fn active_secret_map(
+    store: &Store,
+    project_id: &str,
+    profile_id: &str,
+) -> Result<BTreeMap<(String, String), SecretRecord>, CliError> {
+    let secrets = store.list_active_secrets_by_profile(project_id, profile_id)?;
+    Ok(secrets
+        .into_iter()
+        .map(|secret| ((secret.name.clone(), secret.source.clone()), secret))
+        .collect())
 }
 
 const fn source_arg_to_str(source: SecretSourceArg) -> &'static str {
@@ -2357,7 +2529,9 @@ mod tests {
             &["locket", "rm", "DATABASE_URL"],
             &["locket", "purge", "DATABASE_URL", "--all-versions"],
             &["locket", "rotate", "DATABASE_URL", "--grace-ttl", "24h"],
+            &["locket", "meta", "DATABASE_URL", "--owner", "platform", "--required"],
             &["locket", "history", "DATABASE_URL"],
+            &["locket", "diff", "dev", "staging"],
             &["locket", "audit", "verify"],
             &["locket", "exec", "--secret", "DATABASE_URL", "--", "/bin/sh", "-c", "true"],
         ] {
@@ -2454,6 +2628,53 @@ mod tests {
     }
 
     #[test]
+    fn profile_dangerous_marking_updates_metadata_only() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        let mut output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut output,
+        )?;
+
+        let mut mark_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "profile", "mark-dangerous", "dev"])?,
+            &context,
+            &mut mark_output,
+        )?;
+        let mark_output = String::from_utf8(mark_output)?;
+        assert!(mark_output.contains("dangerous=dangerous"));
+
+        let mut list_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "profile", "list"])?,
+            &context,
+            &mut list_output,
+        )?;
+        let list_output = String::from_utf8(list_output)?;
+        assert!(list_output.contains("* dev"));
+        assert!(list_output.contains("dangerous"));
+
+        let mut clear_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "profile", "clear-dangerous", "dev"])?,
+            &context,
+            &mut clear_output,
+        )?;
+        assert!(String::from_utf8(clear_output)?.contains("dangerous=not-dangerous"));
+        let mut list_after_clear = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "profile", "list"])?,
+            &context,
+            &mut list_after_clear,
+        )?;
+        assert!(!String::from_utf8(list_after_clear)?.contains("dangerous"));
+        Ok(())
+    }
+
+    #[test]
     fn set_list_get_and_rm_secret_value() -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempdir()?;
         let context = test_context(&directory);
@@ -2510,6 +2731,145 @@ mod tests {
         let mut list_after_rm = Vec::new();
         run_with_context(Cli::try_parse_from(["locket", "list"])?, &context, &mut list_after_rm)?;
         assert!(String::from_utf8(list_after_rm)?.contains("no secrets"));
+        Ok(())
+    }
+
+    #[test]
+    fn meta_updates_secret_metadata_without_printing_values()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        let mut output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut output,
+        )?;
+        let args = test_secret_write_args("DATABASE_URL");
+        super::set_secret_value(&context, &args, "postgres://localhost/app", "manual", 1_000)?;
+
+        let mut meta_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from([
+                "locket",
+                "meta",
+                "DATABASE_URL",
+                "--description",
+                "primary database",
+                "--owner",
+                "platform",
+                "--tag",
+                "database",
+                "--tag",
+                "prod",
+                "--required",
+            ])?,
+            &context,
+            &mut meta_output,
+        )?;
+        let meta_output = String::from_utf8(meta_output)?;
+        assert!(meta_output.contains("metadata updated DATABASE_URL"));
+        assert!(!meta_output.contains("postgres://localhost/app"));
+
+        let store = locket_store::Store::open(directory.path().join("store.db"))?;
+        let row = store.connection().query_row(
+            "SELECT description, owner, tags_json, required, updated_at
+             FROM secrets
+             WHERE name = 'DATABASE_URL'",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, bool>(3)?,
+                    row.get::<_, i64>(4)?,
+                ))
+            },
+        )?;
+        assert_eq!(
+            row,
+            (
+                "primary database".to_owned(),
+                "platform".to_owned(),
+                "[\"database\",\"prod\"]".to_owned(),
+                true,
+                1_000,
+            )
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn diff_reports_profile_metadata_only_differences() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        let mut output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut output,
+        )?;
+        let db_args = test_secret_write_args("DATABASE_URL");
+        super::set_secret_value(
+            &context,
+            &db_args,
+            "postgres://localhost/dev-old",
+            "manual",
+            1_000,
+        )?;
+        let rotate_args = test_rotate_args("DATABASE_URL", None);
+        super::rotate_secret_value(
+            &context,
+            &rotate_args,
+            "postgres://localhost/dev-new",
+            2_000,
+            None,
+        )?;
+
+        let mut create_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "profile", "create", "staging"])?,
+            &context,
+            &mut create_output,
+        )?;
+        let mut use_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "use", "staging"])?,
+            &context,
+            &mut use_output,
+        )?;
+        super::set_secret_value(
+            &context,
+            &db_args,
+            "postgres://localhost/staging",
+            "manual",
+            3_000,
+        )?;
+        let api_args = test_secret_write_args("API_KEY");
+        super::set_secret_value(&context, &api_args, "sk_test_sample", "manual", 4_000)?;
+
+        let mut diff_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "diff", "dev", "staging"])?,
+            &context,
+            &mut diff_output,
+        )?;
+        let diff_output = String::from_utf8(diff_output)?;
+        assert!(diff_output.contains("changed DATABASE_URL source=user-local"));
+        assert!(diff_output.contains("dev_version=2"));
+        assert!(diff_output.contains("staging_version=1"));
+        assert!(diff_output.contains("only staging: API_KEY source=user-local version=1"));
+        assert!(!diff_output.contains("postgres://localhost"));
+        assert!(!diff_output.contains("sk_test_sample"));
+
+        let mut empty_diff_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "diff", "staging", "staging"])?,
+            &context,
+            &mut empty_diff_output,
+        )?;
+        assert_eq!(String::from_utf8(empty_diff_output)?, "no differences\n");
         Ok(())
     }
 

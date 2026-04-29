@@ -350,6 +350,30 @@ impl Store {
             .map_err(StoreError::from)
     }
 
+    /// Updates the dangerous marker for a profile by project id and profile name.
+    ///
+    /// Returns `true` when a profile row was updated and `false` when no matching
+    /// profile exists.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Sqlite`] when `SQLite` rejects the update.
+    pub fn set_profile_dangerous(
+        &self,
+        project_id: &str,
+        name: &str,
+        dangerous: bool,
+    ) -> Result<bool, StoreError> {
+        self.connection.execute(
+            "UPDATE profiles
+             SET dangerous = ?3
+             WHERE project_id = ?1 AND name = ?2",
+            (project_id, name, dangerous),
+        )?;
+
+        Ok(self.connection.changes() == 1)
+    }
+
     /// Records or refreshes trust for a project root hash.
     ///
     /// # Errors
@@ -733,6 +757,42 @@ impl Store {
             )
             .optional()
             .map_err(StoreError::from)
+    }
+
+    /// Updates mutable metadata fields on an active secret without changing secret material.
+    ///
+    /// `None` keeps the existing field. `tags` replaces the whole tag list when
+    /// present.
+    ///
+    /// Returns `true` when an active secret row was updated and `false` when no
+    /// matching active secret exists.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Sqlite`] when `SQLite` rejects the update.
+    pub fn update_secret_metadata(
+        &self,
+        secret_id: &str,
+        description: Option<&str>,
+        owner: Option<&str>,
+        tags: Option<&[String]>,
+        required: Option<bool>,
+    ) -> Result<bool, StoreError> {
+        let tags_json = tags.map(|tags| {
+            let tags = tags.iter().map(|tag| Value::String(tag.clone())).collect::<Vec<_>>();
+            canonical_json_string(Some(&Value::Array(tags)))
+        });
+        self.connection.execute(
+            "UPDATE secrets
+             SET description = COALESCE(?2, description),
+                 owner = COALESCE(?3, owner),
+                 tags_json = COALESCE(?4, tags_json),
+                 required = COALESCE(?5, required)
+             WHERE id = ?1 AND state = 'active'",
+            params![secret_id, description, owner, tags_json.as_deref(), required,],
+        )?;
+
+        Ok(self.connection.changes() == 1)
     }
 
     /// Rotates a secret by deprecating the current version and inserting the new current version.
@@ -1870,6 +1930,40 @@ mod tests {
     }
 
     #[test]
+    fn profile_dangerous_marker_updates() -> Result<(), Box<dyn Error>> {
+        let test_store = open_initialized_store()?;
+        test_store.store.insert_project_if_absent("lk_proj_test", "test", 100)?;
+        test_store.store.insert_profile_if_absent(
+            "lk_prof_default",
+            "lk_proj_test",
+            "default",
+            false,
+            200,
+        )?;
+
+        assert!(test_store.store.set_profile_dangerous("lk_proj_test", "default", true)?);
+        assert!(
+            test_store
+                .store
+                .get_profile_by_name("lk_proj_test", "default")?
+                .ok_or("profile should exist")?
+                .dangerous
+        );
+
+        assert!(test_store.store.set_profile_dangerous("lk_proj_test", "default", false)?);
+        assert!(
+            !test_store
+                .store
+                .get_profile_by_name("lk_proj_test", "default")?
+                .ok_or("profile should exist")?
+                .dangerous
+        );
+        assert!(!test_store.store.set_profile_dangerous("lk_proj_test", "missing", true)?);
+
+        Ok(())
+    }
+
+    #[test]
     fn trust_project_root_upserts_and_checks_root_hash() -> Result<(), Box<dyn Error>> {
         let test_store = open_initialized_store()?;
         test_store.store.insert_project_if_absent("lk_proj_test", "test", 100)?;
@@ -1968,6 +2062,61 @@ mod tests {
             |row| row.get::<_, Vec<u8>>(0),
         )?;
         assert_eq!(stored_fingerprint, fingerprint.fingerprint);
+
+        Ok(())
+    }
+
+    #[test]
+    fn secret_metadata_update_changes_metadata_columns() -> Result<(), Box<dyn Error>> {
+        let mut test_store = open_initialized_store()?;
+        insert_project_profile(&test_store.store)?;
+        test_store.store.create_active_secret(
+            &test_secret(),
+            &test_secret_version(),
+            &test_secret_blob(),
+            &test_secret_fingerprint(),
+        )?;
+
+        assert!(test_store.store.update_secret_metadata(
+            "lk_sec_test",
+            Some("database connection"),
+            Some("platform"),
+            Some(&["database".to_owned(), "prod".to_owned()]),
+            Some(true),
+        )?);
+
+        let row = test_store.store.connection().query_row(
+            "SELECT description, owner, tags_json, required, updated_at
+             FROM secrets
+             WHERE id = 'lk_sec_test'",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, bool>(3)?,
+                    row.get::<_, i64>(4)?,
+                ))
+            },
+        )?;
+        assert_eq!(
+            row,
+            (
+                "database connection".to_owned(),
+                "platform".to_owned(),
+                "[\"database\",\"prod\"]".to_owned(),
+                true,
+                100,
+            )
+        );
+        assert!(!test_store.store.update_secret_metadata(
+            "lk_sec_missing",
+            Some("missing"),
+            None,
+            None,
+            None,
+        )?);
 
         Ok(())
     }
