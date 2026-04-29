@@ -1,5 +1,7 @@
 //! Locket command-line entry point.
 
+mod policy_authoring;
+
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use directories::ProjectDirs;
 use ignore::{WalkBuilder, gitignore::GitignoreBuilder};
@@ -37,6 +39,8 @@ use std::process::{Command as ProcessCommand, ExitCode as ProcessExitCode};
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+use policy_authoring::PolicyCommand;
 
 const LOCKET_TOML: &str = "locket.toml";
 const CONFIG_TOML: &str = "config.toml";
@@ -98,6 +102,12 @@ enum Command {
         /// Profile command.
         #[command(subcommand)]
         command: ProfileCommand,
+    },
+    /// Author command policies in locket.toml.
+    Policy {
+        /// Policy command.
+        #[command(subcommand)]
+        command: PolicyCommand,
     },
     /// Switch active profile.
     Use(ProfileNameArgs),
@@ -607,6 +617,7 @@ fn run_with_context(
         Command::EmitExample => emit_example_command(context, output)?,
         Command::InstallHooks => install_hooks_command(context, output)?,
         Command::Profile { command } => profile_command(context, output, command)?,
+        Command::Policy { command } => policy_authoring::command(context, output, command)?,
         Command::Project { command } => project_command(context, output, command)?,
         Command::Shellenv(args) => shellenv_command(output, &args)?,
         Command::Hook(args) => hook_command(output, &args)?,
@@ -4712,6 +4723,11 @@ mod tests {
             &["locket", "agent", "status"],
             &["locket", "agent", "stop"],
             &["locket", "agent", "logs"],
+            &["locket", "policy", "add", "dev", "--", "pnpm", "dev"],
+            &["locket", "policy", "allow", "dev", "DATABASE_URL"],
+            &["locket", "policy", "require", "dev", "API_KEY"],
+            &["locket", "policy", "delete", "dev", "--yes"],
+            &["locket", "policy", "doctor"],
         ] {
             assert!(Cli::try_parse_from(args).is_ok(), "{args:?}");
         }
@@ -4790,6 +4806,140 @@ mod tests {
             &mut profiles_after_use,
         )?;
         assert!(String::from_utf8(profiles_after_use)?.contains("* staging"));
+        Ok(())
+    }
+
+    #[test]
+    fn policy_commands_update_locket_toml_without_duplicates_and_audit_metadata()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        let mut output = Vec::new();
+
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut output,
+        )?;
+        output.clear();
+
+        run_with_context(
+            Cli::try_parse_from(["locket", "policy", "add", "dev", "--", "pnpm", "dev"])?,
+            &context,
+            &mut output,
+        )?;
+        run_with_context(
+            Cli::try_parse_from([
+                "locket",
+                "policy",
+                "allow",
+                "dev",
+                "DATABASE_URL",
+                "DATABASE_URL",
+                "API_KEY",
+            ])?,
+            &context,
+            &mut output,
+        )?;
+        run_with_context(
+            Cli::try_parse_from(["locket", "policy", "require", "dev", "API_KEY", "API_KEY"])?,
+            &context,
+            &mut output,
+        )?;
+
+        let output = String::from_utf8(output)?;
+        assert!(output.contains("metadata_only: yes"));
+        assert!(!output.contains("pnpm"));
+
+        let policy_text = std::fs::read_to_string(directory.path().join("locket.toml"))?;
+        let document = locket_core::PolicyDocument::from_toml_str(&policy_text)?;
+        let policy = document.commands.get("dev").ok_or("missing dev policy")?;
+        assert_eq!(
+            policy.optional_secrets.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            ["DATABASE_URL"]
+        );
+        assert_eq!(
+            policy.required_secrets.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            ["API_KEY"]
+        );
+        assert_eq!(
+            policy.allowed_secrets.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            ["API_KEY", "DATABASE_URL"]
+        );
+
+        let store = locket_store::Store::open(directory.path().join("store.db"))?;
+        let mut statement = store.connection().prepare(
+            "SELECT metadata_json FROM audit_log WHERE action = 'POLICY_UPDATE' ORDER BY sequence",
+        )?;
+        let rows = statement
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        assert_eq!(rows.len(), 3);
+        assert!(rows.iter().any(|row| row.contains("\"operation\":\"add\"")));
+        assert!(rows.iter().any(|row| row.contains("\"operation\":\"allow\"")));
+        assert!(rows.iter().any(|row| row.contains("\"operation\":\"require\"")));
+        assert!(rows.iter().all(|row| !row.contains("pnpm")));
+
+        let mut doctor_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "policy", "doctor"])?,
+            &context,
+            &mut doctor_output,
+        )?;
+        let doctor_output = String::from_utf8(doctor_output)?;
+        assert!(doctor_output.contains("policy_doctor: ok"));
+        assert!(doctor_output.contains("metadata_only: yes"));
+
+        assert_error_contains(
+            run_with_context(
+                Cli::try_parse_from(["locket", "policy", "delete", "dev"])?,
+                &context,
+                &mut Vec::new(),
+            ),
+            "--yes",
+        );
+        run_with_context(
+            Cli::try_parse_from(["locket", "policy", "delete", "dev", "--yes"])?,
+            &context,
+            &mut Vec::new(),
+        )?;
+        let policy_text = std::fs::read_to_string(directory.path().join("locket.toml"))?;
+        let document = locket_core::PolicyDocument::from_toml_str(&policy_text)?;
+        assert!(!document.commands.contains_key("dev"));
+        Ok(())
+    }
+
+    #[test]
+    fn policy_doctor_rejects_invalid_policy_document() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut Vec::new(),
+        )?;
+        std::fs::write(
+            directory.path().join("locket.toml"),
+            r#"
+schema_version = 1
+project_id = "lk_proj_0123456789abcdef"
+name = "app"
+default_profile = "dev"
+
+[commands.dev]
+argv = []
+"#,
+        )?;
+
+        assert_error_contains(
+            run_with_context(
+                Cli::try_parse_from(["locket", "policy", "doctor"])?,
+                &context,
+                &mut Vec::new(),
+            ),
+            "argv",
+        );
         Ok(())
     }
 
