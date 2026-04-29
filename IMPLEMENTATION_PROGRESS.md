@@ -853,7 +853,8 @@ editing — they drift. Severity: **blocker** (security/correctness),
     (2 sites: `main.rs`, `commands/scan/redact.rs`) to a new
     `LocketError::ProjectNotFound` typed variant (input band) — semantically
     distinct from `ProjectRootUntrusted`. Regression covers both callers.
-  - [ ] **subtask** — typed-secret-overflow: migrate `secret version overflow`
+  - [~] [6e4d05db] **subtask** — typed-secret-overflow: migrate `secret version overflow`
+    Claim: branch agent-6e4d05db/typed-secret-overflow, worktree .worktrees/agent-6e4d05db-typed-secret-overflow.
     (3 sites) to a new `LocketError::SecretVersionOverflow` variant (input or
     integrity band, per spec). Regression covers a stubbed overflow path.
   - [ ] **subtask** — typed-config-value-validation: migrate the per-value
