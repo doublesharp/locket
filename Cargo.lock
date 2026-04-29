@@ -661,7 +661,10 @@ dependencies = [
  "data-encoding",
  "keyring",
  "locket-crypto",
+ "serde",
+ "tempfile",
  "thiserror",
+ "toml",
  "zeroize",
 ]
 
