@@ -6,7 +6,7 @@ mod policy_authoring;
 
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::Shell as CompletionShell;
-use directories::ProjectDirs;
+use directories::{BaseDirs, ProjectDirs};
 use ignore::{WalkBuilder, gitignore::GitignoreBuilder};
 use locket_core::{
     CommandPolicy, CommandSpec, Duration as LocketDuration, ExternalEnvSource, KeyId,
@@ -719,6 +719,7 @@ struct RuntimeContext {
     cwd: PathBuf,
     store_path: PathBuf,
     config_path: PathBuf,
+    template_dir: PathBuf,
     key_store: Arc<dyn MasterKeyStore + Send + Sync>,
 }
 
@@ -728,6 +729,9 @@ impl RuntimeContext {
         let Some(project_dirs) = ProjectDirs::from("dev", "0xdoublesharp", "Locket") else {
             return Err(CliError::Config("could not resolve a local data directory".to_owned()));
         };
+        let Some(base_dirs) = BaseDirs::new() else {
+            return Err(CliError::Config("could not resolve a local home directory".to_owned()));
+        };
         let data_dir = project_dirs.data_dir();
         let config_dir = project_dirs.config_dir();
         fs::create_dir_all(data_dir)?;
@@ -736,6 +740,7 @@ impl RuntimeContext {
             cwd,
             store_path: data_dir.join("store.db"),
             config_path: config_dir.join(CONFIG_TOML),
+            template_dir: base_dirs.home_dir().join(".locket").join("templates"),
             key_store: Arc::new(KeyringMasterKeyStore),
         })
     }
@@ -861,7 +866,7 @@ fn new_command(
         ));
     }
 
-    let template = onboarding::load_project_template(&context.config_path, &args.from_template)?;
+    let template = onboarding::load_project_template(&context.template_dir, &args.from_template)?;
     let rendered = template.render_project_config(template.name.clone())?;
     fs::write(&config_path, rendered)?;
     let config = read_project_config(&config_path)?;
@@ -5000,6 +5005,7 @@ mod tests {
             cwd: directory.path().to_path_buf(),
             store_path: directory.path().join("store.db"),
             config_path: directory.path().join("config.toml"),
+            template_dir: directory.path().join(".locket").join("templates"),
             key_store: std::sync::Arc::new(MemoryMasterKeyStore::default()),
         }
     }
@@ -5308,7 +5314,7 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempdir()?;
         let context = test_context(&directory);
-        let templates_dir = directory.path().join("templates");
+        let templates_dir = context.template_dir.clone();
         std::fs::create_dir_all(&templates_dir)?;
         std::fs::write(
             templates_dir.join("web.toml"),
@@ -5355,6 +5361,33 @@ optional_secrets = ["API_KEY"]
         assert!(bootstrap_output.contains("metadata_only: yes"));
         assert!(bootstrap_output.contains("- none"));
         assert!(!bootstrap_output.contains("postgres://"));
+        Ok(())
+    }
+
+    #[test]
+    fn new_rejects_template_with_invalid_expected_secret_name()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        std::fs::create_dir_all(&context.template_dir)?;
+        std::fs::write(
+            context.template_dir.join("bad.toml"),
+            r#"
+name = "bad-app"
+expected_secrets = ["database-url"]
+"#,
+        )?;
+        let mut output = Vec::new();
+
+        assert_error_contains(
+            run_with_context(
+                Cli::try_parse_from(["locket", "new", "--from-template", "bad"])?,
+                &context,
+                &mut output,
+            ),
+            "template expected secret name is invalid",
+        );
+        assert!(!directory.path().join("locket.toml").exists());
         Ok(())
     }
 
