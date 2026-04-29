@@ -7556,7 +7556,7 @@ argv = []
 
         let mut reveal_output = Vec::new();
         run_with_context(
-            Cli::try_parse_from(["locket", "get", "DATABASE_URL", "--reveal"])?,
+            Cli::try_parse_from(["locket", "get", "DATABASE_URL", "--reveal", "--force"])?,
             &stale_context,
             &mut reveal_output,
         )?;
@@ -7579,7 +7579,7 @@ argv = []
 
         let mut prod_reveal_output = Vec::new();
         run_with_context(
-            Cli::try_parse_from(["locket", "get", "API_TOKEN", "--reveal"])?,
+            Cli::try_parse_from(["locket", "get", "API_TOKEN", "--reveal", "--force"])?,
             &fallback_context,
             &mut prod_reveal_output,
         )?;
