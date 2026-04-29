@@ -1,15 +1,210 @@
 # Locket
 
-Locket is a planned local-first secrets control plane for development environments.
+Locket is a local-first secrets control plane for development environments.
 
-This repository is currently a pre-implementation planning and Rust workspace scaffold.
-The docs describe the product target and engineering requirements for the app we are about
-to build; they do not describe a shipped or usable application yet.
+It replaces plaintext `.env` files as the source of truth with an encrypted local vault, explicit access policy, process-scoped secret injection, audit integrity checks, local team sharing, and scanner/redaction tools for keeping secrets out of code, logs, and AI prompts.
 
-The product and implementation requirements live in [`docs/specs/index.md`](docs/specs/index.md).
-Engineering standards, testing expectations, and fuzzing guidance are part of the planned implementation specs.
+Locket treats secrets as capabilities granted to specific projects, profiles, commands, directories, editors, shells, and runtime sessions.
 
-## Planned Quality Gates
+## Features
+
+- Encrypted local vault for development secrets.
+- Project and profile workflows for separate local environments.
+- Command policies that define which secrets a command may receive.
+- Process-scoped delivery through `locket run`, `locket exec`, Docker, and Docker Compose helpers.
+- Shell, editor, desktop, and tray integrations for local status and approvals.
+- Secret rotation, history, profile diffs, and safe removal workflows.
+- Scanner, pre-commit checks, redaction, and AI-safe context/output tools.
+- Recovery, passkey support, and multi-machine sync.
+- Local-first team onboarding with encrypted invites, roles, and bootstrap checks.
+- Audit and diagnostics designed to report what happened without exposing values.
+- No telemetry or analytics, and no remote calls except opt-in update checks or explicit sealed sync/export/import actions.
+
+## Project Files
+
+- `locket.toml` lives in the project and contains shareable configuration, policies, and metadata.
+- Secret values stay in the local encrypted vault, not in Git-tracked project files.
+- `.env.example` is maintained as a names-only contract for expected variables.
+- `.gitignore` is updated to keep plaintext local env files out of Git.
+
+Locket is intentionally local-first. CI and production should use their platform-native secret stores; Locket is for local development workflows.
+
+## Install From Source
+
+```bash
+cargo install --path crates/locket-cli
+```
+
+For repository development, run the CLI without installing it:
+
+```bash
+cargo run -p locket-cli -- <command>
+```
+
+## Quick Start
+
+Initialize a project:
+
+```bash
+locket init --name my-app --profile dev
+```
+
+Import an existing env file:
+
+```bash
+locket import .env
+```
+
+Or set one secret from stdin:
+
+```bash
+printf '%s' "$DATABASE_URL" | locket set DATABASE_URL
+```
+
+Inspect metadata without printing values:
+
+```bash
+locket status
+locket list
+locket get DATABASE_URL
+```
+
+Create a command policy and run it:
+
+```bash
+locket policy add dev -- npm run dev
+locket policy require dev DATABASE_URL
+locket run dev
+```
+
+Check the workspace for accidental leaks:
+
+```bash
+locket scan .
+locket scan --require-known .
+```
+
+## Core Workflows
+
+### Project Setup
+
+```bash
+locket init [--name <name>] [--profile <profile>]
+locket new --from-template <name>
+locket bootstrap
+locket status
+locket emit-example
+```
+
+`locket init` creates the project configuration, prepares the local vault, updates `.gitignore`, and creates a managed `.env.example` block.
+
+### Secrets And Profiles
+
+```bash
+locket set <KEY> [--source user-local|machine-local|team-managed]
+locket import .env [--overwrite]
+locket list [--all]
+locket get <KEY>
+locket get <KEY> --reveal
+locket rotate <KEY> [--grace-ttl <duration>]
+locket history <KEY>
+locket diff <profileA> <profileB>
+locket profile create staging
+locket use staging
+```
+
+Secret names use portable environment-variable syntax, such as `DATABASE_URL` or `STRIPE_SECRET_KEY`. Secret values are not accepted as command-line arguments; use stdin for writes so values do not land in shell history or process listings.
+
+### Policies And Execution
+
+```bash
+locket policy add dev -- pnpm dev
+locket policy allow dev DATABASE_URL
+locket policy require dev API_TOKEN
+locket policy doctor
+```
+
+Run a saved policy or inject explicit secrets into one child process:
+
+```bash
+locket run dev
+locket env inspect --policy dev
+locket exec --secret DATABASE_URL -- <command> [args...]
+locket env docker --policy dev -- docker run ...
+locket compose run --policy dev -- docker compose up
+```
+
+Execution commands prepare the child process environment for that invocation only. They do not export secrets into the parent shell.
+
+### Agent And Integrations
+
+```bash
+locket agent start
+locket agent status
+locket shellenv
+locket hook
+locket allow
+locket deny
+locket install-hooks
+```
+
+The local agent backs unlock caching, live grants, shell prompts, editor status, `lk://` reference resolution, and desktop/tray workflows.
+
+### Scan And Redact
+
+```bash
+locket scan [path]
+locket scan --staged
+locket scan --require-known [path]
+locket redact file.log
+some-command | locket redact --stdin
+locket context
+locket ai-safe -- <command> [args...]
+```
+
+`scan` reports provider-token patterns, high-entropy strings, env-file markers, and, with `--require-known`, values already stored in the local vault. `redact` and `context` help prepare logs or project metadata before sharing them.
+
+### Access And Recovery
+
+```bash
+locket unlock [--verify-user]
+locket lock
+locket passkey register
+locket recover
+locket recovery rotate
+```
+
+Recovery and verification flows are local-first and avoid putting recovery material in project files.
+
+### Team And Sync
+
+```bash
+locket device init
+locket device pubkey
+locket team init
+locket team invite <name> --device <device-descriptor> --profile dev --role developer
+locket team accept <invite.locket>
+locket team members
+locket export --sealed --recipient <device-descriptor> --profile dev
+locket import-bundle <bundle>
+```
+
+Team and sync workflows use encrypted files addressed to trusted devices. They never require a hosted service or plaintext secret exchange.
+
+### Audit And Diagnostics
+
+```bash
+locket audit verify
+locket doctor
+locket agent logs
+locket debug bundle --redacted
+```
+
+Diagnostics are designed to report project, vault, hook, agent, policy, and bundle state without exposing secret values.
+
+## Development
+
+The workspace uses the repository-pinned Rust toolchain.
 
 ```bash
 make fmt-check
@@ -18,4 +213,12 @@ make test
 make coverage
 ```
 
-Fuzz targets are planned in [`docs/specs/fuzzing.md`](docs/specs/fuzzing.md).
+Additional quality gates are available through the `Makefile`:
+
+```bash
+make deny
+make audit
+make fuzz-smoke
+```
+
+Full design specs live in [`docs/specs/index.md`](docs/specs/index.md).
