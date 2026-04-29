@@ -1,5 +1,6 @@
 //! Cryptographic primitives for Locket.
 
+use argon2::{Algorithm, Argon2, Params, Version};
 use chacha20poly1305::{
     Key, XChaCha20Poly1305, XNonce,
     aead::{Aead, KeyInit, OsRng, Payload, rand_core::RngCore},
@@ -34,7 +35,23 @@ pub const FINGERPRINT_LEN: usize = 32;
 const AAD_V1_PREFIX: &[u8] = b"locket-aad-v1";
 const KEY_WRAP_V1_PREFIX: &[u8] = b"locket-key-wrap-v1";
 const HKDF_WRAP_INFO_V1_PREFIX: &[u8] = b"locket-wrap-v1";
+const PASSPHRASE_FALLBACK_AAD_V1_PREFIX: &[u8] = b"locket-passphrase-fallback-v1";
 const SECRET_DEK_PURPOSE: &str = "secret-dek";
+
+/// Argon2id memory cost in KiB for passphrase fallback envelopes.
+pub const PASSPHRASE_FALLBACK_M_COST: u32 = 32_768;
+
+/// Argon2id iteration count for passphrase fallback envelopes.
+pub const PASSPHRASE_FALLBACK_T_COST: u32 = 2;
+
+/// Argon2id parallelism for passphrase fallback envelopes.
+pub const PASSPHRASE_FALLBACK_P_COST: u32 = 4;
+
+/// Argon2id output length for passphrase fallback envelopes.
+pub const PASSPHRASE_FALLBACK_OUTPUT_LEN: u32 = KEY_LEN as u32;
+
+/// Salt length in bytes for new passphrase fallback envelopes.
+pub const PASSPHRASE_FALLBACK_SALT_LEN: usize = 32;
 
 /// Fixed-size symmetric key bytes.
 pub type KeyBytes = [u8; KEY_LEN];
@@ -67,6 +84,9 @@ pub enum CryptoError {
     /// HKDF expansion failed.
     #[error("key derivation failed")]
     KeyDerivationFailed,
+    /// Stored passphrase KDF parameters are unsupported or malformed.
+    #[error("invalid kdf parameters")]
+    InvalidKdfParameters,
     /// Encryption failed.
     #[error("encryption failed")]
     EncryptionFailed,
@@ -240,6 +260,32 @@ pub struct WrappedKeyMaterial {
     pub nonce: NonceBytes,
 }
 
+/// Argon2id parameters for passphrase fallback key derivation.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct PassphraseKdfParams {
+    /// Memory cost in KiB.
+    pub m_cost: u32,
+    /// Iteration count.
+    pub t_cost: u32,
+    /// Parallelism.
+    pub p_cost: u32,
+    /// Derived output length in bytes.
+    pub output_len: u32,
+}
+
+impl PassphraseKdfParams {
+    /// Returns the v1 default passphrase fallback KDF parameters.
+    #[must_use]
+    pub const fn fallback_v1() -> Self {
+        Self {
+            m_cost: PASSPHRASE_FALLBACK_M_COST,
+            t_cost: PASSPHRASE_FALLBACK_T_COST,
+            p_cost: PASSPHRASE_FALLBACK_P_COST,
+            output_len: PASSPHRASE_FALLBACK_OUTPUT_LEN,
+        }
+    }
+}
+
 /// Appends a little-endian `u16` to an output buffer.
 pub fn append_u16_le(output: &mut Vec<u8>, value: u16) {
     output.extend_from_slice(&value.to_le_bytes());
@@ -331,6 +377,24 @@ pub fn hkdf_wrap_info_v1(metadata: &HkdfWrapInfo<'_>) -> CryptoResult<Vec<u8>> {
     Ok(info)
 }
 
+/// Constructs canonical AAD for passphrase fallback master-key envelopes.
+///
+/// # Errors
+///
+/// Returns an error if either field cannot be represented by the canonical v1
+/// length prefixes.
+pub fn passphrase_fallback_aad_v1(
+    project_id: &str,
+    kdf_profile_id: &str,
+) -> CryptoResult<Vec<u8>> {
+    let mut aad = Vec::new();
+    aad.extend_from_slice(PASSPHRASE_FALLBACK_AAD_V1_PREFIX);
+    append_u16_le(&mut aad, KEY_WRAP_SCHEMA_V1);
+    append_canonical_field(&mut aad, "project_id", project_id)?;
+    append_canonical_field(&mut aad, "kdf_profile_id", kdf_profile_id)?;
+    Ok(aad)
+}
+
 /// Derives a 32-byte wrapping key from a master key and canonical HKDF wrap info.
 ///
 /// # Errors
@@ -355,6 +419,50 @@ pub fn derive_wrapping_key_v1(
 /// unavailable.
 pub fn generate_key() -> CryptoResult<Zeroizing<KeyBytes>> {
     Ok(Zeroizing::new(random_bytes::<KEY_LEN>()?))
+}
+
+/// Generates a random salt for passphrase fallback KDF profiles.
+///
+/// # Errors
+///
+/// Returns [`CryptoError::RandomFailed`] when operating-system randomness is
+/// unavailable.
+pub fn generate_passphrase_salt() -> CryptoResult<[u8; PASSPHRASE_FALLBACK_SALT_LEN]> {
+    random_bytes::<PASSPHRASE_FALLBACK_SALT_LEN>()
+}
+
+/// Derives a passphrase fallback wrapping key using Argon2id.
+///
+/// # Errors
+///
+/// Returns [`CryptoError::InvalidKdfParameters`] when stored parameters are not
+/// valid for v1 fallback, and [`CryptoError::KeyDerivationFailed`] when Argon2id
+/// derivation fails.
+pub fn derive_passphrase_fallback_key_v1(
+    passphrase: &[u8],
+    salt: &[u8],
+    params: PassphraseKdfParams,
+) -> CryptoResult<Zeroizing<KeyBytes>> {
+    if passphrase.is_empty()
+        || salt.is_empty()
+        || params.output_len != PASSPHRASE_FALLBACK_OUTPUT_LEN
+    {
+        return Err(CryptoError::InvalidKdfParameters);
+    }
+
+    let argon_params = Params::new(
+        params.m_cost,
+        params.t_cost,
+        params.p_cost,
+        Some(KEY_LEN),
+    )
+    .map_err(|_| CryptoError::InvalidKdfParameters)?;
+    let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, argon_params);
+    let mut key = Zeroizing::new([0_u8; KEY_LEN]);
+    argon2
+        .hash_password_into(passphrase, salt, &mut *key)
+        .map_err(|_| CryptoError::KeyDerivationFailed)?;
+    Ok(key)
 }
 
 /// Wraps stored project/profile key material using separate nonce storage.
@@ -556,10 +664,12 @@ fn aead_decrypt(
 mod tests {
     use super::{
         AAD_SCHEMA_V1, CryptoError, HKDF_WRAP_INFO_SCHEMA_V1, HkdfWrapInfo, KEY_LEN,
-        KEY_WRAP_SCHEMA_V1, KeyPurpose, KeyWrapAad, KeyWrapPurpose, NONCE_LEN, SecretBlobAad,
-        TAG_LEN, canonical_field, decrypt_secret_value_v1, derive_wrapping_key_v1,
-        hkdf_wrap_info_v1, key_wrap_aad_v1, secret_blob_aad_v1, secret_fingerprint_v1,
-        unwrap_dek_v1, unwrap_key_material_v1, wrap_dek_v1, wrap_key_material_v1,
+        KEY_WRAP_SCHEMA_V1, KeyPurpose, KeyWrapAad, KeyWrapPurpose, NONCE_LEN,
+        PASSPHRASE_FALLBACK_OUTPUT_LEN, PassphraseKdfParams, SecretBlobAad, TAG_LEN,
+        canonical_field, decrypt_secret_value_v1, derive_passphrase_fallback_key_v1,
+        derive_wrapping_key_v1, hkdf_wrap_info_v1, key_wrap_aad_v1, passphrase_fallback_aad_v1,
+        secret_blob_aad_v1, secret_fingerprint_v1, unwrap_dek_v1, unwrap_key_material_v1,
+        wrap_dek_v1, wrap_key_material_v1,
     };
 
     const PROFILE_SECRET_KEY: [u8; KEY_LEN] = [7; KEY_LEN];
@@ -662,6 +772,64 @@ mod tests {
 
         assert_eq!(info, expected);
         Ok(())
+    }
+
+    #[test]
+    fn passphrase_fallback_aad_bytes_are_stable() -> Result<(), CryptoError> {
+        let aad = passphrase_fallback_aad_v1("lk_proj_123", "lk_kdf_passphrase_v1")?;
+        let expected = [
+            b"locket-passphrase-fallback-v1".as_slice(),
+            &KEY_WRAP_SCHEMA_V1.to_le_bytes(),
+            &[10, 0],
+            b"project_id",
+            &[11, 0, 0, 0],
+            b"lk_proj_123",
+            &[14, 0],
+            b"kdf_profile_id",
+            &[20, 0, 0, 0],
+            b"lk_kdf_passphrase_v1",
+        ]
+        .concat();
+
+        assert_eq!(aad, expected);
+        Ok(())
+    }
+
+    #[test]
+    fn passphrase_fallback_key_derivation_is_salt_and_passphrase_bound()
+    -> Result<(), CryptoError> {
+        let params = PassphraseKdfParams {
+            m_cost: 32,
+            t_cost: 1,
+            p_cost: 1,
+            output_len: PASSPHRASE_FALLBACK_OUTPUT_LEN,
+        };
+
+        let first = derive_passphrase_fallback_key_v1(b"correct horse", b"salt-one", params)?;
+        let second = derive_passphrase_fallback_key_v1(b"correct horse", b"salt-one", params)?;
+        let changed_passphrase =
+            derive_passphrase_fallback_key_v1(b"wrong horse", b"salt-one", params)?;
+        let changed_salt =
+            derive_passphrase_fallback_key_v1(b"correct horse", b"salt-two", params)?;
+
+        assert_eq!(&*first, &*second);
+        assert_ne!(&*first, &*changed_passphrase);
+        assert_ne!(&*first, &*changed_salt);
+        Ok(())
+    }
+
+    #[test]
+    fn passphrase_fallback_rejects_empty_passphrase_or_salt() {
+        let params = PassphraseKdfParams::fallback_v1();
+
+        assert!(matches!(
+            derive_passphrase_fallback_key_v1(b"", b"salt", params),
+            Err(CryptoError::InvalidKdfParameters)
+        ));
+        assert!(matches!(
+            derive_passphrase_fallback_key_v1(b"passphrase", b"", params),
+            Err(CryptoError::InvalidKdfParameters)
+        ));
     }
 
     #[test]
