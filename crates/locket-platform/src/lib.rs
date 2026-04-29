@@ -368,9 +368,7 @@ fn encode_bytes(bytes: &[u8]) -> String {
 }
 
 fn decode_bytes(encoded: &str) -> Result<Vec<u8>, PlatformError> {
-    BASE64URL_NOPAD
-        .decode(encoded.as_bytes())
-        .map_err(|_| PlatformError::InvalidPassphraseFallback)
+    BASE64URL_NOPAD.decode(encoded.as_bytes()).map_err(|_| PlatformError::InvalidPassphraseFallback)
 }
 
 fn decode_nonce(encoded: &str) -> Result<[u8; 24], PlatformError> {
@@ -497,7 +495,8 @@ mod tests {
         let loaded = store.load_master_key(PROJECT_ID, b"fallback passphrase")?;
         assert_eq!(&*loaded, &MASTER_KEY);
 
-        let envelope = std::fs::read_to_string(directory.path().join(format!("{PROJECT_ID}.toml")))?;
+        let envelope =
+            std::fs::read_to_string(directory.path().join(format!("{PROJECT_ID}.toml")))?;
         assert!(!envelope.contains("fallback passphrase"));
         assert!(!envelope.contains(&encode_key(&MASTER_KEY)));
         assert!(envelope.contains("algorithm = \"argon2id\""));

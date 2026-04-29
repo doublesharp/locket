@@ -383,10 +383,7 @@ pub fn hkdf_wrap_info_v1(metadata: &HkdfWrapInfo<'_>) -> CryptoResult<Vec<u8>> {
 ///
 /// Returns an error if either field cannot be represented by the canonical v1
 /// length prefixes.
-pub fn passphrase_fallback_aad_v1(
-    project_id: &str,
-    kdf_profile_id: &str,
-) -> CryptoResult<Vec<u8>> {
+pub fn passphrase_fallback_aad_v1(project_id: &str, kdf_profile_id: &str) -> CryptoResult<Vec<u8>> {
     let mut aad = Vec::new();
     aad.extend_from_slice(PASSPHRASE_FALLBACK_AAD_V1_PREFIX);
     append_u16_le(&mut aad, KEY_WRAP_SCHEMA_V1);
@@ -450,13 +447,8 @@ pub fn derive_passphrase_fallback_key_v1(
         return Err(CryptoError::InvalidKdfParameters);
     }
 
-    let argon_params = Params::new(
-        params.m_cost,
-        params.t_cost,
-        params.p_cost,
-        Some(KEY_LEN),
-    )
-    .map_err(|_| CryptoError::InvalidKdfParameters)?;
+    let argon_params = Params::new(params.m_cost, params.t_cost, params.p_cost, Some(KEY_LEN))
+        .map_err(|_| CryptoError::InvalidKdfParameters)?;
     let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, argon_params);
     let mut key = Zeroizing::new([0_u8; KEY_LEN]);
     argon2
@@ -796,8 +788,8 @@ mod tests {
     }
 
     #[test]
-    fn passphrase_fallback_key_derivation_is_salt_and_passphrase_bound()
-    -> Result<(), CryptoError> {
+    fn passphrase_fallback_key_derivation_is_salt_and_passphrase_bound() -> Result<(), CryptoError>
+    {
         let params = PassphraseKdfParams {
             m_cost: 32,
             t_cost: 1,

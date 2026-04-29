@@ -28,6 +28,7 @@ locket-exec = { path = "../locket-exec" }
 locket-platform = { path = "../locket-platform" }
 locket-scan = { path = "../locket-scan" }
 locket-store = { path = "../locket-store" }
+rpassword = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
