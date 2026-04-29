@@ -13,7 +13,7 @@ use serde_json::json;
 
 use crate::{
     CONFIG_TOML, CliError, RuntimeContext, load_project_key, metadata_invalid_error,
-    now_unix_nanos, open_store, resolve_project,
+    metadata_looks_like_secret_error, now_unix_nanos, open_store, resolve_project,
 };
 
 #[derive(Clone, Copy)]
@@ -148,8 +148,8 @@ pub fn validate_config_value_not_secret_like(value: &str) -> Result<(), CliError
         matches!(finding.kind, FindingKind::HighEntropy | FindingKind::ProviderTokenPattern)
     });
     if secret_like {
-        return Err(CliError::Config(
-            "config value looks like a secret; refusing to store it".to_owned(),
+        return Err(metadata_looks_like_secret_error(
+            "config value looks like a secret; refusing to store it",
         ));
     }
     Ok(())
@@ -160,18 +160,18 @@ pub fn parse_config_value(spec: &ConfigKeySpec, value: &str) -> Result<toml::Val
         ConfigValueKind::Bool => match value {
             "true" => Ok(toml::Value::Boolean(true)),
             "false" => Ok(toml::Value::Boolean(false)),
-            _ => Err(CliError::Config("config value must be true or false".to_owned())),
+            _ => Err(metadata_invalid_error("config value must be true or false")),
         },
         ConfigValueKind::Duration => {
             LocketDuration::from_str(value)
-                .map_err(|_| CliError::Config("invalid config duration".to_owned()))?;
+                .map_err(|_| metadata_invalid_error("invalid config duration"))?;
             Ok(toml::Value::String(value.to_owned()))
         }
         ConfigValueKind::DurationMax { max_secs, message } => {
             let duration = LocketDuration::from_str(value)
-                .map_err(|_| CliError::Config("invalid config duration".to_owned()))?;
+                .map_err(|_| metadata_invalid_error("invalid config duration"))?;
             if duration.as_secs() > max_secs {
-                return Err(CliError::Config(message.to_owned()));
+                return Err(metadata_invalid_error(message));
             }
             Ok(toml::Value::String(value.to_owned()))
         }
@@ -179,7 +179,7 @@ pub fn parse_config_value(spec: &ConfigKeySpec, value: &str) -> Result<toml::Val
             if values.contains(&value) {
                 Ok(toml::Value::String(value.to_owned()))
             } else {
-                Err(CliError::Config(message.to_owned()))
+                Err(metadata_invalid_error(message))
             }
         }
         ConfigValueKind::EditorDefault => {
@@ -192,8 +192,8 @@ pub fn parse_config_value(spec: &ConfigKeySpec, value: &str) -> Result<toml::Val
         }
         ConfigValueKind::RuntimeSessionSecretNameRetention => {
             RuntimeSessionSecretNameRetention::from_str(value).map_err(|_| {
-                CliError::Config(
-                    "runtime.session_secret_name_retention must be a duration or off".to_owned(),
+                metadata_invalid_error(
+                    "runtime.session_secret_name_retention must be a duration or off",
                 )
             })?;
             Ok(toml::Value::String(value.to_owned()))
@@ -230,25 +230,25 @@ pub fn validate_stored_config_value(
 }
 
 fn invalid_stored_config_value(key: &str) -> CliError {
-    CliError::Config(format!("invalid stored config value for {key}"))
+    metadata_invalid_error(format!("invalid stored config value for {key}"))
 }
 
 fn validate_editor_default(value: &str) -> Result<(), CliError> {
     if value.is_empty() || value.chars().any(char::is_control) {
-        return Err(CliError::Config(
-            "editor.default must be a command name or absolute path".to_owned(),
+        return Err(metadata_invalid_error(
+            "editor.default must be a command name or absolute path",
         ));
     }
     if value.starts_with('~') || value.contains('$') || value.contains('`') {
-        return Err(CliError::Config("editor.default must not use shell expansion".to_owned()));
+        return Err(metadata_invalid_error("editor.default must not use shell expansion"));
     }
     if Path::new(value).is_absolute() {
         return Ok(());
     }
     let shell_meta = ['/', '\\', '|', '&', ';', '<', '>', '(', ')'];
     if value.chars().any(char::is_whitespace) || value.chars().any(|c| shell_meta.contains(&c)) {
-        return Err(CliError::Config(
-            "editor.default must be a command name or absolute path".to_owned(),
+        return Err(metadata_invalid_error(
+            "editor.default must be a command name or absolute path",
         ));
     }
     Ok(())
@@ -256,17 +256,17 @@ fn validate_editor_default(value: &str) -> Result<(), CliError> {
 
 fn validate_https_url(value: &str) -> Result<(), CliError> {
     let Some(rest) = value.strip_prefix("https://") else {
-        return Err(CliError::Config("updates.manifest_url must be an HTTPS URL".to_owned()));
+        return Err(metadata_invalid_error("updates.manifest_url must be an HTTPS URL"));
     };
     if rest.is_empty()
         || value.chars().any(char::is_whitespace)
         || value.chars().any(char::is_control)
     {
-        return Err(CliError::Config("updates.manifest_url must be an HTTPS URL".to_owned()));
+        return Err(metadata_invalid_error("updates.manifest_url must be an HTTPS URL"));
     }
     let host = rest.split(['/', '?', '#']).next().unwrap_or_default();
     if host.is_empty() || host.starts_with(':') || host.contains('@') {
-        return Err(CliError::Config("updates.manifest_url must be an HTTPS URL".to_owned()));
+        return Err(metadata_invalid_error("updates.manifest_url must be an HTTPS URL"));
     }
     Ok(())
 }
@@ -304,7 +304,7 @@ pub fn config_set_value(
     let section_value =
         config.entry(section.to_owned()).or_insert_with(|| toml::Value::Table(toml::Table::new()));
     let Some(section_table) = section_value.as_table_mut() else {
-        return Err(CliError::Config("config section is not a table".to_owned()));
+        return Err(metadata_invalid_error("config section is not a table"));
     };
     section_table.insert(name.to_owned(), value);
     Ok(())
@@ -315,7 +315,7 @@ pub fn config_unset_value(config: &mut toml::Table, key: &str) -> Result<(), Cli
         split_config_key(key).ok_or_else(|| metadata_invalid_error("unsupported config key"))?;
     let should_remove_section = if let Some(section_value) = config.get_mut(section) {
         let Some(section_table) = section_value.as_table_mut() else {
-            return Err(CliError::Config("config section is not a table".to_owned()));
+            return Err(metadata_invalid_error("config section is not a table"));
         };
         section_table.remove(name);
         section_table.is_empty()
