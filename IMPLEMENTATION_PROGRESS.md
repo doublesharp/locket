@@ -26,6 +26,12 @@ There are multiple agents working so it is imperative that you maintain an agent
 - Don't restate spec content here. A TODO line names the work, points
   at one spec section if non-obvious, and stops. Skip routine
   error/audit/file enumerations — agents can read the spec.
+- After a slice merges to `main`: flip the line to `[x]`, **compress
+  the description to 1–2 lines** about what shipped (drop spec/error/
+  audit/file pointers and any claim notes), and remove the merged
+  worktree and branch
+  (`git worktree remove .worktrees/agent-<id>-<topic>` then
+  `git branch -D agent-<id>/<topic>`).
 
 ## Definition of Done
 
@@ -283,7 +289,7 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
     records `confirmation_source = "interactive"` (`7dda131`). A
     `RUN/DENIED` denial-row pass remains a follow-up under
     audit-coverage.
-  - [ ] **subtask** — run-user-verification-gate: implement
+  - [~] [723116e9] **subtask** — run-user-verification-gate: implement
     `require_user_verification = true` gate via
     `crates/locket-platform/src/user_verification.rs`. Audit: `RUN` records
     `user_verification = { required, satisfied, method }`. Errors:
@@ -351,8 +357,9 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
   Claim: branch agent-70c448c4/env-layering-modes, worktree .worktrees/agent-70c448c4-env-layering-modes.
   `minimal`/`strict`, plus `override = "preserve"`/`"error"` with a
   warning when a policy chooses neither.
-- [~] [70c448c4] ready: agent-70c448c4/conservative-env-allowlist @ 123d956 — minimal mode now uses the spec allowlist (`PATH HOME USER SHELL TMPDIR LANG LC_* TERM CI`) with `LC_*` matching, and `policy doctor` surfaces it.
-  Claim: branch agent-70c448c4/conservative-env-allowlist, worktree .worktrees/agent-70c448c4-conservative-env-allowlist.
+- [x] Conservative env allowlist
+  (`PATH HOME USER SHELL TMPDIR LANG LC_* TERM CI`) applied in `minimal`
+  mode with `LC_*` matching; `policy doctor` surfaces it.
 - [ ] Ephemeral env-file fallback for children that can't accept an env
   map: 0700 parent / 0600 file outside project tree, post-spawn delete,
   audited delivery mode, secure-erase warning when unsupported.
@@ -505,7 +512,8 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
 - [ ] `locket recover` restores Locket-managed automation-client private
   keys from the envelope; `--force` rotates intact keychain entries and
   records the override in the `RECOVER` audit row.
-- [~] [b67f47d6] ready: agent-b67f47d6/audit-schema-version @ f8acb31 — audit-chain verification is covered by a regression row signed with its stored `schema_version`.
+- [x] Audit-chain HMAC verification recomputes each row using the row's
+  stored `schema_version`, not the binary's current version.
 - [ ] Typed `metadata_json` shape validator per audit action family
   (required fields, no unknown fields without a schema bump).
 
@@ -534,9 +542,10 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
   audit, scan findings, devices, members (never reveals values).
 - [ ] Accessibility: keyboard nav, focus states, screen-reader labels,
   contrast, reduced motion, no post-TTL value leak via a11y metadata.
-- [ ] Empty-state guidance for `locket init`/`team accept`/
+- [~] [4efea70d] Empty-state guidance for `locket init`/`team accept`/
   `profile create dev`/`set`/`import`/`policy add`/`agent start`/
   `device init`.
+  Claim: branch agent-4efea70d/empty-state-guidance, worktree .worktrees/agent-4efea70d-empty-state-guidance.
 - [x] Denial UX differentiates locked vault, missing grant, policy denial,
   dangerous-profile, revoked device, and expired invite with distinct copy and
   recovery affordances.
@@ -695,10 +704,9 @@ editing — they drift. Severity: **blocker** (security/correctness),
 - [ ] Cold-start budgets: passphrase fallback unlock <300 ms,
   recovery-envelope unlock <2 s, agent idle memory <50 MB
   (`docs/specs/performance.md`).
-- [ ] Production-crate clippy denies (`unwrap_used`, `expect_used`,
+- [x] Production-crate clippy denies (`unwrap_used`, `expect_used`,
   `panic`, `todo`, `unimplemented`, `dbg_macro`, `print_stdout`,
-  `print_stderr`); security-critical crates additionally deny
-  undocumented `unsafe` (`docs/specs/engineering.md`).
+  `print_stderr`) plus workspace-wide `unsafe_code = "forbid"`.
 - [ ] Dependency hygiene gates: `cargo machete`/`udeps` in CI; OpenSSF
   Scorecard once public; keyless signing with transparency logs for CI
   artifacts; frontend `pnpm lint`/`typecheck`/`test`/`build` once
