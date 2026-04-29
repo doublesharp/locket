@@ -283,7 +283,8 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
   the `set`/`rotate`/`rm`/`purge`/`copy`/`import` command call sites with
   user-config and project-override regression coverage. `team accept` remains
   pending under the team-commands item.
-- [ ] Pre-commit hook block markers
+- [~] [6e4d05db] Pre-commit hook block markers
+  Claim: branch agent-6e4d05db/precommit-hook-markers, worktree .worktrees/agent-6e4d05db-precommit-hook-markers.
   (`# --- BEGIN/END LOCKET PRE-COMMIT ---`), idempotent rewrite, typed
   confirmation when prepending to a non-Locket hook, and `HOOK_INSTALL`
   audit row when project context is available.
@@ -539,10 +540,11 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
   - Files: `crates/locket-cli/src/` (new `commands/team/`),
     `crates/locket-store/src/teams.rs` (new module + tables `teams`,
     `team_members`, `team_invites`).
-  - [ ] **subtask** — team-store-schema: define and migrate the `teams`,
-    `team_members`, `team_invites` tables with the column constraints from
-    `docs/specs/storage.md:26-50`. Add a `SCHEMA_MIGRATE` audit row for the
-    bump. Pre-req for the rest of the team subtasks.
+  - [x] **subtask** — team-store-schema: `teams`, `team_members`,
+    `team_invites` tables already live in `crates/locket-store/src/schema.rs`
+    with the spec-required column constraints (role check, profiles_json,
+    nonce length, expires_at>created_at, accepted_at/revoked_at integrity).
+    No migration bump needed for this slice.
   - [ ] **subtask** — team-init-command: implement `locket team init` with a
     `TEAM_INIT` audit row and golden-path coverage. Errors: `TeamRoleDenied`
     on a re-init attempt without role. Depends on `team-store-schema`.
@@ -568,13 +570,8 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
   - [ ] **subtask** — team-revoke-device: implement `locket team
     revoke-device`. Audit `DEVICE_REVOKE`. Errors: `TeamRoleDenied`. Depends
     on `team-store-schema`.
-- [ ] Role-based authorization for team-managed state.
-  - Spec: `docs/specs/team-sync-recovery.md:75-110` (role table).
-  - Errors: `TeamRoleDenied` (113).
-  - Audit actions: extend existing `TEAM_*`/`POLICY_UPDATE`/`SECRET_*` rows
-    with denying role evaluator id.
-  - Files: shared role-check helper in `crates/locket-core/src/team/role.rs`
-    (new); call from every team-managed action.
+- [ ] Role-based authorization for team-managed state
+  (`docs/specs/team-sync-recovery.md:75-110`).
 - [~] Passkey support. Metadata storage and `list`/`remove` CLI behavior exist.
   Remaining: platform registration and PRF optional key wrapping.
   - Spec: `docs/specs/crypto.md:192-218` (local user verification + passkey
@@ -595,18 +592,12 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
   - Audit actions: `DEVICE_INIT`, `DEVICE_REGISTER`, `DEVICE_REVOKE`.
   - Files: `crates/locket-platform/src/helpers.rs` (descriptor codec),
     `crates/locket-crypto/src/` (fingerprint hash + safety-words derivation).
-- [ ] Invite issuer/recipient trust ceremony: signed invite files containing
-  issuer public keys, recipient fingerprint, expiry, nonce, role, profiles,
-  project id; `team accept` displays issuer fingerprint + safety words for
-  out-of-band confirmation; replay protection via accepted-invite ids and
-  5-minute clock-skew tolerance; expired/revoked/mismatched invites fail closed.
-  - Spec: `docs/specs/team-sync-recovery.md:56-69`.
-  - Errors: `InviteExpired` (113), `InviteRevoked` (113),
-    `InviteSignatureInvalid` (113), `InviteFingerprintMismatch` (113),
-    `ReplayDetected` (113).
-  - Audit actions: `TEAM_INVITE`, `TEAM_ACCEPT`.
-  - Files: shared invite codec in new `crates/locket-core/src/invite.rs`;
-    consumer in `crates/locket-cli/src/team.rs`.
+- [ ] Invite issuer/recipient trust ceremony: signed invites with
+  issuer/recipient/expiry/nonce/role/profiles/project; `team accept`
+  displays issuer fingerprint + safety words for out-of-band
+  confirmation; replay protection and 5-minute clock-skew tolerance;
+  expired/revoked/mismatched invites fail closed
+  (`docs/specs/team-sync-recovery.md:56-69`).
 - [~] [bec7ddfc] ready: agent-bec7ddfc/audit-coverage-denials @ 1e2b5c7 — first
   reveal/copy denial slice landed (`get --reveal` now writes a `REVEAL` audit
   row with `status = DENIED` and `denial_reason = "noninteractive_terminal"`
