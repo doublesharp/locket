@@ -321,6 +321,7 @@ inherit_env = ["PATH"]
     assert_eq!(metadata_json["external_sources"], json!([]));
     assert_eq!(metadata_json["confirmation_source"], json!(null));
     assert_eq!(metadata_json["child_exit"], json!(0));
+    assert_eq!(metadata_json["override_explicit"], json!(false));
     assert_eq!(
         metadata_json["secrets"],
         json!([{
@@ -333,6 +334,42 @@ inherit_env = ["PATH"]
     );
     assert!(!metadata.contains("machine-precedence-value"));
     assert!(!metadata.contains("user-precedence-value"));
+    Ok(())
+}
+
+#[test]
+fn run_warns_when_implicit_locket_override_replaces_parent_name_without_values()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    let home = test_secret_write_args("HOME");
+    crate::set_secret_value(&context, &home, "locket-home", "manual", 1_000)?;
+
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(directory.path().join("locket.toml"))?
+        .write_all(
+            br#"
+[commands.env_check]
+argv = ["/bin/sh", "-c", "test \"$HOME\" = \"locket-home\""]
+required_secrets = ["HOME"]
+env_mode = "minimal"
+"#,
+        )?;
+
+    let mut output = Vec::new();
+    run_with_context(Cli::try_parse_from(["locket", "run", "env_check"])?, &context, &mut output)?;
+    let output = String::from_utf8(output)?;
+    assert!(
+        output
+            .contains("warning: implicit override=locket will replace existing env name(s): HOME")
+    );
+    assert!(!output.contains("locket-home"));
     Ok(())
 }
 

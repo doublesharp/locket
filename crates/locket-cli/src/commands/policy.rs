@@ -157,6 +157,13 @@ fn doctor(context: &RuntimeContext, output: &mut impl Write) -> Result<(), CliEr
     writeln!(output, "policies: {}", document.commands.len())?;
     writeln!(output, "metadata_only: yes")?;
     writeln!(output, "minimal_env_allowlist: {}", locket_exec::DEFAULT_SAFE_ALLOWLIST.join(" "))?;
+    for policy in document.commands.values().filter(|policy| !policy.override_explicit()) {
+        writeln!(
+            output,
+            "warning: policy {} uses implicit override=locket; set override explicitly",
+            policy.name
+        )?;
+    }
     if policy_text.contains("lk://") {
         writeln!(output, "warning: lk:// validation skipped because agent is unavailable")?;
     }

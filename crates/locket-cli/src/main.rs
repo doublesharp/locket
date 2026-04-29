@@ -2177,6 +2177,7 @@ pub(crate) fn write_runtime_policy_audit_if_available(
         "command_type": command_type(&policy.command),
         "env_mode": policy.env_mode.to_string(),
         "override": policy.override_behavior.to_string(),
+        "override_explicit": policy.override_explicit(),
         "secret_names": secret_names,
         "secrets": secrets,
         "allowed_secret_names": allowed_secret_names,

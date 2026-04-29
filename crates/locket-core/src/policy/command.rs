@@ -48,6 +48,8 @@ pub struct CommandPolicy {
     pub env_mode: EnvMode,
     /// Conflict behavior for Locket secret names; TOML field name is `override`.
     pub override_behavior: EnvOverrideMode,
+    /// Source of the resolved `override` field.
+    pub override_source: PolicyFieldSource,
     /// External environment source descriptors.
     pub external_env_sources: Vec<ExternalEnvSource>,
     /// Whether Docker/Compose helpers may deliver secrets to remote contexts.
@@ -60,7 +62,22 @@ pub struct CommandPolicy {
     pub ttl: Duration,
 }
 
+/// Whether a policy field was set explicitly or came from a default.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum PolicyFieldSource {
+    /// The field was omitted and the parser supplied the default.
+    Defaulted,
+    /// The field was present in the policy document.
+    Explicit,
+}
+
 impl CommandPolicy {
+    /// Returns true when the TOML policy explicitly set `override`.
+    #[must_use]
+    pub const fn override_explicit(&self) -> bool {
+        matches!(self.override_source, PolicyFieldSource::Explicit)
+    }
+
     pub(super) fn from_toml_value(
         name: &str,
         value: toml::Value,
@@ -120,6 +137,11 @@ impl CommandPolicy {
             normalize_allowed_secrets(name, &required_secrets, &optional_secrets)?;
 
         let env_mode = parse_env_mode(name, raw.env_mode)?;
+        let override_source = if raw.override_behavior.is_some() {
+            PolicyFieldSource::Explicit
+        } else {
+            PolicyFieldSource::Defaulted
+        };
         let override_behavior = parse_override_behavior(name, raw.override_behavior)?;
         let ttl = parse_ttl(name, raw.ttl)?;
         let external_env_sources =
@@ -134,6 +156,7 @@ impl CommandPolicy {
             inherit_env: raw.inherit_env.unwrap_or_default(),
             env_mode,
             override_behavior,
+            override_source,
             external_env_sources,
             allow_remote_docker: raw.allow_remote_docker.unwrap_or(false),
             confirm: raw.confirm.unwrap_or(false),

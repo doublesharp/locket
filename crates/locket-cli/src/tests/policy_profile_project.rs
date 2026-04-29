@@ -84,6 +84,10 @@ fn policy_commands_update_locket_toml_without_duplicates_and_audit_metadata()
         doctor_output
             .contains("minimal_env_allowlist: PATH HOME USER SHELL TMPDIR LANG LC_* TERM CI")
     );
+    assert!(
+        doctor_output
+            .contains("warning: policy dev uses implicit override=locket; set override explicitly")
+    );
 
     assert_error_contains(
         run_with_context(

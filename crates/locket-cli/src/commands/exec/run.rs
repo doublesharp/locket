@@ -45,6 +45,12 @@ pub struct RuntimeExecutionRequest<'a> {
     pub current_dir: Option<&'a Path>,
 }
 
+struct PreparedPolicyExecution {
+    selections: Vec<PolicySecretSelection>,
+    secret_names: Vec<String>,
+    prepared: locket_exec::PreparedExecution,
+}
+
 pub fn run_command(
     context: &RuntimeContext,
     output: &mut impl Write,
@@ -91,11 +97,54 @@ pub fn run_command(
     let mut store = open_store(context)?;
     ensure_trusted_project_root(&store, &resolved)?;
     let profile = default_profile(&store, &resolved.config)?;
-    let selections = policy_secret_selections(&store, &resolved, &profile, &policy)?;
+    let prepared_policy =
+        prepare_policy_execution(context, output, &store, &resolved, &profile, &policy)?;
+    let status = execute_prepared_with_runtime_session(
+        context,
+        &RuntimeExecutionRequest {
+            store: &store,
+            resolved: &resolved,
+            profile: &profile,
+            policy_name: Some(&policy.name),
+            secret_names: &prepared_policy.secret_names,
+            prepared: &prepared_policy.prepared,
+            current_dir: Some(&context.cwd),
+        },
+    )?;
+    let audit_status = if status.success() { "SUCCESS" } else { "FAILED" };
+    write_runtime_policy_audit_if_available(
+        context,
+        &mut store,
+        &resolved,
+        &profile,
+        &policy,
+        audit_status,
+        &prepared_policy.selections,
+        status.code(),
+        confirmation_source,
+        user_verification.as_ref(),
+    )?;
+    if status.success() {
+        return Ok(());
+    }
+
+    writeln!(output, "child exited with status {status}")?;
+    Err(child_exit_error(status))
+}
+
+fn prepare_policy_execution(
+    context: &RuntimeContext,
+    output: &mut impl Write,
+    store: &Store,
+    resolved: &ResolvedProject,
+    profile: &ProfileRecord,
+    policy: &CommandPolicy,
+) -> Result<PreparedPolicyExecution, CliError> {
+    let selections = policy_secret_selections(store, resolved, profile, policy)?;
     let parent_env = std::env::vars()
         .map(|(name, value)| (name, locket_exec::env_value(value)))
         .collect::<locket_exec::EnvMap>();
-    let external_env = resolve_policy_external_env(&policy, &parent_env)?;
+    let external_env = resolve_policy_external_env(policy, &parent_env)?;
     let missing_required = missing_required_secret_names(&selections, &external_env);
     if !missing_required.is_empty() {
         return Err(secret_not_found_error(format!(
@@ -104,9 +153,16 @@ pub fn run_command(
         )));
     }
 
-    let locket_env = policy_locket_env(context, &store, &resolved, &profile, &selections)?;
+    let locket_env = policy_locket_env(context, store, resolved, profile, &selections)?;
+    warn_implicit_locket_override_conflicts(
+        output,
+        policy,
+        &parent_env,
+        &external_env,
+        &locket_env,
+    )?;
     let request = locket_exec::ExecutionRequest {
-        argv: policy_argv(&policy),
+        argv: policy_argv(policy),
         parent_env,
         inherit_env: policy.inherit_env.clone(),
         external_env: external_env.clone(),
@@ -122,37 +178,8 @@ pub fn run_command(
             .filter_map(|selection| selection.selected.as_ref().map(|secret| secret.name.as_str()))
             .chain(external_env_names.iter().map(String::as_str)),
     );
-    let status = execute_prepared_with_runtime_session(
-        context,
-        &RuntimeExecutionRequest {
-            store: &store,
-            resolved: &resolved,
-            profile: &profile,
-            policy_name: Some(&policy.name),
-            secret_names: &secret_names,
-            prepared: &prepared,
-            current_dir: Some(&context.cwd),
-        },
-    )?;
-    let audit_status = if status.success() { "SUCCESS" } else { "FAILED" };
-    write_runtime_policy_audit_if_available(
-        context,
-        &mut store,
-        &resolved,
-        &profile,
-        &policy,
-        audit_status,
-        &selections,
-        status.code(),
-        confirmation_source,
-        user_verification.as_ref(),
-    )?;
-    if status.success() {
-        return Ok(());
-    }
 
-    writeln!(output, "child exited with status {status}")?;
-    Err(child_exit_error(status))
+    Ok(PreparedPolicyExecution { selections, secret_names, prepared })
 }
 
 pub fn resolve_policy_external_env(
@@ -176,6 +203,43 @@ pub fn resolve_policy_external_env(
         }
     }
     Ok(external_env)
+}
+
+fn warn_implicit_locket_override_conflicts(
+    output: &mut impl Write,
+    policy: &CommandPolicy,
+    parent_env: &locket_exec::EnvMap,
+    external_env: &locket_exec::EnvMap,
+    locket_env: &locket_exec::EnvMap,
+) -> Result<(), CliError> {
+    if policy.override_explicit() {
+        return Ok(());
+    }
+    let inherit_env = policy.inherit_env.iter().map(String::as_str).collect::<Vec<_>>();
+    let base_env = locket_exec::merge_environment(
+        parent_env,
+        locket_exec::DEFAULT_SAFE_ALLOWLIST,
+        &inherit_env,
+        external_env,
+        &locket_exec::EnvMap::new(),
+        policy.env_mode,
+        policy.override_behavior,
+    )
+    .map_err(|error| exec_prepare_error(locket_exec::ExecError::Environment(error)))?;
+    let conflicts = locket_env
+        .keys()
+        .filter(|name| base_env.contains_key(*name))
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    if conflicts.is_empty() {
+        return Ok(());
+    }
+    writeln!(
+        output,
+        "warning: implicit override=locket will replace existing env name(s): {}",
+        conflicts.into_iter().collect::<Vec<_>>().join(", ")
+    )?;
+    Ok(())
 }
 
 fn missing_required_secret_names<'a>(

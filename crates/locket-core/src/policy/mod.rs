@@ -52,6 +52,7 @@ optional_secrets = ["OPENAI_API_KEY"]
         );
         assert_eq!(policy.env_mode, EnvMode::Minimal);
         assert_eq!(policy.override_behavior, EnvOverrideMode::Locket);
+        assert!(!policy.override_explicit());
         assert_eq!(policy.ttl.as_secs(), 15 * 60);
         assert!(!policy.allow_remote_docker);
         assert!(!policy.confirm);
@@ -83,6 +84,7 @@ ttl = "30m"
         assert_eq!(policy.inherit_env, ["PATH", "HOME"]);
         assert_eq!(policy.env_mode, EnvMode::Strict);
         assert_eq!(policy.override_behavior, EnvOverrideMode::Preserve);
+        assert!(policy.override_explicit());
         assert_eq!(
             policy.external_env_sources,
             vec![
