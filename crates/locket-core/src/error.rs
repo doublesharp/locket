@@ -23,6 +23,9 @@ pub enum LocketError {
     /// Typed-string confirmation prompt rejected by the user input.
     #[error("confirmation did not match")]
     ConfirmationFailed,
+    /// `locket scan` found one or more blocking findings.
+    #[error("scan blocked by findings")]
+    ScanFindingBlocked,
     /// Secret, profile, policy, or key material already exists.
     #[error("secret already exists")]
     SecretAlreadyExists,
@@ -113,6 +116,7 @@ impl LocketError {
             Self::EnvironmentConflict => 66,
             Self::SecretAlreadyExists => 67,
             Self::ConfirmationFailed => 68,
+            Self::ScanFindingBlocked => 69,
             Self::AccessDenied => 70,
             Self::ProjectRootUntrusted => 71,
             Self::UnlockRequired => 72,
@@ -160,6 +164,7 @@ mod tests {
         assert_eq!(LocketError::EnvironmentConflict.exit_code(), 66);
         assert_eq!(LocketError::SecretAlreadyExists.exit_code(), 67);
         assert_eq!(LocketError::ConfirmationFailed.exit_code(), 68);
+        assert_eq!(LocketError::ScanFindingBlocked.exit_code(), 69);
     }
 
     #[test]

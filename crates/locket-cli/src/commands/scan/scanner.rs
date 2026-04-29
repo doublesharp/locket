@@ -9,14 +9,14 @@ use std::process::Command as ProcessCommand;
 use ignore::{WalkBuilder, gitignore::GitignoreBuilder};
 use locket_crypto::KeyPurpose;
 use locket_scan::{
-    FindingKind, ScanFinding, SuppressedFinding, partition_inline_suppressions, scan_text,
+    FindingKind, ScanFinding, Severity, SuppressedFinding, partition_inline_suppressions, scan_text,
 };
 use locket_store::AuditWrite;
 use serde_json::{Value, json};
 
 use crate::{
     CliError, ResolvedProject, RuntimeContext, ScanArgs, absolutize, collect_known_secret_values,
-    load_project_key, now_unix_nanos, open_store, resolve_project,
+    load_project_key, now_unix_nanos, open_store, resolve_project, scan_finding_blocked_error,
 };
 
 const LOCKETIGNORE_FILE: &str = ".locketignore";
@@ -72,10 +72,16 @@ pub fn scan_command(
         writeln!(output, "{}", format_finding(finding))?;
     }
 
+    let warning_count = severity_count(&findings, Severity::Warning);
+    let blocking_count = severity_count(&findings, Severity::Blocking);
     if findings.is_empty() {
         writeln!(output, "scan: no findings")?;
     } else {
-        writeln!(output, "scan: {} finding(s)", findings.len())?;
+        writeln!(
+            output,
+            "scan: {} finding(s) (blocking={blocking_count} warning={warning_count})",
+            findings.len()
+        )?;
     }
 
     if !suppressed.is_empty() {
@@ -92,10 +98,20 @@ pub fn scan_command(
     if !suppressed.is_empty()
         && let Some(project) = project.as_ref()
     {
-        write_scan_suppression_audit(context, project, &suppressed, args.staged)?;
+        write_scan_suppression_audit(context, project, &suppressed, &findings, args.staged)?;
+    }
+
+    if blocking_count > 0 {
+        return Err(scan_finding_blocked_error(format!(
+            "scan blocked by {blocking_count} finding(s)"
+        )));
     }
 
     Ok(())
+}
+
+fn severity_count(findings: &[ScanFinding], severity: Severity) -> usize {
+    findings.iter().filter(|finding| finding.kind.default_severity() == severity).count()
 }
 
 fn format_suppressed_finding(finding: &SuppressedFinding) -> String {
@@ -116,6 +132,7 @@ fn write_scan_suppression_audit(
     context: &RuntimeContext,
     project: &ResolvedProject,
     suppressed: &[SuppressedFinding],
+    kept: &[ScanFinding],
     staged: bool,
 ) -> Result<(), CliError> {
     let mut store = open_store(context)?;
@@ -134,6 +151,7 @@ fn write_scan_suppression_audit(
                 "column": finding.column,
                 "rule_id": finding.rule_id,
                 "reason": finding.reason,
+                "severity": finding.kind.default_severity().as_str(),
             })
         })
         .collect();
@@ -142,9 +160,12 @@ fn write_scan_suppression_audit(
         "schema_version": 1,
         "action": "SCAN",
         "status": "SUPPRESSED",
+        "command": "scan",
         "scope": if staged { "staged" } else { "tree" },
         "suppressed_count": suppressed.len(),
         "suppressions": entries,
+        "kept_blocking_count": severity_count(kept, Severity::Blocking),
+        "kept_warning_count": severity_count(kept, Severity::Warning),
     });
     let audit = AuditWrite {
         project_id: project.config.project_id.as_str(),
@@ -336,10 +357,11 @@ fn path_label(root: &Path, path: &Path) -> String {
 
 pub fn format_finding(finding: &ScanFinding) -> String {
     format!(
-        "{}:{}:{}: {} token_length={}",
+        "{}:{}:{}: [{}] {} token_length={}",
         finding.path_label,
         finding.line,
         finding.column,
+        finding.kind.default_severity().as_str(),
         finding_kind_label(finding.kind),
         finding.token_length
     )

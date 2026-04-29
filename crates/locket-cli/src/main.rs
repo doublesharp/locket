@@ -7,8 +7,8 @@ mod support;
 pub(crate) use runtime::context::RuntimeContext;
 pub(crate) use runtime::error::{
     CliError, bundle_verification_error, confirmation_failed_error, profile_not_found_error,
-    project_root_untrusted_error, secret_already_exists_error, secret_deleted_error,
-    secret_not_found_error, unimplemented_in_build_error,
+    project_root_untrusted_error, scan_finding_blocked_error, secret_already_exists_error,
+    secret_deleted_error, secret_not_found_error, unimplemented_in_build_error,
 };
 pub(crate) use runtime::key_access::{
     MasterKeySource, default_profile, ensure_project_exists, load_master_key,

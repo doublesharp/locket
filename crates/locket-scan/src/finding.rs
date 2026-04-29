@@ -20,6 +20,30 @@ pub enum FindingKind {
     KnownSecretValue,
 }
 
+/// Severity level assigned to a scanner finding.
+///
+/// `Blocking` findings make `locket scan` fail closed; `Warning` findings are
+/// reported but exit successfully. Order is meaningful: `Warning < Blocking` so
+/// callers may compute the max severity over a finding set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Severity {
+    /// Reported but does not fail the command.
+    Warning,
+    /// Fails the command with a typed `ScanFindingBlocked` error.
+    Blocking,
+}
+
+impl Severity {
+    /// Stable lowercase label used in CLI output and audit metadata.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Warning => "warning",
+            Self::Blocking => "blocking",
+        }
+    }
+}
+
 impl FindingKind {
     /// Returns the stable rule identifier for this finding kind.
     #[must_use]
@@ -29,6 +53,22 @@ impl FindingKind {
             Self::ProviderTokenPattern => RULE_ID_PROVIDER_TOKEN,
             Self::EnvFileMarker => RULE_ID_ENV_FILE,
             Self::KnownSecretValue => RULE_ID_KNOWN_SECRET,
+        }
+    }
+
+    /// Default severity per `docs/specs/scan-redaction.md:51-56`.
+    ///
+    /// Known-secret matches are blocking by default; provider-token, high-entropy,
+    /// and `.env` findings are warnings by default. Project policy may upgrade
+    /// provider-token and `.env` findings to blocking; that policy hook is not
+    /// yet wired here.
+    #[must_use]
+    pub const fn default_severity(self) -> Severity {
+        match self {
+            Self::KnownSecretValue => Severity::Blocking,
+            Self::HighEntropy | Self::ProviderTokenPattern | Self::EnvFileMarker => {
+                Severity::Warning
+            }
         }
     }
 

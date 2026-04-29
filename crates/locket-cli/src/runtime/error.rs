@@ -102,6 +102,10 @@ pub fn confirmation_failed_error(message: impl Into<String>) -> CliError {
     typed_cli_error(LocketError::ConfirmationFailed, message)
 }
 
+pub fn scan_finding_blocked_error(message: impl Into<String>) -> CliError {
+    typed_cli_error(LocketError::ScanFindingBlocked, message)
+}
+
 pub fn bundle_verification_error(message: impl Into<String>) -> CliError {
     typed_cli_error(LocketError::BundleVerificationFailed, message)
 }

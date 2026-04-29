@@ -9,7 +9,8 @@ mod rules;
 mod tests;
 
 pub use finding::{
-    FindingKind, ScanFinding, SuppressedFinding, SuppressionResult, partition_inline_suppressions,
+    FindingKind, ScanFinding, Severity, SuppressedFinding, SuppressionResult,
+    partition_inline_suppressions,
 };
 pub use redact::{KnownRedaction, RedactionResult, redact_text, redact_text_with_known_values};
 pub use rules::{

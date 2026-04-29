@@ -59,7 +59,7 @@ fn scan_respects_locketignore_for_project_scan() -> Result<(), Box<dyn std::erro
     run_with_context(Cli::try_parse_from(["locket", "scan"])?, &context, &mut scan_output)?;
 
     let scan_output = String::from_utf8(scan_output)?;
-    assert!(scan_output.contains("visible.txt:1:7: provider-token-pattern"));
+    assert!(scan_output.contains("visible.txt:1:7: [warning] provider-token-pattern"));
     assert!(!scan_output.contains("ignored.txt"));
     assert!(!scan_output.contains("sk_test_sampleTokenValue123"));
     assert!(!scan_output.contains("sk_test_visibleTokenValue123"));
@@ -133,15 +133,19 @@ fn scan_inline_suppression_does_not_silence_known_secret_match()
     )?;
 
     let mut scan_output = Vec::new();
-    run_with_context(
+    let result = run_with_context(
         Cli::try_parse_from(["locket", "scan", "--require-known", "leak.txt"])?,
         &context,
         &mut scan_output,
-    )?;
+    );
+    let Err(error) = result else {
+        return Err("known-secret match must fail closed (blocking)".into());
+    };
+    assert_eq!(error.exit_code(), 69);
 
     let scan_output = String::from_utf8(scan_output)?;
-    assert!(scan_output.contains("leak.txt:1:4: known-secret"));
-    assert!(scan_output.contains("scan: 1 finding(s)"));
+    assert!(scan_output.contains("leak.txt:1:4: [blocking] known-secret"));
+    assert!(scan_output.contains("scan: 1 finding(s) (blocking=1 warning=0)"));
     assert!(!scan_output.contains("scan: 1 suppressed"));
     assert!(!scan_output.contains("known-secret-value"));
     Ok(())
@@ -189,14 +193,19 @@ fn scan_require_known_matches_vault_values_without_printing_them()
     std::fs::write(directory.path().join("sample.txt"), "db=known-secret-value\n")?;
 
     let mut scan_output = Vec::new();
-    run_with_context(
+    let result = run_with_context(
         Cli::try_parse_from(["locket", "scan", "--require-known", "sample.txt"])?,
         &context,
         &mut scan_output,
-    )?;
+    );
+    let Err(error) = result else {
+        return Err("known-secret match must fail closed (blocking)".into());
+    };
+    assert_eq!(error.exit_code(), 69);
 
     let scan_output = String::from_utf8(scan_output)?;
     assert!(scan_output.contains("known-secret"));
+    assert!(scan_output.contains("[blocking]"));
     assert!(scan_output.contains("known-value coverage checked 1 value(s)"));
     assert!(!scan_output.contains("known-secret-value"));
     Ok(())
@@ -222,14 +231,18 @@ fn scan_staged_uses_index_content_without_printing_known_values()
     std::fs::write(&sample_path, "db=redacted-in-working-tree\n")?;
 
     let mut scan_output = Vec::new();
-    run_with_context(
+    let result = run_with_context(
         Cli::try_parse_from(["locket", "scan", "--staged", "--require-known"])?,
         &context,
         &mut scan_output,
-    )?;
+    );
+    let Err(error) = result else {
+        return Err("staged known-secret match must fail closed (blocking)".into());
+    };
+    assert_eq!(error.exit_code(), 69);
 
     let scan_output = String::from_utf8(scan_output)?;
-    assert!(scan_output.contains("sample.txt:1:4: known-secret"));
+    assert!(scan_output.contains("sample.txt:1:4: [blocking] known-secret"));
     assert!(scan_output.contains("known-value coverage checked 1 value(s)"));
     assert!(!scan_output.contains("known-secret-value"));
     assert!(!scan_output.contains("redacted-in-working-tree"));
@@ -404,5 +417,102 @@ fn redact_warns_when_known_coverage_skipped_without_project()
     )?;
     assert!(!coverage.known_coverage_active);
     assert!(coverage.skipped_message.is_some());
+    Ok(())
+}
+
+#[test]
+fn scan_warning_only_provider_token_returns_zero_exit_code()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    std::fs::write(directory.path().join("notes.txt"), "token=sk_test_warningTokenValueA\n")?;
+
+    let mut scan_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "scan", "notes.txt"])?,
+        &context,
+        &mut scan_output,
+    )?;
+
+    let scan_output = String::from_utf8(scan_output)?;
+    assert!(scan_output.contains("[warning] provider-token-pattern"));
+    assert!(scan_output.contains("scan: 1 finding(s) (blocking=0 warning=1)"));
+    Ok(())
+}
+
+#[test]
+fn scan_blocking_known_secret_fails_with_exit_69() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    let args = test_secret_write_args("DATABASE_URL");
+    crate::set_secret_value(&context, &args, "block-me-secret-value", "manual", 1_000)?;
+    std::fs::write(directory.path().join("leak.txt"), "db=block-me-secret-value\n")?;
+
+    let mut scan_output = Vec::new();
+    let result = run_with_context(
+        Cli::try_parse_from(["locket", "scan", "--require-known", "leak.txt"])?,
+        &context,
+        &mut scan_output,
+    );
+
+    let Err(error) = result else {
+        return Err("blocking scan finding must surface a typed error".into());
+    };
+    assert_eq!(error.exit_code(), 69);
+    let scan_output = String::from_utf8(scan_output)?;
+    assert!(scan_output.contains("[blocking] known-secret"));
+    assert!(scan_output.contains("(blocking=1 warning=0)"));
+    assert!(!scan_output.contains("block-me-secret-value"));
+    Ok(())
+}
+
+#[test]
+fn scan_suppressed_audit_row_records_severity_breakdown() -> Result<(), Box<dyn std::error::Error>>
+{
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    let entropy_token = "Z9a$kLmN2pQx7R!sT4vW8yB3cD6eF";
+    std::fs::write(
+        directory.path().join("mixed.txt"),
+        format!(
+            "high={entropy_token} # locket-allow: known fixture\n\
+             pat=sk_test_warningTokenValueB\n",
+        ),
+    )?;
+
+    let mut scan_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "scan", "mixed.txt"])?,
+        &context,
+        &mut scan_output,
+    )?;
+
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let metadata: String = store.connection().query_row(
+        "SELECT metadata_json FROM audit_log WHERE action = 'SCAN' AND status = 'SUPPRESSED'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert!(metadata.contains("\"command\":\"scan\""));
+    assert!(metadata.contains("\"kept_warning_count\":1"));
+    assert!(metadata.contains("\"kept_blocking_count\":0"));
+    assert!(metadata.contains("\"severity\":\"warning\""));
+    assert!(!metadata.contains(entropy_token));
+    assert!(!metadata.contains("sk_test_warningTokenValueB"));
     Ok(())
 }
