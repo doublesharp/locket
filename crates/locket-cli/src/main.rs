@@ -58,6 +58,8 @@ enum Command {
     Purge(PurgeArgs),
     /// List secrets.
     List(ListArgs),
+    /// Execute a child process with scoped injection.
+    Exec(ExecArgs),
     /// Lock local agent-held keys.
     Lock,
     /// Unlock the local vault.
@@ -178,6 +180,19 @@ struct ListArgs {
     /// Include deleted sources and deprecated version counts.
     #[arg(long)]
     all: bool,
+}
+
+#[derive(Debug, Args)]
+struct ExecArgs {
+    /// Secret name to inject. May be repeated.
+    #[arg(long = "secret")]
+    secrets: Vec<String>,
+    /// Inject every active profile secret after confirmation.
+    #[arg(long)]
+    all: bool,
+    /// Command and arguments after `--`.
+    #[arg(last = true, required = true)]
+    command: Vec<String>,
 }
 
 #[derive(Debug, Args)]
@@ -397,6 +412,7 @@ fn run_with_context(
         Command::Get(args) => get_command(context, output, &args)?,
         Command::Rm(args) => rm_command(context, output, &args)?,
         Command::List(args) => list_command(context, output, &args)?,
+        Command::Exec(args) => exec_command(context, output, &args)?,
         Command::EmitExample => emit_example_command(context, output)?,
         Command::Profile { command } => profile_command(context, output, command)?,
         Command::Scan(args) => scan_command(context, output, args)?,
@@ -734,6 +750,49 @@ fn list_command(
         )?;
     }
     Ok(())
+}
+
+fn exec_command(
+    context: &RuntimeContext,
+    output: &mut impl Write,
+    args: &ExecArgs,
+) -> Result<(), CliError> {
+    if args.all {
+        return Err(CliError::Config(
+            "exec --all confirmation is not wired in this build yet".to_owned(),
+        ));
+    }
+    if args.secrets.is_empty() {
+        return Err(CliError::Config(
+            "exec requires at least one --secret in this build".to_owned(),
+        ));
+    }
+
+    let mut locket_env = locket_exec::EnvMap::new();
+    for key in &args.secrets {
+        let resolved = resolve_active_secret(context, key)?;
+        let value = decrypt_current_secret(context, &resolved)?;
+        locket_env.insert(resolved.secret.name, value.as_str().to_owned());
+    }
+
+    let request = locket_exec::ExecutionRequest {
+        argv: args.command.clone(),
+        parent_env: std::env::vars().collect(),
+        inherit_env: vec!["PATH".to_owned()],
+        external_env: locket_exec::EnvMap::new(),
+        locket_env,
+        env_mode: locket_exec::EnvMode::Strict,
+        override_mode: locket_exec::EnvOverrideMode::Locket,
+    };
+    let prepared = locket_exec::prepare_execution(&request)
+        .map_err(|error| CliError::Config(error.to_string()))?;
+    let status = prepared.command().status()?;
+    if status.success() {
+        return Ok(());
+    }
+
+    writeln!(output, "child exited with status {status}")?;
+    Err(CliError::Config("child process failed".to_owned()))
 }
 
 fn profile_command(
@@ -1596,6 +1655,7 @@ mod tests {
             &["locket", "rm", "DATABASE_URL"],
             &["locket", "purge", "DATABASE_URL", "--all-versions"],
             &["locket", "rotate", "DATABASE_URL", "--grace-ttl", "24h"],
+            &["locket", "exec", "--secret", "DATABASE_URL", "--", "/bin/sh", "-c", "true"],
         ] {
             assert!(Cli::try_parse_from(args).is_ok(), "{args:?}");
         }
@@ -1758,6 +1818,49 @@ mod tests {
         assert!(example.contains("DATABASE_URL="));
         assert!(example.contains("OPENAI_API_KEY="));
         assert!(!example.contains("postgres://localhost/app"));
+        Ok(())
+    }
+
+    #[test]
+    fn exec_injects_secret_into_child_scope() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        let mut output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut output,
+        )?;
+        let args = super::SecretWriteArgs {
+            key: "DATABASE_URL".to_owned(),
+            source: super::SourceArg { source: Some(super::SecretSourceArg::UserLocal) },
+            metadata: super::SecretMetadataFlags {
+                description: None,
+                owner: None,
+                tags: Vec::new(),
+                required: false,
+                optional: false,
+            },
+        };
+        super::set_secret_value(&context, &args, "postgres://localhost/app", "manual", 1_000)?;
+
+        let mut exec_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from([
+                "locket",
+                "exec",
+                "--secret",
+                "DATABASE_URL",
+                "--",
+                "/bin/sh",
+                "-c",
+                "test \"$DATABASE_URL\" = \"postgres://localhost/app\"",
+            ])?,
+            &context,
+            &mut exec_output,
+        )?;
+
+        assert!(String::from_utf8(exec_output)?.is_empty());
         Ok(())
     }
 

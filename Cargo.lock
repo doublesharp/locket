@@ -486,6 +486,7 @@ dependencies = [
  "directories",
  "locket-core",
  "locket-crypto",
+ "locket-exec",
  "locket-platform",
  "locket-scan",
  "locket-store",
