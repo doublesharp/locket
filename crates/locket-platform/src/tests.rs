@@ -287,6 +287,25 @@ fn recovery_envelope_round_trips_and_rejects_tampering() -> Result<(), PlatformE
     Ok(())
 }
 
+#[test]
+fn recovery_envelope_rejects_impossible_entry_count_without_allocation() -> Result<(), PlatformError>
+{
+    let envelope = RecoveryEnvelope {
+        kdf_profile_id: "lk_kdf_test".to_owned(),
+        created_at_unix_nanos: 123,
+        entries: Vec::new(),
+    };
+    let mut bytes = envelope.serialize()?;
+    let count_offset = bytes.len() - 4;
+    bytes[count_offset..].copy_from_slice(&u32::MAX.to_le_bytes());
+
+    assert!(matches!(
+        RecoveryEnvelope::deserialize(&bytes),
+        Err(PlatformError::InvalidRecoveryEnvelope(_))
+    ));
+    Ok(())
+}
+
 #[cfg(unix)]
 #[test]
 fn recovery_files_use_user_only_permissions() -> Result<(), PlatformError> {
