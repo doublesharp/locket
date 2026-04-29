@@ -1,5 +1,15 @@
 [workspace]
-members = ["crates/locket-core"]
+members = [
+    "crates/locket-agent",
+    "crates/locket-cli",
+    "crates/locket-core",
+    "crates/locket-crypto",
+    "crates/locket-docker",
+    "crates/locket-exec",
+    "crates/locket-platform",
+    "crates/locket-scan",
+    "crates/locket-store",
+]
 exclude = ["fuzz"]
 resolver = "2"
 

@@ -1,0 +1,17 @@
+[package]
+name = "locket-exec"
+description = "Process execution and environment injection for Locket"
+edition.workspace = true
+categories = ["command-line-utilities"]
+keywords = ["secrets", "env", "process"]
+license.workspace = true
+readme = "../../README.md"
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+locket-core = { path = "../locket-core" }

@@ -1,0 +1,16 @@
+[package]
+name = "locket-docker"
+description = "Docker and Compose helpers for Locket"
+edition.workspace = true
+categories = ["command-line-utilities"]
+keywords = ["secrets", "docker", "compose"]
+license.workspace = true
+readme = "../../README.md"
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]

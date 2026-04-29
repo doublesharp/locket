@@ -1,0 +1,16 @@
+[package]
+name = "locket-scan"
+description = "Scanner and redactor for Locket"
+edition.workspace = true
+categories = ["command-line-utilities"]
+keywords = ["secrets", "scanner", "redaction"]
+license.workspace = true
+readme = "../../README.md"
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]

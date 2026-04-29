@@ -1,0 +1,16 @@
+[package]
+name = "locket-agent"
+description = "Local agent and protocol types for Locket"
+edition.workspace = true
+categories = ["command-line-utilities"]
+keywords = ["secrets", "agent", "ipc"]
+license.workspace = true
+readme = "../../README.md"
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]

@@ -1,0 +1,21 @@
+[package]
+name = "locket-cli"
+description = "Command-line interface for Locket"
+edition.workspace = true
+categories = ["command-line-utilities"]
+keywords = ["secrets", "env", "cli"]
+license.workspace = true
+readme = "../../README.md"
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[[bin]]
+name = "locket"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+clap = { workspace = true }
