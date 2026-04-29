@@ -10,12 +10,21 @@ my @required_specs = qw(
   scan-redaction.md desktop.md audit.md team-sync-recovery.md operations.md
   performance.md errors.md engineering.md testing.md fuzzing.md
 );
+my %required_specs = map { $_ => 1 } @required_specs;
 
 my @errors;
 for my $spec (@required_specs) {
     my $path = "docs/specs/$spec";
     push @errors, "missing required spec: $path" unless -f $path;
 }
+
+my @spec_files = sort map { s{\Adocs/specs/}{}r } glob 'docs/specs/*.md';
+for my $spec (@spec_files) {
+    push @errors, "unregistered spec file: docs/specs/$spec" unless $required_specs{$spec};
+}
+
+check_spec_index();
+check_spec_backlinks();
 
 my @markdown_files;
 find(
@@ -74,6 +83,47 @@ if (@errors) {
 }
 
 print "docs-check passed\n";
+
+sub check_spec_index {
+    my $index = 'docs/specs/index.md';
+    open my $fh, '<', $index or die "open $index: $!";
+    my @reading_order;
+    my $in_reading_order = 0;
+    while (my $line = <$fh>) {
+        if ($line =~ /^## Reading Order\s*$/) {
+            $in_reading_order = 1;
+            next;
+        }
+        last if $in_reading_order && $line =~ /^##\s+/;
+        next unless $in_reading_order;
+        push @reading_order, $1 if $line =~ /^\s*-\s+\[[^\]]+\]\(([^)#]+)(?:#[^)]+)?\)\s*$/;
+    }
+    close $fh;
+
+    my @expected = grep { $_ ne 'index.md' } @required_specs;
+    if (join("\n", @reading_order) ne join("\n", @expected)) {
+        push @errors,
+          "docs/specs/index.md Reading Order must match required spec list: "
+          . "expected [@expected], found [@reading_order]";
+    }
+}
+
+sub check_spec_backlinks {
+    for my $spec (@required_specs) {
+        next if $spec eq 'index.md';
+        my $path = "docs/specs/$spec";
+        next unless -f $path;
+        open my $fh, '<', $path or die "open $path: $!";
+        my $first_line = <$fh> // '';
+        my $second_line = <$fh> // '';
+        my $third_line = <$fh> // '';
+        close $fh;
+        my $preamble = join '', $first_line, $second_line, $third_line;
+        if ($preamble !~ /\QStart at [index.md](index.md).\E/) {
+            push @errors, "$path must start with a backlink to docs/specs/index.md";
+        }
+    }
+}
 
 sub dirname {
     my ($path) = @_;
