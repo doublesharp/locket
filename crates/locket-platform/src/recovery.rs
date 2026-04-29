@@ -13,6 +13,9 @@ use crate::fs_helpers::{secure_directory, write_user_only_file};
 /// Schema version for recovery KDF TOML files.
 pub const RECOVERY_KDF_TOML_VERSION: u32 = 1;
 
+const MIN_SERIALIZED_RECOVERY_ENTRY_LEN: usize =
+    2 + "entry_kind".len() + 4 + 2 + "entry_id".len() + 4 + NONCE_LEN + 4;
+
 /// Persisted KDF parameters for the recovery envelope (stored in `recovery/kdf.toml`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RecoveryKdfToml {
@@ -213,8 +216,17 @@ impl RecoveryEnvelope {
         let count_bytes = read_exact(&mut cur, 4, data)?;
         let entry_count =
             u32::from_le_bytes([count_bytes[0], count_bytes[1], count_bytes[2], count_bytes[3]]);
+        let entry_count = usize::try_from(entry_count)
+            .map_err(|_| PlatformError::InvalidRecoveryEnvelope("entry count too large".into()))?;
+        let max_possible_entries =
+            data.len().saturating_sub(cur) / MIN_SERIALIZED_RECOVERY_ENTRY_LEN;
+        if entry_count > max_possible_entries {
+            return Err(PlatformError::InvalidRecoveryEnvelope(
+                "entry count exceeds envelope length".into(),
+            ));
+        }
         // Entries
-        let mut entries = Vec::with_capacity(entry_count as usize);
+        let mut entries = Vec::with_capacity(entry_count);
         for _ in 0..entry_count {
             let entry_kind = read_field_string(&mut cur, data)?;
             let entry_id = read_field_string(&mut cur, data)?;

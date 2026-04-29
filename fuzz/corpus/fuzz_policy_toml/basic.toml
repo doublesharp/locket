@@ -1,0 +1,7 @@
+[commands.web]
+argv = ["npm", "run", "dev"]
+required_secrets = ["DATABASE_URL"]
+optional_secrets = ["SENTRY_DSN"]
+env_mode = "minimal"
+override = "error"
+ttl = "15m"

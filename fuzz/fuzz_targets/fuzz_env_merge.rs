@@ -9,11 +9,9 @@ fuzz_target!(|data: &[u8]| {
     let locket = build_env(data, b"LOCKET_");
 
     for mode in [EnvMode::Strict, EnvMode::Minimal, EnvMode::Merge, EnvMode::Passthrough] {
-        for override_mode in [
-            EnvOverrideMode::Locket,
-            EnvOverrideMode::Preserve,
-            EnvOverrideMode::Error,
-        ] {
+        for override_mode in
+            [EnvOverrideMode::Locket, EnvOverrideMode::Preserve, EnvOverrideMode::Error]
+        {
             let _ = merge_environment(
                 &parent,
                 &["PARENT_0", "PARENT_1"],
@@ -32,7 +30,7 @@ fn build_env(data: &[u8], prefix: &[u8]) -> EnvMap {
     for (index, chunk) in data.chunks(4).take(8).enumerate() {
         let name = format!("{}{}", String::from_utf8_lossy(prefix), index);
         let value = String::from_utf8_lossy(chunk).into_owned();
-        env.insert(name, value);
+        env.insert(name, value.into());
     }
     env
 }
