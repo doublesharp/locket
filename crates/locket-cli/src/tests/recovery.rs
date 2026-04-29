@@ -1,5 +1,6 @@
 #[allow(unused_imports)]
 use super::*;
+use sha2::Digest;
 
 #[test]
 fn recovery_restore_rejects_mismatched_kdf_profile() -> Result<(), Box<dyn std::error::Error>> {
@@ -61,6 +62,73 @@ fn recovery_restore_recovers_master_key_from_envelope() -> Result<(), Box<dyn st
     let recover_output = String::from_utf8(recover_output)?;
     assert!(recover_output.contains("recovered: master_key"));
     assert!(recover_output.contains("metadata_only: yes"));
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let (schema_version, command, metadata, previous_hmac, hmac): (
+        u16,
+        String,
+        String,
+        Vec<u8>,
+        Vec<u8>,
+    ) = store.connection().query_row(
+        "SELECT schema_version, command, metadata_json, previous_hmac, hmac
+         FROM audit_log WHERE action = 'RECOVER'",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+    )?;
+    assert_eq!(schema_version, 1);
+    assert_eq!(command, "recover");
+    assert_eq!(previous_hmac.len(), locket_core::AUDIT_HMAC_LEN);
+    assert_eq!(hmac.len(), locket_core::AUDIT_HMAC_LEN);
+    let expected_checksum = crate::format_hex(&sha2::Sha256::digest(envelope.serialize()?));
+    let metadata: serde_json::Value = serde_json::from_str(&metadata)?;
+    assert_eq!(metadata["schema_version"], 1);
+    assert_eq!(metadata["action"], "RECOVER");
+    assert_eq!(metadata["status"], "SUCCESS");
+    assert_eq!(metadata["command"], "recover");
+    assert_eq!(metadata["project_id"], project_id);
+    assert_eq!(metadata["kdf_profile_id"], kdf.kdf_profile_id);
+    assert_eq!(metadata["force"], false);
+    assert_eq!(metadata["restored_entry_kinds"], serde_json::json!(["master_key"]));
+    assert_eq!(metadata["restored_entry_counts"]["master_key"], 1);
+    assert_eq!(metadata["envelope_checksum_sha256"], expected_checksum);
+    Ok(())
+}
+
+#[test]
+fn recovery_restore_validation_failure_writes_no_recover_audit()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    let mut init_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut init_output,
+    )?;
+    let resolved = crate::require_project(&context)?;
+    let (project_id, master_key) = test_project_id_and_master_key(&context)?;
+    let (kdf, mut envelope, code_bytes) =
+        setup_recovery_envelope(&context, &project_id, &master_key)?;
+    envelope.kdf_profile_id = "lk_kdf_other".to_owned();
+
+    let result = crate::restore_from_recovery_code(
+        &context,
+        &mut Vec::new(),
+        &resolved,
+        &kdf,
+        &envelope,
+        &code_bytes,
+        true,
+    );
+
+    assert_error_contains(result, "kdf profile mismatch");
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let recover_rows: i64 = store.connection().query_row(
+        "SELECT COUNT(*) FROM audit_log WHERE action = 'RECOVER'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(recover_rows, 0);
     Ok(())
 }
 
@@ -117,6 +185,7 @@ fn recovery_rotate_creates_envelope_and_prints_full_code() -> Result<(), Box<dyn
         |row| row.get(0),
     )?;
     assert!(metadata.contains("\"kdf_profile_id\""));
+    assert!(metadata.contains("\"command\":\"recovery rotate\""));
     assert!(!metadata.contains(code_line));
     Ok(())
 }

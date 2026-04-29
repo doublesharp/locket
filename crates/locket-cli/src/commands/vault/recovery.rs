@@ -5,6 +5,7 @@ use locket_platform::{
 };
 use locket_store::AuditWrite;
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use std::io::Write;
 use std::path::PathBuf;
 
@@ -155,6 +156,7 @@ pub fn restore_from_recovery_code(
             "no master_key entries found in recovery envelope".to_owned(),
         ));
     }
+    write_recover_audit(context, resolved, kdf, envelope, restored, force)?;
     writeln!(output, "recovered: master_key")?;
     writeln!(output, "metadata_only: yes")?;
     Ok(())
@@ -238,6 +240,7 @@ fn write_recovery_rotate_audit(
         "schema_version": 1,
         "action": "RECOVERY_ROTATE",
         "status": "SUCCESS",
+        "command": "recovery rotate",
         "kdf_profile_id": kdf_profile_id,
     });
     let audit = AuditWrite {
@@ -247,6 +250,48 @@ fn write_recovery_rotate_audit(
         status: "SUCCESS",
         secret_name: None,
         command: Some("recovery rotate"),
+        metadata_json: &metadata,
+        timestamp,
+    };
+    store.append_audit(audit_key.as_ref(), &audit)?;
+    Ok(())
+}
+
+fn write_recover_audit(
+    context: &RuntimeContext,
+    resolved: &ResolvedProject,
+    kdf: &RecoveryKdfToml,
+    envelope: &RecoveryEnvelope,
+    restored_master_keys: usize,
+    force: bool,
+) -> Result<(), CliError> {
+    let timestamp = now_unix_nanos()?;
+    let mut store = open_store(context)?;
+    let audit_key =
+        load_project_key(context, &store, resolved.config.project_id.as_str(), KeyPurpose::Audit)?;
+    let envelope_bytes = envelope.serialize()?;
+    let envelope_checksum = format_hex(&Sha256::digest(&envelope_bytes));
+    let metadata = json!({
+        "schema_version": 1,
+        "action": "RECOVER",
+        "status": "SUCCESS",
+        "command": "recover",
+        "project_id": resolved.config.project_id.as_str(),
+        "kdf_profile_id": &kdf.kdf_profile_id,
+        "envelope_checksum_sha256": envelope_checksum,
+        "restored_entry_kinds": ["master_key"],
+        "restored_entry_counts": {
+            "master_key": restored_master_keys,
+        },
+        "force": force,
+    });
+    let audit = AuditWrite {
+        project_id: resolved.config.project_id.as_str(),
+        profile_id: None,
+        action: "RECOVER",
+        status: "SUCCESS",
+        secret_name: None,
+        command: Some("recover"),
         metadata_json: &metadata,
         timestamp,
     };
