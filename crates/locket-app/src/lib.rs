@@ -55,6 +55,43 @@ pub enum TrayIconState {
     ErrorDegraded,
 }
 
+/// Tray icon asset style required for a platform.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TrayIconAssetStyle {
+    /// macOS template image: black-only alpha mask.
+    TemplateMask,
+    /// Full-color icon for light system themes.
+    FullColorLight,
+    /// Full-color icon for dark system themes.
+    FullColorDark,
+}
+
+/// Metadata-only tray icon descriptor.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TrayIconDescriptor {
+    /// State represented by this icon.
+    pub state: TrayIconState,
+    /// Lucide icon name backing the state.
+    pub lucide_icon: &'static str,
+    /// Short safe label for accessibility and diagnostics.
+    pub label: &'static str,
+}
+
+impl TrayIconState {
+    /// Return the metadata-only icon descriptor for this state.
+    #[must_use]
+    pub const fn descriptor(self) -> TrayIconDescriptor {
+        let (lucide_icon, label) = match self {
+            Self::AgentUnlocked => ("lock-open", "agent running, vault unlocked"),
+            Self::AgentLocked => ("lock", "agent running, vault locked"),
+            Self::AgentStopped => ("lock", "agent stopped"),
+            Self::ScanWarning => ("shield-alert", "scan warning"),
+            Self::ErrorDegraded => ("alert-triangle", "error or degraded"),
+        };
+        TrayIconDescriptor { state: self, lucide_icon, label }
+    }
+}
+
 /// Access setting for a release webview capability.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CapabilityAccess {
@@ -130,10 +167,29 @@ pub const fn tray_icon_states() -> &'static [TrayIconState] {
     ]
 }
 
+/// Return the icon asset styles required for a target platform.
+#[must_use]
+pub const fn tray_icon_asset_styles_for_os(os: &str) -> &'static [TrayIconAssetStyle] {
+    match os.as_bytes() {
+        b"macos" => &[TrayIconAssetStyle::TemplateMask],
+        b"windows" | b"linux" => {
+            &[TrayIconAssetStyle::FullColorLight, TrayIconAssetStyle::FullColorDark]
+        }
+        _ => &[TrayIconAssetStyle::FullColorLight, TrayIconAssetStyle::FullColorDark],
+    }
+}
+
+/// Return all tray icon descriptors in spec order.
+#[must_use]
+pub fn tray_icon_descriptors() -> Vec<TrayIconDescriptor> {
+    tray_icon_states().iter().map(|state| state.descriptor()).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        CapabilityAccess, ReleaseWebviewPolicy, TrayIconState, primary_views, tray_icon_states,
+        CapabilityAccess, ReleaseWebviewPolicy, TrayIconAssetStyle, TrayIconState, primary_views,
+        tray_icon_asset_styles_for_os, tray_icon_descriptors, tray_icon_states,
     };
 
     #[test]
@@ -152,6 +208,32 @@ mod tests {
                 TrayIconState::ScanWarning,
                 TrayIconState::ErrorDegraded,
             ]
+        );
+    }
+
+    #[test]
+    fn tray_icon_descriptors_use_lucide_spec_icons() {
+        let descriptors = tray_icon_descriptors();
+
+        assert_eq!(descriptors.len(), tray_icon_states().len());
+        assert_eq!(descriptors[0].lucide_icon, "lock-open");
+        assert_eq!(descriptors[1].lucide_icon, "lock");
+        assert_eq!(descriptors[2].lucide_icon, "lock");
+        assert_eq!(descriptors[3].lucide_icon, "shield-alert");
+        assert_eq!(descriptors[4].lucide_icon, "alert-triangle");
+        assert!(descriptors.iter().all(|descriptor| !descriptor.label.contains("secret")));
+    }
+
+    #[test]
+    fn tray_icon_asset_styles_match_platform_requirements() {
+        assert_eq!(tray_icon_asset_styles_for_os("macos"), &[TrayIconAssetStyle::TemplateMask]);
+        assert_eq!(
+            tray_icon_asset_styles_for_os("windows"),
+            &[TrayIconAssetStyle::FullColorLight, TrayIconAssetStyle::FullColorDark,]
+        );
+        assert_eq!(
+            tray_icon_asset_styles_for_os("linux"),
+            &[TrayIconAssetStyle::FullColorLight, TrayIconAssetStyle::FullColorDark,]
         );
     }
 
