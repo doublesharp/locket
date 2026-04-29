@@ -679,6 +679,70 @@ to touch. Items marked `[x]` are merged to `main` and verified.
     them (e.g. `META` failure path).
   - Files: shared validator in `crates/locket-core/src/metadata.rs` (used by
     every editor of metadata).
+- [ ] Member/device revocation produces a rotation checklist for every
+  profile/secret the member or device could access.
+  - Spec: `docs/specs/invariants.md` Fixed Implementation Decisions.
+  - Audit: extend `TEAM_REMOVE`/`DEVICE_REVOKE` rows with checklist
+    summary metadata.
+  - Files: shared helper in `crates/locket-core/src/team/role.rs`,
+    consumers in `team`/`device` revoke paths.
+- [ ] Recovery-code Crockford Base32 encoding with two checksum chars
+  (detect-only; never auto-correct).
+  - Spec: `docs/specs/invariants.md` Fixed Implementation Decisions;
+    `docs/specs/crypto.md`.
+  - Errors: `RecoveryUnavailable` (101).
+  - Files: `crates/locket-crypto/src/recovery.rs`.
+- [ ] Sealed-bundle plaintext manifest minimization: no profile, secret,
+  policy names; no member/device labels. Manifest carries only digest,
+  recipients, project id, schema, `created_at`, profile count.
+  - Spec: `docs/specs/team-sync-recovery.md`.
+  - Files: `crates/locket-cli/src/commands/team/bundle.rs`,
+    `crates/locket-crypto/src/` sealing module.
+- [ ] `imported_audit_chains` structural verifier (monotonic sequence,
+  prev-HMAC linkage, checkpoint HMAC match) used by
+  `import-bundle`/`team accept` and surfaced via `audit verify`.
+  - Spec: `docs/specs/team-sync-recovery.md`,
+    `docs/specs/audit.md`.
+  - Errors: `IntegrityFailure` (93), `BundleInvalid` (110).
+  - Audit: extend `BACKUP_IMPORT`/`TEAM_ACCEPT` with chain-status
+    metadata.
+  - Files: `crates/locket-store/src/audit.rs`,
+    `crates/locket-cli/src/commands/team/bundle.rs`.
+- [ ] `import-bundle`/`team accept` apply rotate-with-no-grace lifecycle
+  when importing a newer version over an active target (deprecate prior,
+  set `last_rotated_at`).
+  - Spec: `docs/specs/team-sync-recovery.md`.
+  - Audit: `SECRET_ROTATE` rows for each affected target.
+  - Files: `crates/locket-cli/src/commands/team/bundle.rs`.
+- [ ] `locket device init --force` rekey: atomic
+  `DEVICE_REVOKE`+`DEVICE_ADD`, recovery-envelope update, rollback if
+  the envelope update fails.
+  - Spec: `docs/specs/team-sync-recovery.md` Team Local Development
+    Bootstrap.
+  - Errors: `KeychainEntryMissing` (100), `RecoveryUnavailable` (101).
+  - Audit: paired `DEVICE_REVOKE` + `DEVICE_ADD`.
+  - Files: `crates/locket-cli/src/commands/team/device.rs`.
+- [ ] `locket recover` restores Locket-managed automation-client private
+  keys from the recovery envelope to their original
+  `OsKeychain`/`WrappedLocalFile` destinations; `--force` rotates intact
+  keychain entries with explicit override metadata in the `RECOVER`
+  audit row.
+  - Spec: `docs/specs/team-sync-recovery.md`.
+  - Errors: `KeychainEntryMissing` (100), `RecoveryUnavailable` (101).
+  - Files: `crates/locket-cli/src/commands/vault/recovery.rs`,
+    `crates/locket-store/src/automation_client*`.
+- [ ] Audit-chain HMAC verification recomputes each row using the row's
+  stored `schema_version`, not the binary's current version.
+  - Spec: `docs/specs/audit.md`.
+  - Errors: `IntegrityFailure` (93), `SchemaMismatch` (91).
+  - Files: `crates/locket-store/src/audit.rs`.
+- [ ] Typed `metadata_json` shape validator per audit action family
+  enforcing required fields and rejecting unknown fields without a
+  schema bump.
+  - Spec: `docs/specs/audit.md` Audit Metadata Shapes.
+  - Errors: `IntegrityFailure` (93).
+  - Files: `crates/locket-store/src/audit.rs` writer plus per-action
+    metadata builders.
 
 ### App/UI
 
