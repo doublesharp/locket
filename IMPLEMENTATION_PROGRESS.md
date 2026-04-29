@@ -163,7 +163,10 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
 - [x] `locket redact` spec coverage.
 - [x] `locket context` spec coverage.
 - [x] `locket ai-safe` spec coverage.
-- [~] [539d8266] ready: agent-539d8266/lock-unlock-audit @ 5230342 — direct-CLI `LOCK`/`UNLOCK` audit rows landed; `unlock` records `method` (`OsKeychain` | `Passphrase`) and the locked-vault path stays metadata-only. Agent-backed RPC wiring and `ttl_seconds` remain a follow-up under the daemon slice (`docs/specs/agent.md:81-95`).
+- [x] Direct-CLI `LOCK`/`UNLOCK` audit rows record method
+  (`OsKeychain`/`Passphrase`); locked-vault path stays metadata-only.
+  Agent-backed RPC and `ttl_seconds` tracked under the daemon
+  decomposition.
 - [x] Trusted-root management.
 - [x] Dangerous-profile flow.
 - [x] `locket meta`.
@@ -182,15 +185,12 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
 - [~] Destructive confirmation flows: `purge`, dangerous-profile, and
   root untrust shipped. Remaining: policy deletion and other sensitive
   surfaces (`docs/specs/policy.md:26`).
-- [~] [70c448c4] ready: agent-70c448c4/source-precedence @ f20dfcb — run audit records selected source by precedence; set tombstone preflight returns typed SecretDeleted.
-  Claim: branch agent-70c448c4/source-precedence, worktree .worktrees/agent-70c448c4-source-precedence.
-  `rotate`, `rm`, `purge`, `history`, `diff`, `copy`, reveal/copy, and execution.
-  - Spec: `docs/specs/data-model.md` (`SecretSource` precedence ordering),
-    `docs/specs/runtime.md:188-216` (rotation/history/diff/copy semantics).
-  - Errors: `SecretSourceConflict` (71), `SecretNotFound` (74), `SecretDeleted` (75).
-  - Audit actions: existing `SECRET_*` actions; add `source` field uniformly.
-  - Files: shared resolver in `crates/locket-store/src/secret/queries.rs`,
-    callers in `crates/locket-cli/src/secrets_cmd.rs`.
+- [~] Source-precedence and multi-source behavior across `set`, `get`,
+  `list`, `rotate`, `rm`, `purge`, `history`, `diff`, `copy`,
+  reveal/copy, and execution. Run audit records selected source by
+  precedence and set tombstone preflight returns typed `SecretDeleted`;
+  remaining commands still need the unified resolver
+  (`docs/specs/data-model.md`, `docs/specs/runtime.md:188-216`).
 - [x] Stable typed CLI error mapping and exit codes across all command families.
 - [x] Secret-name (`^[A-Z_][A-Z0-9_]*$`) and profile-name
   (`^[a-z][a-z0-9_-]{0,63}$`) regex validation plus `_default` reserved
@@ -685,9 +685,10 @@ editing — they drift. Severity: **blocker** (security/correctness),
   - Files: `scripts/release/`, signing config in `Cargo.toml` workspace
     metadata once tooling is chosen.
 - [x] Markdown/spec link checks via `make docs-check`.
-- [ ] `agent logs` retention: JSON Lines, 1 MiB rotation, 5 files,
+- [~] [bec7ddfc] `agent logs` retention: JSON Lines, 1 MiB rotation, 5 files,
   default 200 lines, `--lines` cap 10000, RFC 3339 / Unix `--since`,
   `--follow` streaming (`docs/specs/operations.md`).
+  Claim: branch agent-bec7ddfc/agent-logs-retention, worktree .worktrees/agent-bec7ddfc-agent-logs-retention.
 - [ ] Update-manifest fetch keyed only by channel/platform/arch/version
   (no project/device/host/user/install ids); release-key rotation
   requires a dual-signed manifest (`docs/specs/operations.md`).
