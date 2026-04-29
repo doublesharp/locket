@@ -270,6 +270,67 @@ inherit_env = ["PATH"]
 }
 
 #[test]
+fn run_policy_audit_records_selected_source_by_precedence_without_values()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    let user_args =
+        test_secret_write_args_for_source("DATABASE_URL", crate::SecretSourceArg::UserLocal);
+    crate::set_secret_value(&context, &user_args, "user-precedence-value", "manual", 1_000)?;
+    let machine_args =
+        test_secret_write_args_for_source("DATABASE_URL", crate::SecretSourceArg::MachineLocal);
+    crate::set_secret_value(&context, &machine_args, "machine-precedence-value", "manual", 2_000)?;
+
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(directory.path().join("locket.toml"))?
+        .write_all(
+            br#"
+[commands.env_check]
+argv = ["/bin/sh", "-c", "test \"$DATABASE_URL\" = \"machine-precedence-value\""]
+required_secrets = ["DATABASE_URL"]
+env_mode = "strict"
+inherit_env = ["PATH"]
+"#,
+        )?;
+
+    run_with_context(
+        Cli::try_parse_from(["locket", "run", "env_check"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let metadata: String = store.connection().query_row(
+        "SELECT metadata_json FROM audit_log WHERE action = 'RUN_POLICY'
+         ORDER BY sequence DESC LIMIT 1",
+        [],
+        |row| row.get(0),
+    )?;
+    let metadata_json: serde_json::Value = serde_json::from_str(&metadata)?;
+    assert_eq!(metadata_json["command"], "run");
+    assert_eq!(metadata_json["secret_names"], json!(["DATABASE_URL"]));
+    assert_eq!(
+        metadata_json["secrets"],
+        json!([{
+            "name": "DATABASE_URL",
+            "required": true,
+            "selected_source": "machine-local",
+            "selected_version": 1,
+            "sources": ["machine-local", "user-local"]
+        }])
+    );
+    assert!(!metadata.contains("machine-precedence-value"));
+    assert!(!metadata.contains("user-precedence-value"));
+    Ok(())
+}
+
+#[test]
 fn docker_policy_plan_and_audit_are_metadata_only() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempdir()?;
     let context = test_context(&directory);

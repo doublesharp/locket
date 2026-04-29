@@ -95,6 +95,38 @@ fn set_command_preflights_source_conflicts_before_reading_secret()
 }
 
 #[test]
+fn set_command_preflights_deleted_source_as_typed_error_before_reading_secret()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    let args = test_secret_write_args("DATABASE_URL");
+    crate::set_secret_value(&context, &args, "postgres://localhost/deleted", "manual", 1_000)?;
+    run_with_context(
+        Cli::try_parse_from(["locket", "rm", "DATABASE_URL"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+
+    let failing_context = test_context_with_failing_secret_reader(&directory);
+    let result = run_with_context(
+        Cli::try_parse_from(["locket", "set", "DATABASE_URL", "--source", "user-local"])?,
+        &failing_context,
+        &mut Vec::new(),
+    );
+    let Err(error) = result else {
+        return Err("deleted source should fail".into());
+    };
+    assert_eq!(error.exit_code(), locket_core::LocketError::SecretDeleted.exit_code());
+    assert!(error.to_string().contains("secret source is deleted"), "{error}");
+    Ok(())
+}
+
+#[test]
 fn rotate_command_reads_secure_secret_value_without_leaking_it()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempdir()?;

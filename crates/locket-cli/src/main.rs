@@ -2143,15 +2143,18 @@ pub(crate) fn write_runtime_policy_audit_if_available(
         .collect::<Vec<_>>();
     let external_sources =
         policy.external_env_sources.iter().map(external_env_source_label).collect::<Vec<_>>();
+    let secrets = policy_secret_audit_entries(selections);
     let metadata = json!({
         "schema_version": 1,
         "action": "RUN_POLICY",
         "status": status,
+        "command": "run",
         "policy": policy.name,
         "command_type": command_type(&policy.command),
         "env_mode": policy.env_mode.to_string(),
         "override": policy.override_behavior.to_string(),
         "secret_names": secret_names,
+        "secrets": secrets,
         "external_env_sources": external_sources,
     });
     let audit = AuditWrite {
@@ -2166,6 +2169,23 @@ pub(crate) fn write_runtime_policy_audit_if_available(
     };
     store.append_audit(audit_key.as_ref(), &audit)?;
     Ok(())
+}
+
+fn policy_secret_audit_entries(selections: &[PolicySecretSelection]) -> Vec<Value> {
+    selections
+        .iter()
+        .map(|selection| {
+            let mut entry = serde_json::Map::new();
+            entry.insert("name".to_owned(), json!(selection.name));
+            entry.insert("required".to_owned(), json!(selection.required));
+            entry.insert("sources".to_owned(), json!(selection.sources));
+            if let Some(secret) = &selection.selected {
+                entry.insert("selected_source".to_owned(), json!(secret.source));
+                entry.insert("selected_version".to_owned(), json!(secret.current_version));
+            }
+            Value::Object(entry)
+        })
+        .collect()
 }
 
 fn absolutize(cwd: &Path, path: &Path) -> PathBuf {

@@ -54,8 +54,8 @@ pub fn preflight_set_secret_value(
         source,
     )? {
         if existing.state == "deleted" {
-            return Err(CliError::Config(
-                "secret source is deleted; v1 does not reactivate tombstones".to_owned(),
+            return Err(secret_deleted_error(
+                "secret source is deleted; v1 does not reactivate tombstones",
             ));
         }
         return Err(secret_already_exists_error("secret exists; use rotate"));
