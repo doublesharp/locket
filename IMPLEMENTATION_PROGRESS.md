@@ -423,52 +423,25 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
     `crates/locket-core/src/policy/`.
 - [x] Shell command surface (`shellenv`, `hook`, `allow`, `deny`)
   (agent-hook install and live-grant TTL tracked under the agent daemon).
-- [ ] Resolve `lk://` references through the agent (policy authorization,
-  pinned-version resolution, expired-grace behavior).
-  - Spec: `docs/specs/runtime.md:123-155`.
-  - Errors: `AccessDenied` (73), `SecretVersionExpired` (75),
-    `SecretDeleted` (75), `GrantRequired` (72).
-  - Audit actions: `RESOLVE_REFERENCE` with reference id, profile id, version,
-    grant id; never includes the resolved value.
-  - Files: agent `ResolveReference` RPC handler; CLI consumers via `lk://`
-    resolver in `crates/locket-core/src/reference.rs`.
+- [ ] Resolve `lk://` references through the agent (policy
+  authorization, pinned-version resolution, expired-grace behavior;
+  `RESOLVE_REFERENCE` audit never carries the value)
+  (`docs/specs/runtime.md:123-155`).
 - [x] Wire Docker and Docker Compose into policy-backed CLI.
-- [ ] `locket exec --all` typed-confirmation flow and `EXEC` audit done.
-  Remaining: `locket env inspect` enhancements and documented env layering /
+- [~] `locket exec --all` typed-confirmation flow and `EXEC` audit
+  shipped. Remaining: `locket env inspect` enhancements and env-layering /
   override-mode docs.
-  - Spec: `docs/specs/runtime.md` env layering section; `docs/specs/project-cli.md`
-    for `env inspect`.
-  - Errors: `InvalidPolicy` (65).
-  - Audit actions: metadata-only `ENV_INSPECT` (or extend existing summary path).
-  - Files: `crates/locket-cli/src/main.rs` env-inspect handler.
-- [ ] VS Code extension integration backed by the local agent.
-  - Spec: `docs/specs/integrations.md:39-65`, `docs/specs/desktop.md` for
-    privacy-aware UI behavior.
-  - Errors: `AgentUnavailable` (80), `ProtocolError` (82).
-  - Audit actions: same as agent-mediated commands; extension never writes
-    audit directly.
-  - Files: new `extensions/vscode/` (out-of-tree TS) or under `crates/locket-app/`
-    once that crate exists; `LOCKET_IDE_ENV_SESSION` plumbing in shell.
-- [ ] Automation-client flows. Public metadata storage, allowed action/policy
-  fields, nonce primitives, CLI metadata flows are in. Remaining: private-key
-  storage and challenge-response authentication.
-  - Spec: `docs/specs/agent.md:62-79` (canonical-request hashing),
-    `docs/specs/data-model.md` automation-client section.
-  - Errors: `ClientUnknown` (83), `ClientRevoked` (83), `ProtocolError` (82),
-    `ReplayDetected` (83).
-  - Audit actions: `CLIENT_ADD`, `CLIENT_REVOKE`,
-    `CLIENT_AUTH` (success/failure).
-  - Files: `crates/locket-store/src/automation_client*` (private key refs +
-    nonces), agent challenge-response handler.
-- [ ] Policy TOML parsing/normalization, deny-by-default evaluation,
-  required/optional secret semantics, `confirm`, `require_user_verification`,
-  TTLs, shell-vs-argv handling.
-  - Spec: `docs/specs/policy.md`, `docs/specs/runtime.md:5-122`.
-  - Errors: `InvalidPolicy` (65), `AccessDenied` (73),
-    `UserVerificationFailed` (76).
-  - Audit actions: `POLICY_UPDATE` on parse/normalize commit; runtime denials
-    write `RUN`/`EXEC` failure rows with the deny reason.
-  - Files: `crates/locket-core/src/policy/` (parser, normalizer, evaluator).
+- [ ] VS Code extension backed by the local agent
+  (`docs/specs/integrations.md:39-65`); extension never writes audit
+  directly.
+- [~] Automation-client flows. Public metadata storage, allowed
+  action/policy fields, nonce primitives, and CLI metadata are in.
+  Remaining: private-key storage and challenge-response authentication
+  (`docs/specs/agent.md:62-79`).
+- [ ] Policy TOML parsing/normalization with deny-by-default
+  evaluation, required/optional secret semantics, `confirm`,
+  `require_user_verification`, TTLs, and shell-vs-argv handling
+  (`docs/specs/policy.md`).
 - [x] Runtime session storage/retention primitives and runtime execution
   recording for `exec`/`run` (doctor process-liveness classification is a
   follow-up under doctor enhancements).
