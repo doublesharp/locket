@@ -460,21 +460,52 @@ to touch. Items marked `[x]` are merged to `main` and verified.
     imports.
   - Files: `crates/locket-cli/src/bundle.rs`, new sealing module under
     `crates/locket-crypto/src/` (age-compatible recipients).
-- [ ] Team command surfaces and behavior: `team init`, `team invite`,
+- [~] Team command surfaces and behavior: `team init`, `team invite`,
   `team accept`, `team revoke-invite`, `team members`, `team remove`,
   `team revoke-device`. An unclaimed prior worktree exists at
   `.worktrees/agent-c-team-metadata` on branch `agent-c/team-metadata`; an
-  agent picking this up may inspect or salvage that branch but should rebase
-  onto current `main` (or rebuild from scratch) before integration.
+  agent picking up any subtask may inspect or salvage that branch but should
+  rebase onto current `main` (or rebuild from scratch) before integration.
+  Decomposed into subtasks below; pick any open one (later subtasks depend
+  on `team-store-schema`).
   - Spec: `docs/specs/team-sync-recovery.md:5-110`.
   - Errors: `KeychainEntryMissing` (100), `TeamRoleDenied` (113),
     `InviteExpired` (113), `InviteRevoked` (113), `InviteSignatureInvalid` (113),
     `InviteFingerprintMismatch` (113), `ReplayDetected` (113).
   - Audit actions: `TEAM_INIT`, `TEAM_INVITE` (creation + revocation),
     `TEAM_ACCEPT`, `TEAM_REMOVE`, `DEVICE_REVOKE`.
-  - Files: `crates/locket-cli/src/` (new `team.rs`),
+  - Files: `crates/locket-cli/src/` (new `commands/team/`),
     `crates/locket-store/src/teams.rs` (new module + tables `teams`,
     `team_members`, `team_invites`).
+  - [ ] **subtask** — team-store-schema: define and migrate the `teams`,
+    `team_members`, `team_invites` tables with the column constraints from
+    `docs/specs/storage.md:26-50`. Add a `SCHEMA_MIGRATE` audit row for the
+    bump. Pre-req for the rest of the team subtasks.
+  - [ ] **subtask** — team-init-command: implement `locket team init` with a
+    `TEAM_INIT` audit row and golden-path coverage. Errors: `TeamRoleDenied`
+    on a re-init attempt without role. Depends on `team-store-schema`.
+  - [ ] **subtask** — team-invite-create: implement `locket team invite`
+    issuance — signed invite file with issuer keys, recipient fingerprint,
+    expiry, nonce, role, profiles. Audit `TEAM_INVITE` (creation). Errors:
+    `TeamRoleDenied`. Depends on `team-store-schema` and the invite codec
+    work tracked under `Invite issuer/recipient trust ceremony`.
+  - [ ] **subtask** — team-invite-accept: implement `locket team accept`
+    verifying signature, recipient fingerprint, expiry, replay protection,
+    safety-word display. Audit `TEAM_ACCEPT`. Errors: `InviteExpired`,
+    `InviteRevoked`, `InviteSignatureInvalid`, `InviteFingerprintMismatch`,
+    `ReplayDetected`. Depends on `team-invite-create`.
+  - [ ] **subtask** — team-invite-revoke: implement `locket team
+    revoke-invite`. Audit `TEAM_INVITE` (revocation). Errors:
+    `TeamRoleDenied`. Depends on `team-invite-create`.
+  - [ ] **subtask** — team-members-list: implement `locket team members`
+    metadata-only listing with privacy aliases. Errors: none for the
+    listing itself. Depends on `team-store-schema`.
+  - [ ] **subtask** — team-remove-member: implement `locket team remove`.
+    Audit `TEAM_REMOVE`. Errors: `TeamRoleDenied`. Depends on
+    `team-store-schema`.
+  - [ ] **subtask** — team-revoke-device: implement `locket team
+    revoke-device`. Audit `DEVICE_REVOKE`. Errors: `TeamRoleDenied`. Depends
+    on `team-store-schema`.
 - [ ] Role-based authorization for team-managed state.
   - Spec: `docs/specs/team-sync-recovery.md:75-110` (role table).
   - Errors: `TeamRoleDenied` (113).
