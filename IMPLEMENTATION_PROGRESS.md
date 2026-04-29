@@ -525,7 +525,7 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
   profile/secret the revoked principal could access.
 - [x] Recovery-code Crockford Base32 encoding with two checksum chars
   (detect-only; never auto-correct).
-- [ ] Sealed-bundle plaintext manifest minimization: no profile, secret,
+- [x] Sealed-bundle plaintext manifest minimization: no profile, secret,
   policy names; no member/device labels (only digest, recipients,
   project id, schema, `created_at`, profile count).
 - [ ] `imported_audit_chains` structural verifier (monotonic sequence,
