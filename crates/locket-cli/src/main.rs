@@ -7,9 +7,10 @@ mod support;
 pub(crate) use runtime::context::RuntimeContext;
 pub(crate) use runtime::error::{
     CliError, access_denied_error, bundle_verification_error, confirmation_failed_error,
-    metadata_invalid_error, metadata_looks_like_secret_error, profile_not_found_error,
-    project_root_untrusted_error, scan_finding_blocked_error, secret_already_exists_error,
-    secret_deleted_error, secret_not_found_error, unimplemented_in_build_error,
+    invalid_profile_name_error, invalid_secret_name_error, metadata_invalid_error,
+    metadata_looks_like_secret_error, profile_not_found_error, project_root_untrusted_error,
+    scan_finding_blocked_error, secret_already_exists_error, secret_deleted_error,
+    secret_not_found_error, unimplemented_in_build_error,
 };
 pub(crate) use runtime::key_access::{
     MasterKeySource, default_profile, ensure_project_exists, load_master_key,
@@ -1370,7 +1371,7 @@ fn preflight_rotate_secret_value(
     args: &RotateArgs,
 ) -> Result<(), CliError> {
     let name = SecretName::new(args.key.clone())
-        .map_err(|_| CliError::Config("invalid secret name".to_owned()))?;
+        .map_err(|_| invalid_secret_name_error("invalid secret name"))?;
     resolve_active_secret_for_source(context, name.as_str(), args.source.source)?;
     Ok(())
 }
@@ -1383,7 +1384,7 @@ fn rotate_secret_value(
     grace_until: Option<i64>,
 ) -> Result<(String, u32), CliError> {
     let name = SecretName::new(args.key.clone())
-        .map_err(|_| CliError::Config("invalid secret name".to_owned()))?;
+        .map_err(|_| invalid_secret_name_error("invalid secret name"))?;
     let resolved_secret =
         resolve_active_secret_for_source(context, name.as_str(), args.source.source)?;
     let new_version = resolved_secret
@@ -1529,7 +1530,7 @@ fn copy_secret_value(
     timestamp: i64,
 ) -> Result<CopySecretResult, CliError> {
     let name = SecretName::new(args.key.clone())
-        .map_err(|_| CliError::Config("invalid secret name".to_owned()))?;
+        .map_err(|_| invalid_secret_name_error("invalid secret name"))?;
     let resolved = require_project(context)?;
     let mut store = open_store(context)?;
     ensure_trusted_project_root(&store, &resolved)?;

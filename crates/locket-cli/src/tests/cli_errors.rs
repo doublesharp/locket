@@ -139,6 +139,68 @@ fn profile_not_found_errors_exit_78() {
 }
 
 #[test]
+fn invalid_secret_name_errors_exit_64() {
+    let error = crate::invalid_secret_name_error("invalid secret name");
+
+    assert_eq!(error.exit_code(), 64);
+    assert_eq!(error.to_string(), "invalid secret name");
+}
+
+#[test]
+fn invalid_profile_name_errors_exit_64() {
+    let error = crate::invalid_profile_name_error("invalid profile name");
+
+    assert_eq!(error.exit_code(), 64);
+    assert_eq!(error.to_string(), "invalid profile name");
+}
+
+#[test]
+fn invalid_secret_name_via_history_command_exits_64() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+
+    let result = run_with_context(
+        Cli::try_parse_from(["locket", "history", "bad-name-with-dash"])?,
+        &context,
+        &mut Vec::new(),
+    );
+    let Err(error) = result else {
+        return Err("history with invalid secret name should fail".into());
+    };
+    assert_eq!(error.exit_code(), 64);
+    assert!(error.to_string().contains("invalid secret name"));
+    Ok(())
+}
+
+#[test]
+fn invalid_profile_name_via_use_command_exits_64() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+
+    let result = run_with_context(
+        Cli::try_parse_from(["locket", "use", "bad name with spaces"])?,
+        &context,
+        &mut Vec::new(),
+    );
+    let Err(error) = result else {
+        return Err("use with invalid profile name should fail".into());
+    };
+    assert_eq!(error.exit_code(), 64);
+    assert!(error.to_string().contains("invalid profile name"));
+    Ok(())
+}
+
+#[test]
 fn secret_not_found_via_meta_command_exits_77() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempdir()?;
     let context = test_context(&directory);

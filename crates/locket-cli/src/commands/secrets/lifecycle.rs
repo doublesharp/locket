@@ -11,10 +11,10 @@ use crate::{
     CliError, CopyArgs, HistoryArgs, ListArgs, PurgeArgs, ResolvedSecret, RotateArgs,
     RuntimeContext, SourceKeyArgs, copy_secret_value, default_profile, ensure_trusted_project_root,
     format_optional_unix_nanos, format_unix_nanos, format_versions, grace_until_from_args,
-    load_project_key, now_unix_nanos, open_store, preflight_rotate_secret_value,
-    profile_not_found_error, refresh_example_for_project_if_enabled, require_project,
-    resolve_secret_for_source, rotate_secret_value, secret_audit_metadata, secret_not_found_error,
-    source_arg_to_str,
+    invalid_secret_name_error, load_project_key, now_unix_nanos, open_store,
+    preflight_rotate_secret_value, profile_not_found_error, refresh_example_for_project_if_enabled,
+    require_project, resolve_secret_for_source, rotate_secret_value, secret_audit_metadata,
+    secret_not_found_error, source_arg_to_str,
 };
 
 pub fn rm_command(
@@ -237,7 +237,7 @@ pub fn history_command(
     args: &HistoryArgs,
 ) -> Result<(), CliError> {
     let name = SecretName::new(args.key.clone())
-        .map_err(|_| CliError::Config("invalid secret name".to_owned()))?;
+        .map_err(|_| invalid_secret_name_error("invalid secret name"))?;
     let resolved = require_project(context)?;
     let store = open_store(context)?;
     ensure_trusted_project_root(&store, &resolved)?;

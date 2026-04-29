@@ -16,7 +16,10 @@ use serde_json::json;
 
 use super::set::{SecretWriteRequest, set_secret_value_in_profile};
 use crate::runtime::RuntimeContext;
-use crate::runtime::error::{CliError, confirmation_failed_error, profile_not_found_error};
+use crate::runtime::error::{
+    CliError, confirmation_failed_error, invalid_profile_name_error, invalid_secret_name_error,
+    profile_not_found_error,
+};
 use crate::runtime::key_access::load_project_key;
 use crate::support::project_files::{ensure_gitignore, refresh_example_for_project_if_enabled};
 use crate::support::secret_helpers::{SecretEncryptRequest, encrypt_secret_version};
@@ -131,7 +134,7 @@ fn import_target_profile(
 ) -> Result<ProfileRecord, CliError> {
     let profile_name = profile_name.unwrap_or(resolved.config.default_profile.as_str());
     let profile_name = ProfileName::new(profile_name.to_owned())
-        .map_err(|_| CliError::Config("invalid profile name".to_owned()))?;
+        .map_err(|_| invalid_profile_name_error("invalid profile name"))?;
     store
         .get_profile_by_name(resolved.config.project_id.as_str(), profile_name.as_str())?
         .ok_or_else(|| profile_not_found_error("profile not found"))
@@ -261,7 +264,7 @@ fn rotate_import_secret_value_in_profile(
     request: ImportRotateRequest<'_>,
 ) -> Result<u32, CliError> {
     let name = SecretName::new(request.key.to_owned())
-        .map_err(|_| CliError::Config("invalid secret name".to_owned()))?;
+        .map_err(|_| invalid_secret_name_error("invalid secret name"))?;
     let secret = store
         .get_secret_by_source(
             request.resolved.config.project_id.as_str(),

@@ -15,7 +15,9 @@ use serde_json::{Value, json};
 
 use crate::commands::config::spec::{config_get_value, read_user_config};
 use crate::runtime::RuntimeContext;
-use crate::runtime::error::{CliError, secret_deleted_error, secret_not_found_error};
+use crate::runtime::error::{
+    CliError, invalid_secret_name_error, secret_deleted_error, secret_not_found_error,
+};
 use crate::runtime::key_access::{default_profile, load_profile_key, load_project_key};
 use crate::{
     CopyArgs, CopySelection, ResolvedProject, SecretSourceArg, active_secrets_by_name,
@@ -155,7 +157,7 @@ pub fn resolve_active_secret(
     key: &str,
 ) -> Result<ResolvedSecret, CliError> {
     let name = SecretName::new(key.to_owned())
-        .map_err(|_| CliError::Config("invalid secret name".to_owned()))?;
+        .map_err(|_| invalid_secret_name_error("invalid secret name"))?;
     let project = require_project(context)?;
     let store = open_store(context)?;
     ensure_trusted_project_root(&store, &project)?;
@@ -188,7 +190,7 @@ pub fn resolve_secret_for_source(
     source: Option<SecretSourceArg>,
 ) -> Result<ResolvedSecret, CliError> {
     let name = SecretName::new(key.to_owned())
-        .map_err(|_| CliError::Config("invalid secret name".to_owned()))?;
+        .map_err(|_| invalid_secret_name_error("invalid secret name"))?;
     let project = require_project(context)?;
     let store = open_store(context)?;
     ensure_trusted_project_root(&store, &project)?;

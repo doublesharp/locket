@@ -14,6 +14,12 @@ pub enum LocketError {
     /// A Git worktree was required but not found.
     #[error("git worktree required")]
     GitWorktreeRequired,
+    /// User-supplied secret name failed `SecretName` validation.
+    #[error("invalid secret name")]
+    InvalidSecretName,
+    /// User-supplied profile name failed `ProfileName` validation.
+    #[error("invalid profile name")]
+    InvalidProfileName,
     /// Policy validation could not complete without an agent or unlocked vault.
     #[error("policy validation incomplete")]
     PolicyValidationIncomplete,
@@ -117,7 +123,11 @@ impl LocketError {
     #[must_use]
     pub const fn exit_code(&self) -> ExitCode {
         match self {
-            Self::InvalidReference | Self::GitWorktreeRequired | Self::MetadataInvalid => 64,
+            Self::InvalidReference
+            | Self::GitWorktreeRequired
+            | Self::MetadataInvalid
+            | Self::InvalidSecretName
+            | Self::InvalidProfileName => 64,
             Self::PolicyValidationIncomplete => 65,
             Self::EnvironmentConflict | Self::MetadataLooksLikeSecret => 66,
             Self::SecretAlreadyExists => 67,
@@ -166,6 +176,8 @@ mod tests {
     fn maps_input_exit_codes() {
         assert_eq!(LocketError::InvalidReference.exit_code(), 64);
         assert_eq!(LocketError::GitWorktreeRequired.exit_code(), 64);
+        assert_eq!(LocketError::InvalidSecretName.exit_code(), 64);
+        assert_eq!(LocketError::InvalidProfileName.exit_code(), 64);
         assert_eq!(LocketError::PolicyValidationIncomplete.exit_code(), 65);
         assert_eq!(LocketError::EnvironmentConflict.exit_code(), 66);
         assert_eq!(LocketError::MetadataInvalid.exit_code(), 64);
@@ -233,6 +245,8 @@ mod tests {
             (LocketError::ConfirmationFailed, "confirmation did not match"),
             (LocketError::SecretNotFound, "secret not found"),
             (LocketError::ProfileNotFound, "profile not found"),
+            (LocketError::InvalidSecretName, "invalid secret name"),
+            (LocketError::InvalidProfileName, "invalid profile name"),
         ];
 
         for (error, message) in cases {

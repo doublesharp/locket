@@ -9,9 +9,9 @@ use serde_json::{Value, json};
 
 use crate::{
     CliError, LOCKET_TOML, ProfileCommand, ProfileNameArgs, RuntimeContext,
-    confirmation_failed_error, format_hex, initialize_profile_keys, load_project_key,
-    now_unix_nanos, open_store, profile_not_found_error, require_project, root_hash,
-    secret_already_exists_error, write_project_config,
+    confirmation_failed_error, format_hex, initialize_profile_keys, invalid_profile_name_error,
+    load_project_key, now_unix_nanos, open_store, profile_not_found_error, require_project,
+    root_hash, secret_already_exists_error, write_project_config,
 };
 
 pub fn profile_command(
@@ -54,7 +54,7 @@ fn create_profile(
 ) -> Result<(), CliError> {
     let resolved = require_project(context)?;
     let profile_name = ProfileName::new(args.profile)
-        .map_err(|_| CliError::Config("invalid profile name".to_owned()))?;
+        .map_err(|_| invalid_profile_name_error("invalid profile name"))?;
     let mut store = open_store(context)?;
     let project_id = resolved.config.project_id.as_str();
 
@@ -102,7 +102,7 @@ fn set_profile_dangerous(
 ) -> Result<(), CliError> {
     let resolved = require_project(context)?;
     let profile_name = ProfileName::new(args.profile)
-        .map_err(|_| CliError::Config("invalid profile name".to_owned()))?;
+        .map_err(|_| invalid_profile_name_error("invalid profile name"))?;
     let mut store = open_store(context)?;
     let project_id = resolved.config.project_id.as_str();
     let Some(profile) = store.get_profile_by_name(project_id, profile_name.as_str())? else {
@@ -226,7 +226,7 @@ pub fn use_profile_command(
     args: ProfileNameArgs,
 ) -> Result<(), CliError> {
     let profile_name = ProfileName::new(args.profile)
-        .map_err(|_| CliError::Config("invalid profile name".to_owned()))?;
+        .map_err(|_| invalid_profile_name_error("invalid profile name"))?;
     let mut resolved = require_project(context)?;
     let mut store = open_store(context)?;
     let project_id = resolved.config.project_id.as_str().to_owned();

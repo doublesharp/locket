@@ -121,6 +121,14 @@ pub fn metadata_looks_like_secret_error(message: impl Into<String>) -> CliError 
     typed_cli_error(LocketError::MetadataLooksLikeSecret, message)
 }
 
+pub fn invalid_secret_name_error(message: impl Into<String>) -> CliError {
+    typed_cli_error(LocketError::InvalidSecretName, message)
+}
+
+pub fn invalid_profile_name_error(message: impl Into<String>) -> CliError {
+    typed_cli_error(LocketError::InvalidProfileName, message)
+}
+
 pub fn bundle_verification_error(message: impl Into<String>) -> CliError {
     typed_cli_error(LocketError::BundleVerificationFailed, message)
 }

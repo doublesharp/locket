@@ -20,7 +20,7 @@ use locket_store::{AuditWrite, Store};
 use serde_json::json;
 
 use crate::runtime::RuntimeContext;
-use crate::runtime::error::{CliError, confirmation_failed_error};
+use crate::runtime::error::{CliError, confirmation_failed_error, invalid_profile_name_error};
 use crate::runtime::key_access::{
     MasterKeySource, default_profile, load_master_key_verified_by_project_key, load_project_key,
     store_master_key_with_fallback,
@@ -73,9 +73,9 @@ pub fn init(
 
     let profile_name = match args.profile {
         Some(profile) => ProfileName::new(profile)
-            .map_err(|_| CliError::Config("invalid profile name".to_owned()))?,
+            .map_err(|_| invalid_profile_name_error("invalid profile name"))?,
         None => ProfileName::new("dev")
-            .map_err(|_| CliError::Config("invalid profile name".to_owned()))?,
+            .map_err(|_| invalid_profile_name_error("invalid profile name"))?,
     };
     let project_name = args.name.unwrap_or_else(|| fallback_project_name(&context.cwd));
     let config = ProjectConfig::new(

@@ -8,7 +8,7 @@ use locket_store::{AuditLogRecord, SecretRecord, SecretVersionRecord, Store};
 
 use crate::{
     CliError, DiffArgs, RuntimeContext, active_secret_map, default_profile, format_optional_str,
-    open_store, optional_i64, require_project, resolve_diff_since,
+    invalid_profile_name_error, open_store, optional_i64, require_project, resolve_diff_since,
 };
 
 pub fn diff_command(
@@ -35,9 +35,9 @@ pub fn diff_command(
         .as_deref()
         .ok_or_else(|| CliError::Config("diff requires two profile names".to_owned()))?;
     let lhs = ProfileName::new(profile_a.to_owned())
-        .map_err(|_| CliError::Config("invalid profile name".to_owned()))?;
+        .map_err(|_| invalid_profile_name_error("invalid profile name"))?;
     let rhs = ProfileName::new(profile_b.to_owned())
-        .map_err(|_| CliError::Config("invalid profile name".to_owned()))?;
+        .map_err(|_| invalid_profile_name_error("invalid profile name"))?;
 
     let resolved = require_project(context)?;
     let store = open_store(context)?;

@@ -10,7 +10,7 @@ use locket_store::{
 };
 
 use crate::runtime::RuntimeContext;
-use crate::runtime::error::CliError;
+use crate::runtime::error::{CliError, invalid_secret_name_error};
 use crate::runtime::key_access::{default_profile, load_project_key};
 use crate::support::project_files::refresh_example_for_project_if_enabled;
 use crate::support::secret_helpers::{
@@ -42,7 +42,7 @@ pub fn preflight_set_secret_value(
     args: &SecretWriteArgs,
 ) -> Result<(), CliError> {
     let name = SecretName::new(args.key.clone())
-        .map_err(|_| CliError::Config("invalid secret name".to_owned()))?;
+        .map_err(|_| invalid_secret_name_error("invalid secret name"))?;
     let resolved = require_project(context)?;
     let store = open_store(context)?;
     let profile = default_profile(&store, &resolved.config)?;
@@ -121,7 +121,7 @@ pub fn set_secret_value_in_profile(
     request: SecretWriteRequest<'_>,
 ) -> Result<(), CliError> {
     let name = SecretName::new(request.key.to_owned())
-        .map_err(|_| CliError::Config("invalid secret name".to_owned()))?;
+        .map_err(|_| invalid_secret_name_error("invalid secret name"))?;
     if let Some(existing) = store.get_secret_by_source(
         request.resolved.config.project_id.as_str(),
         &request.profile.id,
