@@ -20,7 +20,7 @@ fn passphrase_fallback_covers_init_unlock_and_decrypt() -> Result<(), Box<dyn st
     let mut unlock_output = Vec::new();
     run_with_context(Cli::try_parse_from(["locket", "unlock"])?, &context, &mut unlock_output)?;
     let unlock_output = String::from_utf8(unlock_output)?;
-    assert!(unlock_output.contains("unlock_source: passphrase-fallback"));
+    assert!(unlock_output.contains("unlock_method: Passphrase"));
 
     let args = test_secret_write_args("DATABASE_URL");
     crate::set_secret_value(&context, &args, "postgres://localhost/app", "manual", 1_000)?;
@@ -58,7 +58,7 @@ fn passphrase_fallback_covers_stale_os_key_material() -> Result<(), Box<dyn std:
         &stale_context,
         &mut unlock_output,
     )?;
-    assert!(String::from_utf8(unlock_output)?.contains("unlock_source: passphrase-fallback"));
+    assert!(String::from_utf8(unlock_output)?.contains("unlock_method: Passphrase"));
 
     let mut reveal_output = Vec::new();
     run_with_context(

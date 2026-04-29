@@ -510,8 +510,169 @@ fn lock_and_unlock_use_direct_metadata_only_mode() -> Result<(), Box<dyn std::er
     run_with_context(Cli::try_parse_from(["locket", "unlock"])?, &context, &mut unlock_output)?;
     let unlock_output = String::from_utf8(unlock_output)?;
     assert!(unlock_output.contains("metadata-only direct CLI unlock succeeded"));
+    assert!(unlock_output.contains("unlock_method: OsKeychain"));
     assert!(unlock_output.contains("cached_keys: no"));
     assert!(unlock_output.contains("verify_user: not requested"));
+    Ok(())
+}
+
+#[test]
+fn lock_writes_metadata_only_lock_audit_row_when_project_resolves()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+
+    run_with_context(Cli::try_parse_from(["locket", "lock"])?, &context, &mut Vec::new())?;
+
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let metadata: String = store.connection().query_row(
+        "SELECT metadata_json FROM audit_log WHERE action = 'LOCK' ORDER BY sequence DESC LIMIT 1",
+        [],
+        |row| row.get(0),
+    )?;
+    assert!(metadata.contains("\"action\":\"LOCK\""));
+    assert!(metadata.contains("\"status\":\"SUCCESS\""));
+    assert!(metadata.contains("\"command\":\"lock\""));
+    assert!(metadata.contains("\"client_kind\":\"direct-cli\""));
+    assert!(metadata.contains("\"agent_available\":false"));
+    assert!(metadata.contains("\"cached_keys_cleared\":0"));
+    assert!(metadata.contains("\"live_grants_revoked\":0"));
+    assert!(metadata.contains("\"schema_version\":1"));
+
+    let command_column: String = store.connection().query_row(
+        "SELECT command FROM audit_log WHERE action = 'LOCK' ORDER BY sequence DESC LIMIT 1",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(command_column, "lock");
+    Ok(())
+}
+
+#[test]
+fn unlock_writes_unlock_audit_row_with_method_for_os_keychain()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+
+    run_with_context(Cli::try_parse_from(["locket", "unlock"])?, &context, &mut Vec::new())?;
+
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let metadata: String = store.connection().query_row(
+        "SELECT metadata_json FROM audit_log WHERE action = 'UNLOCK' ORDER BY sequence DESC LIMIT 1",
+        [],
+        |row| row.get(0),
+    )?;
+    assert!(metadata.contains("\"action\":\"UNLOCK\""));
+    assert!(metadata.contains("\"status\":\"SUCCESS\""));
+    assert!(metadata.contains("\"command\":\"unlock\""));
+    assert!(metadata.contains("\"client_kind\":\"direct-cli\""));
+    assert!(metadata.contains("\"method\":\"OsKeychain\""));
+    assert!(metadata.contains("\"agent_available\":false"));
+    assert!(metadata.contains("\"cached_keys\":false"));
+    assert!(metadata.contains("\"required\":false"));
+    assert!(metadata.contains("\"schema_version\":1"));
+
+    let command_column: String = store.connection().query_row(
+        "SELECT command FROM audit_log WHERE action = 'UNLOCK' ORDER BY sequence DESC LIMIT 1",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(command_column, "unlock");
+    Ok(())
+}
+
+#[test]
+fn unlock_records_passphrase_method_when_keychain_is_unavailable()
+-> Result<(), Box<dyn std::error::Error>> {
+    use std::sync::Arc;
+
+    let directory = tempdir()?;
+    // Force the OS keystore to be unavailable for the entire project lifecycle so
+    // init falls back to the passphrase store and unlock loads through it.
+    let context = crate::tests::test_context_with_key_store(
+        &directory,
+        Arc::new(crate::tests::UnavailableMasterKeyStore),
+    );
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+
+    let mut unlock_output = Vec::new();
+    run_with_context(Cli::try_parse_from(["locket", "unlock"])?, &context, &mut unlock_output)?;
+    let unlock_output = String::from_utf8(unlock_output)?;
+    assert!(unlock_output.contains("unlock_method: Passphrase"));
+
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let metadata: String = store.connection().query_row(
+        "SELECT metadata_json FROM audit_log WHERE action = 'UNLOCK' ORDER BY sequence DESC LIMIT 1",
+        [],
+        |row| row.get(0),
+    )?;
+    assert!(metadata.contains("\"method\":\"Passphrase\""));
+    Ok(())
+}
+
+#[test]
+fn unlock_returns_unlock_required_when_master_key_is_missing()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    let resolved = crate::resolve_project(&context.cwd)?.ok_or("project should resolve")?;
+    context.key_store.delete_master_key(resolved.config.project_id.as_str())?;
+
+    let mut unlock_output = Vec::new();
+    let unlock_result =
+        run_with_context(Cli::try_parse_from(["locket", "unlock"])?, &context, &mut unlock_output);
+    let Err(unlock_error) = unlock_result else {
+        return Err("locked-vault unlock must fail".into());
+    };
+    assert_eq!(unlock_error.exit_code(), locket_core::LocketError::UnlockRequired.exit_code(),);
+    assert!(unlock_output.is_empty());
+    Ok(())
+}
+
+#[test]
+fn lock_stays_metadata_only_when_vault_is_locked() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    let resolved = crate::resolve_project(&context.cwd)?.ok_or("project should resolve")?;
+    context.key_store.delete_master_key(resolved.config.project_id.as_str())?;
+
+    let mut lock_output = Vec::new();
+    run_with_context(Cli::try_parse_from(["locket", "lock"])?, &context, &mut lock_output)?;
+    let lock_output = String::from_utf8(lock_output)?;
+    assert!(lock_output.contains("metadata_only: yes"));
+    assert!(lock_output.contains("project_id:"));
+
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let count: i64 = store.connection().query_row(
+        "SELECT COUNT(*) FROM audit_log WHERE action = 'LOCK'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(count, 0, "locked-vault lock must not append a LOCK audit row");
     Ok(())
 }
 
