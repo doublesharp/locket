@@ -541,7 +541,8 @@ to touch. Items marked `[x]` are merged to `main` and verified.
 - [ ] Execution/session monitor view.
   - Spec: `docs/specs/desktop.md:17`; data source is the existing
     `runtime_sessions` table.
-- [ ] Tray icon state set (Lucide-based; reflects locked/unlocked/scan-warn/
+- [~] [4efea70d] Tray icon state set (Lucide-based; reflects locked/unlocked/scan-warn/
+  Claim: branch agent-4efea70d/tray-icon-states, worktree .worktrees/agent-4efea70d-tray-icon-states.
   alert states; macOS template image, Windows/Linux full-color light/dark).
   - Spec: `docs/specs/desktop.md:98-108`.
 - [ ] Tray notification policy: no secret values, no secret names by default
