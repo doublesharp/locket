@@ -224,6 +224,15 @@ pub struct EncryptedSecretValue {
     pub aad_schema_version: u16,
 }
 
+/// Encrypted stored key material for a `keys` row.
+#[derive(Clone, Eq, PartialEq)]
+pub struct WrappedKeyMaterial {
+    /// Wrapped key ciphertext without the nonce.
+    pub ciphertext: Vec<u8>,
+    /// Nonce used for key-wrap encryption.
+    pub nonce: NonceBytes,
+}
+
 /// Appends a little-endian `u16` to an output buffer.
 pub fn append_u16_le(output: &mut Vec<u8>, value: u16) {
     output.extend_from_slice(&value.to_le_bytes());
@@ -328,6 +337,52 @@ pub fn derive_wrapping_key_v1(
     let hkdf = Hkdf::<Sha256>::new(None, master_key);
     let mut key = Zeroizing::new([0_u8; KEY_LEN]);
     hkdf.expand(&info, &mut *key).map_err(|_| CryptoError::KeyDerivationFailed)?;
+    Ok(key)
+}
+
+/// Generates a random 32-byte symmetric key.
+///
+/// # Errors
+///
+/// Returns [`CryptoError::RandomFailed`] when operating-system randomness is
+/// unavailable.
+pub fn generate_key() -> CryptoResult<Zeroizing<KeyBytes>> {
+    Ok(Zeroizing::new(random_bytes::<KEY_LEN>()?))
+}
+
+/// Wraps stored project/profile key material using separate nonce storage.
+///
+/// # Errors
+///
+/// Returns an error if random generation or encryption fails.
+pub fn wrap_key_material_v1(
+    wrapping_key: &KeyBytes,
+    key_material: &KeyBytes,
+    aad: &[u8],
+) -> CryptoResult<WrappedKeyMaterial> {
+    let nonce = random_bytes::<NONCE_LEN>()?;
+    let ciphertext = aead_encrypt(wrapping_key, &nonce, key_material, aad)?;
+    Ok(WrappedKeyMaterial { ciphertext, nonce })
+}
+
+/// Unwraps stored project/profile key material using separate nonce storage.
+///
+/// # Errors
+///
+/// Returns an error if authentication fails or plaintext length is invalid.
+pub fn unwrap_key_material_v1(
+    wrapping_key: &KeyBytes,
+    wrapped: &WrappedKeyMaterial,
+    aad: &[u8],
+) -> CryptoResult<Zeroizing<KeyBytes>> {
+    let plaintext =
+        Zeroizing::new(aead_decrypt(wrapping_key, &wrapped.nonce, &wrapped.ciphertext, aad)?);
+    if plaintext.len() != KEY_LEN {
+        return Err(CryptoError::InvalidWrappedKey);
+    }
+
+    let mut key = Zeroizing::new([0_u8; KEY_LEN]);
+    key.copy_from_slice(&plaintext);
     Ok(key)
 }
 
@@ -478,7 +533,8 @@ mod tests {
     use super::{
         AAD_SCHEMA_V1, CryptoError, HkdfWrapInfo, KEY_LEN, KEY_WRAP_SCHEMA_V1, KeyPurpose,
         KeyWrapAad, KeyWrapPurpose, NONCE_LEN, SecretBlobAad, TAG_LEN, decrypt_secret_value_v1,
-        derive_wrapping_key_v1, key_wrap_aad_v1, secret_blob_aad_v1, unwrap_dek_v1, wrap_dek_v1,
+        derive_wrapping_key_v1, key_wrap_aad_v1, secret_blob_aad_v1, unwrap_dek_v1,
+        unwrap_key_material_v1, wrap_dek_v1, wrap_key_material_v1,
     };
 
     const PROFILE_SECRET_KEY: [u8; KEY_LEN] = [7; KEY_LEN];
@@ -653,6 +709,25 @@ mod tests {
         )?;
 
         assert_ne!(&*project_key, &*profile_key);
+        Ok(())
+    }
+
+    #[test]
+    fn stored_key_wrap_round_trips_with_separate_nonce() -> Result<(), CryptoError> {
+        let key_material = [23; KEY_LEN];
+        let aad = key_wrap_aad_v1(&KeyWrapAad::new(
+            "lk_proj_123",
+            "lk_key_profile",
+            Some("lk_prof_dev"),
+            0,
+            KeyWrapPurpose::ProfileSecret,
+        ))?;
+
+        let wrapped = wrap_key_material_v1(&PROFILE_SECRET_KEY, &key_material, &aad)?;
+        let unwrapped = unwrap_key_material_v1(&PROFILE_SECRET_KEY, &wrapped, &aad)?;
+
+        assert_eq!(wrapped.nonce.len(), NONCE_LEN);
+        assert_eq!(&*unwrapped, &key_material);
         Ok(())
     }
 }

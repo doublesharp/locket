@@ -3,6 +3,7 @@
 use std::path::Path;
 use std::time::Duration;
 
+use rusqlite::types::Type;
 use rusqlite::{Connection, OptionalExtension, params};
 use thiserror::Error;
 
@@ -39,6 +40,109 @@ pub struct ProfileRecord {
     pub name: String,
     /// Whether the profile is marked dangerous.
     pub dangerous: bool,
+    /// Creation timestamp in nanoseconds since the Unix epoch.
+    pub created_at: i64,
+}
+
+/// Wrapped project/profile key material.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct KeyRecord {
+    /// Key identifier.
+    pub id: String,
+    /// Parent project identifier.
+    pub project_id: String,
+    /// Optional parent profile identifier for profile-scoped keys.
+    pub profile_id: Option<String>,
+    /// Persisted key purpose string.
+    pub purpose: String,
+    /// Encrypted key material.
+    pub wrapped_material: Vec<u8>,
+    /// Nonce used to wrap the key material.
+    pub nonce: [u8; 24],
+    /// Creation timestamp in nanoseconds since the Unix epoch.
+    pub created_at: i64,
+}
+
+/// Secret metadata row.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SecretRecord {
+    /// Secret identifier.
+    pub id: String,
+    /// Parent project identifier.
+    pub project_id: String,
+    /// Parent profile identifier.
+    pub profile_id: String,
+    /// Secret name.
+    pub name: String,
+    /// Persisted secret source string.
+    pub source: String,
+    /// Persisted secret origin string.
+    pub origin: String,
+    /// Current secret version.
+    pub current_version: u32,
+    /// Persisted secret state string.
+    pub state: String,
+    /// Creation timestamp in nanoseconds since the Unix epoch.
+    pub created_at: i64,
+    /// Last metadata update timestamp in nanoseconds since the Unix epoch.
+    pub updated_at: i64,
+    /// Last rotation timestamp in nanoseconds since the Unix epoch.
+    pub last_rotated_at: Option<i64>,
+    /// Tombstone timestamp in nanoseconds since the Unix epoch.
+    pub deleted_at: Option<i64>,
+}
+
+/// Secret version metadata row.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SecretVersionRecord {
+    /// Parent secret identifier.
+    pub secret_id: String,
+    /// Version number.
+    pub version: u32,
+    /// Persisted secret source string.
+    pub source: String,
+    /// Persisted secret origin string.
+    pub origin: String,
+    /// Persisted version state string.
+    pub state: String,
+    /// Creation timestamp in nanoseconds since the Unix epoch.
+    pub created_at: i64,
+    /// Deprecation timestamp in nanoseconds since the Unix epoch.
+    pub deprecated_at: Option<i64>,
+    /// Grace-window expiration timestamp in nanoseconds since the Unix epoch.
+    pub grace_until: Option<i64>,
+    /// Purge timestamp in nanoseconds since the Unix epoch.
+    pub purged_at: Option<i64>,
+}
+
+/// Encrypted secret value row.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SecretBlobRecord {
+    /// Parent secret identifier.
+    pub secret_id: String,
+    /// Version number.
+    pub version: u32,
+    /// Encrypted data-encryption key bytes.
+    pub encrypted_dek: Vec<u8>,
+    /// Encrypted secret value bytes.
+    pub ciphertext: Vec<u8>,
+    /// Nonce used for the value ciphertext.
+    pub value_nonce: [u8; 24],
+    /// AAD schema version.
+    pub aad_schema_version: u16,
+    /// Creation timestamp in nanoseconds since the Unix epoch.
+    pub created_at: i64,
+}
+
+/// Keyed secret fingerprint row.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SecretFingerprintRecord {
+    /// Parent secret identifier.
+    pub secret_id: String,
+    /// Version number.
+    pub version: u32,
+    /// Keyed fingerprint bytes.
+    pub fingerprint: Vec<u8>,
     /// Creation timestamp in nanoseconds since the Unix epoch.
     pub created_at: i64,
 }
@@ -228,6 +332,247 @@ impl Store {
 
         Ok(row_count > 0)
     }
+
+    /// Inserts wrapped key material.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Sqlite`] when `SQLite` rejects the insert, including
+    /// uniqueness, foreign-key, and key-scope constraint failures.
+    pub fn insert_key(&self, key: &KeyRecord) -> Result<(), StoreError> {
+        self.connection.execute(
+            "INSERT INTO keys(id, project_id, profile_id, purpose, wrapped_material, nonce, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                key.id.as_str(),
+                key.project_id.as_str(),
+                key.profile_id.as_deref(),
+                key.purpose.as_str(),
+                key.wrapped_material.as_slice(),
+                key.nonce.as_slice(),
+                key.created_at,
+            ],
+        )?;
+
+        Ok(())
+    }
+
+    /// Returns wrapped key material by id.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Sqlite`] when `SQLite` cannot query the key row.
+    pub fn get_key(&self, id: &str) -> Result<Option<KeyRecord>, StoreError> {
+        self.connection
+            .query_row(
+                "SELECT id, project_id, profile_id, purpose, wrapped_material, nonce, created_at
+                 FROM keys
+                 WHERE id = ?1",
+                [id],
+                key_record_from_row,
+            )
+            .optional()
+            .map_err(StoreError::from)
+    }
+
+    /// Returns wrapped key material by project/profile scope and purpose.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Sqlite`] when `SQLite` cannot query the key row.
+    pub fn get_key_by_scope(
+        &self,
+        project_id: &str,
+        profile_id: Option<&str>,
+        purpose: &str,
+    ) -> Result<Option<KeyRecord>, StoreError> {
+        self.connection
+            .query_row(
+                "SELECT id, project_id, profile_id, purpose, wrapped_material, nonce, created_at
+                 FROM keys
+                 WHERE project_id = ?1 AND profile_id IS ?2 AND purpose = ?3",
+                params![project_id, profile_id, purpose],
+                key_record_from_row,
+            )
+            .optional()
+            .map_err(StoreError::from)
+    }
+
+    /// Creates a secret, its initial version, encrypted blob, and keyed fingerprint atomically.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Sqlite`] when `SQLite` rejects any insert. The
+    /// transaction is rolled back when any row fails to insert.
+    pub fn create_active_secret(
+        &mut self,
+        secret: &SecretRecord,
+        version: &SecretVersionRecord,
+        blob: &SecretBlobRecord,
+        fingerprint: &SecretFingerprintRecord,
+    ) -> Result<(), StoreError> {
+        let transaction = self.connection.transaction()?;
+        transaction.execute(
+            "INSERT INTO secrets(
+               id, project_id, profile_id, name, source, origin, required,
+               current_version, state, created_at, updated_at, last_rotated_at, deleted_at
+             )
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?7, ?8, ?9, ?10, ?11, ?12)",
+            params![
+                secret.id.as_str(),
+                secret.project_id.as_str(),
+                secret.profile_id.as_str(),
+                secret.name.as_str(),
+                secret.source.as_str(),
+                secret.origin.as_str(),
+                secret.current_version,
+                secret.state.as_str(),
+                secret.created_at,
+                secret.updated_at,
+                secret.last_rotated_at,
+                secret.deleted_at,
+            ],
+        )?;
+        transaction.execute(
+            "INSERT INTO secret_versions(
+               secret_id, version, source, origin, state, created_at,
+               deprecated_at, grace_until, purged_at
+             )
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                version.secret_id.as_str(),
+                version.version,
+                version.source.as_str(),
+                version.origin.as_str(),
+                version.state.as_str(),
+                version.created_at,
+                version.deprecated_at,
+                version.grace_until,
+                version.purged_at,
+            ],
+        )?;
+        transaction.execute(
+            "INSERT INTO blobs(
+               secret_id, version, encrypted_dek, ciphertext, value_nonce,
+               aad_schema_version, created_at
+             )
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                blob.secret_id.as_str(),
+                blob.version,
+                blob.encrypted_dek.as_slice(),
+                blob.ciphertext.as_slice(),
+                blob.value_nonce.as_slice(),
+                blob.aad_schema_version,
+                blob.created_at,
+            ],
+        )?;
+        transaction.execute(
+            "INSERT INTO fingerprints(secret_id, version, fingerprint, created_at)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![
+                fingerprint.secret_id.as_str(),
+                fingerprint.version,
+                fingerprint.fingerprint.as_slice(),
+                fingerprint.created_at,
+            ],
+        )?;
+        transaction.commit()?;
+
+        Ok(())
+    }
+
+    /// Returns an active secret by project/profile/name/source.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Sqlite`] when `SQLite` cannot query the secret row.
+    pub fn get_active_secret(
+        &self,
+        project_id: &str,
+        profile_id: &str,
+        name: &str,
+        source: &str,
+    ) -> Result<Option<SecretRecord>, StoreError> {
+        self.connection
+            .query_row(
+                "SELECT id, project_id, profile_id, name, source, origin, current_version, state,
+                        created_at, updated_at, last_rotated_at, deleted_at
+                 FROM secrets
+                 WHERE project_id = ?1
+                   AND profile_id = ?2
+                   AND name = ?3
+                   AND source = ?4
+                   AND state = 'active'",
+                (project_id, profile_id, name, source),
+                secret_record_from_row,
+            )
+            .optional()
+            .map_err(StoreError::from)
+    }
+
+    /// Lists active secrets for a profile ordered by name and source.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Sqlite`] when `SQLite` cannot query secret rows.
+    pub fn list_active_secrets_by_profile(
+        &self,
+        project_id: &str,
+        profile_id: &str,
+    ) -> Result<Vec<SecretRecord>, StoreError> {
+        let mut statement = self.connection.prepare(
+            "SELECT id, project_id, profile_id, name, source, origin, current_version, state,
+                    created_at, updated_at, last_rotated_at, deleted_at
+             FROM secrets
+             WHERE project_id = ?1 AND profile_id = ?2 AND state = 'active'
+             ORDER BY name, source",
+        )?;
+        let secrets = statement
+            .query_map((project_id, profile_id), secret_record_from_row)?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(secrets)
+    }
+
+    /// Tombstones a secret by id.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Sqlite`] when `SQLite` rejects the update.
+    pub fn tombstone_secret(&self, id: &str, deleted_at: i64) -> Result<(), StoreError> {
+        self.connection.execute(
+            "UPDATE secrets
+             SET state = 'deleted', deleted_at = ?2, updated_at = ?2
+             WHERE id = ?1",
+            (id, deleted_at),
+        )?;
+
+        Ok(())
+    }
+
+    /// Returns an encrypted blob by secret id and version.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Sqlite`] when `SQLite` cannot query the blob row.
+    pub fn get_blob(
+        &self,
+        secret_id: &str,
+        version: u32,
+    ) -> Result<Option<SecretBlobRecord>, StoreError> {
+        self.connection
+            .query_row(
+                "SELECT secret_id, version, encrypted_dek, ciphertext, value_nonce,
+                        aad_schema_version, created_at
+                 FROM blobs
+                 WHERE secret_id = ?1 AND version = ?2",
+                params![secret_id, version],
+                secret_blob_record_from_row,
+            )
+            .optional()
+            .map_err(StoreError::from)
+    }
 }
 
 fn project_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProjectRecord> {
@@ -242,6 +587,69 @@ fn profile_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProfileR
         dangerous: row.get(3)?,
         created_at: row.get(4)?,
     })
+}
+
+fn key_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<KeyRecord> {
+    Ok(KeyRecord {
+        id: row.get(0)?,
+        project_id: row.get(1)?,
+        profile_id: row.get(2)?,
+        purpose: row.get(3)?,
+        wrapped_material: row.get(4)?,
+        nonce: nonce_from_row(row, 5, "keys.nonce")?,
+        created_at: row.get(6)?,
+    })
+}
+
+fn secret_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SecretRecord> {
+    Ok(SecretRecord {
+        id: row.get(0)?,
+        project_id: row.get(1)?,
+        profile_id: row.get(2)?,
+        name: row.get(3)?,
+        source: row.get(4)?,
+        origin: row.get(5)?,
+        current_version: row.get(6)?,
+        state: row.get(7)?,
+        created_at: row.get(8)?,
+        updated_at: row.get(9)?,
+        last_rotated_at: row.get(10)?,
+        deleted_at: row.get(11)?,
+    })
+}
+
+fn secret_blob_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SecretBlobRecord> {
+    Ok(SecretBlobRecord {
+        secret_id: row.get(0)?,
+        version: row.get(1)?,
+        encrypted_dek: row.get(2)?,
+        ciphertext: row.get(3)?,
+        value_nonce: nonce_from_row(row, 4, "blobs.value_nonce")?,
+        aad_schema_version: row.get(5)?,
+        created_at: row.get(6)?,
+    })
+}
+
+fn nonce_from_row(
+    row: &rusqlite::Row<'_>,
+    column: usize,
+    field: &'static str,
+) -> rusqlite::Result<[u8; 24]> {
+    let bytes: Vec<u8> = row.get(column)?;
+    bytes.try_into().map_err(|bytes: Vec<u8>| {
+        rusqlite::Error::FromSqlConversionFailure(
+            column,
+            Type::Blob,
+            Box::new(InvalidNonceLength { field, actual: bytes.len() }),
+        )
+    })
+}
+
+#[derive(Debug, Error)]
+#[error("{field} must be 24 bytes, got {actual}")]
+struct InvalidNonceLength {
+    field: &'static str,
+    actual: usize,
 }
 
 /// Error returned by the storage layer.
@@ -495,7 +903,10 @@ mod tests {
 
     use tempfile::{TempDir, tempdir};
 
-    use super::{ProfileRecord, ProjectRecord, SCHEMA_VERSION, Store};
+    use super::{
+        KeyRecord, ProfileRecord, ProjectRecord, SCHEMA_VERSION, SecretBlobRecord,
+        SecretFingerprintRecord, SecretRecord, SecretVersionRecord, Store,
+    };
 
     struct TestStore {
         _directory: TempDir,
@@ -512,7 +923,7 @@ mod tests {
         Ok(TestStore { _directory: directory, store })
     }
 
-    fn insert_project_profile_secret(store: &Store) -> Result<(), Box<dyn Error>> {
+    fn insert_project_profile(store: &Store) -> Result<(), Box<dyn Error>> {
         let connection = store.connection();
         connection.execute(
             "INSERT INTO projects(id, name, created_at) VALUES ('lk_proj_test', 'test', 1)",
@@ -525,6 +936,13 @@ mod tests {
             [],
         )?;
 
+        Ok(())
+    }
+
+    fn insert_project_profile_secret(store: &Store) -> Result<(), Box<dyn Error>> {
+        insert_project_profile(store)?;
+
+        let connection = store.connection();
         connection.execute(
             "INSERT INTO secrets(
                id, project_id, profile_id, name, source, origin, required,
@@ -538,6 +956,58 @@ mod tests {
         )?;
 
         Ok(())
+    }
+
+    fn test_secret() -> SecretRecord {
+        SecretRecord {
+            id: "lk_sec_test".to_owned(),
+            project_id: "lk_proj_test".to_owned(),
+            profile_id: "lk_prof_test".to_owned(),
+            name: "DATABASE_URL".to_owned(),
+            source: "user-local".to_owned(),
+            origin: "manual".to_owned(),
+            current_version: 1,
+            state: "active".to_owned(),
+            created_at: 100,
+            updated_at: 100,
+            last_rotated_at: None,
+            deleted_at: None,
+        }
+    }
+
+    fn test_secret_version() -> SecretVersionRecord {
+        SecretVersionRecord {
+            secret_id: "lk_sec_test".to_owned(),
+            version: 1,
+            source: "user-local".to_owned(),
+            origin: "manual".to_owned(),
+            state: "current".to_owned(),
+            created_at: 100,
+            deprecated_at: None,
+            grace_until: None,
+            purged_at: None,
+        }
+    }
+
+    fn test_secret_blob() -> SecretBlobRecord {
+        SecretBlobRecord {
+            secret_id: "lk_sec_test".to_owned(),
+            version: 1,
+            encrypted_dek: vec![1, 2, 3, 4],
+            ciphertext: vec![5, 6, 7, 8],
+            value_nonce: [9; 24],
+            aad_schema_version: 1,
+            created_at: 100,
+        }
+    }
+
+    fn test_secret_fingerprint() -> SecretFingerprintRecord {
+        SecretFingerprintRecord {
+            secret_id: "lk_sec_test".to_owned(),
+            version: 1,
+            fingerprint: vec![10, 11, 12, 13],
+            created_at: 100,
+        }
     }
 
     #[test]
@@ -741,6 +1211,126 @@ mod tests {
             |row| row.get::<_, i64>(0),
         )?;
         assert_eq!(row_count, 1);
+
+        Ok(())
+    }
+
+    #[test]
+    fn key_insert_get_by_scope_and_id() -> Result<(), Box<dyn Error>> {
+        let test_store = open_initialized_store()?;
+        insert_project_profile(&test_store.store)?;
+
+        let key = KeyRecord {
+            id: "lk_key_test".to_owned(),
+            project_id: "lk_proj_test".to_owned(),
+            profile_id: Some("lk_prof_test".to_owned()),
+            purpose: "profile-secret".to_owned(),
+            wrapped_material: vec![1, 2, 3],
+            nonce: [4; 24],
+            created_at: 200,
+        };
+        test_store.store.insert_key(&key)?;
+
+        let project_key = KeyRecord {
+            id: "lk_key_project".to_owned(),
+            project_id: "lk_proj_test".to_owned(),
+            profile_id: None,
+            purpose: "project-metadata".to_owned(),
+            wrapped_material: vec![5, 6, 7],
+            nonce: [8; 24],
+            created_at: 300,
+        };
+        test_store.store.insert_key(&project_key)?;
+
+        assert_eq!(test_store.store.get_key("lk_key_test")?, Some(key.clone()));
+        assert_eq!(
+            test_store.store.get_key_by_scope(
+                "lk_proj_test",
+                Some("lk_prof_test"),
+                "profile-secret"
+            )?,
+            Some(key)
+        );
+        assert_eq!(
+            test_store.store.get_key_by_scope("lk_proj_test", None, "project-metadata")?,
+            Some(project_key.clone())
+        );
+        assert_eq!(test_store.store.get_key("lk_key_project")?, Some(project_key));
+
+        Ok(())
+    }
+
+    #[test]
+    fn create_secret_lists_blob_and_fingerprint() -> Result<(), Box<dyn Error>> {
+        let mut test_store = open_initialized_store()?;
+        insert_project_profile(&test_store.store)?;
+
+        let secret = test_secret();
+        let version = test_secret_version();
+        let blob = test_secret_blob();
+        let fingerprint = test_secret_fingerprint();
+        test_store.store.create_active_secret(&secret, &version, &blob, &fingerprint)?;
+
+        assert_eq!(
+            test_store.store.get_active_secret(
+                "lk_proj_test",
+                "lk_prof_test",
+                "DATABASE_URL",
+                "user-local"
+            )?,
+            Some(secret.clone())
+        );
+        assert_eq!(
+            test_store.store.list_active_secrets_by_profile("lk_proj_test", "lk_prof_test")?,
+            vec![secret]
+        );
+        assert_eq!(test_store.store.get_blob("lk_sec_test", 1)?, Some(blob));
+
+        let stored_fingerprint = test_store.store.connection().query_row(
+            "SELECT fingerprint FROM fingerprints WHERE secret_id = 'lk_sec_test' AND version = 1",
+            [],
+            |row| row.get::<_, Vec<u8>>(0),
+        )?;
+        assert_eq!(stored_fingerprint, fingerprint.fingerprint);
+
+        Ok(())
+    }
+
+    #[test]
+    fn tombstone_secret_hides_it_from_active_queries() -> Result<(), Box<dyn Error>> {
+        let mut test_store = open_initialized_store()?;
+        insert_project_profile(&test_store.store)?;
+
+        test_store.store.create_active_secret(
+            &test_secret(),
+            &test_secret_version(),
+            &test_secret_blob(),
+            &test_secret_fingerprint(),
+        )?;
+        test_store.store.tombstone_secret("lk_sec_test", 300)?;
+
+        assert_eq!(
+            test_store.store.get_active_secret(
+                "lk_proj_test",
+                "lk_prof_test",
+                "DATABASE_URL",
+                "user-local"
+            )?,
+            None
+        );
+        assert!(
+            test_store
+                .store
+                .list_active_secrets_by_profile("lk_proj_test", "lk_prof_test")?
+                .is_empty()
+        );
+
+        let deleted_at = test_store.store.connection().query_row(
+            "SELECT deleted_at FROM secrets WHERE id = 'lk_sec_test' AND state = 'deleted'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )?;
+        assert_eq!(deleted_at, 300);
 
         Ok(())
     }
