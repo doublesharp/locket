@@ -36,6 +36,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const LOCKET_TOML: &str = "locket.toml";
+const CONFIG_TOML: &str = "config.toml";
 const EXAMPLE_FILE: &str = ".env.example";
 const GITIGNORE_FILE: &str = ".gitignore";
 const EXAMPLE_BEGIN: &str = "# --- BEGIN LOCKET MANAGED ---";
@@ -122,6 +123,18 @@ enum Command {
         /// Agent command.
         #[command(subcommand)]
         command: AgentCommand,
+    },
+    /// Manage non-secret user preferences.
+    Config {
+        /// Config command.
+        #[command(subcommand)]
+        command: ConfigCommand,
+    },
+    /// Manage passkey authenticators.
+    Passkey {
+        /// Passkey command.
+        #[command(subcommand)]
+        command: PasskeyCommand,
     },
 }
 
@@ -364,6 +377,52 @@ enum AuditCommand {
     Verify,
 }
 
+#[derive(Debug, Subcommand)]
+enum ConfigCommand {
+    /// List configured non-secret preferences.
+    List,
+    /// Get a configured non-secret preference.
+    Get(ConfigKeyArgs),
+    /// Set a non-secret preference.
+    Set(ConfigSetArgs),
+    /// Unset a non-secret preference.
+    Unset(ConfigKeyArgs),
+}
+
+#[derive(Debug, Args)]
+struct ConfigKeyArgs {
+    /// Config key.
+    key: String,
+}
+
+#[derive(Debug, Args)]
+struct ConfigSetArgs {
+    /// Config key.
+    key: String,
+    /// Config value.
+    value: String,
+}
+
+#[derive(Debug, Subcommand)]
+enum PasskeyCommand {
+    /// Register a passkey authenticator.
+    Register,
+    /// List passkey authenticators.
+    List(PasskeyListArgs),
+    /// Remove a passkey authenticator.
+    Remove {
+        /// Passkey label or credential id prefix.
+        passkey: String,
+    },
+}
+
+#[derive(Debug, Args)]
+struct PasskeyListArgs {
+    /// Include revoked credentials.
+    #[arg(long)]
+    all: bool,
+}
+
 #[derive(Debug, Args)]
 struct SourceArg {
     /// Runtime source to target.
@@ -456,6 +515,8 @@ fn run_with_context(
         Command::Redact(args) => redact_command(context, output, args)?,
         Command::Context(args) => context_command(context, output, args)?,
         Command::AiSafe(args) => ai_safe_command(context, output, &args)?,
+        Command::Config { command } => config_command(context, output, command)?,
+        Command::Passkey { command } => passkey_command(output, command)?,
     }
 
     Ok(())
@@ -465,6 +526,7 @@ fn run_with_context(
 struct RuntimeContext {
     cwd: PathBuf,
     store_path: PathBuf,
+    config_path: PathBuf,
     key_store: Arc<dyn MasterKeyStore + Send + Sync>,
 }
 
@@ -475,10 +537,13 @@ impl RuntimeContext {
             return Err(CliError::Config("could not resolve a local data directory".to_owned()));
         };
         let data_dir = project_dirs.data_dir();
+        let config_dir = project_dirs.config_dir();
         fs::create_dir_all(data_dir)?;
+        fs::create_dir_all(config_dir)?;
         Ok(Self {
             cwd,
             store_path: data_dir.join("store.db"),
+            config_path: config_dir.join(CONFIG_TOML),
             key_store: Arc::new(KeyringMasterKeyStore),
         })
     }
@@ -1060,6 +1125,107 @@ fn audit_command(
             )?;
             writeln!(output, "audit: verified {rows} row(s)")?;
             Ok(())
+        }
+    }
+}
+
+fn config_command(
+    context: &RuntimeContext,
+    output: &mut impl Write,
+    command: ConfigCommand,
+) -> Result<(), CliError> {
+    match command {
+        ConfigCommand::List => config_list_command(context, output),
+        ConfigCommand::Get(args) => config_get_command(context, output, &args.key),
+        ConfigCommand::Set(args) => config_set_command(context, output, &args.key, &args.value),
+        ConfigCommand::Unset(args) => config_unset_command(context, output, &args.key),
+    }
+}
+
+fn config_list_command(context: &RuntimeContext, output: &mut impl Write) -> Result<(), CliError> {
+    let config = read_user_config(context)?;
+    let mut listed = 0_u32;
+    for spec in CONFIG_KEY_SPECS {
+        if let Some(value) = config_get_value(&config, spec.key) {
+            writeln!(output, "{}={}", spec.key, format_config_value(value))?;
+            listed += 1;
+        }
+    }
+    if listed == 0 {
+        writeln!(output, "no config values")?;
+    }
+    Ok(())
+}
+
+fn config_get_command(
+    context: &RuntimeContext,
+    output: &mut impl Write,
+    key: &str,
+) -> Result<(), CliError> {
+    validate_config_key(key)?;
+    let config = read_user_config(context)?;
+    let value = config_get_value(&config, key)
+        .ok_or_else(|| CliError::Config("config key is not set".to_owned()))?;
+    writeln!(output, "{}", format_config_value(value))?;
+    Ok(())
+}
+
+fn config_set_command(
+    context: &RuntimeContext,
+    output: &mut impl Write,
+    key: &str,
+    value: &str,
+) -> Result<(), CliError> {
+    let spec = validate_config_key(key)?;
+    validate_config_value_not_secret_like(value)?;
+    let parsed = parse_config_value(spec, value)?;
+    let mut config = read_user_config(context)?;
+    config_set_value(&mut config, key, parsed)?;
+    write_user_config(context, &config)?;
+    if spec.audit {
+        write_config_update_audit_if_available(context, key, "set")?;
+    }
+    writeln!(output, "set {key}")?;
+    Ok(())
+}
+
+fn config_unset_command(
+    context: &RuntimeContext,
+    output: &mut impl Write,
+    key: &str,
+) -> Result<(), CliError> {
+    let spec = validate_config_key(key)?;
+    let mut config = read_user_config(context)?;
+    config_unset_value(&mut config, key)?;
+    write_user_config(context, &config)?;
+    if spec.audit {
+        write_config_update_audit_if_available(context, key, "unset")?;
+    }
+    writeln!(output, "unset {key}")?;
+    Ok(())
+}
+
+fn passkey_command(output: &mut impl Write, command: PasskeyCommand) -> Result<(), CliError> {
+    match command {
+        PasskeyCommand::Register => Err(CliError::Config(
+            "passkey registration is not available in this build; no credential metadata was written"
+                .to_owned(),
+        )),
+        PasskeyCommand::List(args) => {
+            writeln!(output, "passkey: platform unavailable in this build")?;
+            writeln!(output, "credentials: none")?;
+            writeln!(output, "include_revoked: {}", if args.all { "yes" } else { "no" })?;
+            writeln!(output, "private_key_material: never displayed")?;
+            Ok(())
+        }
+        PasskeyCommand::Remove { passkey } => {
+            if passkey.trim().is_empty() {
+                return Err(CliError::Config("passkey identifier cannot be empty".to_owned()));
+            }
+            Err(CliError::Config(
+                "passkey removal is not available in this build; no credential metadata was changed"
+                    .to_owned(),
+            ))
         }
     }
 }
@@ -2634,6 +2800,177 @@ fn write_project_config(path: &Path, config: &ProjectConfig) -> Result<(), CliEr
     Ok(())
 }
 
+#[derive(Clone, Copy)]
+struct ConfigKeySpec {
+    key: &'static str,
+    kind: ConfigValueKind,
+    audit: bool,
+}
+
+#[derive(Clone, Copy)]
+enum ConfigValueKind {
+    Bool,
+    Duration,
+}
+
+const CONFIG_KEY_SPECS: [ConfigKeySpec; 5] = [
+    ConfigKeySpec { key: "privacy.redact_names", kind: ConfigValueKind::Bool, audit: false },
+    ConfigKeySpec { key: "example.auto_refresh", kind: ConfigValueKind::Bool, audit: false },
+    ConfigKeySpec { key: "agent.autostart", kind: ConfigValueKind::Bool, audit: true },
+    ConfigKeySpec { key: "reveal.ttl", kind: ConfigValueKind::Duration, audit: true },
+    ConfigKeySpec {
+        key: "runtime.session_secret_name_retention",
+        kind: ConfigValueKind::Duration,
+        audit: true,
+    },
+];
+
+fn validate_config_key(key: &str) -> Result<&'static ConfigKeySpec, CliError> {
+    CONFIG_KEY_SPECS
+        .iter()
+        .find(|spec| spec.key == key)
+        .ok_or_else(|| CliError::Config("unsupported config key".to_owned()))
+}
+
+fn validate_config_value_not_secret_like(value: &str) -> Result<(), CliError> {
+    let secret_like = scan_text(CONFIG_TOML, value).iter().any(|finding| {
+        matches!(finding.kind, FindingKind::HighEntropy | FindingKind::ProviderTokenPattern)
+    });
+    if secret_like {
+        return Err(CliError::Config(
+            "config value looks like a secret; refusing to store it".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn parse_config_value(spec: &ConfigKeySpec, value: &str) -> Result<toml::Value, CliError> {
+    match spec.kind {
+        ConfigValueKind::Bool => match value {
+            "true" => Ok(toml::Value::Boolean(true)),
+            "false" => Ok(toml::Value::Boolean(false)),
+            _ => Err(CliError::Config("config value must be true or false".to_owned())),
+        },
+        ConfigValueKind::Duration => {
+            LocketDuration::from_str(value)
+                .map_err(|_| CliError::Config("invalid config duration".to_owned()))?;
+            Ok(toml::Value::String(value.to_owned()))
+        }
+    }
+}
+
+fn read_user_config(runtime: &RuntimeContext) -> Result<toml::Table, CliError> {
+    let toml_text = match fs::read_to_string(&runtime.config_path) {
+        Ok(toml_text) => toml_text,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(toml::Table::new()),
+        Err(error) => return Err(error.into()),
+    };
+    Ok(toml::from_str::<toml::Table>(&toml_text)?)
+}
+
+fn write_user_config(runtime: &RuntimeContext, config: &toml::Table) -> Result<(), CliError> {
+    if let Some(parent) = runtime.config_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let toml_text = toml::to_string_pretty(config)?;
+    fs::write(&runtime.config_path, toml_text)?;
+    Ok(())
+}
+
+fn config_get_value<'a>(config: &'a toml::Table, key: &str) -> Option<&'a toml::Value> {
+    let (section, name) = split_config_key(key)?;
+    config.get(section)?.as_table()?.get(name)
+}
+
+fn config_set_value(
+    config: &mut toml::Table,
+    key: &str,
+    value: toml::Value,
+) -> Result<(), CliError> {
+    let (section, name) = split_config_key(key)
+        .ok_or_else(|| CliError::Config("unsupported config key".to_owned()))?;
+    let section_value =
+        config.entry(section.to_owned()).or_insert_with(|| toml::Value::Table(toml::Table::new()));
+    let Some(section_table) = section_value.as_table_mut() else {
+        return Err(CliError::Config("config section is not a table".to_owned()));
+    };
+    section_table.insert(name.to_owned(), value);
+    Ok(())
+}
+
+fn config_unset_value(config: &mut toml::Table, key: &str) -> Result<(), CliError> {
+    let (section, name) = split_config_key(key)
+        .ok_or_else(|| CliError::Config("unsupported config key".to_owned()))?;
+    let should_remove_section = if let Some(section_value) = config.get_mut(section) {
+        let Some(section_table) = section_value.as_table_mut() else {
+            return Err(CliError::Config("config section is not a table".to_owned()));
+        };
+        section_table.remove(name);
+        section_table.is_empty()
+    } else {
+        false
+    };
+    if should_remove_section {
+        config.remove(section);
+    }
+    Ok(())
+}
+
+fn split_config_key(key: &str) -> Option<(&str, &str)> {
+    let (section, name) = key.split_once('.')?;
+    if section.is_empty() || name.is_empty() || name.contains('.') {
+        return None;
+    }
+    Some((section, name))
+}
+
+fn format_config_value(value: &toml::Value) -> String {
+    match value {
+        toml::Value::Boolean(value) => value.to_string(),
+        toml::Value::String(value) => value.clone(),
+        _ => value.to_string(),
+    }
+}
+
+fn write_config_update_audit_if_available(
+    context: &RuntimeContext,
+    key: &str,
+    operation: &str,
+) -> Result<(), CliError> {
+    let Some(resolved) = resolve_project(&context.cwd)? else {
+        return Ok(());
+    };
+    let mut store = open_store(context)?;
+    if store.get_project(resolved.config.project_id.as_str())?.is_none() {
+        return Ok(());
+    }
+    let Ok(audit_key) =
+        load_project_key(context, &store, resolved.config.project_id.as_str(), KeyPurpose::Audit)
+    else {
+        return Ok(());
+    };
+    let metadata = json!({
+        "schema_version": 1,
+        "action": "CONFIG_UPDATE",
+        "status": "SUCCESS",
+        "operation": operation,
+        "key": key,
+        "value": "hidden",
+    });
+    let audit = AuditWrite {
+        project_id: resolved.config.project_id.as_str(),
+        profile_id: None,
+        action: "CONFIG_UPDATE",
+        status: "SUCCESS",
+        secret_name: None,
+        command: Some("config"),
+        metadata_json: &metadata,
+        timestamp: now_unix_nanos()?,
+    };
+    store.append_audit(audit_key.as_ref(), &audit)?;
+    Ok(())
+}
+
 fn ensure_gitignore(root: &Path) -> Result<(), CliError> {
     let path = root.join(GITIGNORE_FILE);
     let existing = match fs::read_to_string(&path) {
@@ -3089,6 +3426,7 @@ mod tests {
         RuntimeContext {
             cwd: directory.path().to_path_buf(),
             store_path: directory.path().join("store.db"),
+            config_path: directory.path().join("config.toml"),
             key_store: std::sync::Arc::new(MemoryMasterKeyStore::default()),
         }
     }
@@ -3141,6 +3479,13 @@ mod tests {
         Ok(())
     }
 
+    fn assert_error_contains(result: Result<(), super::CliError>, expected: &str) {
+        assert!(result.is_err(), "expected error containing {expected:?}");
+        if let Err(error) = result {
+            assert!(error.to_string().contains(expected), "{error}");
+        }
+    }
+
     #[test]
     fn parses_bare_status() {
         let cli = Cli::try_parse_from(["locket"]);
@@ -3164,6 +3509,13 @@ mod tests {
             &["locket", "diff", "dev", "staging"],
             &["locket", "audit", "verify"],
             &["locket", "exec", "--secret", "DATABASE_URL", "--", "/bin/sh", "-c", "true"],
+            &["locket", "config", "list"],
+            &["locket", "config", "get", "privacy.redact_names"],
+            &["locket", "config", "set", "privacy.redact_names", "true"],
+            &["locket", "config", "unset", "privacy.redact_names"],
+            &["locket", "passkey", "register"],
+            &["locket", "passkey", "list", "--all"],
+            &["locket", "passkey", "remove", "work-laptop"],
         ] {
             assert!(Cli::try_parse_from(args).is_ok(), "{args:?}");
         }
@@ -3417,6 +3769,183 @@ mod tests {
         assert!(logs_output.contains("\"action\":\"start\""));
         assert!(logs_output.contains("\"action\":\"stop\""));
         assert!(!logs_output.contains("secret"));
+        Ok(())
+    }
+
+    #[test]
+    fn config_commands_manage_allowlisted_non_secret_preferences()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+
+        let mut empty_list = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "config", "list"])?,
+            &context,
+            &mut empty_list,
+        )?;
+        assert_eq!(String::from_utf8(empty_list)?, "no config values\n");
+
+        let mut set_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "config", "set", "privacy.redact_names", "true"])?,
+            &context,
+            &mut set_output,
+        )?;
+        assert_eq!(String::from_utf8(set_output)?, "set privacy.redact_names\n");
+
+        let config_file = std::fs::read_to_string(directory.path().join("config.toml"))?;
+        assert!(config_file.contains("[privacy]"));
+        assert!(config_file.contains("redact_names = true"));
+
+        let mut get_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "config", "get", "privacy.redact_names"])?,
+            &context,
+            &mut get_output,
+        )?;
+        assert_eq!(String::from_utf8(get_output)?, "true\n");
+
+        let mut duration_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "config", "set", "reveal.ttl", "5m"])?,
+            &context,
+            &mut duration_output,
+        )?;
+        assert_eq!(String::from_utf8(duration_output)?, "set reveal.ttl\n");
+
+        let mut list_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "config", "list"])?,
+            &context,
+            &mut list_output,
+        )?;
+        let list_output = String::from_utf8(list_output)?;
+        assert!(list_output.contains("privacy.redact_names=true"));
+        assert!(list_output.contains("reveal.ttl=5m"));
+
+        let mut unset_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "config", "unset", "privacy.redact_names"])?,
+            &context,
+            &mut unset_output,
+        )?;
+        assert_eq!(String::from_utf8(unset_output)?, "unset privacy.redact_names\n");
+
+        let mut get_unset_output = Vec::new();
+        let result = run_with_context(
+            Cli::try_parse_from(["locket", "config", "get", "privacy.redact_names"])?,
+            &context,
+            &mut get_unset_output,
+        );
+        assert_error_contains(result, "config key is not set");
+        Ok(())
+    }
+
+    #[test]
+    fn config_set_rejects_unknown_keys_invalid_values_and_secret_like_values()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+
+        let mut output = Vec::new();
+        let unknown = run_with_context(
+            Cli::try_parse_from(["locket", "config", "set", "provider.token", "false"])?,
+            &context,
+            &mut output,
+        );
+        assert_error_contains(unknown, "unsupported config key");
+
+        let mut output = Vec::new();
+        let invalid_bool = run_with_context(
+            Cli::try_parse_from(["locket", "config", "set", "agent.autostart", "yes"])?,
+            &context,
+            &mut output,
+        );
+        assert_error_contains(invalid_bool, "true or false");
+
+        let mut output = Vec::new();
+        let token = run_with_context(
+            Cli::try_parse_from([
+                "locket",
+                "config",
+                "set",
+                "reveal.ttl",
+                "sk_test_sampleTokenValue123",
+            ])?,
+            &context,
+            &mut output,
+        );
+        assert_error_contains(token, "looks like a secret");
+        assert!(!directory.path().join("config.toml").exists());
+        Ok(())
+    }
+
+    #[test]
+    fn config_security_relevant_updates_write_metadata_only_audit_when_project_exists()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        let mut init_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut init_output,
+        )?;
+
+        let mut set_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "config", "set", "agent.autostart", "true"])?,
+            &context,
+            &mut set_output,
+        )?;
+
+        let store = locket_store::Store::open(directory.path().join("store.db"))?;
+        let metadata: String = store.connection().query_row(
+            "SELECT metadata_json FROM audit_log WHERE action = 'CONFIG_UPDATE'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert!(metadata.contains("\"key\":\"agent.autostart\""));
+        assert!(metadata.contains("\"operation\":\"set\""));
+        assert!(!metadata.contains("true"));
+        Ok(())
+    }
+
+    #[test]
+    fn passkey_commands_are_metadata_only_when_platform_is_unavailable()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+
+        let mut list_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "passkey", "list", "--all"])?,
+            &context,
+            &mut list_output,
+        )?;
+        let list_output = String::from_utf8(list_output)?;
+        assert!(list_output.contains("platform unavailable"));
+        assert!(list_output.contains("credentials: none"));
+        assert!(list_output.contains("private_key_material: never displayed"));
+
+        let mut register_output = Vec::new();
+        let register = run_with_context(
+            Cli::try_parse_from(["locket", "passkey", "register"])?,
+            &context,
+            &mut register_output,
+        );
+        assert_error_contains(register, "not available");
+        assert!(register_output.is_empty());
+
+        let mut remove_output = Vec::new();
+        let remove = run_with_context(
+            Cli::try_parse_from(["locket", "passkey", "remove", "work-laptop"])?,
+            &context,
+            &mut remove_output,
+        );
+        assert_error_contains(remove, "not available");
+        assert!(remove_output.is_empty());
         Ok(())
     }
 
