@@ -175,10 +175,7 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
 - [x] `locket redact` spec coverage.
 - [x] `locket context` spec coverage.
 - [x] `locket ai-safe` spec coverage.
-- [ ] Replace metadata-only `locket lock`/`locket unlock` with
-  spec-complete direct CLI and agent-backed behavior; record unlock
-  method and TTL on `UNLOCK`/`LOCK` audit rows
-  (`docs/specs/agent.md:81-95`).
+- [~] [539d8266] ready: agent-539d8266/lock-unlock-audit @ 5230342 — direct-CLI `LOCK`/`UNLOCK` audit rows landed; `unlock` records `method` (`OsKeychain` | `Passphrase`) and the locked-vault path stays metadata-only. Agent-backed RPC wiring and `ttl_seconds` remain a follow-up under the daemon slice (`docs/specs/agent.md:81-95`).
 - [x] Trusted-root management.
 - [x] Dangerous-profile flow.
 - [x] `locket meta`.
@@ -369,36 +366,23 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
 - [x] Runtime session storage/retention primitives and runtime execution
   recording for `exec`/`run` (doctor process-liveness classification is a
   follow-up under doctor enhancements).
-- [ ] Env layering modes: `merge` and `passthrough` distinct from
-  `minimal`/`strict`, plus `override = "preserve"` / `"error"` modes
-  with a warning when a policy doesn't choose an override mode.
-  - Spec: `docs/specs/runtime.md` Runtime Execution.
-  - Errors: `InvalidPolicy` (65), `EnvironmentConflict` (66).
-  - Files: `crates/locket-exec/src/`,
-    `crates/locket-core/src/policy/`.
+- [ ] Env layering modes `merge`/`passthrough` distinct from
+  `minimal`/`strict`, plus `override = "preserve"`/`"error"` with a
+  warning when a policy chooses neither.
 - [~] [70c448c4] Conservative env allowlist
   Claim: branch agent-70c448c4/conservative-env-allowlist, worktree .worktrees/agent-70c448c4-conservative-env-allowlist.
   (`PATH HOME USER SHELL TMPDIR LANG LC_* TERM CI`) applied in `minimal`
   mode and surfaced in `policy doctor`.
   - Spec: `docs/specs/runtime.md` Runtime Execution.
   - Files: `crates/locket-exec/src/env_layer.rs` (or equivalent).
-- [ ] Ephemeral env-file fallback for child processes that cannot accept
-  an env map: 0700 parent / 0600 file, randomized name outside the
-  project tree, post-spawn deletion, audited delivery mode, secure-erase
-  warning when not supported.
-  - Spec: `docs/specs/runtime.md` Runtime Execution.
-  - Audit: `RUN`/`EXEC` extended with `delivery_mode = "ephemeral_file"`.
-  - Files: `crates/locket-exec/src/`.
-- [ ] Clipboard clear-after-TTL only when clipboard still contains the
-  copied value, plus pre-copy warning on platforms that can't reliably
-  clear (e.g. some Wayland compositors).
-  - Spec: `docs/specs/runtime.md` Reveal/Copy.
-  - Files: `crates/locket-platform/src/` clipboard module.
-- [ ] `locket diff --since` git-revision resolution via direct
-  `git log -1 --format=%ct <rev>` (no shell construction; never echo the
-  revision back into a shell).
-  - Spec: `docs/specs/runtime.md` Rotation & History.
-  - Files: `crates/locket-cli/src/commands/secrets/diff.rs`.
+- [ ] Ephemeral env-file fallback for children that can't accept an env
+  map: 0700 parent / 0600 file outside project tree, post-spawn delete,
+  audited delivery mode, secure-erase warning when unsupported.
+- [ ] Clipboard clear-after-TTL only if clipboard still contains the
+  value, with pre-copy warning where reliable clearing isn't possible
+  (e.g. some Wayland compositors).
+- [x] `locket diff --since` resolves git revisions via direct
+  `git log -1 --format=%ct <rev>` (no shell construction).
 
 ### Security/Recovery/Team
 
@@ -540,7 +524,7 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
   (`MetadataInvalid` 64, `MetadataLooksLikeSecret` 66).
 - [ ] Member/device revocation produces a rotation checklist for every
   profile/secret the revoked principal could access.
-- [ ] Recovery-code Crockford Base32 encoding with two checksum chars
+- [x] Recovery-code Crockford Base32 encoding with two checksum chars
   (detect-only; never auto-correct).
 - [ ] Sealed-bundle plaintext manifest minimization: no profile, secret,
   policy names; no member/device labels (only digest, recipients,
@@ -563,26 +547,16 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
 ### App/UI
 
 - [x] `locket-app` workspace crate scaffolded under `crates/locket-app/`.
-- [ ] Build the Tauri desktop app.
-  - Spec: `docs/specs/desktop.md:5-65`.
-  - Files: `crates/locket-app/src-tauri/`, `crates/locket-app/ui/`.
-- [ ] Build the tray/status panel.
-  - Spec: `docs/specs/desktop.md:65-108`.
-- [ ] Reveal/copy UI gates with short-lived plaintext handling.
-  - Spec: `docs/specs/runtime.md:156-187`, `docs/specs/desktop.md`.
-  - Audit actions: `REVEAL`, `COPY` (already defined; UI must call through agent).
-- [ ] Status subscriptions from the agent.
-  - Spec: `docs/specs/agent.md:65, 95` (`SubscribeStatus`).
+- [ ] Build the Tauri desktop app (`docs/specs/desktop.md:5-65`).
+- [ ] Build the tray/status panel (`docs/specs/desktop.md:65-108`).
+- [ ] Reveal/copy UI gates with short-lived plaintext handling
+  (`REVEAL`/`COPY` go through the agent).
+- [ ] Status subscriptions from the agent (`SubscribeStatus`).
 - [ ] Privacy-mode rendering in desktop, tray, and editor-facing UI.
-  - Spec: `docs/specs/desktop.md:37, 94-96`.
-- [ ] Audit, policy, profile, scan, and bootstrap views per spec.
-  - Spec: `docs/specs/desktop.md:5-38`.
+- [ ] Audit, policy, profile, scan, and bootstrap views.
 - [ ] Secret version history view (current/deprecated/purged with
   `deprecated_at`, `grace_until`, pinned-reference eligibility).
-  - Spec: `docs/specs/desktop.md:15`.
-- [ ] Execution/session monitor view.
-  - Spec: `docs/specs/desktop.md:17`; data source is the existing
-    `runtime_sessions` table.
+- [ ] Execution/session monitor view backed by `runtime_sessions`.
 - [x] Tray icon state set (Lucide-based) reflects
   locked/unlocked/scan-warn/alert with platform-appropriate styling.
 - [x] Tray notification policy: no secret values, no secret names by default
