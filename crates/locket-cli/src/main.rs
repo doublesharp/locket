@@ -32,6 +32,7 @@ mod runtime;
 pub(crate) mod scan;
 mod secret_helpers;
 mod secrets_cmd;
+mod set;
 mod shell;
 mod status;
 mod time_helpers;
@@ -80,6 +81,9 @@ use secret_helpers::{
     resolve_secret_for_source, reveal_ttl_seconds, secret_audit_metadata,
     select_copy_profiles_and_sources, write_value_access_audit_if_available,
 };
+#[cfg(test)]
+pub(crate) use set::set_secret_value;
+pub(crate) use set::{SecretWriteRequest, set_secret_value_in_profile};
 #[cfg(test)]
 pub(crate) use shell::SHELL_HOOK_BEGIN;
 pub(crate) use time_helpers::{
@@ -1045,7 +1049,7 @@ fn run_with_context(
         Command::Doctor => return diagnostics::doctor_command(context, output),
         Command::Debug { command } => debug_cmd::debug_command(context, output, command)?,
         Command::Init(args) => init::init(context, output, args)?,
-        Command::Set(args) => set_command(context, output, &args)?,
+        Command::Set(args) => set::set_command(context, output, &args)?,
         Command::Import(args) => import_command(context, output, &args)?,
         Command::Get(args) => get_command(context, output, &args)?,
         Command::Rm(args) => secrets_cmd::rm_command(context, output, &args)?,
@@ -1145,21 +1149,6 @@ fn new_command(
     writeln!(output, "expected_secrets: {}", template.expected_secrets.len())?;
     writeln!(output, "commands: {}", template.command_count())?;
     writeln!(output, "secrets: not written")?;
-    Ok(())
-}
-
-fn set_command(
-    context: &RuntimeContext,
-    output: &mut impl Write,
-    args: &SecretWriteArgs,
-) -> Result<(), CliError> {
-    preflight_set_secret_value(context, args)?;
-    let prompt = format!("set secret value for {}", args.key);
-    let value = context.secret_value_reader.read_secret_value(&prompt)?;
-    set_secret_value(context, args, value.as_str(), "manual", now_unix_nanos()?)?;
-    refresh_example_for_project_if_enabled(context)?;
-    let source = source_arg_to_str(args.source.source.unwrap_or(SecretSourceArg::UserLocal));
-    writeln!(output, "set {} ({source})", args.key)?;
     Ok(())
 }
 
@@ -2237,190 +2226,6 @@ pub(crate) fn insert_wrapped_key(
         nonce: wrapped.nonce,
         created_at: timestamp,
     })?;
-    Ok(())
-}
-
-fn preflight_set_secret_value(
-    context: &RuntimeContext,
-    args: &SecretWriteArgs,
-) -> Result<(), CliError> {
-    let name = SecretName::new(args.key.clone())
-        .map_err(|_| CliError::Config("invalid secret name".to_owned()))?;
-    let resolved = require_project(context)?;
-    let store = open_store(context)?;
-    let profile = default_profile(&store, &resolved.config)?;
-    let source = source_arg_to_str(args.source.source.unwrap_or(SecretSourceArg::UserLocal));
-    if let Some(existing) = store.get_secret_by_source(
-        resolved.config.project_id.as_str(),
-        &profile.id,
-        name.as_str(),
-        source,
-    )? {
-        if existing.state == "deleted" {
-            return Err(CliError::Config(
-                "secret source is deleted; v1 does not reactivate tombstones".to_owned(),
-            ));
-        }
-        return Err(CliError::Config("secret already exists; use rotate".to_owned()));
-    }
-    if args.source.source.is_none() {
-        let existing = store.list_secrets_by_name(
-            resolved.config.project_id.as_str(),
-            &profile.id,
-            name.as_str(),
-        )?;
-        if !existing.is_empty() {
-            return Err(CliError::Config(
-                "secret exists in another source; pass --source to choose a target".to_owned(),
-            ));
-        }
-    }
-    Ok(())
-}
-
-fn set_secret_value(
-    context: &RuntimeContext,
-    args: &SecretWriteArgs,
-    value: &str,
-    origin: &str,
-    timestamp: i64,
-) -> Result<(), CliError> {
-    let source = source_arg_to_str(args.source.source.unwrap_or(SecretSourceArg::UserLocal));
-    let resolved = require_project(context)?;
-    let mut store = open_store(context)?;
-    ensure_trusted_project_root(&store, &resolved)?;
-    let profile = default_profile(&store, &resolved.config)?;
-    set_secret_value_in_profile(
-        context,
-        &mut store,
-        SecretWriteRequest {
-            resolved: &resolved,
-            profile: &profile,
-            key: &args.key,
-            source,
-            value,
-            origin,
-            audit_action: "SET",
-            timestamp,
-        },
-    )
-}
-
-#[derive(Clone, Copy)]
-struct SecretWriteRequest<'a> {
-    resolved: &'a ResolvedProject,
-    profile: &'a ProfileRecord,
-    key: &'a str,
-    source: &'a str,
-    value: &'a str,
-    origin: &'a str,
-    audit_action: &'a str,
-    timestamp: i64,
-}
-
-fn set_secret_value_in_profile(
-    context: &RuntimeContext,
-    store: &mut Store,
-    request: SecretWriteRequest<'_>,
-) -> Result<(), CliError> {
-    let name = SecretName::new(request.key.to_owned())
-        .map_err(|_| CliError::Config("invalid secret name".to_owned()))?;
-    if let Some(existing) = store.get_secret_by_source(
-        request.resolved.config.project_id.as_str(),
-        &request.profile.id,
-        name.as_str(),
-        request.source,
-    )? {
-        if existing.state == "deleted" {
-            return Err(secret_deleted_error(
-                "secret source is deleted; v1 does not reactivate tombstones",
-            ));
-        }
-        return Err(CliError::Config("secret already exists; use rotate".to_owned()));
-    }
-
-    let secret_id = SecretId::generate().map_err(|_| CliError::Time)?;
-    let version = 1;
-    let audit_key = load_project_key(
-        context,
-        store,
-        request.resolved.config.project_id.as_str(),
-        KeyPurpose::Audit,
-    )?;
-    let (encrypted, fingerprint) = encrypt_secret_version(
-        context,
-        store,
-        SecretEncryptRequest {
-            project_id: request.resolved.config.project_id.as_str(),
-            profile_id: &request.profile.id,
-            secret_id: secret_id.as_str(),
-            secret_name: name.as_str(),
-            version,
-            value: request.value,
-        },
-    )?;
-    let secret_id_string = secret_id.into_string();
-    let metadata = secret_audit_metadata(
-        request.audit_action,
-        name.as_str(),
-        &request.profile.id,
-        request.source,
-        Some(version),
-    );
-    let audit = AuditWrite {
-        project_id: request.resolved.config.project_id.as_str(),
-        profile_id: Some(&request.profile.id),
-        action: request.audit_action,
-        status: "SUCCESS",
-        secret_name: Some(name.as_str()),
-        command: None,
-        metadata_json: &metadata,
-        timestamp: request.timestamp,
-    };
-
-    store.create_active_secret_with_audit(
-        &SecretRecord {
-            id: secret_id_string.clone(),
-            project_id: request.resolved.config.project_id.as_str().to_owned(),
-            profile_id: request.profile.id.clone(),
-            name: name.as_str().to_owned(),
-            source: request.source.to_owned(),
-            origin: request.origin.to_owned(),
-            current_version: version,
-            state: "active".to_owned(),
-            created_at: request.timestamp,
-            updated_at: request.timestamp,
-            last_rotated_at: None,
-            deleted_at: None,
-        },
-        &SecretVersionRecord {
-            secret_id: secret_id_string.clone(),
-            version,
-            source: request.source.to_owned(),
-            origin: request.origin.to_owned(),
-            state: "current".to_owned(),
-            created_at: request.timestamp,
-            deprecated_at: None,
-            grace_until: None,
-            purged_at: None,
-        },
-        &SecretBlobRecord {
-            secret_id: secret_id_string.clone(),
-            version,
-            encrypted_dek: encrypted.encrypted_dek,
-            ciphertext: encrypted.ciphertext,
-            value_nonce: encrypted.value_nonce,
-            aad_schema_version: encrypted.aad_schema_version,
-            created_at: request.timestamp,
-        },
-        &SecretFingerprintRecord {
-            secret_id: secret_id_string,
-            version,
-            fingerprint,
-            created_at: request.timestamp,
-        },
-        Some(AuditContext { key: audit_key.as_ref(), write: &audit }),
-    )?;
     Ok(())
 }
 
