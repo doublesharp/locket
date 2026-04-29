@@ -920,6 +920,7 @@ impl From<locket_platform::PlatformError> for CliError {
 fn status(context: &RuntimeContext, output: &mut impl Write) -> Result<(), CliError> {
     let Some(resolved) = resolve_project(&context.cwd)? else {
         writeln!(output, "locket: not initialized")?;
+        writeln!(output, "next_action: run locket init")?;
         return Ok(());
     };
 
@@ -931,16 +932,109 @@ fn status(context: &RuntimeContext, output: &mut impl Write) -> Result<(), CliEr
         resolved.config.project_id.as_str(),
         resolved.config.default_profile.as_str(),
     )?;
+    let redact_names = status_privacy_redact_names_enabled(context)?;
+    let project_label = status_project_label(&resolved, redact_names);
+    let profile_label = status_profile_label(
+        profile.as_ref(),
+        resolved.config.default_profile.as_str(),
+        redact_names,
+    );
+    let running_sessions =
+        store.list_incomplete_runtime_sessions(resolved.config.project_id.as_str())?.len();
+    let scan_warning_count = status_scan_warning_count(&resolved.root)?;
+    let example_exists = resolved.root.join(EXAMPLE_FILE).exists();
+    let next_action = status_next_action(
+        project.as_ref(),
+        profile.as_ref(),
+        trusted,
+        example_exists,
+        scan_warning_count,
+    );
 
-    writeln!(output, "project: {}", resolved.config.name)?;
-    writeln!(output, "project_id: {}", resolved.config.project_id)?;
+    writeln!(output, "project: {project_label}")?;
+    writeln!(
+        output,
+        "project_id: {}",
+        status_project_id_label(resolved.config.project_id.as_str(), redact_names)
+    )?;
     writeln!(output, "root: {}", resolved.root.display())?;
-    writeln!(output, "default_profile: {}", resolved.config.default_profile)?;
+    writeln!(output, "default_profile: {profile_label}")?;
+    writeln!(output, "active_profile: {profile_label}")?;
+    writeln!(output, "lock_state: {}", status_lock_state(project.as_ref(), profile.as_ref()))?;
+    writeln!(output, "agent: unavailable")?;
+    writeln!(output, "agent_state: unavailable")?;
+    writeln!(output, "running_sessions: {running_sessions}")?;
+    writeln!(output, "scan_warnings: {scan_warning_count}")?;
     writeln!(output, "store: {}", if project.is_some() { "ready" } else { "partial" })?;
     writeln!(output, "trusted_root: {}", if trusted { "yes" } else { "no" })?;
     writeln!(output, "profile: {}", if profile.is_some() { "ready" } else { "missing" })?;
-    writeln!(output, "agent: unavailable")?;
+    writeln!(output, "metadata_only: yes")?;
+    writeln!(output, "next_action: {next_action}")?;
     Ok(())
+}
+
+fn status_privacy_redact_names_enabled(context: &RuntimeContext) -> Result<bool, CliError> {
+    let config = read_user_config(context)?;
+    Ok(config_bool_value(&config, "privacy.redact_names")?.unwrap_or(false))
+}
+
+fn status_project_label(resolved: &ResolvedProject, redact_names: bool) -> String {
+    if redact_names {
+        privacy_alias("project", resolved.config.project_id.as_str())
+    } else {
+        resolved.config.name.clone()
+    }
+}
+
+fn status_project_id_label(project_id: &str, redact_names: bool) -> String {
+    if redact_names { privacy_alias("project", project_id) } else { project_id.to_owned() }
+}
+
+fn status_profile_label(
+    profile: Option<&ProfileRecord>,
+    default_profile: &str,
+    redact_names: bool,
+) -> String {
+    if redact_names {
+        let profile_id = profile.map_or(default_profile, |profile| profile.id.as_str());
+        privacy_alias("profile", profile_id)
+    } else {
+        default_profile.to_owned()
+    }
+}
+
+const fn status_lock_state(
+    project: Option<&locket_store::ProjectRecord>,
+    profile: Option<&ProfileRecord>,
+) -> &'static str {
+    if project.is_none() || profile.is_none() { "unavailable" } else { "locked" }
+}
+
+fn status_scan_warning_count(root: &Path) -> Result<usize, CliError> {
+    let mut findings = Vec::new();
+    scan_path(root, root, &[], true, &mut findings)?;
+    findings.retain(|finding| !matches!(finding.path_label.as_str(), LOCKET_TOML | EXAMPLE_FILE));
+    Ok(findings.len())
+}
+
+const fn status_next_action(
+    project: Option<&locket_store::ProjectRecord>,
+    profile: Option<&ProfileRecord>,
+    trusted_root: bool,
+    example_exists: bool,
+    scan_warning_count: usize,
+) -> &'static str {
+    if project.is_none() || profile.is_none() {
+        "run locket init to resume local metadata setup"
+    } else if !trusted_root {
+        "run locket project trust-root"
+    } else if !example_exists {
+        "run locket emit-example"
+    } else if scan_warning_count > 0 {
+        "run locket scan"
+    } else {
+        "none"
+    }
 }
 
 fn new_command(
@@ -6047,6 +6141,89 @@ mod tests {
 
         let output = String::from_utf8(output)?;
         assert!(output.contains("not initialized"));
+        assert!(output.contains("next_action: run locket init"));
+        Ok(())
+    }
+
+    #[test]
+    fn status_reports_metadata_summary_and_next_action() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        let mut init_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut init_output,
+        )?;
+
+        std::fs::write(directory.path().join("leak.txt"), "token=sk_test_sampleTokenValue123\n")?;
+        let resolved = super::resolve_project(&context.cwd)?.ok_or("project should resolve")?;
+        let store = locket_store::Store::open(directory.path().join("store.db"))?;
+        let profile = store
+            .get_profile_by_name(resolved.config.project_id.as_str(), "dev")?
+            .ok_or("default profile should exist")?;
+        store.insert_runtime_session(&locket_store::RuntimeSessionRecord {
+            id: "lk_sess_status".to_owned(),
+            project_id: resolved.config.project_id.to_string(),
+            profile_id: profile.id,
+            policy_name: Some("dev".to_owned()),
+            process_id: 42,
+            process_start_time: 900,
+            started_at: 1_000,
+            ended_at: None,
+            exit_status: None,
+            secret_names: vec!["API_KEY".to_owned()],
+            spawn_audit_sequence: None,
+            completion_audit_sequence: None,
+        })?;
+
+        let mut output = Vec::new();
+        run_with_context(Cli::try_parse_from(["locket", "status"])?, &context, &mut output)?;
+
+        let output = String::from_utf8(output)?;
+        assert!(output.contains("project: app"));
+        assert!(output.contains("default_profile: dev"));
+        assert!(output.contains("active_profile: dev"));
+        assert!(output.contains("lock_state: locked"));
+        assert!(output.contains("agent_state: unavailable"));
+        assert!(output.contains("running_sessions: 1"));
+        assert!(output.contains("scan_warnings: 1"), "{output}");
+        assert!(output.contains("trusted_root: yes"));
+        assert!(output.contains("metadata_only: yes"));
+        assert!(output.contains("next_action: run locket scan"));
+        assert!(!output.contains("sk_test_sampleTokenValue123"));
+        Ok(())
+    }
+
+    #[test]
+    fn status_redacts_project_and_profile_names_from_privacy_config()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        let mut init_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut init_output,
+        )?;
+        let mut config_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "config", "set", "privacy.redact_names", "true"])?,
+            &context,
+            &mut config_output,
+        )?;
+
+        let mut output = Vec::new();
+        run_with_context(Cli::try_parse_from(["locket", "status"])?, &context, &mut output)?;
+
+        let output = String::from_utf8(output)?;
+        assert!(output.contains("project: project-"));
+        assert!(output.contains("project_id: project-"));
+        assert!(output.contains("default_profile: profile-"));
+        assert!(output.contains("active_profile: profile-"));
+        assert!(!output.contains("project: app"));
+        assert!(!output.contains("default_profile: dev"));
+        assert!(!output.contains("active_profile: dev"));
         Ok(())
     }
 
