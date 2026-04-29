@@ -2,8 +2,8 @@
 
 use locket_core::ProjectConfig;
 use locket_crypto::{
-    HkdfWrapInfo, KeyPurpose, KeyWrapAad, KeyWrapPurpose, WrappedKeyMaterial, derive_wrapping_key_v1,
-    key_wrap_aad_v1, unwrap_key_material_v1,
+    HkdfWrapInfo, KeyPurpose, KeyWrapAad, KeyWrapPurpose, WrappedKeyMaterial,
+    derive_wrapping_key_v1, key_wrap_aad_v1, unwrap_key_material_v1,
 };
 use locket_store::{ProfileRecord, Store};
 
@@ -218,10 +218,7 @@ pub fn ensure_project_exists(store: &Store, project_id: &str) -> Result<(), CliE
     ))
 }
 
-pub fn default_profile(
-    store: &Store,
-    config: &ProjectConfig,
-) -> Result<ProfileRecord, CliError> {
+pub fn default_profile(store: &Store, config: &ProjectConfig) -> Result<ProfileRecord, CliError> {
     store
         .get_profile_by_name(config.project_id.as_str(), config.default_profile.as_str())?
         .ok_or_else(|| CliError::Config("default profile is missing".to_owned()))

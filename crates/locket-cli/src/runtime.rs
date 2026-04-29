@@ -5,9 +5,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use directories::{BaseDirs, ProjectDirs};
-use locket_platform::{
-    KeyringMasterKeyStore, MasterKeyStore, PassphraseFallbackMasterKeyStore,
-};
+use locket_platform::{KeyringMasterKeyStore, MasterKeyStore, PassphraseFallbackMasterKeyStore};
 
 use crate::CONFIG_TOML;
 use crate::cli_error::CliError;
