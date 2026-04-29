@@ -5,19 +5,17 @@
 #![allow(clippy::multiple_crate_versions)]
 
 use argon2::{Algorithm, Argon2, Params, Version};
-use chacha20poly1305::{
-    Key, XChaCha20Poly1305, XNonce,
-    aead::{Aead, KeyInit, OsRng, Payload, rand_core::RngCore},
-};
 use hkdf::Hkdf;
-use hmac::{Hmac, Mac};
-use rand::TryRngCore as _;
 use sha2::Sha256;
-use zeroize::{Zeroize, Zeroizing};
+use zeroize::Zeroizing;
 
 mod aad;
+mod aead;
 mod error;
+mod key_wrap;
 mod purpose;
+mod random;
+mod secret_value;
 
 pub use aad::{
     AAD_SCHEMA_V1, HKDF_WRAP_INFO_SCHEMA_V1, HkdfWrapInfo, KEY_WRAP_SCHEMA_V1, KeyWrapAad,
@@ -25,9 +23,21 @@ pub use aad::{
     hkdf_wrap_info_v1, key_wrap_aad_v1, passphrase_fallback_aad_v1, secret_blob_aad_v1,
 };
 pub use error::{CryptoError, CryptoResult};
+pub use key_wrap::{
+    WrappedKeyMaterial, derive_wrapping_key_v1, unwrap_dek_v1, unwrap_key_material_v1, wrap_dek_v1,
+    wrap_key_material_v1,
+};
 pub use purpose::{KeyPurpose, KeyWrapPurpose};
+pub use random::{
+    generate_key, generate_passphrase_salt, generate_recovery_code_bytes, generate_recovery_salt,
+};
+pub use secret_value::{
+    EncryptedSecretValue, decrypt_secret_value_v1, encrypt_secret_value_v1, secret_fingerprint_v1,
+};
 
 use aad::{RECOVERY_ENTRY_AAD_V1_PREFIX, RECOVERY_ENTRY_HKDF_V1_PREFIX};
+use aead::{aead_decrypt, aead_encrypt};
+use random::random_bytes;
 
 /// Size in bytes of Locket symmetric keys.
 pub const KEY_LEN: usize = 32;
@@ -121,28 +131,6 @@ impl RecoveryKdfParams {
     }
 }
 
-/// Encrypted secret value material for a `SecretBlob` row.
-#[derive(Clone, Eq, PartialEq)]
-pub struct EncryptedSecretValue {
-    /// Wrapped DEK bytes in `wrap_nonce || wrap_ciphertext` layout.
-    pub encrypted_dek: Vec<u8>,
-    /// Secret value ciphertext encrypted with the per-version DEK.
-    pub ciphertext: Vec<u8>,
-    /// Nonce used only for secret value encryption.
-    pub value_nonce: NonceBytes,
-    /// AAD schema version used to derive the value AAD.
-    pub aad_schema_version: u16,
-}
-
-/// Encrypted stored key material for a `keys` row.
-#[derive(Clone, Eq, PartialEq)]
-pub struct WrappedKeyMaterial {
-    /// Wrapped key ciphertext without the nonce.
-    pub ciphertext: Vec<u8>,
-    /// Nonce used for key-wrap encryption.
-    pub nonce: NonceBytes,
-}
-
 /// Argon2id parameters for passphrase fallback key derivation.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct PassphraseKdfParams {
@@ -167,42 +155,6 @@ impl PassphraseKdfParams {
             output_len: PASSPHRASE_FALLBACK_OUTPUT_LEN,
         }
     }
-}
-
-/// Derives a 32-byte wrapping key from a master key and canonical HKDF wrap info.
-///
-/// # Errors
-///
-/// Returns an error if wrap-info construction or HKDF expansion fails.
-pub fn derive_wrapping_key_v1(
-    master_key: &KeyBytes,
-    metadata: &HkdfWrapInfo<'_>,
-) -> CryptoResult<Zeroizing<KeyBytes>> {
-    let info = hkdf_wrap_info_v1(metadata)?;
-    let hkdf = Hkdf::<Sha256>::new(None, master_key);
-    let mut key = Zeroizing::new([0_u8; KEY_LEN]);
-    hkdf.expand(&info, &mut *key).map_err(|_| CryptoError::KeyDerivationFailed)?;
-    Ok(key)
-}
-
-/// Generates a random 32-byte symmetric key.
-///
-/// # Errors
-///
-/// Returns [`CryptoError::RandomFailed`] when operating-system randomness is
-/// unavailable.
-pub fn generate_key() -> CryptoResult<Zeroizing<KeyBytes>> {
-    Ok(Zeroizing::new(random_bytes::<KEY_LEN>()?))
-}
-
-/// Generates a random salt for passphrase fallback KDF profiles.
-///
-/// # Errors
-///
-/// Returns [`CryptoError::RandomFailed`] when operating-system randomness is
-/// unavailable.
-pub fn generate_passphrase_salt() -> CryptoResult<[u8; PASSPHRASE_FALLBACK_SALT_LEN]> {
-    random_bytes::<PASSPHRASE_FALLBACK_SALT_LEN>()
 }
 
 /// Derives a passphrase fallback wrapping key using Argon2id.
@@ -232,167 +184,6 @@ pub fn derive_passphrase_fallback_key_v1(
         .hash_password_into(passphrase, salt, &mut *key)
         .map_err(|_| CryptoError::KeyDerivationFailed)?;
     Ok(key)
-}
-
-/// Wraps stored project/profile key material using separate nonce storage.
-///
-/// # Errors
-///
-/// Returns an error if random generation or encryption fails.
-pub fn wrap_key_material_v1(
-    wrapping_key: &KeyBytes,
-    key_material: &KeyBytes,
-    aad: &[u8],
-) -> CryptoResult<WrappedKeyMaterial> {
-    let nonce = random_bytes::<NONCE_LEN>()?;
-    let ciphertext = aead_encrypt(wrapping_key, &nonce, key_material, aad)?;
-    Ok(WrappedKeyMaterial { ciphertext, nonce })
-}
-
-/// Unwraps stored project/profile key material using separate nonce storage.
-///
-/// # Errors
-///
-/// Returns an error if authentication fails or plaintext length is invalid.
-pub fn unwrap_key_material_v1(
-    wrapping_key: &KeyBytes,
-    wrapped: &WrappedKeyMaterial,
-    aad: &[u8],
-) -> CryptoResult<Zeroizing<KeyBytes>> {
-    let plaintext =
-        Zeroizing::new(aead_decrypt(wrapping_key, &wrapped.nonce, &wrapped.ciphertext, aad)?);
-    if plaintext.len() != KEY_LEN {
-        return Err(CryptoError::InvalidWrappedKey);
-    }
-
-    let mut key = Zeroizing::new([0_u8; KEY_LEN]);
-    key.copy_from_slice(&plaintext);
-    Ok(key)
-}
-
-/// Computes a profile-scoped keyed fingerprint for known-value scan matching.
-///
-/// # Errors
-///
-/// Returns an error if `value` is not valid secret value text.
-pub fn secret_fingerprint_v1(
-    profile_fingerprint_key: &KeyBytes,
-    value: &str,
-) -> CryptoResult<FingerprintBytes> {
-    validate_secret_value(value)?;
-    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(profile_fingerprint_key)
-        .map_err(|_| CryptoError::KeyDerivationFailed)?;
-    mac.update(b"locket-secret-fingerprint-v1");
-    mac.update(value.as_bytes());
-    Ok(mac.finalize().into_bytes().into())
-}
-
-/// Encrypts a UTF-8 secret value and wraps its generated DEK.
-///
-/// The returned `encrypted_dek` embeds its own wrap nonce. The returned
-/// `value_nonce` is used only for the value ciphertext.
-///
-/// # Errors
-///
-/// Returns an error if the value contains a NUL byte, random generation fails,
-/// or encryption fails.
-pub fn encrypt_secret_value_v1(
-    profile_secret_key: &KeyBytes,
-    value: &str,
-    value_aad: &[u8],
-    dek_wrap_aad: &[u8],
-) -> CryptoResult<EncryptedSecretValue> {
-    validate_secret_value(value)?;
-
-    let dek = Zeroizing::new(random_bytes::<KEY_LEN>()?);
-    let value_nonce = random_bytes::<NONCE_LEN>()?;
-    let ciphertext = aead_encrypt(&dek, &value_nonce, value.as_bytes(), value_aad)?;
-    let encrypted_dek = wrap_dek_v1(profile_secret_key, &dek, dek_wrap_aad)?;
-
-    Ok(EncryptedSecretValue {
-        encrypted_dek,
-        ciphertext,
-        value_nonce,
-        aad_schema_version: AAD_SCHEMA_V1,
-    })
-}
-
-/// Decrypts a secret value after unwrapping its embedded DEK.
-///
-/// # Errors
-///
-/// Returns an error if the wrapped DEK layout is invalid, authentication fails,
-/// or decrypted bytes are not a valid secret value.
-pub fn decrypt_secret_value_v1(
-    profile_secret_key: &KeyBytes,
-    encrypted: &EncryptedSecretValue,
-    value_aad: &[u8],
-    dek_wrap_aad: &[u8],
-) -> CryptoResult<Zeroizing<String>> {
-    let dek = unwrap_dek_v1(profile_secret_key, &encrypted.encrypted_dek, dek_wrap_aad)?;
-    let mut plaintext = Zeroizing::new(aead_decrypt(
-        &dek,
-        &encrypted.value_nonce,
-        &encrypted.ciphertext,
-        value_aad,
-    )?);
-
-    let value = match String::from_utf8(std::mem::take(&mut *plaintext)) {
-        Ok(value) => value,
-        Err(error) => {
-            let mut bytes = Zeroizing::new(error.into_bytes());
-            bytes.zeroize();
-            return Err(CryptoError::DecryptionFailed);
-        }
-    };
-
-    validate_secret_value(&value)?;
-    Ok(Zeroizing::new(value))
-}
-
-/// Wraps a 32-byte DEK using key-wrap v1 embedded nonce layout.
-///
-/// The returned bytes are `wrap_nonce || wrap_ciphertext`.
-///
-/// # Errors
-///
-/// Returns an error if random generation or encryption fails.
-pub fn wrap_dek_v1(wrapping_key: &KeyBytes, dek: &KeyBytes, aad: &[u8]) -> CryptoResult<Vec<u8>> {
-    let wrap_nonce = random_bytes::<NONCE_LEN>()?;
-    let wrap_ciphertext = aead_encrypt(wrapping_key, &wrap_nonce, dek, aad)?;
-
-    let mut wrapped = Vec::with_capacity(NONCE_LEN + wrap_ciphertext.len());
-    wrapped.extend_from_slice(&wrap_nonce);
-    wrapped.extend_from_slice(&wrap_ciphertext);
-    Ok(wrapped)
-}
-
-/// Unwraps a 32-byte DEK using key-wrap v1 embedded nonce layout.
-///
-/// # Errors
-///
-/// Returns an error if the embedded layout is invalid or authentication fails.
-pub fn unwrap_dek_v1(
-    wrapping_key: &KeyBytes,
-    encrypted_dek: &[u8],
-    aad: &[u8],
-) -> CryptoResult<Zeroizing<KeyBytes>> {
-    let expected_len = NONCE_LEN + KEY_LEN + TAG_LEN;
-    if encrypted_dek.len() != expected_len {
-        return Err(CryptoError::InvalidWrappedKey);
-    }
-
-    let (wrap_nonce, wrap_ciphertext) = encrypted_dek.split_at(NONCE_LEN);
-    let wrap_nonce: &NonceBytes =
-        wrap_nonce.try_into().map_err(|_| CryptoError::InvalidWrappedKey)?;
-    let plaintext = Zeroizing::new(aead_decrypt(wrapping_key, wrap_nonce, wrap_ciphertext, aad)?);
-    if plaintext.len() != KEY_LEN {
-        return Err(CryptoError::InvalidWrappedKey);
-    }
-
-    let mut dek = Zeroizing::new([0_u8; KEY_LEN]);
-    dek.copy_from_slice(&plaintext);
-    Ok(dek)
 }
 
 /// Crockford Base32 symbol alphabet (32 data symbols).
@@ -542,28 +333,6 @@ const fn crockford_decode_char(c: u8) -> CryptoResult<u8> {
     }
 }
 
-/// Generates a fresh 20-byte random recovery code.
-///
-/// # Errors
-///
-/// Returns `CryptoError::RandomFailed` if the OS RNG fails.
-pub fn generate_recovery_code_bytes() -> CryptoResult<[u8; RECOVERY_CODE_BYTES]> {
-    let mut bytes = [0u8; RECOVERY_CODE_BYTES];
-    rand::rngs::OsRng.try_fill_bytes(&mut bytes).map_err(|_| CryptoError::RandomFailed)?;
-    Ok(bytes)
-}
-
-/// Generates a fresh random recovery salt.
-///
-/// # Errors
-///
-/// Returns `CryptoError::RandomFailed` if the OS RNG fails.
-pub fn generate_recovery_salt() -> CryptoResult<[u8; RECOVERY_SALT_LEN]> {
-    let mut salt = [0u8; RECOVERY_SALT_LEN];
-    rand::rngs::OsRng.try_fill_bytes(&mut salt).map_err(|_| CryptoError::RandomFailed)?;
-    Ok(salt)
-}
-
 /// Derives the recovery unwrap root key from a raw recovery code and stored KDF params.
 ///
 /// Uses Argon2id with the stored parameters. Returns a zeroizing 32-byte key.
@@ -671,40 +440,6 @@ pub fn open_recovery_entry_v1(
     let entry_key = recovery_entry_key_v1(unwrap_root, entry_kind, entry_id, kdf_profile_id)?;
     let aad = recovery_entry_aad_v1(kdf_profile_id, entry_kind, entry_id)?;
     aead_decrypt(&entry_key, nonce, ciphertext, &aad)
-}
-
-fn validate_secret_value(value: &str) -> CryptoResult<()> {
-    if value.as_bytes().contains(&0) { Err(CryptoError::InvalidSecretValue) } else { Ok(()) }
-}
-
-fn random_bytes<const N: usize>() -> CryptoResult<[u8; N]> {
-    let mut bytes = [0_u8; N];
-    OsRng.try_fill_bytes(&mut bytes).map_err(|_| CryptoError::RandomFailed)?;
-    Ok(bytes)
-}
-
-fn aead_encrypt(
-    key: &KeyBytes,
-    nonce: &NonceBytes,
-    plaintext: &[u8],
-    aad: &[u8],
-) -> CryptoResult<Vec<u8>> {
-    let cipher = XChaCha20Poly1305::new(Key::from_slice(key));
-    cipher
-        .encrypt(XNonce::from_slice(nonce), Payload { msg: plaintext, aad })
-        .map_err(|_| CryptoError::EncryptionFailed)
-}
-
-fn aead_decrypt(
-    key: &KeyBytes,
-    nonce: &NonceBytes,
-    ciphertext: &[u8],
-    aad: &[u8],
-) -> CryptoResult<Vec<u8>> {
-    let cipher = XChaCha20Poly1305::new(Key::from_slice(key));
-    cipher
-        .decrypt(XNonce::from_slice(nonce), Payload { msg: ciphertext, aad })
-        .map_err(|_| CryptoError::DecryptionFailed)
 }
 
 #[cfg(test)]
