@@ -3,6 +3,24 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
+/// Inline suppression marker that suppresses high-entropy findings on the same line.
+pub const INLINE_SUPPRESS_LINE_MARKER: &str = "locket-allow";
+
+/// Inline suppression marker that suppresses high-entropy findings on the next non-empty line.
+pub const INLINE_SUPPRESS_NEXT_MARKER: &str = "locket-allow-next-line";
+
+/// Stable rule identifier for high-entropy findings.
+pub const RULE_ID_HIGH_ENTROPY: &str = "high-entropy";
+
+/// Stable rule identifier for provider-token pattern findings.
+pub const RULE_ID_PROVIDER_TOKEN: &str = "provider-token-pattern";
+
+/// Stable rule identifier for `.env` file findings.
+pub const RULE_ID_ENV_FILE: &str = "env-file";
+
+/// Stable rule identifier for known-secret value findings.
+pub const RULE_ID_KNOWN_SECRET: &str = "known-secret";
+
 /// Default minimum length for high-entropy token detection.
 pub const DEFAULT_MIN_ENTROPY_TOKEN_LEN: usize = 20;
 
@@ -22,6 +40,28 @@ pub enum FindingKind {
     KnownSecretValue,
 }
 
+impl FindingKind {
+    /// Returns the stable rule identifier for this finding kind.
+    #[must_use]
+    pub const fn rule_id(self) -> &'static str {
+        match self {
+            Self::HighEntropy => RULE_ID_HIGH_ENTROPY,
+            Self::ProviderTokenPattern => RULE_ID_PROVIDER_TOKEN,
+            Self::EnvFileMarker => RULE_ID_ENV_FILE,
+            Self::KnownSecretValue => RULE_ID_KNOWN_SECRET,
+        }
+    }
+
+    /// Returns true when inline suppression comments may suppress findings of this kind.
+    ///
+    /// Per spec, inline suppression applies to high-entropy findings only. Known-secret,
+    /// provider-token, and `.env` file findings are not suppressible inline.
+    #[must_use]
+    pub const fn allows_inline_suppression(self) -> bool {
+        matches!(self, Self::HighEntropy)
+    }
+}
+
 /// Metadata-only scanner finding.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScanFinding {
@@ -35,6 +75,140 @@ pub struct ScanFinding {
     pub token_length: usize,
     /// Finding kind.
     pub kind: FindingKind,
+}
+
+/// A finding that an inline suppression comment removed from the active set.
+///
+/// Suppressed findings carry only metadata-safe context (path, line, column, rule id,
+/// and reason text). They never carry the matched token value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SuppressedFinding {
+    /// Caller-provided path label.
+    pub path_label: String,
+    /// One-based line number where the finding occurred.
+    pub line: usize,
+    /// One-based column number where the finding occurred.
+    pub column: usize,
+    /// Length of the detected token in bytes.
+    pub token_length: usize,
+    /// Finding kind that was suppressed.
+    pub kind: FindingKind,
+    /// Stable rule identifier for the suppressed finding kind.
+    pub rule_id: &'static str,
+    /// Caller-provided reason text from the suppression comment, or empty when none.
+    pub reason: String,
+}
+
+/// Result of partitioning scan findings against inline suppression comments in the
+/// scanned text.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SuppressionResult {
+    /// Findings that remain after applying inline suppression.
+    pub kept: Vec<ScanFinding>,
+    /// Findings that an inline comment suppressed.
+    pub suppressed: Vec<SuppressedFinding>,
+}
+
+/// Partitions `findings` into kept and inline-suppressed groups.
+///
+/// Suppression markers are case-sensitive comment fragments anywhere on a line:
+///
+/// - `locket-allow` (optionally followed by `: <reason>`) suppresses high-entropy
+///   findings on the same line.
+/// - `locket-allow-next-line` (optionally followed by `: <reason>`) suppresses
+///   high-entropy findings on the next non-empty line.
+///
+/// Per the scan spec, only high-entropy findings may be suppressed inline. Known-secret,
+/// provider-token, and `.env` file findings always pass through unchanged so suppression
+/// can never silence a known-secret match.
+///
+/// `findings` must come from a scan of the same `text`; line numbers are matched
+/// directly. Suppressed findings carry path, line, column, length, rule id, and reason
+/// only — they never include the matched value.
+#[must_use]
+pub fn partition_inline_suppressions(text: &str, findings: Vec<ScanFinding>) -> SuppressionResult {
+    let directives = collect_inline_suppressions(text);
+    let mut kept = Vec::new();
+    let mut suppressed = Vec::new();
+
+    for finding in findings {
+        if finding.kind.allows_inline_suppression()
+            && let Some(reason) = directives.get(&finding.line)
+        {
+            suppressed.push(SuppressedFinding {
+                path_label: finding.path_label,
+                line: finding.line,
+                column: finding.column,
+                token_length: finding.token_length,
+                kind: finding.kind,
+                rule_id: finding.kind.rule_id(),
+                reason: reason.clone(),
+            });
+        } else {
+            kept.push(finding);
+        }
+    }
+
+    SuppressionResult { kept, suppressed }
+}
+
+/// Returns a map from line numbers to reason text for every inline suppression
+/// directive that targets a finding line in `text`.
+///
+/// Same-line `locket-allow` directives map to the same line they appear on. Next-line
+/// `locket-allow-next-line` directives map to the next non-empty line after the
+/// directive. Both directives on the same line activate independently.
+fn collect_inline_suppressions(text: &str) -> BTreeMap<usize, String> {
+    let mut directives = BTreeMap::new();
+    let lines: Vec<&str> = text.split('\n').collect();
+
+    for (index, line) in lines.iter().enumerate() {
+        let line_number = index + 1;
+
+        if let Some(reason) = parse_suppression_marker(line, INLINE_SUPPRESS_NEXT_MARKER) {
+            let mut target = index + 1;
+            while target < lines.len() && lines[target].trim().is_empty() {
+                target += 1;
+            }
+            if target < lines.len() {
+                directives.entry(target + 1).or_insert_with(|| reason.clone());
+            }
+        }
+
+        if let Some(reason) = parse_suppression_marker(line, INLINE_SUPPRESS_LINE_MARKER) {
+            directives.insert(line_number, reason);
+        }
+    }
+
+    directives
+}
+
+/// Returns the reason text for a suppression marker if `line` contains `marker`.
+///
+/// Reason text is the trimmed portion after the first `:` following the marker. Markers
+/// not followed by `:` map to an empty reason. The same-line marker `locket-allow` must
+/// not match the longer `locket-allow-next-line` marker; callers handle the longer
+/// marker first to avoid ambiguity.
+fn parse_suppression_marker(line: &str, marker: &str) -> Option<String> {
+    let mut search_from = 0;
+    while let Some(relative) = line[search_from..].find(marker) {
+        let start = search_from + relative;
+        let end = start + marker.len();
+
+        let next_char = line[end..].chars().next();
+        let is_word_continuation =
+            next_char.is_some_and(|character| character.is_alphanumeric() || character == '-');
+        if is_word_continuation {
+            search_from = end;
+            continue;
+        }
+
+        let reason = line[end..].split_once(':').map_or(String::new(), |(_prefix, after)| {
+            after.split(['\n', '\r']).next().unwrap_or("").trim().to_owned()
+        });
+        return Some(reason);
+    }
+    None
 }
 
 /// Result of redacting secret-looking text.
@@ -394,7 +568,8 @@ fn is_env_file_label(path_label: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        FindingKind, KnownRedaction, is_default_high_entropy_token, is_high_entropy_token,
+        FindingKind, KnownRedaction, RULE_ID_HIGH_ENTROPY, ScanFinding,
+        is_default_high_entropy_token, is_high_entropy_token, partition_inline_suppressions,
         redact_text, redact_text_with_known_values, scan_text, shannon_entropy,
     };
 
@@ -539,5 +714,110 @@ mod tests {
         assert_eq!(findings[0].column, 12);
         assert_eq!(findings[0].token_length, token.len());
         assert_eq!(findings[0].kind, FindingKind::ProviderTokenPattern);
+    }
+
+    #[test]
+    fn inline_suppression_removes_high_entropy_findings_on_same_line() {
+        let entropy = "Z9a$kLmN2pQx7R!sT4vW8yB3cD6eF";
+        let text = format!("token={entropy} # locket-allow: known random fixture\n");
+        let findings = scan_text("notes.txt", &text);
+
+        let result = partition_inline_suppressions(&text, findings);
+
+        assert!(result.kept.is_empty());
+        assert_eq!(result.suppressed.len(), 1);
+        let suppressed = &result.suppressed[0];
+        assert_eq!(suppressed.kind, FindingKind::HighEntropy);
+        assert_eq!(suppressed.rule_id, RULE_ID_HIGH_ENTROPY);
+        assert_eq!(suppressed.path_label, "notes.txt");
+        assert_eq!(suppressed.line, 1);
+        assert_eq!(suppressed.reason, "known random fixture");
+        assert!(!format!("{suppressed:?}").contains(entropy));
+    }
+
+    #[test]
+    fn inline_suppression_supports_next_line_marker() {
+        let entropy = "Z9a$kLmN2pQx7R!sT4vW8yB3cD6eF";
+        let text = format!("// locket-allow-next-line: fixture\n{entropy}\n");
+        let findings = scan_text("notes.txt", &text);
+
+        let result = partition_inline_suppressions(&text, findings);
+
+        assert!(result.kept.is_empty());
+        assert_eq!(result.suppressed.len(), 1);
+        assert_eq!(result.suppressed[0].kind, FindingKind::HighEntropy);
+        assert_eq!(result.suppressed[0].line, 2);
+        assert_eq!(result.suppressed[0].reason, "fixture");
+    }
+
+    #[test]
+    fn next_line_marker_skips_blank_lines_to_next_non_empty_line() {
+        let entropy = "Z9a$kLmN2pQx7R!sT4vW8yB3cD6eF";
+        let text = format!("// locket-allow-next-line\n\n   \n{entropy}\n");
+        let findings = scan_text("notes.txt", &text);
+
+        let result = partition_inline_suppressions(&text, findings);
+
+        assert!(result.kept.is_empty());
+        assert_eq!(result.suppressed.len(), 1);
+        assert_eq!(result.suppressed[0].line, 4);
+        assert_eq!(result.suppressed[0].reason, "");
+    }
+
+    #[test]
+    fn inline_suppression_does_not_silence_known_secret_matches() {
+        let path = "leak.txt";
+        let suppressed_finding = ScanFinding {
+            path_label: path.to_owned(),
+            line: 1,
+            column: 1,
+            token_length: 16,
+            kind: FindingKind::KnownSecretValue,
+        };
+        let text = "secret-value # locket-allow: hide it\n";
+
+        let result = partition_inline_suppressions(text, vec![suppressed_finding.clone()]);
+
+        assert_eq!(result.kept, vec![suppressed_finding]);
+        assert!(result.suppressed.is_empty());
+    }
+
+    #[test]
+    fn inline_suppression_does_not_silence_provider_token_or_env_file_findings() {
+        let provider_token = "sk_live_sampleTokenValue123";
+        let text = format!("token={provider_token} # locket-allow: nope\n");
+        let findings = scan_text(".env.local", &text);
+
+        let result = partition_inline_suppressions(&text, findings);
+
+        assert!(result.suppressed.is_empty());
+        assert!(
+            result.kept.iter().any(|finding| finding.kind == FindingKind::ProviderTokenPattern)
+        );
+        assert!(result.kept.iter().any(|finding| finding.kind == FindingKind::EnvFileMarker));
+    }
+
+    #[test]
+    fn next_line_marker_on_last_line_is_a_noop() {
+        let text = "// locket-allow-next-line: nothing follows\n";
+        let findings = scan_text("notes.txt", text);
+
+        let result = partition_inline_suppressions(text, findings);
+
+        assert!(result.kept.is_empty());
+        assert!(result.suppressed.is_empty());
+    }
+
+    #[test]
+    fn line_marker_does_not_match_next_line_marker_substring() {
+        let entropy = "Z9a$kLmN2pQx7R!sT4vW8yB3cD6eF";
+        let text = format!("token={entropy} # locket-allow-next-line: previous-line note\n");
+        let findings = scan_text("notes.txt", &text);
+
+        let result = partition_inline_suppressions(&text, findings);
+
+        assert_eq!(result.kept.len(), 1);
+        assert_eq!(result.kept[0].kind, FindingKind::HighEntropy);
+        assert!(result.suppressed.is_empty());
     }
 }

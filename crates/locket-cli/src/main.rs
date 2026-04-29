@@ -26,7 +26,8 @@ use locket_platform::{
     save_recovery_envelope, save_recovery_kdf_toml,
 };
 use locket_scan::{
-    FindingKind, KnownRedaction, ScanFinding, redact_text, redact_text_with_known_values, scan_text,
+    FindingKind, KnownRedaction, ScanFinding, SuppressedFinding, partition_inline_suppressions,
+    redact_text, redact_text_with_known_values, scan_text,
 };
 use locket_store::{
     AuditContext, AuditLogRecord, AuditWrite, DirectoryGrantRecord, KeyRecord, ProfileRecord,
@@ -1110,7 +1111,8 @@ const fn status_lock_state(
 
 fn status_scan_warning_count(root: &Path) -> Result<usize, CliError> {
     let mut findings = Vec::new();
-    scan_path(root, root, &[], true, &mut findings)?;
+    let mut suppressed = Vec::new();
+    scan_path(root, root, &[], true, &mut findings, &mut suppressed)?;
     findings.retain(|finding| !matches!(finding.path_label.as_str(), LOCKET_TOML | EXAMPLE_FILE));
     Ok(findings.len())
 }
@@ -4020,10 +4022,18 @@ fn scan_command(
     };
 
     let mut findings = Vec::new();
+    let mut suppressed = Vec::new();
     if let Some(git_root) = git_root {
-        scan_staged_path(&git_root, &known_values, &mut findings)?;
+        scan_staged_path(&git_root, &known_values, &mut findings, &mut suppressed)?;
     } else {
-        scan_path(&scan_root, &scan_root, &known_values, !args.no_gitignore, &mut findings)?;
+        scan_path(
+            &scan_root,
+            &scan_root,
+            &known_values,
+            !args.no_gitignore,
+            &mut findings,
+            &mut suppressed,
+        )?;
     }
     for finding in &findings {
         writeln!(output, "{}", format_finding(finding))?;
@@ -4035,9 +4045,85 @@ fn scan_command(
         writeln!(output, "scan: {} finding(s)", findings.len())?;
     }
 
+    if !suppressed.is_empty() {
+        writeln!(output, "scan: {} suppressed finding(s)", suppressed.len())?;
+        for finding in &suppressed {
+            writeln!(output, "{}", format_suppressed_finding(finding))?;
+        }
+    }
+
     if args.require_known {
         writeln!(output, "scan: known-value coverage checked {} value(s)", known_values.len())?;
     }
+
+    if !suppressed.is_empty()
+        && let Some(project) = project.as_ref()
+    {
+        write_scan_suppression_audit(context, project, &suppressed, args.staged)?;
+    }
+
+    Ok(())
+}
+
+fn format_suppressed_finding(finding: &SuppressedFinding) -> String {
+    if finding.reason.is_empty() {
+        format!(
+            "{}:{}:{}: {} suppressed",
+            finding.path_label, finding.line, finding.column, finding.rule_id,
+        )
+    } else {
+        format!(
+            "{}:{}:{}: {} suppressed reason={}",
+            finding.path_label, finding.line, finding.column, finding.rule_id, finding.reason,
+        )
+    }
+}
+
+fn write_scan_suppression_audit(
+    context: &RuntimeContext,
+    project: &ResolvedProject,
+    suppressed: &[SuppressedFinding],
+    staged: bool,
+) -> Result<(), CliError> {
+    let mut store = open_store(context)?;
+    if store.get_project(project.config.project_id.as_str())?.is_none() {
+        return Ok(());
+    }
+    let audit_key =
+        load_project_key(context, &store, project.config.project_id.as_str(), KeyPurpose::Audit)?;
+
+    let entries: Vec<Value> = suppressed
+        .iter()
+        .map(|finding| {
+            json!({
+                "path_label": finding.path_label,
+                "line": finding.line,
+                "column": finding.column,
+                "rule_id": finding.rule_id,
+                "reason": finding.reason,
+            })
+        })
+        .collect();
+
+    let metadata = json!({
+        "schema_version": 1,
+        "action": "SCAN",
+        "status": "SUPPRESSED",
+        "scope": if staged { "staged" } else { "tree" },
+        "suppressed_count": suppressed.len(),
+        "suppressions": entries,
+    });
+    let audit = AuditWrite {
+        project_id: project.config.project_id.as_str(),
+        profile_id: None,
+        action: "SCAN",
+        status: "SUPPRESSED",
+        secret_name: None,
+        command: Some("scan"),
+        metadata_json: &metadata,
+        timestamp: now_unix_nanos()?,
+    };
+    store.append_audit(audit_key.as_ref(), &audit)?;
     Ok(())
 }
 
@@ -7102,6 +7188,7 @@ fn scan_path(
     known_values: &[zeroize::Zeroizing<String>],
     use_gitignore: bool,
     findings: &mut Vec<ScanFinding>,
+    suppressed: &mut Vec<SuppressedFinding>,
 ) -> Result<(), CliError> {
     if path.is_dir() {
         let mut builder = WalkBuilder::new(path);
@@ -7118,12 +7205,12 @@ fn scan_path(
             if child == path || !child.is_file() {
                 continue;
             }
-            scan_file(root, child, known_values, findings)?;
+            scan_file(root, child, known_values, findings, suppressed)?;
         }
         return Ok(());
     }
 
-    scan_file(root, path, known_values, findings)
+    scan_file(root, path, known_values, findings, suppressed)
 }
 
 fn scan_file(
@@ -7131,6 +7218,7 @@ fn scan_file(
     path: &Path,
     known_values: &[zeroize::Zeroizing<String>],
     findings: &mut Vec<ScanFinding>,
+    suppressed: &mut Vec<SuppressedFinding>,
 ) -> Result<(), CliError> {
     if !path.is_file() {
         return Ok(());
@@ -7139,8 +7227,11 @@ fn scan_file(
     let label = path_label(root, path);
     match fs::read_to_string(path) {
         Ok(text) => {
-            findings.extend(scan_text(&label, &text));
-            findings.extend(scan_known_values(&label, &text, known_values));
+            let mut file_findings = scan_text(&label, &text);
+            file_findings.extend(scan_known_values(&label, &text, known_values));
+            let result = partition_inline_suppressions(&text, file_findings);
+            findings.extend(result.kept);
+            suppressed.extend(result.suppressed);
         }
         Err(error) if error.kind() == io::ErrorKind::InvalidData => {
             findings.extend(scan_text(&label, ""));
@@ -7155,6 +7246,7 @@ fn scan_staged_path(
     git_root: &Path,
     known_values: &[zeroize::Zeroizing<String>],
     findings: &mut Vec<ScanFinding>,
+    suppressed: &mut Vec<SuppressedFinding>,
 ) -> Result<(), CliError> {
     let locket_ignore = locket_ignore(git_root)?;
     let staged_paths =
@@ -7181,8 +7273,11 @@ fn scan_staged_path(
         let contents = git_output(git_root, ["cat-file", "-p", &spec])?;
         match String::from_utf8(contents) {
             Ok(text) => {
-                findings.extend(scan_text(&path, &text));
-                findings.extend(scan_known_values(&path, &text, known_values));
+                let mut file_findings = scan_text(&path, &text);
+                file_findings.extend(scan_known_values(&path, &text, known_values));
+                let result = partition_inline_suppressions(&text, file_findings);
+                findings.extend(result.kept);
+                suppressed.extend(result.suppressed);
             }
             Err(_) => findings.extend(scan_text(&path, "")),
         }
@@ -13337,6 +13432,113 @@ required_secrets = ["DATABASE_URL"]
         assert!(!scan_output.contains("ignored.txt"));
         assert!(!scan_output.contains("sk_test_sampleTokenValue123"));
         assert!(!scan_output.contains("sk_test_visibleTokenValue123"));
+        Ok(())
+    }
+
+    #[test]
+    fn scan_inline_suppression_drops_high_entropy_finding_and_writes_audit_row()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        let mut init_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut init_output,
+        )?;
+
+        let entropy_token = "Z9a$kLmN2pQx7R!sT4vW8yB3cD6eF";
+        std::fs::write(
+            directory.path().join("notes.txt"),
+            format!("token={entropy_token} # locket-allow: known fixture\n"),
+        )?;
+
+        let mut scan_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "scan", "notes.txt"])?,
+            &context,
+            &mut scan_output,
+        )?;
+
+        let scan_output = String::from_utf8(scan_output)?;
+        assert!(scan_output.contains("scan: no findings"));
+        assert!(scan_output.contains("scan: 1 suppressed finding(s)"));
+        assert!(scan_output.contains("high-entropy suppressed reason=known fixture"));
+        assert!(!scan_output.contains(entropy_token));
+
+        let store = locket_store::Store::open(directory.path().join("store.db"))?;
+        let mut statement = store.connection().prepare(
+            "SELECT status, metadata_json FROM audit_log WHERE action = 'SCAN' ORDER BY sequence",
+        )?;
+        let rows = statement
+            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?
+            .collect::<Result<Vec<_>, _>>()?;
+        assert_eq!(rows.len(), 1);
+        let (status, metadata) = &rows[0];
+        assert_eq!(status, "SUPPRESSED");
+        assert!(metadata.contains("\"rule_id\":\"high-entropy\""));
+        assert!(metadata.contains("\"reason\":\"known fixture\""));
+        assert!(metadata.contains("notes.txt"));
+        assert!(!metadata.contains(entropy_token));
+        Ok(())
+    }
+
+    #[test]
+    fn scan_inline_suppression_does_not_silence_known_secret_match()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        let mut init_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut init_output,
+        )?;
+        let args = test_secret_write_args("DATABASE_URL");
+        super::set_secret_value(&context, &args, "known-secret-value", "manual", 1_000)?;
+        std::fs::write(
+            directory.path().join("leak.txt"),
+            "db=known-secret-value # locket-allow: try to hide it\n",
+        )?;
+
+        let mut scan_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "scan", "--require-known", "leak.txt"])?,
+            &context,
+            &mut scan_output,
+        )?;
+
+        let scan_output = String::from_utf8(scan_output)?;
+        assert!(scan_output.contains("leak.txt:1:4: known-secret"));
+        assert!(scan_output.contains("scan: 1 finding(s)"));
+        assert!(!scan_output.contains("scan: 1 suppressed"));
+        assert!(!scan_output.contains("known-secret-value"));
+        Ok(())
+    }
+
+    #[test]
+    fn scan_inline_suppression_audit_omits_when_no_suppression_present()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        let mut init_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut init_output,
+        )?;
+        std::fs::write(directory.path().join("notes.txt"), "token=sk_test_sampleTokenValue123\n")?;
+
+        let mut scan_output = Vec::new();
+        run_with_context(Cli::try_parse_from(["locket", "scan"])?, &context, &mut scan_output)?;
+
+        let store = locket_store::Store::open(directory.path().join("store.db"))?;
+        let scan_rows: u32 = store.connection().query_row(
+            "SELECT COUNT(*) FROM audit_log WHERE action = 'SCAN'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(scan_rows, 0);
         Ok(())
     }
 
