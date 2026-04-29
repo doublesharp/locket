@@ -58,23 +58,14 @@ In addition to the verification commands above, every slice must:
 
 ## Multi-Agent Coordination
 
-Multiple agents (A, B, C, ...) often run in parallel against this repository.
-Follow these rules so work composes cleanly.
-
 ### Claiming an agent id
 
-Each running agent generates a unique 8-character lowercase hex id at session
-start. With ~4 billion possible ids the collision probability is negligible
-even with hundreds of concurrent agents across hosts. The id is used in TODO
-claims and in branch and worktree names (e.g. `agent-3f7a91c2/team-metadata`).
+Each session generates an 8-char hex id used in claim files and
+branch/worktree names. Registry: `<repo>/.agents/active/<id>.toml`,
+resolved via the git common dir so all worktrees on this host share it.
+Keep `/.agents/` out of commits.
 
-The registry lives at `<repo-root>/.agents/active/<id>.toml`, resolved through
-the git common directory so all worktrees on this host share one registry. It
-is **not tracked in git** — keep `/.agents/` out of commits (add it to your
-`.gitignore` or global excludesfile).
-
-Run this once at session start. The id is generated from `/dev/urandom` and
-the registry write is atomic.
+Run once at session start (atomic write, retries on collision):
 
 ```sh
 reg="$(cd "$(dirname "$(git rev-parse --git-common-dir)")" && pwd)/.agents/active"
