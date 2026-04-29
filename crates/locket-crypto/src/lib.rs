@@ -555,9 +555,10 @@ fn aead_decrypt(
 #[cfg(test)]
 mod tests {
     use super::{
-        AAD_SCHEMA_V1, CryptoError, HkdfWrapInfo, KEY_LEN, KEY_WRAP_SCHEMA_V1, KeyPurpose,
-        KeyWrapAad, KeyWrapPurpose, NONCE_LEN, SecretBlobAad, TAG_LEN, decrypt_secret_value_v1,
-        derive_wrapping_key_v1, key_wrap_aad_v1, secret_blob_aad_v1, secret_fingerprint_v1,
+        AAD_SCHEMA_V1, CryptoError, HKDF_WRAP_INFO_SCHEMA_V1, HkdfWrapInfo, KEY_LEN,
+        KEY_WRAP_SCHEMA_V1, KeyPurpose, KeyWrapAad, KeyWrapPurpose, NONCE_LEN, SecretBlobAad,
+        TAG_LEN, canonical_field, decrypt_secret_value_v1, derive_wrapping_key_v1,
+        hkdf_wrap_info_v1, key_wrap_aad_v1, secret_blob_aad_v1, secret_fingerprint_v1,
         unwrap_dek_v1, unwrap_key_material_v1, wrap_dek_v1, wrap_key_material_v1,
     };
 
@@ -636,6 +637,41 @@ mod tests {
     }
 
     #[test]
+    fn hkdf_wrap_info_encodes_missing_profile_as_empty_field() -> Result<(), CryptoError> {
+        let info = hkdf_wrap_info_v1(&HkdfWrapInfo::new(
+            "lk_proj_123",
+            None,
+            KeyPurpose::ProjectMetadata,
+        ))?;
+        let expected = [
+            b"locket-wrap-v1".as_slice(),
+            &HKDF_WRAP_INFO_SCHEMA_V1.to_le_bytes(),
+            &[10, 0],
+            b"project_id",
+            &[11, 0, 0, 0],
+            b"lk_proj_123",
+            &[10, 0],
+            b"profile_id",
+            &[0, 0, 0, 0],
+            &[7, 0],
+            b"purpose",
+            &[16, 0, 0, 0],
+            b"project-metadata",
+        ]
+        .concat();
+
+        assert_eq!(info, expected);
+        Ok(())
+    }
+
+    #[test]
+    fn canonical_field_rejects_oversized_field_name() {
+        let name = "n".repeat(usize::from(u16::MAX) + 1);
+
+        assert!(matches!(canonical_field(&name, "value"), Err(CryptoError::FieldNameTooLong)));
+    }
+
+    #[test]
     fn secret_value_uses_separate_value_and_wrap_nonces() -> Result<(), CryptoError> {
         let value_aad = secret_blob_aad_v1(&SecretBlobAad::new(
             "lk_proj_123",
@@ -704,6 +740,49 @@ mod tests {
     }
 
     #[test]
+    fn changed_dek_wrap_aad_fails_secret_decryption() -> Result<(), CryptoError> {
+        let value_aad = secret_blob_aad_v1(&SecretBlobAad::new(
+            "lk_proj_123",
+            "lk_prof_dev",
+            "lk_sec_db",
+            "DATABASE_URL",
+            1,
+        ))?;
+        let wrap_aad = key_wrap_aad_v1(&KeyWrapAad::new(
+            "lk_proj_123",
+            "lk_sec_db",
+            Some("lk_prof_dev"),
+            1,
+            KeyWrapPurpose::SecretDek,
+        ))?;
+        let changed_wrap_aad = key_wrap_aad_v1(&KeyWrapAad::new(
+            "lk_proj_123",
+            "lk_sec_db",
+            Some("lk_prof_dev"),
+            2,
+            KeyWrapPurpose::SecretDek,
+        ))?;
+
+        let encrypted =
+            super::encrypt_secret_value_v1(&PROFILE_SECRET_KEY, "secret", &value_aad, &wrap_aad)?;
+        let result =
+            decrypt_secret_value_v1(&PROFILE_SECRET_KEY, &encrypted, &value_aad, &changed_wrap_aad);
+
+        assert!(matches!(result, Err(CryptoError::DecryptionFailed)));
+        Ok(())
+    }
+
+    #[test]
+    fn secret_values_reject_nul_bytes_before_encryption_or_fingerprinting() {
+        let encrypted =
+            super::encrypt_secret_value_v1(&PROFILE_SECRET_KEY, "bad\0value", b"value", b"wrap");
+        let fingerprint = secret_fingerprint_v1(&PROFILE_SECRET_KEY, "bad\0value");
+
+        assert!(matches!(encrypted, Err(CryptoError::InvalidSecretValue)));
+        assert!(matches!(fingerprint, Err(CryptoError::InvalidSecretValue)));
+    }
+
+    #[test]
     fn wrap_and_unwrap_dek_round_trip() -> Result<(), CryptoError> {
         let dek = [19; KEY_LEN];
         let aad = key_wrap_aad_v1(&KeyWrapAad::new(
@@ -719,6 +798,16 @@ mod tests {
 
         assert_eq!(&*unwrapped, &dek);
         Ok(())
+    }
+
+    #[test]
+    fn unwrap_dek_rejects_noncanonical_embedded_nonce_layout() {
+        let encrypted_dek = vec![0_u8; NONCE_LEN + KEY_LEN + TAG_LEN - 1];
+
+        assert!(matches!(
+            unwrap_dek_v1(&PROFILE_SECRET_KEY, &encrypted_dek, b"aad"),
+            Err(CryptoError::InvalidWrappedKey)
+        ));
     }
 
     #[test]

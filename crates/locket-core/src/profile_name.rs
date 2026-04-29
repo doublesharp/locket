@@ -105,6 +105,8 @@ const fn is_profile_name_rest(value: u8) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::str::FromStr;
+
     use super::{MAX_PROFILE_NAME_LEN, ProfileName};
 
     #[test]
@@ -146,8 +148,39 @@ mod tests {
     }
 
     #[test]
+    fn rejects_ascii_controls_and_trailing_newlines() {
+        for value in ["dev\n", "dev\t", "dev\0"] {
+            assert!(ProfileName::new(value).is_err(), "{value:?} should be invalid");
+        }
+    }
+
+    #[test]
     fn exposes_validated_string() {
         let name = ProfileName::new("dev-local");
         assert!(matches!(name.as_ref().map(ProfileName::as_str), Ok("dev-local")));
+    }
+
+    #[test]
+    fn display_from_str_and_into_string_preserve_value() -> Result<(), super::InvalidProfileName> {
+        let name = ProfileName::from_str("dev-local")?;
+
+        assert_eq!(name.to_string(), "dev-local");
+        assert_eq!(name.into_string(), "dev-local");
+        Ok(())
+    }
+
+    #[test]
+    fn serializes_as_string_and_revalidates_on_deserialize()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let name = ProfileName::new("dev-local")?;
+        let serialized = serde_json::to_string(&name)?;
+
+        assert_eq!(serialized, "\"dev-local\"");
+        assert!(matches!(
+            serde_json::from_str::<ProfileName>("\"dev-local\"").as_ref().map(ProfileName::as_str),
+            Ok("dev-local")
+        ));
+        assert!(serde_json::from_str::<ProfileName>("\"Dev\"").is_err());
+        Ok(())
     }
 }

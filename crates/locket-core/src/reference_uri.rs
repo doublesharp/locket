@@ -317,6 +317,34 @@ mod tests {
     }
 
     #[test]
+    fn displays_sources_as_canonical_query_values() {
+        assert_eq!(SecretSource::TeamManaged.to_string(), "team-managed");
+        assert_eq!(SecretSource::UserLocal.to_string(), "user-local");
+        assert_eq!(SecretSource::MachineLocal.to_string(), "machine-local");
+    }
+
+    #[test]
+    fn secret_version_is_non_zero_and_displays_number() {
+        assert_eq!(super::SecretVersion::new(0), None);
+        assert!(matches!(
+            super::SecretVersion::new(42).map(|version| version.to_string()),
+            Some(value) if value == "42"
+        ));
+    }
+
+    #[test]
+    fn into_parts_returns_validated_components() -> Result<(), InvalidReferenceUri> {
+        let (profile, key, version, source) =
+            LkReferenceUri::parse("lk://dev/DATABASE_URL@v7?source=machine-local")?.into_parts();
+
+        assert_eq!(profile.as_str(), "dev");
+        assert_eq!(key.as_str(), "DATABASE_URL");
+        assert_eq!(version.map(super::SecretVersion::get), Some(7));
+        assert_eq!(source, Some(SecretSource::MachineLocal));
+        Ok(())
+    }
+
+    #[test]
     fn rejects_missing_profile_or_key() {
         assert_eq!(LkReferenceUri::parse("lk:///KEY"), Err(InvalidReferenceUri::MissingProfile));
         assert_eq!(LkReferenceUri::parse("lk://dev/"), Err(InvalidReferenceUri::MissingKey));
@@ -367,6 +395,14 @@ mod tests {
         );
         assert_eq!(
             LkReferenceUri::parse("lk://dev/DATABASE_URL?foo=bar"),
+            Err(InvalidReferenceUri::UnknownQueryKey)
+        );
+        assert_eq!(
+            LkReferenceUri::parse("lk://dev/DATABASE_URL?source=user-local&"),
+            Err(InvalidReferenceUri::UnknownQueryKey)
+        );
+        assert_eq!(
+            LkReferenceUri::parse("lk://dev/DATABASE_URL?source"),
             Err(InvalidReferenceUri::UnknownQueryKey)
         );
         assert_eq!(

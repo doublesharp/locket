@@ -348,10 +348,38 @@ fn frame_payload(bytes: &[u8], maximum_size: usize) -> Result<(&[u8], usize), Pr
 mod tests {
     use super::{
         AgentMethod, DEFAULT_MAX_MESSAGE_SIZE, ErrorEnvelope, LockState, PROTOCOL_VERSION,
-        ProtocolError, RequestEnvelope, StatusPayload, SuccessEnvelope, decode_request_frame,
-        encode_frame,
+        ProtocolError, RequestEnvelope, ResponseEnvelope, StatusPayload, SuccessEnvelope,
+        UnknownMethod, decode_request_frame, encode_frame,
     };
     use serde_json::json;
+
+    #[test]
+    fn agent_methods_round_trip_through_wire_names() -> Result<(), UnknownMethod> {
+        let methods = [
+            AgentMethod::Status,
+            AgentMethod::Unlock,
+            AgentMethod::Lock,
+            AgentMethod::RegisterClient,
+            AgentMethod::RevokeClient,
+            AgentMethod::RequestGrant,
+            AgentMethod::RevokeGrant,
+            AgentMethod::ExpireGrant,
+            AgentMethod::ResolveReference,
+            AgentMethod::PrepareExec,
+            AgentMethod::ScanKnownValues,
+            AgentMethod::Reveal,
+            AgentMethod::Copy,
+            AgentMethod::SubscribeStatus,
+            AgentMethod::CancelSubscription,
+            AgentMethod::ClientHello,
+        ];
+
+        for method in methods {
+            assert_eq!(method.as_str().parse::<AgentMethod>()?, method);
+        }
+
+        Ok(())
+    }
 
     #[test]
     fn encodes_and_decodes_length_prefixed_request() -> Result<(), ProtocolError> {
@@ -368,6 +396,19 @@ mod tests {
 
         assert_eq!(decoded, request);
         assert_eq!(consumed, frame.len());
+        Ok(())
+    }
+
+    #[test]
+    fn decodes_first_frame_and_reports_consumed_bytes() -> Result<(), ProtocolError> {
+        let request = RequestEnvelope::new("req-1", AgentMethod::Status, json!({}));
+        let mut bytes = encode_frame(&request, DEFAULT_MAX_MESSAGE_SIZE)?;
+        bytes.extend_from_slice(b"trailing bytes");
+
+        let (decoded, consumed) = decode_request_frame(&bytes, DEFAULT_MAX_MESSAGE_SIZE)?;
+
+        assert_eq!(decoded, request);
+        assert!(consumed < bytes.len());
         Ok(())
     }
 
@@ -398,6 +439,16 @@ mod tests {
         assert!(matches!(
             decode_request_frame(&frame, 9),
             Err(ProtocolError::MessageTooLarge { length: 10, maximum: 9 })
+        ));
+    }
+
+    #[test]
+    fn encode_rejects_payloads_over_configured_maximum() {
+        let request = RequestEnvelope::new("req-1", AgentMethod::Status, json!({"data": "x"}));
+
+        assert!(matches!(
+            encode_frame(&request, 1),
+            Err(ProtocolError::MessageTooLarge { maximum: 1, .. })
         ));
     }
 
@@ -447,6 +498,31 @@ mod tests {
         assert!(!error.ok);
         assert!(!error.retryable);
         assert_eq!(error.error, "AccessDenied");
+    }
+
+    #[test]
+    fn response_envelope_deserializes_by_success_marker_shape() -> Result<(), serde_json::Error> {
+        let success_value = json!({
+            "v": PROTOCOL_VERSION,
+            "id": "req-1",
+            "ok": true,
+            "payload": {"ready": true}
+        });
+        let error_value = json!({
+            "v": PROTOCOL_VERSION,
+            "id": "req-2",
+            "ok": false,
+            "error": "AccessDenied",
+            "message": "access denied",
+            "retryable": false
+        });
+
+        let success: ResponseEnvelope = serde_json::from_value(success_value)?;
+        let error: ResponseEnvelope = serde_json::from_value(error_value)?;
+
+        assert!(matches!(success, ResponseEnvelope::Success(envelope) if envelope.ok));
+        assert!(matches!(error, ResponseEnvelope::Error(envelope) if !envelope.ok));
+        Ok(())
     }
 
     #[test]

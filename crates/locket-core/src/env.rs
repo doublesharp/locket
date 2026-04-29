@@ -180,14 +180,9 @@ mod tests {
         values.iter().map(|(name, value)| ((*name).to_owned(), (*value).to_owned())).collect()
     }
 
-    fn ok_env(result: Result<EnvMap, EnvMergeError>) -> EnvMap {
-        assert!(result.is_ok());
-        result.unwrap_or_default()
-    }
-
     #[test]
-    fn strict_inherits_only_explicit_names_and_locket_values() {
-        let merged = ok_env(merge_environment(
+    fn strict_inherits_only_explicit_names_and_locket_values() -> Result<(), EnvMergeError> {
+        let merged = merge_environment(
             &env(&[("PATH", "/bin"), ("HOME", "/home/me"), ("NODE_ENV", "dev")]),
             &["PATH", "HOME"],
             &["NODE_ENV"],
@@ -195,16 +190,17 @@ mod tests {
             &env(&[("DATABASE_URL", "postgres://local")]),
             EnvMode::Strict,
             EnvOverrideMode::Locket,
-        ));
+        )?;
 
         assert_eq!(merged.len(), 2);
         assert_eq!(merged.get("NODE_ENV").map(String::as_str), Some("dev"));
         assert_eq!(merged.get("DATABASE_URL").map(String::as_str), Some("postgres://local"));
+        Ok(())
     }
 
     #[test]
-    fn minimal_inherits_safe_allowlist() {
-        let merged = ok_env(merge_environment(
+    fn minimal_inherits_safe_allowlist() -> Result<(), EnvMergeError> {
+        let merged = merge_environment(
             &env(&[("PATH", "/bin"), ("HOME", "/home/me"), ("SECRET", "parent")]),
             &["PATH", "HOME"],
             &[],
@@ -212,16 +208,17 @@ mod tests {
             &EnvMap::new(),
             EnvMode::Minimal,
             EnvOverrideMode::Locket,
-        ));
+        )?;
 
         assert_eq!(merged.len(), 2);
         assert_eq!(merged.get("PATH").map(String::as_str), Some("/bin"));
         assert!(!merged.contains_key("SECRET"));
+        Ok(())
     }
 
     #[test]
-    fn merge_inherits_parent_environment() {
-        let merged = ok_env(merge_environment(
+    fn merge_inherits_parent_environment() -> Result<(), EnvMergeError> {
+        let merged = merge_environment(
             &env(&[("PATH", "/bin"), ("EXISTING", "value")]),
             &[],
             &[],
@@ -229,14 +226,49 @@ mod tests {
             &EnvMap::new(),
             EnvMode::Merge,
             EnvOverrideMode::Locket,
-        ));
+        )?;
 
         assert_eq!(merged.len(), 2);
+        Ok(())
     }
 
     #[test]
-    fn external_sources_apply_before_locket_values() {
-        let merged = ok_env(merge_environment(
+    fn passthrough_inherits_parent_environment() -> Result<(), EnvMergeError> {
+        let merged = merge_environment(
+            &env(&[("PATH", "/bin"), ("EXISTING", "value")]),
+            &[],
+            &[],
+            &EnvMap::new(),
+            &EnvMap::new(),
+            EnvMode::Passthrough,
+            EnvOverrideMode::Locket,
+        )?;
+
+        assert_eq!(merged.len(), 2);
+        assert_eq!(merged.get("EXISTING").map(String::as_str), Some("value"));
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_inherit_overrides_safe_allowlist_value_before_external_sources()
+    -> Result<(), EnvMergeError> {
+        let merged = merge_environment(
+            &env(&[("PATH", "/parent")]),
+            &["PATH"],
+            &["PATH"],
+            &env(&[("PATH", "/external")]),
+            &EnvMap::new(),
+            EnvMode::Minimal,
+            EnvOverrideMode::Locket,
+        )?;
+
+        assert_eq!(merged.get("PATH").map(String::as_str), Some("/external"));
+        Ok(())
+    }
+
+    #[test]
+    fn external_sources_apply_before_locket_values() -> Result<(), EnvMergeError> {
+        let merged = merge_environment(
             &EnvMap::new(),
             &[],
             &[],
@@ -244,14 +276,15 @@ mod tests {
             &env(&[("DATABASE_URL", "locket")]),
             EnvMode::Strict,
             EnvOverrideMode::Locket,
-        ));
+        )?;
 
         assert_eq!(merged.get("DATABASE_URL").map(String::as_str), Some("locket"));
+        Ok(())
     }
 
     #[test]
-    fn preserve_keeps_existing_values() {
-        let merged = ok_env(merge_environment(
+    fn preserve_keeps_existing_values() -> Result<(), EnvMergeError> {
+        let merged = merge_environment(
             &env(&[("DATABASE_URL", "parent")]),
             &[],
             &[],
@@ -259,9 +292,26 @@ mod tests {
             &env(&[("DATABASE_URL", "locket")]),
             EnvMode::Merge,
             EnvOverrideMode::Preserve,
-        ));
+        )?;
 
         assert_eq!(merged.get("DATABASE_URL").map(String::as_str), Some("parent"));
+        Ok(())
+    }
+
+    #[test]
+    fn error_mode_inserts_locket_values_without_conflicts() -> Result<(), EnvMergeError> {
+        let merged = merge_environment(
+            &EnvMap::new(),
+            &[],
+            &[],
+            &EnvMap::new(),
+            &env(&[("DATABASE_URL", "locket")]),
+            EnvMode::Strict,
+            EnvOverrideMode::Error,
+        )?;
+
+        assert_eq!(merged.get("DATABASE_URL").map(String::as_str), Some("locket"));
+        Ok(())
     }
 
     #[test]
@@ -280,5 +330,34 @@ mod tests {
             merged,
             Err(EnvMergeError::Conflict { name }) if name == "DATABASE_URL"
         ));
+    }
+
+    #[test]
+    fn environment_modes_parse_and_display_canonical_values() {
+        for (value, mode) in [
+            ("strict", EnvMode::Strict),
+            ("minimal", EnvMode::Minimal),
+            ("merge", EnvMode::Merge),
+            ("passthrough", EnvMode::Passthrough),
+        ] {
+            assert_eq!(value.parse::<EnvMode>(), Ok(mode));
+            assert_eq!(mode.to_string(), value);
+        }
+
+        assert!("Strict".parse::<EnvMode>().is_err());
+    }
+
+    #[test]
+    fn override_modes_parse_and_display_canonical_values() {
+        for (value, mode) in [
+            ("locket", EnvOverrideMode::Locket),
+            ("preserve", EnvOverrideMode::Preserve),
+            ("error", EnvOverrideMode::Error),
+        ] {
+            assert_eq!(value.parse::<EnvOverrideMode>(), Ok(mode));
+            assert_eq!(mode.to_string(), value);
+        }
+
+        assert!("override".parse::<EnvOverrideMode>().is_err());
     }
 }

@@ -1,6 +1,7 @@
 //! Locket command-line entry point.
 
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
+use clap_complete::{Shell as CompletionShell, generate as generate_completions};
 use directories::ProjectDirs;
 use ignore::{WalkBuilder, gitignore::GitignoreBuilder};
 use locket_core::{
@@ -111,6 +112,8 @@ enum Command {
     Shellenv(ShellenvArgs),
     /// Emit or install a metadata-only shell hook.
     Hook(HookArgs),
+    /// Generate shell completion scripts.
+    Completion(CompletionArgs),
     /// Allow shell integration for the trusted project root and active profile.
     Allow,
     /// Revoke shell integration consent for the active profile or project.
@@ -311,6 +314,13 @@ struct HookArgs {
     /// Describe installation status. Full agent-backed install is not available in this build.
     #[arg(long)]
     install: bool,
+}
+
+#[derive(Debug, Clone, Copy, Args)]
+struct CompletionArgs {
+    /// Shell syntax to generate.
+    #[arg(value_enum)]
+    shell: CompletionShell,
 }
 
 #[derive(Debug, Args)]
@@ -557,6 +567,14 @@ struct SecretMetadataFlags {
 
 fn main() -> ProcessExitCode {
     let cli = Cli::parse();
+    if let Some(Command::Completion(args)) = &cli.command {
+        let mut output = io::stdout();
+        return match completion_command(&mut output, args.shell) {
+            Ok(()) => ProcessExitCode::SUCCESS,
+            Err(error) => write_error_and_exit(&error),
+        };
+    }
+
     let context = match RuntimeContext::default() {
         Ok(context) => context,
         Err(error) => {
@@ -610,6 +628,7 @@ fn run_with_context(
         Command::Project { command } => project_command(context, output, command)?,
         Command::Shellenv(args) => shellenv_command(output, &args)?,
         Command::Hook(args) => hook_command(output, &args)?,
+        Command::Completion(args) => completion_command(output, args.shell)?,
         Command::Allow => allow_command(context, output)?,
         Command::Deny(args) => deny_command(context, output, &args)?,
         Command::Agent { command } => agent_command(context, output, command)?,
@@ -622,6 +641,14 @@ fn run_with_context(
         Command::Passkey { command } => passkey_command(output, command)?,
     }
 
+    Ok(())
+}
+
+fn completion_command(output: &mut impl Write, shell: CompletionShell) -> Result<(), CliError> {
+    let mut command = Cli::command();
+    let mut buffer = Vec::new();
+    generate_completions(shell, &mut command, "locket", &mut buffer);
+    output.write_all(&buffer)?;
     Ok(())
 }
 
@@ -4646,6 +4673,63 @@ mod tests {
     }
 
     #[test]
+    fn env_import_parser_handles_exports_quotes_comments_and_invalid_lines() {
+        let entries = super::parse_env_import(
+            "# ignored\n\
+             export DATABASE_URL='postgres://localhost/app'\n\
+             OPENAI_API_KEY=\"sk_test_sample\"\n\
+             INVALID-NAME=value\n\
+             MISSING_EQUALS\n\
+             NULL_BYTE=bad\0value\n",
+        );
+
+        assert_eq!(entries.len(), 5);
+        let first = match &entries[0] {
+            super::EnvImportEntry::Secret { key, value } => Some((key.as_str(), value.as_str())),
+            super::EnvImportEntry::Invalid => None,
+        };
+        let second = match &entries[1] {
+            super::EnvImportEntry::Secret { key, value } => Some((key.as_str(), value.as_str())),
+            super::EnvImportEntry::Invalid => None,
+        };
+        assert_eq!(first, Some(("DATABASE_URL", "postgres://localhost/app")));
+        assert_eq!(second, Some(("OPENAI_API_KEY", "sk_test_sample")));
+        assert!(matches!(&entries[2], super::EnvImportEntry::Invalid));
+        assert!(matches!(&entries[3], super::EnvImportEntry::Invalid));
+        assert!(matches!(&entries[4], super::EnvImportEntry::Invalid));
+    }
+
+    #[test]
+    fn root_hash_parser_accepts_prefixed_mixed_case_hex_and_rejects_bad_input()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let parsed = super::parse_root_hash(&format!("0x{}", "Aa".repeat(32)))?;
+
+        assert_eq!(parsed, [0xaa; 32]);
+        assert_error_contains(super::parse_root_hash("abcd").map(|_| ()), "64 hex characters");
+        assert_error_contains(
+            super::parse_root_hash(&format!("{}0g", "00".repeat(31))).map(|_| ()),
+            "hex encoded",
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn grace_ttl_parser_handles_absent_values_caps_and_timestamp_overflow()
+    -> Result<(), Box<dyn std::error::Error>> {
+        assert_eq!(super::grace_until_from_args(None, 1_000)?, None);
+        assert_eq!(super::grace_until_from_args(Some("24h"), 1_000)?, Some(86_400_000_001_000),);
+        assert_error_contains(
+            super::grace_until_from_args(Some("8d"), 1_000).map(|_| ()),
+            "7d cap",
+        );
+        assert!(matches!(
+            super::grace_until_from_args(Some("1s"), i64::MAX - 10),
+            Err(super::CliError::Time)
+        ));
+        Ok(())
+    }
+
+    #[test]
     fn parses_bare_status() {
         let cli = Cli::try_parse_from(["locket"]);
         assert!(cli.is_ok());
@@ -4705,6 +4789,11 @@ mod tests {
             &["locket", "shellenv", "--shell", "zsh"],
             &["locket", "hook"],
             &["locket", "hook", "--install"],
+            &["locket", "completion", "bash"],
+            &["locket", "completion", "zsh"],
+            &["locket", "completion", "fish"],
+            &["locket", "completion", "elvish"],
+            &["locket", "completion", "powershell"],
             &["locket", "allow"],
             &["locket", "deny"],
             &["locket", "deny", "--all"],
@@ -4728,6 +4817,27 @@ mod tests {
         ] {
             assert!(Cli::try_parse_from(args).is_ok(), "{args:?}");
         }
+    }
+
+    #[test]
+    fn completion_command_generates_scripts_without_project()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        let mut output = Vec::new();
+
+        run_with_context(
+            Cli::try_parse_from(["locket", "completion", "bash"])?,
+            &context,
+            &mut output,
+        )?;
+
+        let output = String::from_utf8(output)?;
+        assert!(output.contains("_locket()"));
+        assert!(output.contains("complete -F _locket"));
+        assert!(output.contains("completion"));
+        assert!(!directory.path().join("locket.toml").exists());
+        Ok(())
     }
 
     #[test]

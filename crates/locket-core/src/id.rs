@@ -171,6 +171,41 @@ mod tests {
     }
 
     #[test]
+    fn invalid_id_reports_expected_prefix() {
+        let result = ProjectId::new("lk_sec_abc");
+
+        assert!(matches!(
+            result,
+            Err(super::InvalidId { expected_prefix }) if expected_prefix == ProjectId::PREFIX
+        ));
+    }
+
+    #[test]
+    fn display_from_str_and_into_string_preserve_value() -> Result<(), super::InvalidId> {
+        let id = "lk_proj_abc";
+        let parsed = id.parse::<ProjectId>()?;
+
+        assert_eq!(parsed.to_string(), id);
+        assert_eq!(parsed.into_string(), id);
+        Ok(())
+    }
+
+    #[test]
+    fn serializes_as_string_and_revalidates_on_deserialize()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let id = ProjectId::new("lk_proj_abc")?;
+        let serialized = serde_json::to_string(&id)?;
+
+        assert_eq!(serialized, "\"lk_proj_abc\"");
+        assert!(matches!(
+            serde_json::from_str::<ProjectId>("\"lk_proj_abc\"").as_ref().map(ProjectId::as_str),
+            Ok("lk_proj_abc")
+        ));
+        assert!(serde_json::from_str::<ProjectId>("\"lk_sec_abc\"").is_err());
+        Ok(())
+    }
+
+    #[test]
     fn generates_lowercase_hex_project_ids() -> Result<(), super::IdGenerationError> {
         let id = ProjectId::generate()?;
 

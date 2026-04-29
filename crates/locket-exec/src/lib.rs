@@ -104,6 +104,8 @@ pub fn prepare_execution(request: &ExecutionRequest) -> Result<PreparedExecution
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsStr;
+
     use super::{ExecError, ExecutionRequest, prepare_execution};
     use crate::{EnvMap, EnvMode, EnvOverrideMode};
 
@@ -164,6 +166,50 @@ mod tests {
         let result = prepare_execution(&request);
 
         assert!(matches!(result, Err(ExecError::Environment(_))));
+    }
+
+    #[test]
+    fn default_override_mode_prefers_locket_values() -> Result<(), ExecError> {
+        let mut request = ExecutionRequest::strict(vec!["tool".to_owned()]);
+        request.external_env = env(&[("DATABASE_URL", "external"), ("PATH", "/external/bin")]);
+        request.locket_env = env(&[("DATABASE_URL", "locket")]);
+
+        let prepared = prepare_execution(&request)?;
+
+        assert_eq!(prepared.env.get("DATABASE_URL").map(String::as_str), Some("locket"));
+        assert_eq!(prepared.env.get("PATH").map(String::as_str), Some("/external/bin"));
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_inherit_ignores_missing_parent_values() -> Result<(), ExecError> {
+        let mut request = ExecutionRequest::strict(vec!["tool".to_owned()]);
+        request.parent_env = env(&[("PATH", "/bin")]);
+        request.inherit_env = vec!["MISSING".to_owned()];
+
+        let prepared = prepare_execution(&request)?;
+
+        assert!(!prepared.env.contains_key("MISSING"));
+        assert!(!prepared.env.contains_key("PATH"));
+        Ok(())
+    }
+
+    #[test]
+    fn prepared_command_clears_ambient_environment() -> Result<(), ExecError> {
+        let mut request = ExecutionRequest::strict(vec!["tool".to_owned(), "--flag".to_owned()]);
+        request.locket_env = env(&[("TOKEN", "secret")]);
+
+        let prepared = prepare_execution(&request)?;
+        let command = prepared.command();
+
+        assert_eq!(command.get_program(), OsStr::new("tool"));
+        assert_eq!(command.get_args().collect::<Vec<_>>(), [OsStr::new("--flag")]);
+        assert!(
+            command
+                .get_envs()
+                .any(|(name, value)| { name == OsStr::new("TOKEN") && value.is_some() })
+        );
+        Ok(())
     }
 
     #[test]

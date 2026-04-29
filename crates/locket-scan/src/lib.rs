@@ -503,4 +503,41 @@ mod tests {
         assert_eq!(result.counts.get(&FindingKind::KnownSecretValue), Some(&1));
         assert_eq!(result.counts.get(&FindingKind::ProviderTokenPattern), None);
     }
+
+    #[test]
+    fn longer_known_value_wins_when_known_values_start_together() {
+        let result = redact_text_with_known_values(
+            "token=abcdef",
+            &[
+                KnownRedaction { value: "abc", marker: "lk_redacted_SHORT" },
+                KnownRedaction { value: "abcdef", marker: "lk_redacted_LONG" },
+            ],
+        );
+
+        assert_eq!(result.text, "token=lk_redacted_LONG");
+        assert_eq!(result.counts.get(&FindingKind::KnownSecretValue), Some(&1));
+    }
+
+    #[test]
+    fn empty_known_values_are_ignored() {
+        let result = redact_text_with_known_values(
+            "plain text",
+            &[KnownRedaction { value: "", marker: "lk_redacted_EMPTY" }],
+        );
+
+        assert_eq!(result.text, "plain text");
+        assert!(result.counts.is_empty());
+    }
+
+    #[test]
+    fn scan_text_reports_candidate_column_after_boundaries() {
+        let token = "sk_live_sampleTokenValue123";
+        let findings = scan_text("config.json", &format!("  api_key=\"{token}\""));
+
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].line, 1);
+        assert_eq!(findings[0].column, 12);
+        assert_eq!(findings[0].token_length, token.len());
+        assert_eq!(findings[0].kind, FindingKind::ProviderTokenPattern);
+    }
 }

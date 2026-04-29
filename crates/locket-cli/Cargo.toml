@@ -19,6 +19,7 @@ workspace = true
 
 [dependencies]
 clap = { workspace = true }
+clap_complete = { workspace = true }
 directories = { workspace = true }
 ignore = { workspace = true }
 locket-crypto = { path = "../locket-crypto" }

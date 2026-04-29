@@ -181,4 +181,23 @@ mod tests {
             assert!(error.exit_code() < 126);
         }
     }
+
+    #[test]
+    fn converts_error_references_to_exit_codes() {
+        assert_eq!(super::ExitCode::from(&LocketError::GrantRequired), 73);
+    }
+
+    #[test]
+    fn displays_stable_error_messages() {
+        let cases = [
+            (LocketError::InvalidReference, "invalid locket reference"),
+            (LocketError::EnvironmentConflict, "environment conflict"),
+            (LocketError::UnrecoverableVault, "vault unrecoverable"),
+            (LocketError::DeviceRevoked, "device revoked"),
+        ];
+
+        for (error, message) in cases {
+            assert_eq!(error.to_string(), message);
+        }
+    }
 }

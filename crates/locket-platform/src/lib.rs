@@ -198,6 +198,11 @@ mod tests {
     }
 
     #[test]
+    fn rejects_invalid_encoded_key_alphabet() {
+        assert!(matches!(decode_key("not valid base64"), Err(PlatformError::InvalidMasterKey)));
+    }
+
+    #[test]
     fn memory_store_round_trips_and_deletes_master_key() -> Result<(), PlatformError> {
         let store = MemoryMasterKeyStore::default();
 
@@ -219,6 +224,19 @@ mod tests {
             store.load_master_key("lk_proj_other"),
             Err(PlatformError::MasterKeyNotFound)
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn memory_store_replaces_existing_project_key() -> Result<(), PlatformError> {
+        let store = MemoryMasterKeyStore::default();
+        let replacement = [7; KEY_LEN];
+
+        store.store_master_key(PROJECT_ID, &MASTER_KEY)?;
+        store.store_master_key("lk_proj_other", &replacement)?;
+
+        assert!(matches!(store.load_master_key(PROJECT_ID), Err(PlatformError::MasterKeyNotFound)));
+        assert_eq!(&*store.load_master_key("lk_proj_other")?, &replacement);
         Ok(())
     }
 

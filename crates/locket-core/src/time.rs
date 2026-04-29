@@ -167,17 +167,32 @@ mod tests {
 
     #[test]
     fn rejects_invalid_duration_syntax() {
-        for input in ["", "0s", "01s", "-1s", "1.5h", "1h30m", "1H", " 1h", "1h "] {
+        for input in ["", "0s", "01s", "-1s", "1.5h", "1h30m", "1H", " 1h", "1h ", "1"] {
             assert!(Duration::from_str(input).is_err(), "{input} should be invalid");
         }
     }
 
     #[test]
+    fn rejects_duration_overflow_after_unit_scaling() {
+        assert!(Duration::from_str("18446744073709551616s").is_err());
+        assert!(Duration::from_str("307445734561825861m").is_err());
+    }
+
+    #[test]
     fn renders_largest_exact_unit_without_original() {
+        assert_eq!(Duration::from_secs(0).to_string(), "0s");
         assert_eq!(Duration::from_secs(120).to_string(), "2m");
         assert_eq!(Duration::from_secs(7_200).to_string(), "2h");
         assert_eq!(Duration::from_secs(172_800).to_string(), "2d");
         assert_eq!(Duration::from_secs(1_209_600).to_string(), "2w");
         assert_eq!(Duration::from_secs(90).to_string(), "90s");
+    }
+
+    #[test]
+    fn exposes_std_duration_and_consumes_into_std() {
+        let duration = Duration::from_secs(42);
+
+        assert_eq!(duration.as_std().as_secs(), 42);
+        assert_eq!(duration.into_std().as_secs(), 42);
     }
 }

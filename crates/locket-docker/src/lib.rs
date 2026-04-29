@@ -194,6 +194,7 @@ mod tests {
     #[test]
     fn classifies_local_and_remote_endpoints() {
         assert_eq!(classify_docker_endpoint(None), DockerContextClass::Local);
+        assert_eq!(classify_docker_endpoint(Some("   ")), DockerContextClass::Local);
         assert_eq!(
             classify_docker_endpoint(Some("unix:///var/run/docker.sock")),
             DockerContextClass::Local
@@ -207,6 +208,10 @@ mod tests {
             DockerContextClass::Remote
         );
         assert_eq!(classify_docker_endpoint(Some("ssh://builder")), DockerContextClass::Remote);
+        assert_eq!(
+            classify_docker_endpoint(Some("HTTPS://builder.example")),
+            DockerContextClass::Remote
+        );
         assert_eq!(classify_docker_endpoint(Some("desktop-linux")), DockerContextClass::Unknown);
     }
 
@@ -257,10 +262,43 @@ mod tests {
     }
 
     #[test]
+    fn allowed_remote_context_is_recorded_in_plan() -> Result<(), DockerError> {
+        let argv = vec!["docker".to_owned(), "run".to_owned(), "app".to_owned()];
+
+        let plan =
+            prepare_docker_run(&argv, &EnvMap::new(), &EnvMap::new(), Some("ssh://builder"), true)?;
+
+        assert_eq!(plan.context_class, DockerContextClass::Remote);
+        Ok(())
+    }
+
+    #[test]
+    fn locket_environment_overrides_base_environment() -> Result<(), DockerError> {
+        let argv =
+            vec!["docker".to_owned(), "compose".to_owned(), "run".to_owned(), "app".to_owned()];
+        let base_env = env(&[("TOKEN", "base"), ("PATH", "/bin")]);
+        let locket_env = env(&[("TOKEN", "locket")]);
+
+        let plan = prepare_compose(&argv, &base_env, &locket_env, None, false)?;
+
+        assert_eq!(plan.env.get("TOKEN").map(String::as_str), Some("locket"));
+        assert_eq!(plan.env.get("PATH").map(String::as_str), Some("/bin"));
+        assert_eq!(plan.injected_names, ["TOKEN"]);
+        Ok(())
+    }
+
+    #[test]
     fn validates_docker_program() {
         let argv = vec!["podman".to_owned(), "run".to_owned(), "app".to_owned()];
         let result = prepare_docker_run(&argv, &EnvMap::new(), &EnvMap::new(), None, false);
 
         assert_eq!(result, Err(DockerError::UnexpectedCommand { program: "podman".to_owned() }));
+    }
+
+    #[test]
+    fn validates_empty_docker_command() {
+        let result = prepare_compose(&[], &EnvMap::new(), &EnvMap::new(), None, false);
+
+        assert_eq!(result, Err(DockerError::EmptyCommand));
     }
 }

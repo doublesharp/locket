@@ -79,6 +79,8 @@ const fn is_secret_name_rest(value: char) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::str::FromStr;
+
     use super::SecretName;
 
     #[test]
@@ -100,7 +102,7 @@ mod tests {
 
     #[test]
     fn rejects_lowercase_and_punctuation() {
-        for value in ["database_url", "DATABASE-URL", "DATABASE.URL", "DATABASE URL"] {
+        for value in ["database_url", "DATABASE-URL", "DATABASE.URL", "DATABASE URL", "É_KEY"] {
             assert!(SecretName::new(value).is_err(), "{value} should be invalid");
         }
     }
@@ -109,5 +111,14 @@ mod tests {
     fn exposes_validated_string() {
         let name = SecretName::new("DATABASE_URL");
         assert!(matches!(name.as_ref().map(SecretName::as_str), Ok("DATABASE_URL")));
+    }
+
+    #[test]
+    fn display_from_str_and_into_string_preserve_value() -> Result<(), super::InvalidSecretName> {
+        let name = SecretName::from_str("_SERVICE_2")?;
+
+        assert_eq!(name.to_string(), "_SERVICE_2");
+        assert_eq!(name.into_string(), "_SERVICE_2");
+        Ok(())
     }
 }

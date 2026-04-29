@@ -2044,7 +2044,7 @@ mod tests {
     use super::{
         AuditContext, AuditWrite, DirectoryGrantRecord, KeyRecord, ProfileRecord, ProjectRecord,
         ProjectRootRecord, SCHEMA_VERSION, SecretBlobRecord, SecretFingerprintRecord, SecretRecord,
-        SecretVersionRecord, Store,
+        SecretVersionRecord, Store, StoreError,
     };
 
     struct TestStore {
@@ -2202,6 +2202,35 @@ mod tests {
         )?;
         assert_eq!(migration_rows, 1);
 
+        Ok(())
+    }
+
+    #[test]
+    fn schema_initialization_rejects_newer_existing_version() -> Result<(), Box<dyn Error>> {
+        let directory = tempdir()?;
+        let path = directory.path().join("store.db");
+        let mut store = Store::open(path)?;
+        store.connection().execute(
+            "CREATE TABLE schema_migrations (
+               version INTEGER PRIMARY KEY,
+               applied_at INTEGER NOT NULL
+             )",
+            [],
+        )?;
+        store.connection().execute(
+            "INSERT INTO schema_migrations(version, applied_at) VALUES (?1, 1)",
+            [i64::from(SCHEMA_VERSION) + 1],
+        )?;
+
+        let result = store.initialize_schema();
+
+        match result {
+            Err(StoreError::UnsupportedSchema { found, supported }) => {
+                assert_eq!(found, i64::from(SCHEMA_VERSION) + 1);
+                assert_eq!(supported, SCHEMA_VERSION);
+            }
+            other => return Err(format!("unexpected schema result: {other:?}").into()),
+        }
         Ok(())
     }
 
@@ -2570,6 +2599,52 @@ mod tests {
             |row| row.get::<_, Vec<u8>>(0),
         )?;
         assert_eq!(stored_fingerprint, fingerprint.fingerprint);
+
+        Ok(())
+    }
+
+    #[test]
+    fn create_secret_rolls_back_when_version_source_mismatches() -> Result<(), Box<dyn Error>> {
+        let mut test_store = open_initialized_store()?;
+        insert_project_profile(&test_store.store)?;
+        let version =
+            SecretVersionRecord { source: "team-managed".to_owned(), ..test_secret_version() };
+
+        let result = test_store.store.create_active_secret(
+            &test_secret(),
+            &version,
+            &test_secret_blob(),
+            &test_secret_fingerprint(),
+        );
+
+        assert!(result.is_err());
+        assert_eq!(
+            test_store.store.get_secret_by_source(
+                "lk_proj_test",
+                "lk_prof_test",
+                "DATABASE_URL",
+                "user-local",
+            )?,
+            None
+        );
+        let version_rows = test_store.store.connection().query_row(
+            "SELECT COUNT(*) FROM secret_versions WHERE secret_id = 'lk_sec_test'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )?;
+        let blob_rows = test_store.store.connection().query_row(
+            "SELECT COUNT(*) FROM blobs WHERE secret_id = 'lk_sec_test'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )?;
+        let fingerprint_rows = test_store.store.connection().query_row(
+            "SELECT COUNT(*) FROM fingerprints WHERE secret_id = 'lk_sec_test'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )?;
+        assert_eq!(version_rows, 0);
+        assert_eq!(blob_rows, 0);
+        assert_eq!(fingerprint_rows, 0);
 
         Ok(())
     }
