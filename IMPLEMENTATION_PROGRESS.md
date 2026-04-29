@@ -30,46 +30,31 @@ There are multiple agents working so it is imperative that you maintain an agent
 
 ## Definition of Done
 
-A TODO item is finishable when, in addition to the verification commands above,
-all of these hold. Use this as the standing checklist for every slice.
+In addition to the verification commands above, every slice must:
 
-1. **Spec match.** Every behavior bullet in the linked spec section is implemented
-   or explicitly out of scope with a remaining `[ ]` follow-up.
-2. **Typed errors mapped.** All failure paths return a `LocketError` variant from
-   `crates/locket-core/src/error.rs` whose exit code falls in the band documented
-   in `docs/specs/errors.md` (see Reference Quick-Index below). New variants must
-   be added to the central error enum, not bolted onto a CLI module.
-3. **Audit rows.** Every spec-defined success, denial, and failure event writes a
-   row through `crates/locket-store/src/audit.rs`. Action names match the
-   canonical set in `docs/specs/data-model.md` and `docs/specs/audit.md` (see
-   Reference Quick-Index below). Metadata is JSON, metadata-only, and matches the
-   shape documented in `docs/specs/audit.md` (sequence, prev-HMAC, current HMAC,
-   schema version on row). The append must run inside the same SQLite transaction
-   as the data change.
-4. **Convenience-column consistency.** When `AuditLog.secret_name` or
-   `.command` are populated, the same string MUST appear inside `metadata_json`
-   so the HMAC chain covers it. Never write `"secret_name": null` or
-   `"command": null` literals.
-5. **Locked-vault behavior.** Commands that the spec marks as locked-safe must
-   succeed in metadata-only form when the vault is locked. Commands that require
-   keys must fail with `UnlockRequired` (exit 70) before doing any work.
-6. **Privacy-mode honored.** Output must respect `privacy.redact_names` for all
-   project, profile, secret, policy, member, and device names where the spec
-   permits aliases. See `docs/specs/storage.md:179-182` and the privacy renderer
-   helpers in `crates/locket-cli/src/main.rs` (`status_*_label`, `context_*_label`).
-7. **Typed confirmations.** Destructive flows accept a literal-string confirmation
-   matching the documented format (e.g. `purge <profile>/<source>/<key>/<vN|all>`)
-   read through `RuntimeContext::confirmation_reader`. Provide `--force` only
-   where the spec calls for it.
-8. **Permissions.** Any new file Locket writes outside SQLite is created
-   user-only (mode 0600 on Unix, equivalent ACL on Windows) via
-   `crates/locket-platform/src/helpers.rs::set_user_only_file_permissions` (or the
-   directory variant) before any sensitive content is written.
-9. **Tests.** Add focused tests under `crates/locket-cli/src/tests/` and the
-   relevant store/core modules. Cover the golden path, the locked-vault path
-   when applicable, every typed error, and the audit-row shape.
-10. **Leak canary.** Run `make leak-canary`. Any new artifact path (logs, bundles,
-    debug output, transcripts) must be reachable from the canary scanner.
+1. **Spec match.** Implement each linked-spec bullet, or carry the gap
+   as a `[ ]` follow-up.
+2. **Typed errors.** Failures return a `LocketError` in the right
+   exit-code band; new variants land in the central enum.
+3. **Audit rows.** Spec-defined success/denial/failure events write
+   through `crates/locket-store/src/audit.rs` in the same SQLite tx as
+   the data change. Metadata is JSON and metadata-only.
+4. **Convenience columns.** When `secret_name`/`command` are populated,
+   echo them inside `metadata_json`. Never write `null` literals there.
+5. **Locked-vault behavior.** Locked-safe commands succeed metadata-only
+   when locked; key-requiring commands fail with `UnlockRequired`
+   before any work.
+6. **Privacy mode.** Output respects `privacy.redact_names` via the
+   `*_label` helpers everywhere the spec permits aliases.
+7. **Typed confirmations.** Destructive flows read the spec-formatted
+   literal through `RuntimeContext::confirmation_reader`; `--force`
+   only where the spec calls for it.
+8. **Permissions.** New non-SQLite files are 0600 / equivalent ACL via
+   `set_user_only_file_permissions`.
+9. **Tests.** Cover golden path, locked-vault (when applicable), every
+   typed error, and the audit-row shape.
+10. **Leak canary.** `make leak-canary` clean; new artifact paths are
+    reachable from the canary scanner.
 
 ## Multi-Agent Coordination
 
@@ -352,12 +337,11 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
     process-start-time helper landed in
     `agent-4efea70d/process-grant-binding`. Errors: `GrantRequired` (73).
     Audit: `RUN` records `grant_id`, `grant_ttl_seconds`.
-  - [~] [723116e9] **subtask** — run-audit-metadata: extend the existing `RUN` audit row
-    Claim: branch agent-723116e9/run-audit-metadata, worktree .worktrees/agent-723116e9-run-audit-metadata.
-    with the spec-required fields (`policy_id`, `allowed_secret_names`,
-    `required_secret_names`, `confirmation_source`, `child_exit`,
-    `external_sources`). No behavioural changes; pure metadata enrichment
-    plus test coverage.
+  - [x] **subtask** — run-audit-metadata: `RUN_POLICY` audit row now
+    carries `policy_id`, `allowed_secret_names`, `required_secret_names`,
+    `external_sources`, `confirmation_source` (null pending confirm-gate),
+    and `child_exit` from `ExitStatus::code()` in `711c1c4`. Tests assert
+    `child_exit=0` on success and the documented exit code on failure.
   - [ ] **subtask** — run-agent-backed: route `locket run` through the
     local agent's `ResolveReference`/grant RPCs once the daemon ships.
     Depends on the `Local agent daemon` item below. Surface
