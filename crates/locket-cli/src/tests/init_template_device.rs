@@ -190,14 +190,58 @@ expected_secrets = ["database-url"]
     )?;
     let mut output = Vec::new();
 
-    assert_error_contains(
+    assert_metadata_invalid(
         run_with_context(
             Cli::try_parse_from(["locket", "new", "--from-template", "bad"])?,
             &context,
             &mut output,
         ),
         "template expected secret name is invalid",
-    );
+    )?;
+    assert!(!directory.path().join("locket.toml").exists());
+    Ok(())
+}
+
+#[test]
+fn new_template_validation_errors_are_typed_metadata_invalid()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    std::fs::create_dir_all(&context.template_dir)?;
+    std::fs::write(
+        context.template_dir.join("bad-profile.toml"),
+        r#"
+name = "bad-app"
+profiles = ["BadProfile"]
+"#,
+    )?;
+    std::fs::write(
+        context.template_dir.join("bad-policy.toml"),
+        r#"
+name = "bad-app"
+default_profile = "dev"
+
+[commands.dev]
+required_secrets = "DATABASE_URL"
+"#,
+    )?;
+
+    assert_metadata_invalid(
+        run_with_context(
+            Cli::try_parse_from(["locket", "new", "--from-template", "bad-profile"])?,
+            &context,
+            &mut Vec::new(),
+        ),
+        "template profile name is invalid",
+    )?;
+    assert_metadata_invalid(
+        run_with_context(
+            Cli::try_parse_from(["locket", "new", "--from-template", "bad-policy"])?,
+            &context,
+            &mut Vec::new(),
+        ),
+        "invalid template command policy",
+    )?;
     assert!(!directory.path().join("locket.toml").exists());
     Ok(())
 }
@@ -897,12 +941,30 @@ expected_secrets = ["database-url"]
         &context,
         &mut Vec::new(),
     );
-    assert_error_contains(result, "template expected secret name is invalid");
+    assert_metadata_invalid(result, "template expected secret name is invalid")?;
     assert!(!directory.path().join("locket.toml").exists());
 
     let store = crate::open_store(&context)?;
     let total: i64 =
         store.connection().query_row("SELECT COUNT(*) FROM audit_log", [], |row| row.get(0))?;
     assert_eq!(total, 0, "rejected template must not write any audit row");
+    Ok(())
+}
+
+fn assert_metadata_invalid<T>(
+    result: Result<T, crate::CliError>,
+    expected_message: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let Err(error) = result else {
+        return Err(
+            format!("expected MetadataInvalid error containing {expected_message:?}").into()
+        );
+    };
+    assert_eq!(error.exit_code(), 64);
+    let crate::CliError::Typed { kind, message } = error else {
+        return Err(format!("expected typed MetadataInvalid error, got {error:?}").into());
+    };
+    assert_eq!(kind, locket_core::LocketError::MetadataInvalid);
+    assert!(message.contains(expected_message), "{message}");
     Ok(())
 }
