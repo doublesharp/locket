@@ -4923,14 +4923,18 @@ fn drain_ai_safe_pending(
     final_flush: bool,
 ) -> Vec<AiSafeRedactedChunk> {
     let mut chunks = Vec::new();
+    let boundary_overlap = ai_safe_redaction_boundary_overlap(known_redactions);
     loop {
         if let Some(newline_index) = state.pending.iter().position(|byte| *byte == b'\n') {
             let bytes = state.pending.drain(..=newline_index).collect::<Vec<_>>();
             chunks.push(redact_ai_safe_bytes(state.stream, &bytes, known_redactions, false, false));
             continue;
         }
-        if state.pending.len() >= AI_SAFE_PARTIAL_LINE_MAX_BYTES {
-            let bytes = state.pending.drain(..).collect::<Vec<_>>();
+        if state.pending.len() >= AI_SAFE_PARTIAL_LINE_MAX_BYTES
+            && state.pending.len() > boundary_overlap
+        {
+            let emit_len = state.pending.len() - boundary_overlap;
+            let bytes = state.pending.drain(..emit_len).collect::<Vec<_>>();
             chunks.push(redact_ai_safe_bytes(state.stream, &bytes, known_redactions, true, false));
             continue;
         }
@@ -4942,6 +4946,10 @@ fn drain_ai_safe_pending(
         chunks.push(redact_ai_safe_bytes(state.stream, &bytes, known_redactions, false, true));
     }
     chunks
+}
+
+fn ai_safe_redaction_boundary_overlap(known_redactions: &[KnownSecretRedaction]) -> usize {
+    known_redactions.iter().map(|entry| entry.value.len()).max().unwrap_or(0)
 }
 
 fn redact_ai_safe_bytes(
@@ -15833,6 +15841,35 @@ required_secrets = ["DATABASE_URL"]
         assert_eq!(metadata["finding_counts"]["known_secret_value"], 2);
         assert!(!metadata.to_string().contains("postgres://localhost/app"));
         Ok(())
+    }
+
+    #[test]
+    fn ai_safe_redacts_known_secret_across_partial_line_flush_boundary() {
+        let secret = "SPLIT_SECRET_VALUE";
+        let redactions = vec![super::KnownSecretRedaction {
+            value: zeroize::Zeroizing::new(secret.to_owned()),
+            marker: "lk_redacted_SPLIT_SECRET".to_owned(),
+            secret_name: Some("SPLIT_SECRET".to_owned()),
+        }];
+        let mut redactor = super::AiSafeStreamRedactor::new(&redactions);
+        let prefix_len = super::AI_SAFE_PARTIAL_LINE_MAX_BYTES - 5;
+        let mut first = vec![b'a'; prefix_len];
+        first.extend_from_slice(&secret.as_bytes()[..5]);
+
+        let first_chunks = redactor
+            .push(super::AiSafeRawChunk { stream: super::AiSafeStream::Stdout, bytes: first });
+        let first_text = first_chunks.iter().map(|chunk| chunk.text.as_str()).collect::<String>();
+        assert!(!first_text.contains(&secret[..5]));
+
+        let mut second = secret.as_bytes()[5..].to_vec();
+        second.push(b'\n');
+        let mut chunks = redactor
+            .push(super::AiSafeRawChunk { stream: super::AiSafeStream::Stdout, bytes: second });
+        chunks.extend(redactor.finish());
+        let text = chunks.iter().map(|chunk| chunk.text.as_str()).collect::<String>();
+
+        assert!(text.contains("lk_redacted_SPLIT_SECRET"));
+        assert!(!text.contains(secret));
     }
 
     #[test]
