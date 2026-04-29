@@ -23,10 +23,9 @@ There are multiple agents working so it is imperative that you maintain an agent
   `cargo clippy --workspace --all-targets --all-features -- -D warnings`, and the
   workspace test suite (`cargo test --workspace --all-targets --all-features` or
   scoped equivalents for the touched crates).
-- Don't repeat info that already lives in another spec doc or in the
-  Reference Quick-Index. A TODO line should name the work, point at the
-  spec section once if needed, and stop. Skip routine error/audit/file
-  enumerations — agents can read the spec.
+- Don't restate spec content here. A TODO line names the work, points
+  at one spec section if non-obvious, and stops. Skip routine
+  error/audit/file enumerations — agents can read the spec.
 
 ## Definition of Done
 
