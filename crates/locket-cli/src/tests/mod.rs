@@ -109,7 +109,7 @@ impl super::SecretValueReader for FailingSecretValueReader {
         &self,
         _prompt: &str,
     ) -> Result<zeroize::Zeroizing<String>, super::CliError> {
-        Err(super::CliError::Config("secret reader was called".to_owned()))
+        Err(super::invalid_reference_error("secret reader was called"))
     }
 }
 

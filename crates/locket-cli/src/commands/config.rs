@@ -10,7 +10,7 @@ use self::spec::{
     validate_config_value_not_secret_like, validate_stored_config_value,
     write_config_update_audit_if_available, write_user_config,
 };
-use crate::{CliError, ConfigCommand, RuntimeContext};
+use crate::{CliError, ConfigCommand, RuntimeContext, invalid_reference_error};
 
 pub fn config_command(
     context: &RuntimeContext,
@@ -49,7 +49,7 @@ fn config_get_command(
     let spec = validate_config_key(key)?;
     let config = read_user_config(context)?;
     let value = config_get_value(&config, key)
-        .ok_or_else(|| CliError::Config("config key is not set".to_owned()))?;
+        .ok_or_else(|| invalid_reference_error("config key is not set"))?;
     validate_stored_config_value(spec, value)?;
     writeln!(output, "{}", format_config_value(value))?;
     Ok(())

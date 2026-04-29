@@ -11,7 +11,7 @@ use locket_platform::{
 };
 
 use crate::CONFIG_TOML;
-use crate::runtime::error::CliError;
+use crate::runtime::error::{CliError, corrupt_db_error};
 use crate::runtime::prompts::{
     ConfirmationReader, EnvOrPromptPassphraseReader, PassphraseReader, RecoveryCodeReader,
     SecretValueReader, StdinConfirmationReader, StdinOrPromptSecretValueReader,
@@ -37,10 +37,10 @@ impl RuntimeContext {
     pub fn default() -> Result<Self, CliError> {
         let cwd = std::env::current_dir()?;
         let Some(project_dirs) = ProjectDirs::from("dev", "0xdoublesharp", "Locket") else {
-            return Err(CliError::Config("could not resolve a local data directory".to_owned()));
+            return Err(corrupt_db_error("could not resolve a local data directory"));
         };
         let Some(base_dirs) = BaseDirs::new() else {
-            return Err(CliError::Config("could not resolve a local home directory".to_owned()));
+            return Err(corrupt_db_error("could not resolve a local home directory"));
         };
         let data_dir = project_dirs.data_dir();
         let config_dir = project_dirs.config_dir();

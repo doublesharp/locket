@@ -7,11 +7,12 @@ mod support;
 pub(crate) use runtime::context::RuntimeContext;
 pub(crate) use runtime::error::{
     CliError, access_denied_error, bundle_verification_error, confirmation_failed_error,
-    invalid_profile_name_error, invalid_secret_name_error, metadata_invalid_error,
-    metadata_looks_like_secret_error, policy_not_found_error, profile_not_found_error,
-    project_not_found_error, project_root_untrusted_error, scan_finding_blocked_error,
-    secret_already_exists_error, secret_deleted_error, secret_not_found_error,
-    secret_version_overflow_error, tty_required_error, unimplemented_in_build_error,
+    git_worktree_required_error, invalid_profile_name_error, invalid_reference_error,
+    invalid_secret_name_error, metadata_invalid_error, metadata_looks_like_secret_error,
+    policy_not_found_error, profile_not_found_error, project_not_found_error,
+    project_root_untrusted_error, scan_finding_blocked_error, secret_already_exists_error,
+    secret_deleted_error, secret_not_found_error, secret_version_overflow_error,
+    tty_required_error, unimplemented_in_build_error, unlock_required_error,
 };
 pub(crate) use runtime::key_access::{
     MasterKeySource, default_profile, ensure_project_exists, load_master_key,
@@ -1112,13 +1113,11 @@ fn new_command(
     args: &NewArgs,
 ) -> Result<(), CliError> {
     if resolve_project(&context.cwd)?.is_some() {
-        return Err(CliError::Config("project already initialized".to_owned()));
+        return Err(secret_already_exists_error("project already initialized"));
     }
     let config_path = context.cwd.join(LOCKET_TOML);
     if config_path.exists() {
-        return Err(CliError::Config(
-            "locket.toml already exists but could not be resolved".to_owned(),
-        ));
+        return Err(metadata_invalid_error("locket.toml already exists but could not be resolved"));
     }
 
     let template = commands::project::onboarding::load_project_template(
@@ -2085,7 +2084,7 @@ fn read_project_config(path: &Path) -> Result<ProjectConfig, CliError> {
     let content = fs::read_to_string(path)?;
     let config = toml::from_str::<ProjectConfig>(&content)?;
     if config.schema_version != PROJECT_CONFIG_SCHEMA_VERSION {
-        return Err(CliError::Config(format!(
+        return Err(metadata_invalid_error(format!(
             "unsupported locket.toml schema_version {}; supported {}",
             config.schema_version, PROJECT_CONFIG_SCHEMA_VERSION
         )));
@@ -2107,7 +2106,8 @@ pub(crate) fn load_command_policy(
 
 pub(crate) fn read_policy_document(path: &Path) -> Result<PolicyDocument, CliError> {
     let content = fs::read_to_string(path)?;
-    PolicyDocument::from_toml_str(&content).map_err(|error| CliError::Config(error.to_string()))
+    PolicyDocument::from_toml_str(&content)
+        .map_err(|error| metadata_invalid_error(error.to_string()))
 }
 
 pub(crate) const fn command_type(command: &CommandSpec) -> &'static str {
@@ -2220,9 +2220,9 @@ fn grace_until_from_args(value: Option<&str>, timestamp: i64) -> Result<Option<i
         return Ok(None);
     };
     let duration = LocketDuration::from_str(value)
-        .map_err(|_| CliError::Config("invalid grace TTL duration".to_owned()))?;
+        .map_err(|_| metadata_invalid_error("invalid grace TTL duration"))?;
     if duration.as_secs() > DEFAULT_MAX_GRACE_TTL_SECONDS {
-        return Err(CliError::Config("grace TTL exceeds the default 7d cap".to_owned()));
+        return Err(metadata_invalid_error("grace TTL exceeds the default 7d cap"));
     }
     let nanos = i64::try_from(duration.as_secs())
         .ok()
@@ -2451,7 +2451,7 @@ pub(crate) fn format_hex(bytes: &[u8]) -> String {
 fn parse_root_hash(value: &str) -> Result<[u8; 32], CliError> {
     let value = value.strip_prefix("0x").unwrap_or(value);
     if value.len() != 64 {
-        return Err(CliError::Config("root hash must be 64 hex characters".to_owned()));
+        return Err(metadata_invalid_error("root hash must be 64 hex characters"));
     }
     let mut output = [0_u8; 32];
     for (index, chunk) in value.as_bytes().chunks_exact(2).enumerate() {
@@ -2471,7 +2471,7 @@ fn hex_nibble_with_message(byte: u8, message: &str) -> Result<u8, CliError> {
         b'0'..=b'9' => Ok(byte - b'0'),
         b'a'..=b'f' => Ok(byte - b'a' + 10),
         b'A'..=b'F' => Ok(byte - b'A' + 10),
-        _ => Err(CliError::Config(message.to_owned())),
+        _ => Err(metadata_invalid_error(message)),
     }
 }
 

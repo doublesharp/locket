@@ -15,8 +15,9 @@ use super::device;
 use crate::{
     BundleCommand, BundleVerifyArgs, CliError, ExportArgs, ImportBundleArgs, ResolvedProject,
     RuntimeContext, bundle_verification_error, default_profile, ensure_project_exists,
-    ensure_trusted_project_root, format_hex, load_project_key, now_unix_nanos, open_store,
-    require_project, set_user_only_file_options, set_user_only_file_permissions,
+    ensure_trusted_project_root, format_hex, invalid_reference_error, load_project_key,
+    metadata_invalid_error, now_unix_nanos, open_store, profile_not_found_error, require_project,
+    set_user_only_file_options, set_user_only_file_permissions,
 };
 
 const BUNDLE_MAGIC_V1: &str = "LOCKET-BUNDLE-V1";
@@ -66,10 +67,10 @@ pub fn export_bundle_command(
     args: &ExportArgs,
 ) -> Result<(), CliError> {
     if !args.sealed {
-        return Err(CliError::Config("bundle export requires --sealed".to_owned()));
+        return Err(invalid_reference_error("bundle export requires --sealed"));
     }
     if args.recipients.is_empty() {
-        return Err(CliError::Config("bundle export requires at least one --recipient".to_owned()));
+        return Err(invalid_reference_error("bundle export requires at least one --recipient"));
     }
 
     let resolved = require_project(context)?;
@@ -132,9 +133,7 @@ pub fn import_bundle_command(
     ensure_trusted_project_root(&store, &resolved)?;
     let bundle = verify_bundle_file(&args.bundle)?;
     if bundle.project_id != resolved.config.project_id.as_str() {
-        return Err(CliError::Config(
-            "bundle project id does not match current project".to_owned(),
-        ));
+        return Err(bundle_verification_error("bundle project id does not match current project"));
     }
     let conflict_policy = if args.accept_incoming {
         "accept-incoming"
@@ -196,9 +195,7 @@ fn bundle_recipient_fingerprints(recipients: &[String]) -> Result<Vec<String>, C
             device::decode_descriptor_key(&descriptor.sealing_public_key_x25519)?;
         let fingerprint = device::device_fingerprint_hex(&signing_public_key, &sealing_public_key);
         if fingerprint != descriptor.fingerprint_sha256 {
-            return Err(CliError::Config(
-                "recipient device descriptor fingerprint mismatch".to_owned(),
-            ));
+            return Err(metadata_invalid_error("recipient device descriptor fingerprint mismatch"));
         }
         fingerprints.insert(fingerprint);
     }
@@ -217,7 +214,7 @@ fn selected_bundle_profiles(
         return store
             .get_profile_by_name(resolved.config.project_id.as_str(), profile_name)?
             .map(|profile| vec![profile])
-            .ok_or_else(|| CliError::Config(format!("profile not found: {profile_name}")));
+            .ok_or_else(|| profile_not_found_error(format!("profile not found: {profile_name}")));
     }
     Ok(vec![default_profile(store, &resolved.config)?])
 }
@@ -265,7 +262,7 @@ fn write_bundle_file(path: &Path, bundle: &SealedBundleFileV1) -> Result<(), Cli
     set_user_only_file_options(&mut options);
     let mut file = options.open(path).map_err(|error| {
         if error.kind() == io::ErrorKind::AlreadyExists {
-            CliError::Config("bundle output already exists".to_owned())
+            invalid_reference_error("bundle output already exists")
         } else {
             CliError::Io(error)
         }

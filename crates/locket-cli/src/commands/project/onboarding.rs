@@ -94,7 +94,7 @@ pub fn load_project_template(template_dir: &Path, name: &str) -> Result<ProjectT
     if name == "basic" {
         return parse_project_template(BUILT_IN_BASIC_TEMPLATE, TemplateSource::BuiltIn);
     }
-    Err(CliError::Config(format!(
+    Err(metadata_invalid_error(format!(
         "unknown template {name:?}; expected a local template at {} or built-in template \"basic\"",
         local_path.display()
     )))

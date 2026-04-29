@@ -10,12 +10,14 @@ use std::process::{Command as ProcessCommand, Stdio};
 use std::sync::mpsc;
 use std::thread;
 
+use crate::runtime::error::corrupt_db_error;
 use crate::{
     AI_SAFE_PARTIAL_LINE_MAX_BYTES, AI_SAFE_READ_CHUNK_BYTES, AiSafeArgs, CliError, RedactArgs,
     ResolvedProject, RuntimeContext, absolutize, decrypt_secret_version, default_profile,
-    ensure_trusted_project_root, load_project_key, now_unix_nanos, open_store, privacy_alias,
-    privacy_redact_names_enabled, project_not_found_error, require_project, resolve_project,
-    set_user_only_file_permissions, should_scan_known_version, unix_nanos_to_rfc3339,
+    ensure_trusted_project_root, invalid_reference_error, load_project_key, now_unix_nanos,
+    open_store, privacy_alias, privacy_redact_names_enabled, project_not_found_error,
+    require_project, resolve_project, set_user_only_file_permissions, should_scan_known_version,
+    unix_nanos_to_rfc3339, unlock_required_error,
 };
 
 pub fn redact_command(
@@ -30,7 +32,7 @@ pub fn redact_command(
     } else if let Some(file) = args.file.as_deref() {
         fs::read_to_string(absolutize(&context.cwd, Path::new(file)))?
     } else {
-        return Err(CliError::Config("redact requires a file path or --stdin".to_owned()));
+        return Err(invalid_reference_error("redact requires a file path or --stdin"));
     };
 
     let redact_names_enabled =
@@ -79,9 +81,7 @@ pub fn collect_redaction_values_for_redact(
 ) -> Result<RedactCoverage, CliError> {
     let Some(project) = project else {
         if require_known {
-            return Err(CliError::Config(
-                "known-value redaction requires a Locket project and unlocked vault".to_owned(),
-            ));
+            return Err(project_not_found_error());
         }
         return Ok(RedactCoverage {
             redactions: Vec::new(),
@@ -194,7 +194,7 @@ pub fn ai_safe_command(
     args: &AiSafeArgs,
 ) -> Result<(), CliError> {
     if args.command.is_empty() {
-        return Err(CliError::Config("ai-safe requires a command after --".to_owned()));
+        return Err(invalid_reference_error("ai-safe requires a command after --"));
     }
 
     let redact_names = privacy_redact_names_enabled(context, args.redact_names.redact_names)?;
@@ -264,9 +264,8 @@ fn collect_ai_safe_known_secret_redactions(
 ) -> Result<Vec<KnownSecretRedaction>, CliError> {
     collect_known_secret_redactions(context, project, redact_names, timestamp).map_err(|error| {
         if matches!(error, CliError::Platform(locket_platform::PlatformError::MasterKeyNotFound)) {
-            CliError::Config(
-                "UnlockRequired: ai-safe requires known-value redaction coverage; run locket unlock or pass --pattern-only"
-                    .to_owned(),
+            unlock_required_error(
+                "UnlockRequired: ai-safe requires known-value redaction coverage; run locket unlock or pass --pattern-only",
             )
         } else {
             error
@@ -430,14 +429,10 @@ fn run_ai_safe_child(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| CliError::Config("failed to capture child stdout".to_owned()))?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| CliError::Config("failed to capture child stderr".to_owned()))?;
+    let stdout =
+        child.stdout.take().ok_or_else(|| corrupt_db_error("failed to capture child stdout"))?;
+    let stderr =
+        child.stderr.take().ok_or_else(|| corrupt_db_error("failed to capture child stderr"))?;
     let (sender, receiver) = mpsc::channel::<Result<AiSafeRawChunk, io::Error>>();
     let stdout_reader = spawn_ai_safe_reader(AiSafeStream::Stdout, stdout, sender.clone());
     let stderr_reader = spawn_ai_safe_reader(AiSafeStream::Stderr, stderr, sender);
@@ -458,12 +453,8 @@ fn run_ai_safe_child(
             )?;
         }
     }
-    stdout_reader
-        .join()
-        .map_err(|_| CliError::Config("ai-safe stdout reader panicked".to_owned()))?;
-    stderr_reader
-        .join()
-        .map_err(|_| CliError::Config("ai-safe stderr reader panicked".to_owned()))?;
+    stdout_reader.join().map_err(|_| corrupt_db_error("ai-safe stdout reader panicked"))?;
+    stderr_reader.join().map_err(|_| corrupt_db_error("ai-safe stderr reader panicked"))?;
     for chunk in redactor.finish() {
         emit_ai_safe_chunk(
             output,

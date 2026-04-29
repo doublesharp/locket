@@ -16,8 +16,8 @@ use serde_json::{Value, json};
 
 use crate::{
     CliError, ResolvedProject, RuntimeContext, ScanArgs, absolutize, collect_known_secret_values,
-    load_project_key, now_unix_nanos, open_store, project_not_found_error, resolve_project,
-    scan_finding_blocked_error,
+    git_worktree_required_error, load_project_key, metadata_invalid_error, now_unix_nanos,
+    open_store, project_not_found_error, resolve_project, scan_finding_blocked_error,
 };
 
 const LOCKETIGNORE_FILE: &str = ".locketignore";
@@ -196,7 +196,7 @@ pub fn scan_path(
             .git_global(use_gitignore)
             .git_exclude(use_gitignore);
         for entry in builder.build() {
-            let entry = entry.map_err(|error| CliError::Config(error.to_string()))?;
+            let entry = entry.map_err(|error| metadata_invalid_error(error.to_string()))?;
             let child = entry.path();
             if child == path || !child.is_file() {
                 continue;
@@ -288,9 +288,9 @@ fn locket_ignore(git_root: &Path) -> Result<ignore::gitignore::Gitignore, CliErr
     if path.exists()
         && let Some(error) = builder.add(path)
     {
-        return Err(CliError::Config(error.to_string()));
+        return Err(metadata_invalid_error(error.to_string()));
     }
-    builder.build().map_err(|error| CliError::Config(error.to_string()))
+    builder.build().map_err(|error| metadata_invalid_error(error.to_string()))
 }
 
 fn scan_known_values(
@@ -380,7 +380,7 @@ pub fn ensure_git_worktree(start: &Path) -> Result<PathBuf, CliError> {
             return Ok(current);
         }
         if !current.pop() {
-            return Err(CliError::Config("git worktree required for --staged".to_owned()));
+            return Err(git_worktree_required_error("git worktree required for --staged"));
         }
     }
 }
@@ -396,5 +396,5 @@ where
     }
 
     let message = String::from_utf8_lossy(&output.stderr);
-    Err(CliError::Config(format!("git command failed: {}", message.trim())))
+    Err(metadata_invalid_error(format!("git command failed: {}", message.trim())))
 }

@@ -7,9 +7,10 @@ use locket_store::{AuditContext, AuditWrite, SecretMetadataUpdate};
 
 use crate::{
     CliError, RuntimeContext, SecretMetaArgs, load_project_key, metadata_flags_have_updates,
-    metadata_required_update, metadata_update_field_names, now_unix_nanos, open_store,
-    resolve_active_secret_for_source, secret_meta_update_audit_metadata, secret_not_found_error,
-    validate_secret_metadata_update, write_secret_meta_update_failure_audit_if_available,
+    metadata_invalid_error, metadata_required_update, metadata_update_field_names, now_unix_nanos,
+    open_store, resolve_active_secret_for_source, secret_meta_update_audit_metadata,
+    secret_not_found_error, validate_secret_metadata_update,
+    write_secret_meta_update_failure_audit_if_available,
 };
 
 pub fn meta_command(
@@ -18,7 +19,7 @@ pub fn meta_command(
     args: &SecretMetaArgs,
 ) -> Result<(), CliError> {
     if !metadata_flags_have_updates(&args.metadata) {
-        return Err(CliError::Config("meta requires at least one metadata flag".to_owned()));
+        return Err(metadata_invalid_error("meta requires at least one metadata flag"));
     }
 
     let resolved_secret = resolve_active_secret_for_source(context, &args.key, args.source.source)?;

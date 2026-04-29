@@ -8,7 +8,9 @@ use locket_crypto::{
 use locket_store::{ProfileRecord, Store};
 
 use crate::runtime::RuntimeContext;
-use crate::runtime::error::{CliError, typed_cli_error};
+use crate::runtime::error::{
+    CliError, profile_not_found_error, project_not_found_error, typed_cli_error,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MasterKeySource {
@@ -221,13 +223,11 @@ pub fn ensure_project_exists(store: &Store, project_id: &str) -> Result<(), CliE
     if store.get_project(project_id)?.is_some() {
         return Ok(());
     }
-    Err(CliError::Config(
-        "project is not present in the local store; run locket init to resume setup".to_owned(),
-    ))
+    Err(project_not_found_error())
 }
 
 pub fn default_profile(store: &Store, config: &ProjectConfig) -> Result<ProfileRecord, CliError> {
     store
         .get_profile_by_name(config.project_id.as_str(), config.default_profile.as_str())?
-        .ok_or_else(|| CliError::Config("default profile is missing".to_owned()))
+        .ok_or_else(|| profile_not_found_error("default profile is missing"))
 }

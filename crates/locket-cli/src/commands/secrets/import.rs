@@ -18,7 +18,7 @@ use super::set::{SecretWriteRequest, set_secret_value_in_profile};
 use crate::runtime::RuntimeContext;
 use crate::runtime::error::{
     CliError, confirmation_failed_error, invalid_profile_name_error, invalid_secret_name_error,
-    profile_not_found_error,
+    profile_not_found_error, secret_not_found_error, tty_required_error,
 };
 use crate::runtime::key_access::load_project_key;
 use crate::support::project_files::{ensure_gitignore, refresh_example_for_project_if_enabled};
@@ -147,9 +147,8 @@ fn confirm_dangerous_import_overwrite(
     writeln!(output, "dangerous_profile: {}", profile.name)?;
     writeln!(output, "metadata_only: yes")?;
     if !io::stdin().is_terminal() {
-        return Err(CliError::Config(
-            "import --overwrite targets a dangerous profile and requires interactive confirmation"
-                .to_owned(),
+        return Err(tty_required_error(
+            "import --overwrite targets a dangerous profile and requires interactive confirmation",
         ));
     }
     writeln!(output, "type '{}' to confirm dangerous import overwrite", profile.name)?;
@@ -272,7 +271,7 @@ fn rotate_import_secret_value_in_profile(
             name.as_str(),
             request.source,
         )?
-        .ok_or_else(|| CliError::Config("secret does not exist".to_owned()))?;
+        .ok_or_else(|| secret_not_found_error("secret does not exist"))?;
     if secret.state == "deleted" {
         return Err(secret_deleted_error("secret source is deleted"));
     }

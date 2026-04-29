@@ -10,11 +10,12 @@ use locket_store::{AuditWrite, AutomationClientRecord, Store};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
+use crate::runtime::error::corrupt_db_error;
 use crate::{
     CliError, ClientAddArgs, ClientCommand, ClientCreateArgs, ResolvedProject, RuntimeContext,
     ensure_project_exists, ensure_trusted_project_root, format_hex, format_unix_nanos,
-    hex_nibble_with_message, load_command_policy, load_project_key, now_unix_nanos, open_store,
-    policy_not_found_error, require_project,
+    hex_nibble_with_message, invalid_reference_error, load_command_policy, load_project_key,
+    metadata_invalid_error, now_unix_nanos, open_store, policy_not_found_error, require_project,
 };
 
 pub fn client_command(
@@ -95,7 +96,7 @@ fn register_client_metadata(
     let actions = validate_client_actions(request.actions)?;
     let policies = validate_client_policies(&resolved, request.policies)?;
     let timestamp = now_unix_nanos()?;
-    let id = ClientId::generate().map_err(|error| CliError::Config(error.to_string()))?;
+    let id = ClientId::generate().map_err(|error| corrupt_db_error(error.to_string()))?;
     let fingerprint = client_public_key_fingerprint(request.public_key);
     let client = AutomationClientRecord {
         id: id.as_str().to_owned(),
@@ -186,7 +187,7 @@ fn client_revoke_command(
     client_ref: &str,
 ) -> Result<(), CliError> {
     if client_ref.trim().is_empty() {
-        return Err(CliError::Config("client identifier cannot be empty".to_owned()));
+        return Err(invalid_reference_error("client identifier cannot be empty"));
     }
     let resolved = require_project(context)?;
     let mut store = open_store(context)?;
@@ -236,7 +237,7 @@ fn client_revoke_command(
 fn parse_client_public_key(value: &str) -> Result<[u8; 32], CliError> {
     let value = value.strip_prefix("0x").unwrap_or(value);
     if value.len() != 64 {
-        return Err(CliError::Config("public key must be 64 hex characters".to_owned()));
+        return Err(metadata_invalid_error("public key must be 64 hex characters"));
     }
     let mut output = [0_u8; 32];
     for (index, chunk) in value.as_bytes().chunks_exact(2).enumerate() {
@@ -260,22 +261,20 @@ fn validate_client_name(name: &str) -> Result<&str, CliError> {
     let name = name.trim();
     let mut chars = name.chars();
     let Some(first) = chars.next() else {
-        return Err(CliError::Config("client name cannot be empty".to_owned()));
+        return Err(invalid_reference_error("client name cannot be empty"));
     };
     if !first.is_ascii_lowercase()
         || !chars.all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-' || ch == '_')
         || name.len() > 64
     {
-        return Err(CliError::Config("client name must match ^[a-z][a-z0-9_-]{0,63}$".to_owned()));
+        return Err(metadata_invalid_error("client name must match ^[a-z][a-z0-9_-]{0,63}$"));
     }
     Ok(name)
 }
 
 fn validate_client_actions(actions: &[String]) -> Result<Vec<String>, CliError> {
     if actions.is_empty() {
-        return Err(CliError::Config(
-            "InvalidPolicy: at least one --action is required".to_owned(),
-        ));
+        return Err(metadata_invalid_error("InvalidPolicy: at least one --action is required"));
     }
     let mut normalized = BTreeSet::new();
     for action in actions {
@@ -284,7 +283,7 @@ fn validate_client_actions(actions: &[String]) -> Result<Vec<String>, CliError> 
                 normalized.insert(action.clone());
             }
             unsupported => {
-                return Err(CliError::Config(format!(
+                return Err(metadata_invalid_error(format!(
                     "InvalidPolicy: unsupported automation-client action: {unsupported}"
                 )));
             }
@@ -298,15 +297,13 @@ fn validate_client_policies(
     policies: &[String],
 ) -> Result<Vec<String>, CliError> {
     if policies.is_empty() {
-        return Err(CliError::Config(
-            "InvalidPolicy: at least one --policy is required".to_owned(),
-        ));
+        return Err(metadata_invalid_error("InvalidPolicy: at least one --policy is required"));
     }
     let mut normalized = BTreeSet::new();
     for policy in policies {
         if policy == "*" || policy.trim().is_empty() {
-            return Err(CliError::Config(
-                "InvalidPolicy: wildcard or empty client policies are not supported".to_owned(),
+            return Err(metadata_invalid_error(
+                "InvalidPolicy: wildcard or empty client policies are not supported",
             ));
         }
         load_command_policy(resolved, policy)?;

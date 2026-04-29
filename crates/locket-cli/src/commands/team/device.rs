@@ -7,10 +7,12 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::io::Write;
 
+use crate::runtime::error::corrupt_db_error;
 use crate::{
     CliError, DeviceAddArgs, DeviceCommand, DeviceInitArgs, DeviceListArgs, DeviceRemoveArgs,
-    RuntimeContext, ensure_project_exists, format_hex, load_project_key, now_unix_nanos,
-    open_store, require_project,
+    RuntimeContext, access_denied_error, ensure_project_exists, format_hex,
+    invalid_reference_error, load_project_key, metadata_invalid_error, now_unix_nanos, open_store,
+    require_project,
 };
 
 pub fn device_command(
@@ -89,7 +91,7 @@ fn device_pubkey_command(
     ensure_project_exists(&store, project_id)?;
     let device = store
         .get_active_local_device(project_id)?
-        .ok_or_else(|| CliError::Config("local device is not initialized".to_owned()))?;
+        .ok_or_else(|| invalid_reference_error("local device is not initialized"))?;
     let descriptor = encode_device_descriptor(&device)?;
 
     writeln!(output, "device_id: {}", device.id)?;
@@ -115,7 +117,7 @@ fn device_add_command(
     let sealing_public_key = decode_descriptor_key(&descriptor.sealing_public_key_x25519)?;
     let fingerprint = device_fingerprint_hex(&signing_public_key, &sealing_public_key);
     if fingerprint != descriptor.fingerprint_sha256 {
-        return Err(CliError::Config("device descriptor fingerprint mismatch".to_owned()));
+        return Err(metadata_invalid_error("device descriptor fingerprint mismatch"));
     }
     let device = DeviceRecord {
         id: descriptor.device_id,
@@ -187,11 +189,9 @@ fn device_remove_command(
     ensure_project_exists(&store, project_id)?;
     let device = store
         .find_device(project_id, &args.device)?
-        .ok_or_else(|| CliError::Config("device not found".to_owned()))?;
+        .ok_or_else(|| invalid_reference_error("device not found"))?;
     if device.local && !args.force {
-        return Err(CliError::Config(
-            "removing the active local device requires --force".to_owned(),
-        ));
+        return Err(access_denied_error("removing the active local device requires --force"));
     }
     if device.revoked_at.is_some() {
         writeln!(output, "device: already revoked")?;
@@ -226,7 +226,7 @@ fn generate_local_device_record(
     let fingerprint = device_fingerprint_hex(&signing_public_key, &sealing_public_key);
     Ok(DeviceRecord {
         id: DeviceId::generate()
-            .map_err(|_| CliError::Config("device id generation failed".to_owned()))?
+            .map_err(|_| corrupt_db_error("device id generation failed"))?
             .into_string(),
         project_id: project_id.to_owned(),
         name: default_device_name(),
@@ -257,26 +257,29 @@ pub fn encode_device_descriptor(device: &DeviceRecord) -> Result<String, CliErro
 
 pub fn decode_device_descriptor(value: &str) -> Result<DeviceDescriptorV1, CliError> {
     let Some(encoded) = value.strip_prefix("lkdev1_") else {
-        return Err(CliError::Config("device descriptor must start with lkdev1_".to_owned()));
+        return Err(metadata_invalid_error("device descriptor must start with lkdev1_"));
     };
     let bytes = BASE64URL_NOPAD
         .decode(encoded.as_bytes())
-        .map_err(|_| CliError::Config("device descriptor is not valid base64url".to_owned()))?;
+        .map_err(|_| metadata_invalid_error("device descriptor is not valid base64url"))?;
     let descriptor: DeviceDescriptorV1 = serde_json::from_slice(&bytes)?;
     if descriptor.v != 1 {
-        return Err(CliError::Config("unsupported device descriptor version".to_owned()));
+        return Err(metadata_invalid_error("unsupported device descriptor version"));
     }
     DeviceId::new(descriptor.device_id.clone())
-        .map_err(|_| CliError::Config("device descriptor id is invalid".to_owned()))?;
+        .map_err(|_| metadata_invalid_error("device descriptor id is invalid"))?;
     Ok(descriptor)
 }
 
 pub fn decode_descriptor_key(value: &str) -> Result<[u8; 32], CliError> {
     let bytes = BASE64URL_NOPAD
         .decode(value.as_bytes())
-        .map_err(|_| CliError::Config("device descriptor key is not valid base64url".to_owned()))?;
+        .map_err(|_| metadata_invalid_error("device descriptor key is not valid base64url"))?;
     bytes.try_into().map_err(|bytes: Vec<u8>| {
-        CliError::Config(format!("device descriptor key must be 32 bytes, got {}", bytes.len()))
+        metadata_invalid_error(format!(
+            "device descriptor key must be 32 bytes, got {}",
+            bytes.len()
+        ))
     })
 }
 
@@ -316,7 +319,7 @@ fn default_device_name() -> String {
 
 fn validate_device_name(name: &str) -> Result<(), CliError> {
     if name.trim().is_empty() || name.len() > 80 || name.chars().any(char::is_control) {
-        return Err(CliError::Config("invalid device name".to_owned()));
+        return Err(metadata_invalid_error("invalid device name"));
     }
     Ok(())
 }

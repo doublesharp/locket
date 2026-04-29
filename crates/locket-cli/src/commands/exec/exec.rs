@@ -10,7 +10,10 @@ use super::run::{
     RuntimeExecutionRequest, execute_prepared_with_runtime_session, unique_secret_names,
 };
 use crate::runtime::RuntimeContext;
-use crate::runtime::error::{CliError, child_exit_error, exec_prepare_error};
+use crate::runtime::error::{
+    CliError, child_exit_error, confirmation_failed_error, exec_prepare_error,
+    invalid_reference_error,
+};
 use crate::runtime::key_access::{default_profile, load_project_key};
 use crate::support::secret_helpers::{decrypt_current_secret, resolve_active_secret};
 use crate::{
@@ -24,7 +27,7 @@ pub fn exec_command(
     args: &ExecArgs,
 ) -> Result<(), CliError> {
     if !args.all && args.secrets.is_empty() {
-        return Err(CliError::Config("exec requires --all or at least one --secret".to_owned()));
+        return Err(invalid_reference_error("exec requires --all or at least one --secret"));
     }
 
     let resolved_project = require_project(context)?;
@@ -134,7 +137,7 @@ fn confirm_exec_all_scope(
     writeln!(output, "type '{expected}' to confirm injection")?;
     let confirmation = context.confirmation_reader.read_confirmation("exec --all")?;
     if confirmation.trim_end_matches(['\r', '\n']) != expected {
-        return Err(CliError::Config("confirmation did not match exec --all scope".to_owned()));
+        return Err(confirmation_failed_error("confirmation did not match exec --all scope"));
     }
     Ok(())
 }

@@ -3,7 +3,7 @@ use super::*;
 
 #[test]
 fn cli_error_exit_codes_follow_reserved_spec_ranges() {
-    assert_eq!(crate::CliError::Config("bad input".to_owned()).exit_code(), 64);
+    assert_eq!(crate::invalid_reference_error("bad input").exit_code(), 64);
     assert_eq!(crate::CliError::ChildExit(42).exit_code(), 42);
     assert_eq!(
         crate::CliError::Crypto(locket_crypto::CryptoError::InvalidSecretValue).exit_code(),
@@ -78,6 +78,14 @@ fn metadata_invalid_errors_exit_64() {
 }
 
 #[test]
+fn invalid_reference_errors_exit_64() {
+    let error = crate::invalid_reference_error("diff requires two profile names");
+
+    assert_eq!(error.exit_code(), 64);
+    assert_eq!(error.to_string(), "diff requires two profile names");
+}
+
+#[test]
 fn metadata_looks_like_secret_errors_exit_66() {
     let error = crate::metadata_looks_like_secret_error(
         "metadata field description looks like a secret; refusing to store it",
@@ -88,6 +96,26 @@ fn metadata_looks_like_secret_errors_exit_66() {
         error.to_string(),
         "metadata field description looks like a secret; refusing to store it"
     );
+}
+
+#[test]
+fn exec_prepare_empty_command_uses_typed_invalid_reference()
+-> Result<(), Box<dyn std::error::Error>> {
+    let request = locket_exec::ExecutionRequest::strict(Vec::new());
+
+    let Err(error) =
+        locket_exec::prepare_execution(&request).map_err(crate::runtime::error::exec_prepare_error)
+    else {
+        return Err("empty command should fail before spawn".into());
+    };
+
+    assert_eq!(error.exit_code(), 64);
+    let crate::CliError::Typed { kind, message } = error else {
+        return Err("empty command should return a typed error".into());
+    };
+    assert_eq!(kind, locket_core::LocketError::InvalidReference);
+    assert_eq!(message, "empty command");
+    Ok(())
 }
 
 #[test]
@@ -201,6 +229,29 @@ fn secret_version_overflow_errors_exit_90() -> Result<(), Box<dyn std::error::Er
 }
 
 #[test]
+fn exec_without_secret_selection_uses_typed_invalid_reference()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    let result = run_with_context(
+        Cli::try_parse_from(["locket", "exec", "--", "/bin/true"])?,
+        &context,
+        &mut Vec::new(),
+    );
+    let Err(error) = result else {
+        return Err("exec without --all or --secret should fail".into());
+    };
+
+    assert_eq!(error.exit_code(), 64);
+    let crate::CliError::Typed { kind, message } = error else {
+        return Err("exec argument validation should return a typed error".into());
+    };
+    assert_eq!(kind, locket_core::LocketError::InvalidReference);
+    assert_eq!(message, "exec requires --all or at least one --secret");
+    Ok(())
+}
+
+#[test]
 fn profile_not_found_errors_exit_78() {
     let error = crate::profile_not_found_error("profile not found");
 
@@ -214,6 +265,30 @@ fn policy_not_found_errors_exit_64() {
 
     assert_eq!(error.exit_code(), 64);
     assert_eq!(error.to_string(), "command policy not found: missing");
+}
+
+#[test]
+fn missing_profile_via_diff_command_exits_78() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+
+    let result = run_with_context(
+        Cli::try_parse_from(["locket", "diff", "dev", "missing-profile"])?,
+        &context,
+        &mut Vec::new(),
+    );
+    let Err(error) = result else {
+        return Err("diff against a missing profile should fail".into());
+    };
+
+    assert_eq!(error.exit_code(), 78);
+    assert!(error.to_string().contains("second profile not found"));
+    Ok(())
 }
 
 #[test]

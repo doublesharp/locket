@@ -8,8 +8,9 @@ use serde_json::json;
 
 use crate::{
     CliError, PasskeyCommand, PasskeyListArgs, ResolvedProject, RuntimeContext,
-    ensure_project_exists, format_hex, format_unix_nanos, load_project_key, now_unix_nanos,
-    open_store, require_project, unimplemented_in_build_error, yes_no,
+    confirmation_failed_error, ensure_project_exists, format_hex, format_unix_nanos,
+    invalid_reference_error, load_project_key, metadata_invalid_error, now_unix_nanos, open_store,
+    require_project, unimplemented_in_build_error, yes_no,
 };
 
 pub fn passkey_command(
@@ -69,7 +70,7 @@ fn passkey_remove_command(
 ) -> Result<(), CliError> {
     let selector = passkey.trim();
     if selector.is_empty() {
-        return Err(CliError::Config("passkey identifier cannot be empty".to_owned()));
+        return Err(invalid_reference_error("passkey identifier cannot be empty"));
     }
     let resolved = require_project(context)?;
     let mut store = open_store(context)?;
@@ -81,11 +82,11 @@ fn passkey_remove_command(
         .filter(|credential| credential.revoked_at.is_none())
         .collect::<Vec<_>>();
     let credential = match active_matches.as_slice() {
-        [] => return Err(CliError::Config("passkey credential not found".to_owned())),
+        [] => return Err(invalid_reference_error("passkey credential not found")),
         [credential] => credential.clone(),
         _ => {
-            return Err(CliError::Config(
-                "passkey identifier is ambiguous; use a longer credential id prefix".to_owned(),
+            return Err(metadata_invalid_error(
+                "passkey identifier is ambiguous; use a longer credential id prefix",
             ));
         }
     };
@@ -96,7 +97,7 @@ fn passkey_remove_command(
     writeln!(output, "prf: {}", yes_no(credential.prf_capable))?;
     let confirmation = context.confirmation_reader.read_confirmation("passkey remove")?;
     if confirmation.trim_end() != selector {
-        return Err(CliError::Config("confirmation did not match passkey identifier".to_owned()));
+        return Err(confirmation_failed_error("confirmation did not match passkey identifier"));
     }
     let timestamp = now_unix_nanos()?;
     store.revoke_passkey_credential(project_id, &credential.id, timestamp)?;

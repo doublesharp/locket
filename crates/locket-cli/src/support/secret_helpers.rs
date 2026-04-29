@@ -16,7 +16,9 @@ use serde_json::{Value, json};
 use crate::commands::config::spec::{config_get_value, read_user_config};
 use crate::runtime::RuntimeContext;
 use crate::runtime::error::{
-    CliError, invalid_secret_name_error, secret_deleted_error, secret_not_found_error,
+    CliError, corrupt_db_error, invalid_profile_name_error, invalid_reference_error,
+    invalid_secret_name_error, metadata_invalid_error, profile_not_found_error,
+    secret_deleted_error, secret_not_found_error,
 };
 use crate::runtime::key_access::{default_profile, load_profile_key, load_project_key};
 use crate::runtime::user_verification::UserVerificationAudit;
@@ -115,7 +117,7 @@ pub fn decrypt_secret_version(
         load_profile_key(context, store, project_id, profile_id, KeyPurpose::ProfileSecret)?;
     let blob = store
         .get_blob(&secret.id, version)?
-        .ok_or_else(|| CliError::Config("secret blob is missing".to_owned()))?;
+        .ok_or_else(|| corrupt_db_error("secret blob is missing"))?;
     let value_aad = secret_blob_aad_v1(&locket_crypto::SecretBlobAad::new(
         project_id,
         profile_id,
@@ -217,8 +219,8 @@ pub fn resolve_secret_for_source(
             [] => return Err(secret_not_found_error("secret not found")),
             [secret] => secret.clone(),
             _ => {
-                return Err(CliError::Config(
-                    "multiple sources exist for this secret; pass --source".to_owned(),
+                return Err(invalid_reference_error(
+                    "multiple sources exist for this secret; pass --source",
                 ));
             }
         }
@@ -260,8 +262,8 @@ pub fn select_copy_source_secret(
         .collect::<Vec<_>>();
     match selected.as_slice() {
         [secret] => Ok((*secret).clone()),
-        _ => Err(CliError::Config(
-            "multiple source candidates have ambiguous precedence; pass --from-source".to_owned(),
+        _ => Err(invalid_reference_error(
+            "multiple source candidates have ambiguous precedence; pass --from-source",
         )),
     }
 }
@@ -290,15 +292,15 @@ pub fn select_copy_profiles_and_sources(
     args: &CopyArgs,
 ) -> Result<CopySelection, CliError> {
     let from_profile_name = ProfileName::new(args.from.clone())
-        .map_err(|_| CliError::Config("invalid source profile name".to_owned()))?;
+        .map_err(|_| invalid_profile_name_error("invalid source profile name"))?;
     let to_profile_name = ProfileName::new(args.to.clone())
-        .map_err(|_| CliError::Config("invalid target profile name".to_owned()))?;
+        .map_err(|_| invalid_profile_name_error("invalid target profile name"))?;
     let from_profile = store
         .get_profile_by_name(project_id, from_profile_name.as_str())?
-        .ok_or_else(|| CliError::Config("source profile not found".to_owned()))?;
+        .ok_or_else(|| profile_not_found_error("source profile not found"))?;
     let to_profile = store
         .get_profile_by_name(project_id, to_profile_name.as_str())?
-        .ok_or_else(|| CliError::Config("target profile not found".to_owned()))?;
+        .ok_or_else(|| profile_not_found_error("target profile not found"))?;
     let source_secret =
         select_copy_source_secret(store, project_id, &from_profile.id, name, args.from_source)?;
     let from_source = source_secret.source.clone();
@@ -311,8 +313,8 @@ pub fn select_copy_profiles_and_sources(
         args.to_source,
     )?;
     if from_profile.id == to_profile.id && from_source == to_source {
-        return Err(CliError::Config(
-            "copy source and target are the same profile and source; use rotate".to_owned(),
+        return Err(invalid_reference_error(
+            "copy source and target are the same profile and source; use rotate",
         ));
     }
     Ok(CopySelection { from_profile, to_profile, source_secret, from_source, to_source })
@@ -384,10 +386,10 @@ pub fn reveal_ttl_seconds(context: &RuntimeContext) -> Result<u64, CliError> {
         return Ok(60);
     };
     let Some(value) = value.as_str() else {
-        return Err(CliError::Config("reveal.ttl must be a duration".to_owned()));
+        return Err(metadata_invalid_error("reveal.ttl must be a duration"));
     };
     let duration = LocketDuration::from_str(value)
-        .map_err(|_| CliError::Config("invalid reveal.ttl duration".to_owned()))?;
+        .map_err(|_| metadata_invalid_error("invalid reveal.ttl duration"))?;
     Ok(duration.as_secs().min(300))
 }
 

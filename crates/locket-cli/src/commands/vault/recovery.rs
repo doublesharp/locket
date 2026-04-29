@@ -133,7 +133,7 @@ pub fn restore_from_recovery_code(
             continue;
         }
         if entry.entry_id != project_id {
-            return Err(CliError::Config("recovery envelope project id mismatch".to_owned()));
+            return Err(metadata_invalid_error("recovery envelope project id mismatch"));
         }
         let plaintext = open_recovery_entry_v1(
             &unwrap_root,
@@ -152,9 +152,7 @@ pub fn restore_from_recovery_code(
         restored += 1;
     }
     if restored == 0 {
-        return Err(CliError::Config(
-            "no master_key entries found in recovery envelope".to_owned(),
-        ));
+        return Err(metadata_invalid_error("no master_key entries found in recovery envelope"));
     }
     write_recover_audit(context, resolved, kdf, envelope, restored, force)?;
     writeln!(output, "recovered: master_key")?;
@@ -169,15 +167,15 @@ fn validate_recovery_metadata(
 ) -> Result<(), CliError> {
     kdf.validate()?;
     if envelope.kdf_profile_id != kdf.kdf_profile_id {
-        return Err(CliError::Config("recovery envelope kdf profile mismatch".to_owned()));
+        return Err(metadata_invalid_error("recovery envelope kdf profile mismatch"));
     }
     if !envelope
         .entries
         .iter()
         .any(|entry| entry.entry_kind == "master_key" && entry.entry_id == project_id)
     {
-        return Err(CliError::Config(
-            "recovery envelope does not contain this project master key".to_owned(),
+        return Err(metadata_invalid_error(
+            "recovery envelope does not contain this project master key",
         ));
     }
     Ok(())

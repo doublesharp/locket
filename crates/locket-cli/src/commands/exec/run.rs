@@ -13,8 +13,8 @@ use locket_store::{ProfileRecord, RuntimeSessionRecord, RuntimeSessionSecretName
 use crate::commands::config::spec::{config_get_value, read_user_config};
 use crate::runtime::RuntimeContext;
 use crate::runtime::error::{
-    CliError, child_exit_error, confirmation_failed_error, exec_prepare_error,
-    unimplemented_in_build_error,
+    CliError, child_exit_error, confirmation_failed_error, corrupt_db_error, exec_prepare_error,
+    metadata_invalid_error, secret_not_found_error, unimplemented_in_build_error,
 };
 use crate::runtime::key_access::default_profile;
 use crate::support::secret_helpers::{
@@ -83,7 +83,7 @@ pub fn run_command(
     let external_env = resolve_policy_external_env(&policy, &parent_env)?;
     let missing_required = missing_required_secret_names(&selections, &external_env);
     if !missing_required.is_empty() {
-        return Err(CliError::Config(format!(
+        return Err(secret_not_found_error(format!(
             "required secret(s) missing: {}",
             missing_required.join(",")
         )));
@@ -221,7 +221,7 @@ pub fn execute_prepared_with_runtime_session(
     let process_id = child.id();
     let session = RuntimeSessionRecord {
         id: SessionId::generate()
-            .map_err(|_| CliError::Config("runtime session id generation failed".to_owned()))?
+            .map_err(|_| corrupt_db_error("runtime session id generation failed"))?
             .into_string(),
         project_id: request.resolved.config.project_id.to_string(),
         profile_id: request.profile.id.clone(),
@@ -261,14 +261,12 @@ fn runtime_session_retention(
         return Ok(RuntimeSessionSecretNameRetention::default());
     };
     let Some(value) = value.as_str() else {
-        return Err(CliError::Config(
-            "runtime.session_secret_name_retention must be a duration or off".to_owned(),
+        return Err(metadata_invalid_error(
+            "runtime.session_secret_name_retention must be a duration or off",
         ));
     };
     RuntimeSessionSecretNameRetention::from_str(value).map_err(|_| {
-        CliError::Config(
-            "runtime.session_secret_name_retention must be a duration or off".to_owned(),
-        )
+        metadata_invalid_error("runtime.session_secret_name_retention must be a duration or off")
     })
 }
 
