@@ -481,6 +481,9 @@ struct RedactArgs {
     /// Read from stdin.
     #[arg(long, conflicts_with = "file")]
     stdin: bool,
+    /// Require known-value coverage; fails when the vault cannot supply known values.
+    #[arg(long)]
+    require_known: bool,
     #[command(flatten)]
     redact_names: RedactNamesArgs,
 }
@@ -817,7 +820,7 @@ fn run_with_context(
         Command::Agent { command } => agent_command(context, output, command)?,
         Command::Use(args) => use_profile_command(context, output, args)?,
         Command::Scan(args) => scan_command(context, output, args)?,
-        Command::Redact(args) => redact_command(context, output, args)?,
+        Command::Redact(args) => redact_command(context, output, &args)?,
         Command::Context(args) => context_command(context, output, &args)?,
         Command::AiSafe(args) => ai_safe_command(context, output, &args)?,
         Command::Config { command } => config_command(context, output, command)?,
@@ -4132,43 +4135,163 @@ fn write_scan_suppression_audit(
 fn redact_command(
     context: &RuntimeContext,
     output: &mut impl Write,
-    args: RedactArgs,
+    args: &RedactArgs,
 ) -> Result<(), CliError> {
     let input = if args.stdin {
         let mut input = String::new();
         io::stdin().read_to_string(&mut input)?;
         input
-    } else if let Some(file) = args.file {
-        fs::read_to_string(absolutize(&context.cwd, Path::new(&file)))?
+    } else if let Some(file) = args.file.as_deref() {
+        fs::read_to_string(absolutize(&context.cwd, Path::new(file)))?
     } else {
         return Err(CliError::Config("redact requires a file path or --stdin".to_owned()));
     };
 
-    let known_redactions = collect_redaction_values_for_redact(
+    let redact_names_enabled =
+        privacy_redact_names_enabled(context, args.redact_names.redact_names)?;
+    let project = resolve_project(&context.cwd)?;
+    let coverage = collect_redaction_values_for_redact(
         context,
-        args.redact_names.redact_names,
+        project.as_ref(),
+        redact_names_enabled,
+        args.require_known,
         now_unix_nanos()?,
     )?;
-    let result = redact_input(&input, &known_redactions);
+    let result = redact_input(&input, &coverage.redactions);
     write!(output, "{}", result.text)?;
+
+    if !coverage.known_coverage_active {
+        let mut stderr = io::stderr();
+        if let Some(message) = &coverage.skipped_message {
+            let _ignored = writeln!(stderr, "locket: {message}");
+        } else {
+            let _ignored = writeln!(
+                stderr,
+                "locket: known-value redaction skipped; pattern and entropy redaction only"
+            );
+        }
+    }
+
+    write_redact_audit_if_available(context, project.as_ref(), args, &coverage, &result)?;
     Ok(())
+}
+
+struct RedactCoverage {
+    redactions: Vec<KnownSecretRedaction>,
+    known_coverage_active: bool,
+    redact_names_enabled: bool,
+    known_secret_names: Vec<String>,
+    skipped_message: Option<String>,
 }
 
 fn collect_redaction_values_for_redact(
     context: &RuntimeContext,
-    redact_names: bool,
+    project: Option<&ResolvedProject>,
+    redact_names_enabled: bool,
+    require_known: bool,
     timestamp: i64,
-) -> Result<Vec<KnownSecretRedaction>, CliError> {
-    let Some(project) = resolve_project(&context.cwd)? else {
-        return Ok(Vec::new());
-    };
-    match collect_known_secret_redactions(context, &project, redact_names, timestamp) {
-        Ok(redactions) => Ok(redactions),
-        Err(error) => {
-            let mut stderr = io::stderr();
-            let _ignored = writeln!(stderr, "locket: known-value redaction skipped: {error}");
-            Ok(Vec::new())
+) -> Result<RedactCoverage, CliError> {
+    let Some(project) = project else {
+        if require_known {
+            return Err(CliError::Config(
+                "known-value redaction requires a Locket project and unlocked vault".to_owned(),
+            ));
         }
+        return Ok(RedactCoverage {
+            redactions: Vec::new(),
+            known_coverage_active: false,
+            redact_names_enabled,
+            known_secret_names: Vec::new(),
+            skipped_message: Some(
+                "known-value redaction skipped: no project resolved".to_owned(),
+            ),
+        });
+    };
+    match collect_known_secret_redactions(context, project, redact_names_enabled, timestamp) {
+        Ok(redactions) => {
+            let known_secret_names = redactions
+                .iter()
+                .filter_map(|entry| entry.secret_name.clone())
+                .collect();
+            Ok(RedactCoverage {
+                redactions,
+                known_coverage_active: true,
+                redact_names_enabled,
+                known_secret_names,
+                skipped_message: None,
+            })
+        }
+        Err(error) => {
+            if require_known {
+                return Err(error);
+            }
+            Ok(RedactCoverage {
+                redactions: Vec::new(),
+                known_coverage_active: false,
+                redact_names_enabled,
+                known_secret_names: Vec::new(),
+                skipped_message: Some(format!("known-value redaction skipped: {error}")),
+            })
+        }
+    }
+}
+
+fn write_redact_audit_if_available(
+    context: &RuntimeContext,
+    project: Option<&ResolvedProject>,
+    args: &RedactArgs,
+    coverage: &RedactCoverage,
+    result: &locket_scan::RedactionResult,
+) -> Result<(), CliError> {
+    let Some(project) = project else { return Ok(()) };
+    let mut store = open_store(context)?;
+    if store.get_project(project.config.project_id.as_str())?.is_none() {
+        return Ok(());
+    }
+    let Ok(audit_key) =
+        load_project_key(context, &store, project.config.project_id.as_str(), KeyPurpose::Audit)
+    else {
+        return Ok(());
+    };
+
+    let counts_by_rule: serde_json::Value = result
+        .counts
+        .iter()
+        .map(|(kind, count)| (redact_finding_kind_label(*kind).to_owned(), json!(count)))
+        .collect::<serde_json::Map<_, _>>()
+        .into();
+    let input_kind = if args.stdin { "stdin" } else { "file" };
+    let metadata = json!({
+        "schema_version": 1,
+        "action": "REDACT",
+        "status": "SUCCESS",
+        "input_kind": input_kind,
+        "require_known": args.require_known,
+        "known_coverage_active": coverage.known_coverage_active,
+        "redact_names_enabled": coverage.redact_names_enabled,
+        "redaction_counts_by_rule": counts_by_rule,
+        "known_secret_names_redacted": coverage.known_secret_names,
+    });
+    let audit = AuditWrite {
+        project_id: project.config.project_id.as_str(),
+        profile_id: None,
+        action: "REDACT",
+        status: "SUCCESS",
+        secret_name: None,
+        command: Some("redact"),
+        metadata_json: &metadata,
+        timestamp: now_unix_nanos()?,
+    };
+    store.append_audit(audit_key.as_ref(), &audit)?;
+    Ok(())
+}
+
+const fn redact_finding_kind_label(kind: locket_scan::FindingKind) -> &'static str {
+    match kind {
+        locket_scan::FindingKind::HighEntropy => "high_entropy",
+        locket_scan::FindingKind::ProviderTokenPattern => "provider_token",
+        locket_scan::FindingKind::EnvFileMarker => "env_file_marker",
+        locket_scan::FindingKind::KnownSecretValue => "known_secret_value",
     }
 }
 
@@ -6019,6 +6142,7 @@ fn collect_known_secret_values(
 struct KnownSecretRedaction {
     value: zeroize::Zeroizing<String>,
     marker: String,
+    secret_name: Option<String>,
 }
 
 fn collect_known_secret_redactions(
@@ -6047,6 +6171,7 @@ fn collect_known_secret_redactions(
                         version.version,
                     )?,
                     marker: marker.clone(),
+                    secret_name: Some(secret.name.clone()),
                 });
             }
         }
@@ -14085,6 +14210,89 @@ required_secrets = ["DATABASE_URL"]
         assert!(redact_output.contains("lk_redacted_secret-"));
         assert!(!redact_output.contains("lk_redacted_DATABASE_URL"));
         assert!(!redact_output.contains("postgres://localhost/app"));
+        Ok(())
+    }
+
+    #[test]
+    fn redact_writes_audit_row_with_counts_and_names()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        let mut output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut output,
+        )?;
+        let args = test_secret_write_args("DATABASE_URL");
+        super::set_secret_value(&context, &args, "postgres://localhost/app", "manual", 1_000)?;
+        std::fs::write(directory.path().join("sample.log"), "db=postgres://localhost/app\n")?;
+
+        let mut redact_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "redact", "sample.log"])?,
+            &context,
+            &mut redact_output,
+        )?;
+
+        let store = locket_store::Store::open(directory.path().join("store.db"))?;
+        let metadata: String = store.connection().query_row(
+            "SELECT metadata_json FROM audit_log WHERE action = 'REDACT'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert!(metadata.contains("\"action\":\"REDACT\""));
+        assert!(metadata.contains("\"input_kind\":\"file\""));
+        assert!(metadata.contains("\"known_coverage_active\":true"));
+        assert!(metadata.contains("\"DATABASE_URL\""));
+        assert!(metadata.contains("\"known_secret_value\""));
+        assert!(!metadata.contains("postgres://"));
+        Ok(())
+    }
+
+    #[test]
+    fn redact_require_known_without_project_fails_closed()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        std::fs::write(directory.path().join("sample.log"), "anything\n")?;
+
+        let mut redact_output = Vec::new();
+        let result = run_with_context(
+            Cli::try_parse_from(["locket", "redact", "--require-known", "sample.log"])?,
+            &context,
+            &mut redact_output,
+        );
+        let Err(super::CliError::Config(message)) = result else {
+            return Err(format!("expected CliError::Config, got {result:?}").into());
+        };
+        assert!(message.contains("known-value redaction"));
+        Ok(())
+    }
+
+    #[test]
+    fn redact_warns_when_known_coverage_skipped_without_project()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        std::fs::write(directory.path().join("sample.log"), "abcdef\n")?;
+
+        let mut redact_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "redact", "sample.log"])?,
+            &context,
+            &mut redact_output,
+        )?;
+
+        let coverage = super::collect_redaction_values_for_redact(
+            &context,
+            None,
+            false,
+            false,
+            super::now_unix_nanos()?,
+        )?;
+        assert!(!coverage.known_coverage_active);
+        assert!(coverage.skipped_message.is_some());
         Ok(())
     }
 
