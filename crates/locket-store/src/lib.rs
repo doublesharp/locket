@@ -10,7 +10,7 @@ use locket_core::{
 };
 use rusqlite::types::Type;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
-use serde_json::Value;
+use serde_json::{Value, json};
 use sha2::Sha256;
 use thiserror::Error;
 
@@ -191,6 +191,20 @@ pub struct AuditContext<'a> {
     pub key: &'a [u8],
     /// Audit row payload.
     pub write: &'a AuditWrite<'a>,
+}
+
+#[derive(Debug)]
+struct StoredAuditRow {
+    sequence: u64,
+    schema_version: u16,
+    timestamp: i64,
+    project_id: String,
+    profile_id: Option<String>,
+    action: String,
+    status: String,
+    metadata_json: String,
+    previous_hmac: [u8; AUDIT_HMAC_LEN],
+    hmac: [u8; AUDIT_HMAC_LEN],
 }
 
 impl Store {
@@ -961,6 +975,92 @@ impl Store {
             .optional()
             .map_err(StoreError::from)
     }
+
+    /// Verifies the local audit HMAC chain and appends an `AUDIT_VERIFY` row on success.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::AuditIntegrity`] for the first detected chain break.
+    /// Returns other [`StoreError`] values for database, parsing, or HMAC construction failures.
+    pub fn verify_audit_chain_and_append(
+        &mut self,
+        project_id: &str,
+        audit_key: &[u8],
+        timestamp: i64,
+    ) -> Result<u64, StoreError> {
+        let transaction = self.connection.transaction()?;
+        let rows = read_audit_rows(&transaction, project_id)?;
+        let mut expected_sequence = 1_u64;
+        let mut previous_hmac = [0; AUDIT_HMAC_LEN];
+
+        for row in &rows {
+            if row.sequence != expected_sequence {
+                return Err(StoreError::AuditIntegrity {
+                    sequence: expected_sequence,
+                    reason: "sequence gap or reordering".to_owned(),
+                });
+            }
+            if row.previous_hmac != previous_hmac {
+                return Err(StoreError::AuditIntegrity {
+                    sequence: row.sequence,
+                    reason: "previous_hmac mismatch".to_owned(),
+                });
+            }
+            let metadata = serde_json::from_str::<Value>(&row.metadata_json).map_err(|error| {
+                StoreError::AuditIntegrity {
+                    sequence: row.sequence,
+                    reason: format!("metadata_json is not valid JSON: {error}"),
+                }
+            })?;
+            let input = AuditHmacInput {
+                schema_version: row.schema_version,
+                sequence: row.sequence,
+                timestamp: Timestamp::from_unix_nanos(row.timestamp),
+                project_id: Some(&row.project_id),
+                profile_id: row.profile_id.as_deref(),
+                action: &row.action,
+                status: &row.status,
+                metadata_json: Some(&metadata),
+                previous_hmac: Some(&row.previous_hmac),
+            };
+            let canonical = audit_hmac_v1_bytes(&input)?;
+            let mut mac = Hmac::<Sha256>::new_from_slice(audit_key)
+                .map_err(|_| StoreError::InvalidAuditKeyLength { actual: audit_key.len() })?;
+            mac.update(&canonical);
+            let expected_hmac = mac.finalize().into_bytes();
+            if expected_hmac.as_slice() != row.hmac.as_slice() {
+                return Err(StoreError::AuditIntegrity {
+                    sequence: row.sequence,
+                    reason: "row hmac mismatch".to_owned(),
+                });
+            }
+
+            previous_hmac = row.hmac;
+            expected_sequence += 1;
+        }
+
+        let rows_verified = rows.len() as u64;
+        let metadata = json!({
+            "schema_version": 1,
+            "action": "AUDIT_VERIFY",
+            "status": "SUCCESS",
+            "rows_verified": rows_verified,
+        });
+        let audit = AuditWrite {
+            project_id,
+            profile_id: None,
+            action: "AUDIT_VERIFY",
+            status: "SUCCESS",
+            secret_name: None,
+            command: None,
+            metadata_json: &metadata,
+            timestamp,
+        };
+        append_audit(&transaction, audit_key, &audit)?;
+        transaction.commit()?;
+
+        Ok(rows_verified)
+    }
 }
 
 fn project_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProjectRecord> {
@@ -1057,6 +1157,72 @@ fn append_optional_audit(
         append_audit(transaction, audit.key, audit.write)?;
     }
     Ok(())
+}
+
+fn read_audit_rows(
+    transaction: &Transaction<'_>,
+    project_id: &str,
+) -> Result<Vec<StoredAuditRow>, StoreError> {
+    let mut statement = transaction.prepare(
+        "SELECT sequence, schema_version, timestamp, project_id, profile_id,
+                action, status, metadata_json, previous_hmac, hmac
+         FROM audit_log
+         WHERE project_id = ?1
+         ORDER BY sequence",
+    )?;
+    let rows = statement
+        .query_map([project_id], |row| {
+            let previous_hmac = row.get::<_, Vec<u8>>(8)?;
+            let hmac = row.get::<_, Vec<u8>>(9)?;
+            Ok((
+                row.get::<_, u64>(0)?,
+                row.get::<_, u16>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, String>(6)?,
+                row.get::<_, String>(7)?,
+                previous_hmac,
+                hmac,
+            ))
+        })?
+        .map(|row| {
+            let (
+                sequence,
+                schema_version,
+                timestamp,
+                project_id,
+                profile_id,
+                action,
+                status,
+                metadata_json,
+                previous_hmac,
+                hmac,
+            ) = row?;
+            Ok(StoredAuditRow {
+                sequence,
+                schema_version,
+                timestamp,
+                project_id,
+                profile_id,
+                action,
+                status,
+                metadata_json,
+                previous_hmac: hmac_vec_to_array(sequence, previous_hmac)?,
+                hmac: hmac_vec_to_array(sequence, hmac)?,
+            })
+        })
+        .collect::<Result<Vec<_>, StoreError>>()?;
+
+    Ok(rows)
+}
+
+fn hmac_vec_to_array(sequence: u64, value: Vec<u8>) -> Result<[u8; AUDIT_HMAC_LEN], StoreError> {
+    value.try_into().map_err(|bytes: Vec<u8>| StoreError::AuditIntegrity {
+        sequence,
+        reason: format!("invalid hmac length {}", bytes.len()),
+    })
 }
 
 fn append_audit(
@@ -1157,6 +1323,15 @@ pub enum StoreError {
     InvalidAuditHmacLength {
         /// Actual HMAC length in bytes.
         actual: usize,
+    },
+
+    /// Audit chain verification failed.
+    #[error("audit integrity failed at sequence {sequence}: {reason}")]
+    AuditIntegrity {
+        /// Sequence number where verification failed.
+        sequence: u64,
+        /// Metadata-only failure reason.
+        reason: String,
     },
 
     /// The database schema is newer than this binary can read.
@@ -1853,6 +2028,16 @@ mod tests {
         assert_eq!(row.4.len(), 32);
         assert!(row.5.contains("\"secret_name\":\"DATABASE_URL\""));
         assert!(!row.5.contains("postgres://"));
+
+        let verified =
+            test_store.store.verify_audit_chain_and_append("lk_proj_test", &[42; 32], 200)?;
+        assert_eq!(verified, 1);
+        let audit_rows = test_store.store.connection().query_row(
+            "SELECT COUNT(*) FROM audit_log WHERE project_id = 'lk_proj_test'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )?;
+        assert_eq!(audit_rows, 2);
 
         Ok(())
     }

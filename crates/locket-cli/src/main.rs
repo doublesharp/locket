@@ -105,6 +105,12 @@ enum Command {
     History(HistoryArgs),
     /// Show metadata-only differences.
     Diff(DiffArgs),
+    /// Audit log operations.
+    Audit {
+        /// Audit command.
+        #[command(subcommand)]
+        command: AuditCommand,
+    },
     /// Manage the local agent.
     Agent {
         /// Agent command.
@@ -346,6 +352,12 @@ enum AgentCommand {
     Logs,
 }
 
+#[derive(Clone, Copy, Debug, Subcommand)]
+enum AuditCommand {
+    /// Verify the local audit HMAC chain.
+    Verify,
+}
+
 #[derive(Debug, Args)]
 struct SourceArg {
     /// Runtime source to target.
@@ -423,6 +435,7 @@ fn run_with_context(
         Command::Exec(args) => exec_command(context, output, &args)?,
         Command::Rotate(args) => rotate_command(context, output, &args)?,
         Command::History(args) => history_command(context, output, &args)?,
+        Command::Audit { command } => audit_command(context, output, command)?,
         Command::EmitExample => emit_example_command(context, output)?,
         Command::Profile { command } => profile_command(context, output, command)?,
         Command::Scan(args) => scan_command(context, output, args)?,
@@ -476,6 +489,7 @@ impl CliError {
         match self {
             Self::Config(_) | Self::TomlDe(_) | Self::TomlSer(_) => 64,
             Self::Platform(locket_platform::PlatformError::MasterKeyNotFound) => 72,
+            Self::Store(StoreError::AuditIntegrity { .. }) => 93,
             Self::Io(_) | Self::Store(_) | Self::Crypto(_) | Self::Platform(_) | Self::Time => 90,
         }
     }
@@ -986,6 +1000,32 @@ fn exec_command(
 
     writeln!(output, "child exited with status {status}")?;
     Err(CliError::Config("child process failed".to_owned()))
+}
+
+fn audit_command(
+    context: &RuntimeContext,
+    output: &mut impl Write,
+    command: AuditCommand,
+) -> Result<(), CliError> {
+    match command {
+        AuditCommand::Verify => {
+            let resolved = require_project(context)?;
+            let mut store = open_store(context)?;
+            let audit_key = load_project_key(
+                context,
+                &store,
+                resolved.config.project_id.as_str(),
+                KeyPurpose::Audit,
+            )?;
+            let rows = store.verify_audit_chain_and_append(
+                resolved.config.project_id.as_str(),
+                audit_key.as_ref(),
+                now_unix_nanos()?,
+            )?;
+            writeln!(output, "audit: verified {rows} row(s)")?;
+            Ok(())
+        }
+    }
 }
 
 fn profile_command(
@@ -2126,6 +2166,25 @@ mod tests {
         }
     }
 
+    fn assert_lifecycle_audit_log(
+        directory: &tempfile::TempDir,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let store = locket_store::Store::open(directory.path().join("store.db"))?;
+        let mut statement = store
+            .connection()
+            .prepare("SELECT action, metadata_json FROM audit_log ORDER BY sequence")?;
+        let rows = statement
+            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?
+            .collect::<Result<Vec<_>, _>>()?;
+        let actions = rows.iter().map(|(action, _)| action.as_str()).collect::<Vec<_>>();
+        assert_eq!(actions, ["SET", "ROTATE", "PURGE", "DELETE", "PURGE", "AUDIT_VERIFY"]);
+        for (_, metadata) in rows {
+            assert!(!metadata.contains("postgres://localhost/old"));
+            assert!(!metadata.contains("postgres://localhost/new"));
+        }
+        Ok(())
+    }
+
     #[test]
     fn parses_bare_status() {
         let cli = Cli::try_parse_from(["locket"]);
@@ -2143,6 +2202,7 @@ mod tests {
             &["locket", "purge", "DATABASE_URL", "--all-versions"],
             &["locket", "rotate", "DATABASE_URL", "--grace-ttl", "24h"],
             &["locket", "history", "DATABASE_URL"],
+            &["locket", "audit", "verify"],
             &["locket", "exec", "--secret", "DATABASE_URL", "--", "/bin/sh", "-c", "true"],
         ] {
             assert!(Cli::try_parse_from(args).is_ok(), "{args:?}");
@@ -2371,19 +2431,15 @@ mod tests {
         )?;
         assert!(String::from_utf8(purge_all_output)?.contains("versions=1,2"));
 
-        let store = locket_store::Store::open(directory.path().join("store.db"))?;
-        let mut statement = store
-            .connection()
-            .prepare("SELECT action, metadata_json FROM audit_log ORDER BY sequence")?;
-        let rows = statement
-            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?
-            .collect::<Result<Vec<_>, _>>()?;
-        let actions = rows.iter().map(|(action, _)| action.as_str()).collect::<Vec<_>>();
-        assert_eq!(actions, ["SET", "ROTATE", "PURGE", "DELETE", "PURGE"]);
-        for (_, metadata) in rows {
-            assert!(!metadata.contains("postgres://localhost/old"));
-            assert!(!metadata.contains("postgres://localhost/new"));
-        }
+        let mut audit_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "audit", "verify"])?,
+            &context,
+            &mut audit_output,
+        )?;
+        assert!(String::from_utf8(audit_output)?.contains("verified 5 row(s)"));
+
+        assert_lifecycle_audit_log(&directory)?;
         Ok(())
     }
 
