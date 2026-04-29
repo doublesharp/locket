@@ -940,7 +940,7 @@ fn set_command(
 ) -> Result<(), CliError> {
     let value = read_secret_value_from_stdin()?;
     set_secret_value(context, args, &value, "manual", now_unix_nanos()?)?;
-    refresh_example_for_project(context)?;
+    refresh_example_for_project_if_enabled(context)?;
     let source = source_arg_to_str(args.source.source.unwrap_or(SecretSourceArg::UserLocal));
     writeln!(output, "set {} ({source})", args.key)?;
     Ok(())
@@ -1020,7 +1020,7 @@ fn import_command(
         }
     }
 
-    refresh_example_for_project(context)?;
+    refresh_example_for_project_if_enabled(context)?;
     ensure_gitignore(&require_project(context)?.root)?;
     writeln!(output, "imported: {imported}")?;
     writeln!(output, "overwritten: {overwritten}")?;
@@ -1097,7 +1097,7 @@ fn rm_command(
         timestamp,
         Some(AuditContext { key: audit_key.as_ref(), write: &audit }),
     )?;
-    refresh_example_for_project(context)?;
+    refresh_example_for_project_if_enabled(context)?;
     writeln!(output, "removed {} ({source})", args.key)?;
     Ok(())
 }
@@ -1111,7 +1111,7 @@ fn rotate_command(
     let grace_until = grace_until_from_args(args.grace_ttl.as_deref(), timestamp)?;
     let value = read_secret_value_from_stdin()?;
     let (source, version) = rotate_secret_value(context, args, &value, timestamp, grace_until)?;
-    refresh_example_for_project(context)?;
+    refresh_example_for_project_if_enabled(context)?;
     writeln!(output, "rotated {} ({source}) version={version}", args.key)?;
     Ok(())
 }
@@ -1122,7 +1122,7 @@ fn copy_command(
     args: &CopyArgs,
 ) -> Result<(), CliError> {
     let result = copy_secret_value(context, args, now_unix_nanos()?)?;
-    refresh_example_for_project(context)?;
+    refresh_example_for_project_if_enabled(context)?;
     writeln!(
         output,
         "copied {} from={} source={} to={} target_source={} version={} operation={} metadata_only=yes",
@@ -1211,7 +1211,7 @@ fn purge_command(
         timestamp,
         Some(AuditContext { key: audit_key.as_ref(), write: &audit }),
     )?;
-    refresh_example_for_project(context)?;
+    refresh_example_for_project_if_enabled(context)?;
     if changed {
         writeln!(
             output,
@@ -2069,8 +2069,11 @@ fn diff_command(
 
 fn emit_example_command(context: &RuntimeContext, output: &mut impl Write) -> Result<(), CliError> {
     let resolved = require_project(context)?;
-    refresh_example_for_project(context)?;
-    writeln!(output, "updated {}", resolved.root.join(EXAMPLE_FILE).display())?;
+    let mut store = open_store(context)?;
+    let names = collect_example_secret_names(&store, &resolved)?;
+    let result = write_example_block_for_emit(&resolved.root, &names, output)?;
+    write_example_emit_audit(context, &mut store, &resolved, &result)?;
+    writeln!(output, "updated {}", result.path.display())?;
     Ok(())
 }
 
@@ -4053,6 +4056,42 @@ fn write_runtime_policy_audit_if_available(
     Ok(())
 }
 
+fn write_example_emit_audit(
+    context: &RuntimeContext,
+    store: &mut Store,
+    resolved: &ResolvedProject,
+    result: &ExampleWriteResult,
+) -> Result<(), CliError> {
+    if store.get_project(resolved.config.project_id.as_str())?.is_none() {
+        return Ok(());
+    }
+    let audit_key =
+        load_project_key(context, store, resolved.config.project_id.as_str(), KeyPurpose::Audit)?;
+    let path_hash = Sha256::digest(EXAMPLE_FILE.as_bytes());
+    let metadata = json!({
+        "schema_version": 1,
+        "action": "EXAMPLE_EMIT",
+        "status": "SUCCESS",
+        "path_kind": "project_env_example",
+        "path_hash": format_hex(&path_hash),
+        "secret_name_count": result.secret_name_count,
+        "marker_only": !result.replaced_unmanaged,
+        "replaced_unmanaged": result.replaced_unmanaged,
+    });
+    let audit = AuditWrite {
+        project_id: resolved.config.project_id.as_str(),
+        profile_id: None,
+        action: "EXAMPLE_EMIT",
+        status: "SUCCESS",
+        secret_name: None,
+        command: Some("emit-example"),
+        metadata_json: &metadata,
+        timestamp: now_unix_nanos()?,
+    };
+    store.append_audit(audit_key.as_ref(), &audit)?;
+    Ok(())
+}
+
 fn ensure_gitignore(root: &Path) -> Result<(), CliError> {
     let path = root.join(GITIGNORE_FILE);
     let existing = match fs::read_to_string(&path) {
@@ -4114,9 +4153,71 @@ fn ensure_example_file(root: &Path) -> Result<(), CliError> {
     Ok(())
 }
 
-fn refresh_example_for_project(context: &RuntimeContext) -> Result<(), CliError> {
+#[derive(Debug)]
+struct ExampleWriteResult {
+    path: PathBuf,
+    secret_name_count: usize,
+    replaced_unmanaged: bool,
+}
+
+fn refresh_example_for_project_if_enabled(context: &RuntimeContext) -> Result<(), CliError> {
     let resolved = require_project(context)?;
+    if !example_auto_refresh_enabled(context, &resolved)? {
+        return Ok(());
+    }
+    refresh_example_for_resolved(context, &resolved)?;
+    Ok(())
+}
+
+fn example_auto_refresh_enabled(
+    context: &RuntimeContext,
+    resolved: &ResolvedProject,
+) -> Result<bool, CliError> {
+    let project_config = read_config_table(&resolved.root.join(LOCKET_TOML))?;
+    if let Some(value) = config_bool_value(&project_config, "example.auto_refresh")? {
+        return Ok(value);
+    }
+    let user_config = read_user_config(context)?;
+    Ok(config_bool_value(&user_config, "example.auto_refresh")?.unwrap_or(true))
+}
+
+fn read_config_table(path: &Path) -> Result<toml::Table, CliError> {
+    let text = fs::read_to_string(path)?;
+    toml::from_str::<toml::Table>(&text).map_err(CliError::from)
+}
+
+fn config_bool_value(config: &toml::Table, key: &str) -> Result<Option<bool>, CliError> {
+    let Some((section, name)) = split_config_key(key) else {
+        return Err(CliError::Config("unsupported config key".to_owned()));
+    };
+    let Some(section_value) = config.get(section) else {
+        return Ok(None);
+    };
+    let Some(section_table) = section_value.as_table() else {
+        return Err(CliError::Config(format!("config section {section:?} must be a table")));
+    };
+    let Some(value) = section_table.get(name) else {
+        return Ok(None);
+    };
+    value
+        .as_bool()
+        .map(Some)
+        .ok_or_else(|| CliError::Config(format!("config key {key:?} must be boolean")))
+}
+
+fn refresh_example_for_resolved(
+    context: &RuntimeContext,
+    resolved: &ResolvedProject,
+) -> Result<ExampleWriteResult, CliError> {
     let store = open_store(context)?;
+    let names = collect_example_secret_names(&store, resolved)?;
+    write_example_block(&resolved.root, &names)
+}
+
+fn collect_example_secret_names(
+    store: &Store,
+    resolved: &ResolvedProject,
+) -> Result<BTreeSet<String>, CliError> {
     let mut names = BTreeSet::new();
     for profile in store.list_profiles(resolved.config.project_id.as_str())? {
         for secret in store
@@ -4125,25 +4226,58 @@ fn refresh_example_for_project(context: &RuntimeContext) -> Result<(), CliError>
             names.insert(secret.name);
         }
     }
-    write_example_block(&resolved.root, &names)
+    Ok(names)
 }
 
-fn write_example_block(root: &Path, names: &BTreeSet<String>) -> Result<(), CliError> {
+fn write_example_block(
+    root: &Path,
+    names: &BTreeSet<String>,
+) -> Result<ExampleWriteResult, CliError> {
     let path = root.join(EXAMPLE_FILE);
+    write_example_block_with_policy(&path, names, UnmanagedExamplePolicy::Refuse, None)
+}
+
+fn write_example_block_for_emit(
+    root: &Path,
+    names: &BTreeSet<String>,
+    output: &mut impl Write,
+) -> Result<ExampleWriteResult, CliError> {
+    let path = root.join(EXAMPLE_FILE);
+    write_example_block_with_policy(
+        &path,
+        names,
+        UnmanagedExamplePolicy::Confirm,
+        Some(output as &mut dyn Write),
+    )
+}
+
+#[derive(Clone, Copy)]
+enum UnmanagedExamplePolicy {
+    Refuse,
+    Confirm,
+}
+
+fn write_example_block_with_policy(
+    path: &Path,
+    names: &BTreeSet<String>,
+    unmanaged_policy: UnmanagedExamplePolicy,
+    output: Option<&mut dyn Write>,
+) -> Result<ExampleWriteResult, CliError> {
     let managed_block = managed_example_block(names);
-    let existing = match fs::read_to_string(&path) {
+    let existing = match fs::read_to_string(path) {
         Ok(content) => content,
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
             fs::write(path, managed_block)?;
-            return Ok(());
+            return Ok(ExampleWriteResult {
+                path: path.to_path_buf(),
+                secret_name_count: names.len(),
+                replaced_unmanaged: false,
+            });
         }
         Err(error) => return Err(error.into()),
     };
     let Some(begin) = existing.find(EXAMPLE_BEGIN) else {
-        return Err(CliError::Config(
-            ".env.example exists without Locket managed markers; refusing silent overwrite"
-                .to_owned(),
-        ));
+        return replace_unmanaged_example(path, names, &managed_block, unmanaged_policy, output);
     };
     let Some(relative_end) = existing[begin..].find(EXAMPLE_END) else {
         return Err(CliError::Config(
@@ -4158,7 +4292,53 @@ fn write_example_block(root: &Path, names: &BTreeSet<String>) -> Result<(), CliE
     if updated != existing {
         fs::write(path, updated)?;
     }
-    Ok(())
+    Ok(ExampleWriteResult {
+        path: path.to_path_buf(),
+        secret_name_count: names.len(),
+        replaced_unmanaged: false,
+    })
+}
+
+fn replace_unmanaged_example(
+    path: &Path,
+    names: &BTreeSet<String>,
+    managed_block: &str,
+    unmanaged_policy: UnmanagedExamplePolicy,
+    output: Option<&mut dyn Write>,
+) -> Result<ExampleWriteResult, CliError> {
+    match unmanaged_policy {
+        UnmanagedExamplePolicy::Refuse => Err(CliError::Config(
+            ".env.example exists without Locket managed markers; refusing automatic overwrite"
+                .to_owned(),
+        )),
+        UnmanagedExamplePolicy::Confirm => {
+            let Some(output) = output else {
+                return Err(CliError::Config(
+                    ".env.example replacement requires interactive confirmation".to_owned(),
+                ));
+            };
+            writeln!(output, ".env.example: unmanaged")?;
+            writeln!(output, "secret_name_count: {}", names.len())?;
+            writeln!(output, "metadata_only: yes")?;
+            if !io::stdin().is_terminal() {
+                return Err(CliError::Config(
+                    ".env.example replacement requires interactive confirmation".to_owned(),
+                ));
+            }
+            writeln!(output, "type 'replace .env.example' to replace the unmanaged file")?;
+            let mut confirmation = String::new();
+            io::stdin().read_line(&mut confirmation)?;
+            if confirmation.trim_end() != "replace .env.example" {
+                return Err(CliError::Config("confirmation did not match".to_owned()));
+            }
+            fs::write(path, managed_block)?;
+            Ok(ExampleWriteResult {
+                path: path.to_path_buf(),
+                secret_name_count: names.len(),
+                replaced_unmanaged: true,
+            })
+        }
+    }
 }
 
 fn managed_example_block(names: &BTreeSet<String>) -> String {
@@ -4717,6 +4897,7 @@ fn now_unix_nanos() -> Result<i64, CliError> {
 mod tests {
     use clap::Parser;
     use locket_platform::MemoryMasterKeyStore;
+    use std::collections::BTreeSet;
     use std::io::Write;
     use std::path::Path;
     use std::process::Command as TestCommand;
@@ -5090,6 +5271,157 @@ optional_secrets = ["API_KEY"]
             ),
             "unknown template",
         );
+        Ok(())
+    }
+
+    #[test]
+    fn emit_example_uses_all_profiles_rewrites_managed_block_and_audits()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        let mut output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut output,
+        )?;
+
+        let dev_args = test_secret_write_args("DATABASE_URL");
+        super::set_secret_value(&context, &dev_args, "postgres://localhost/app", "manual", 1_000)?;
+        let mut create_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "profile", "create", "staging"])?,
+            &context,
+            &mut create_output,
+        )?;
+        let mut use_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "use", "staging"])?,
+            &context,
+            &mut use_output,
+        )?;
+        let staging_args = test_secret_write_args("API_KEY");
+        super::set_secret_value(&context, &staging_args, "sk_test_sample", "manual", 2_000)?;
+
+        let example_path = directory.path().join(".env.example");
+        std::fs::write(
+            &example_path,
+            "HEADER=kept\n# --- BEGIN LOCKET MANAGED ---\nOLD_SECRET=\n# --- END LOCKET MANAGED ---\nFOOTER=kept\n",
+        )?;
+
+        let mut emit_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "emit-example"])?,
+            &context,
+            &mut emit_output,
+        )?;
+
+        let example = std::fs::read_to_string(&example_path)?;
+        assert!(example.contains("HEADER=kept"));
+        assert!(example.contains("FOOTER=kept"));
+        assert!(example.contains("API_KEY="));
+        assert!(example.contains("DATABASE_URL="));
+        assert!(!example.contains("OLD_SECRET="));
+        assert!(!example.contains("postgres://localhost/app"));
+        assert!(!example.contains("sk_test_sample"));
+
+        let store = locket_store::Store::open(directory.path().join("store.db"))?;
+        let metadata: String = store.connection().query_row(
+            "SELECT metadata_json FROM audit_log WHERE action = 'EXAMPLE_EMIT'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert!(metadata.contains("\"secret_name_count\":2"));
+        assert!(metadata.contains("\"path_kind\":\"project_env_example\""));
+        assert!(metadata.contains("\"marker_only\":true"));
+        assert!(!metadata.contains("DATABASE_URL"));
+        assert!(!metadata.contains("postgres://localhost/app"));
+        Ok(())
+    }
+
+    #[test]
+    fn automatic_example_refresh_respects_user_and_project_config()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        let mut output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut output,
+        )?;
+
+        let mut config_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "config", "set", "example.auto_refresh", "false"])?,
+            &context,
+            &mut config_output,
+        )?;
+        std::fs::write(directory.path().join("import.env"), "USER_DISABLED=value\n")?;
+        let mut import_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "import", "import.env"])?,
+            &context,
+            &mut import_output,
+        )?;
+        let example = std::fs::read_to_string(directory.path().join(".env.example"))?;
+        assert!(!example.contains("USER_DISABLED="));
+
+        let mut emit_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "emit-example"])?,
+            &context,
+            &mut emit_output,
+        )?;
+        let example = std::fs::read_to_string(directory.path().join(".env.example"))?;
+        assert!(example.contains("USER_DISABLED="));
+
+        let mut config_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "config", "set", "example.auto_refresh", "true"])?,
+            &context,
+            &mut config_output,
+        )?;
+        let locket_toml_path = directory.path().join("locket.toml");
+        let mut locket_toml = std::fs::read_to_string(&locket_toml_path)?;
+        locket_toml.push_str("\n[example]\nauto_refresh = false\n");
+        std::fs::write(&locket_toml_path, locket_toml)?;
+
+        std::fs::write(directory.path().join("import2.env"), "PROJECT_DISABLED=value\n")?;
+        let mut import_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "import", "import2.env"])?,
+            &context,
+            &mut import_output,
+        )?;
+        let example = std::fs::read_to_string(directory.path().join(".env.example"))?;
+        assert!(example.contains("USER_DISABLED="));
+        assert!(!example.contains("PROJECT_DISABLED="));
+        Ok(())
+    }
+
+    #[test]
+    fn automatic_example_refresh_refuses_unmanaged_example_file()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        let mut output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut output,
+        )?;
+
+        let example_path = directory.path().join(".env.example");
+        std::fs::write(&example_path, "MANUAL=kept\n")?;
+        let mut names = BTreeSet::new();
+        names.insert("DATABASE_URL".to_owned());
+
+        assert_error_contains(
+            super::write_example_block(directory.path(), &names).map(|_| ()),
+            "refusing automatic overwrite",
+        );
+        assert_eq!(std::fs::read_to_string(&example_path)?, "MANUAL=kept\n");
         Ok(())
     }
 
