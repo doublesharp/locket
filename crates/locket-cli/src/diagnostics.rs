@@ -3,14 +3,15 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use locket_core::PROJECT_CONFIG_SCHEMA_VERSION;
-use locket_store::SCHEMA_VERSION;
+use locket_crypto::KeyPurpose;
+use locket_store::{AuditWrite, SCHEMA_VERSION};
 use serde_json::{Value, json};
 
 use super::{
     CONFIG_KEY_SPECS, CliError, GITIGNORE_ENTRIES, GITIGNORE_FILE, HOOK_BEGIN, LOCKET_TOML,
     RuntimeContext, agent_log_path, agent_pid_path, agent_socket_path, format_hex,
-    git_dir_for_worktree, open_store, read_project_config, read_user_config, resolve_project,
-    root_hash,
+    git_dir_for_worktree, load_project_key, now_unix_nanos, open_store, read_project_config,
+    read_user_config, resolve_project, root_hash,
 };
 
 const SKIPPED_LOCKED_CHECKS: [&str; 5] = [
@@ -129,10 +130,25 @@ impl DiagnosticReport {
             }).collect::<Vec<_>>(),
         })
     }
+
+    fn audit_metadata(&self) -> Value {
+        json!({
+            "schema_version": 1,
+            "action": "DOCTOR",
+            "status": if self.counts.fail == 0 { "SUCCESS" } else { "FAILED" },
+            "check_names": self.checks.iter().map(|check| check.name).collect::<Vec<_>>(),
+            "pass_count": self.counts.pass,
+            "warn_count": self.counts.warn,
+            "fail_count": self.counts.fail,
+            "skip_count": self.counts.skip,
+            "critical_fail_count": self.counts.critical_fail,
+        })
+    }
 }
 
 pub fn doctor_command(context: &RuntimeContext, output: &mut impl Write) -> Result<u8, CliError> {
     let report = collect_diagnostics(context);
+    write_doctor_audit_if_available(context, &report);
     write_doctor_report(output, &report)?;
     Ok(report.exit_code())
 }
@@ -420,6 +436,40 @@ fn check_agent_placeholder(context: &RuntimeContext) -> DiagnosticCheck {
         "unavailable last_known_pid=no"
     };
     DiagnosticCheck::pass("agent_placeholder", status)
+}
+
+fn write_doctor_audit_if_available(context: &RuntimeContext, report: &DiagnosticReport) {
+    let Ok(Some(project)) = resolve_project(&context.cwd) else {
+        return;
+    };
+    let Ok(mut store) = open_store(context) else {
+        return;
+    };
+    match store.get_project(project.config.project_id.as_str()) {
+        Ok(Some(_)) => {}
+        Ok(None) | Err(_) => return,
+    }
+    let Ok(audit_key) =
+        load_project_key(context, &store, project.config.project_id.as_str(), KeyPurpose::Audit)
+    else {
+        return;
+    };
+    let metadata = report.audit_metadata();
+    let status = if report.counts.fail == 0 { "SUCCESS" } else { "FAILED" };
+    let Ok(timestamp) = now_unix_nanos() else {
+        return;
+    };
+    let audit = AuditWrite {
+        project_id: project.config.project_id.as_str(),
+        profile_id: None,
+        action: "DOCTOR",
+        status,
+        secret_name: None,
+        command: Some("doctor"),
+        metadata_json: &metadata,
+        timestamp,
+    };
+    let _ignored = store.append_audit(audit_key.as_ref(), &audit);
 }
 
 fn write_doctor_report(output: &mut impl Write, report: &DiagnosticReport) -> Result<(), CliError> {

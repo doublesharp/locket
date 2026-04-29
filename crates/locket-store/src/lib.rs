@@ -1,12 +1,13 @@
 //! `SQLite` storage layer for Locket.
 
 use std::path::Path;
+use std::str::FromStr;
 use std::time::Duration;
 
 use hmac::{Hmac, Mac};
 use locket_core::{
-    AUDIT_HMAC_LEN, AuditCanonicalizationError, AuditHmacInput, Timestamp, audit_hmac_v1_bytes,
-    canonical_json_string,
+    AUDIT_HMAC_LEN, AuditCanonicalizationError, AuditHmacInput, Duration as LocketDuration,
+    Timestamp, audit_hmac_v1_bytes, canonical_json_string,
 };
 use rusqlite::types::Type;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
@@ -192,6 +193,90 @@ pub struct SecretFingerprintRecord {
     pub created_at: i64,
 }
 
+/// Metadata-only runtime process/session row.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RuntimeSessionRecord {
+    /// Runtime session identifier.
+    pub id: String,
+    /// Parent project identifier.
+    pub project_id: String,
+    /// Parent profile identifier.
+    pub profile_id: String,
+    /// Optional policy name used to authorize the session.
+    pub policy_name: Option<String>,
+    /// Runtime process id.
+    pub process_id: u32,
+    /// Process start timestamp in nanoseconds since the Unix epoch.
+    pub process_start_time: i64,
+    /// Session start timestamp in nanoseconds since the Unix epoch.
+    pub started_at: i64,
+    /// Session end timestamp in nanoseconds since the Unix epoch.
+    pub ended_at: Option<i64>,
+    /// Process exit status when known.
+    pub exit_status: Option<i32>,
+    /// Sensitive metadata names only; never secret values.
+    pub secret_names: Vec<String>,
+    /// Optional project-scoped audit sequence for the spawn event.
+    pub spawn_audit_sequence: Option<u64>,
+    /// Optional project-scoped audit sequence for the completion event.
+    pub completion_audit_sequence: Option<u64>,
+}
+
+/// Retention behavior for `runtime_sessions.secret_names`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RuntimeSessionSecretNameRetention {
+    /// Store secret names on new runtime-session rows and prune them after this duration.
+    RetainFor(LocketDuration),
+    /// Do not store secret names on new runtime-session rows.
+    Off,
+}
+
+impl RuntimeSessionSecretNameRetention {
+    /// Default `runtime.session_secret_name_retention` value in seconds.
+    pub const DEFAULT_SECONDS: u64 = 90 * 24 * 60 * 60;
+
+    /// Returns the default 90-day retention behavior.
+    #[must_use]
+    pub const fn default_retention() -> Self {
+        Self::RetainFor(LocketDuration::from_secs(Self::DEFAULT_SECONDS))
+    }
+
+    /// Filters the candidate names according to this retention mode.
+    #[must_use]
+    pub fn secret_names_for_storage(&self, secret_names: &[String]) -> Vec<String> {
+        match self {
+            Self::RetainFor(_) => secret_names.to_vec(),
+            Self::Off => Vec::new(),
+        }
+    }
+}
+
+impl Default for RuntimeSessionSecretNameRetention {
+    fn default() -> Self {
+        Self::default_retention()
+    }
+}
+
+impl FromStr for RuntimeSessionSecretNameRetention {
+    type Err = InvalidRuntimeSessionSecretNameRetention;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        if value == "off" {
+            return Ok(Self::Off);
+        }
+
+        Ok(Self::RetainFor(
+            LocketDuration::from_str(value)
+                .map_err(|_| InvalidRuntimeSessionSecretNameRetention)?,
+        ))
+    }
+}
+
+/// Invalid `runtime.session_secret_name_retention` value.
+#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
+#[error("runtime.session_secret_name_retention must be a duration or off")]
+pub struct InvalidRuntimeSessionSecretNameRetention;
+
 /// Metadata applied to the version being superseded by rotation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct VersionDeprecation {
@@ -349,6 +434,142 @@ impl Store {
             .collect::<Result<Vec<_>, _>>()?;
         actions.reverse();
         Ok(actions)
+    }
+
+    /// Inserts a runtime-session row at process spawn time.
+    ///
+    /// `secret_names` are stored as names only for troubleshooting correlation. Callers
+    /// should pass names filtered through [`RuntimeSessionSecretNameRetention`] when the
+    /// configured retention mode is `off`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Sqlite`] when `SQLite` rejects the insert.
+    pub fn insert_runtime_session(&self, session: &RuntimeSessionRecord) -> Result<(), StoreError> {
+        let secret_names_json = json!(&session.secret_names).to_string();
+        self.connection.execute(
+            "INSERT INTO runtime_sessions(
+               id, project_id, profile_id, policy_name, process_id, process_start_time,
+               started_at, ended_at, exit_status, secret_names_json,
+               spawn_audit_sequence, completion_audit_sequence
+             )
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            params![
+                session.id.as_str(),
+                session.project_id.as_str(),
+                session.profile_id.as_str(),
+                session.policy_name.as_deref(),
+                session.process_id,
+                session.process_start_time,
+                session.started_at,
+                session.ended_at,
+                session.exit_status,
+                secret_names_json,
+                session.spawn_audit_sequence,
+                session.completion_audit_sequence,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Marks a runtime session completed when the process exits.
+    ///
+    /// Returns `true` when an incomplete session was updated and `false` when the row
+    /// was missing or already completed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Sqlite`] when `SQLite` rejects the update.
+    pub fn mark_runtime_session_completed(
+        &self,
+        id: &str,
+        ended_at: i64,
+        exit_status: Option<i32>,
+        completion_audit_sequence: Option<u64>,
+    ) -> Result<bool, StoreError> {
+        let updated = self.connection.execute(
+            "UPDATE runtime_sessions
+             SET ended_at = ?2,
+                 exit_status = ?3,
+                 completion_audit_sequence = ?4
+             WHERE id = ?1 AND ended_at IS NULL",
+            params![id, ended_at, exit_status, completion_audit_sequence],
+        )?;
+        Ok(updated > 0)
+    }
+
+    /// Lists runtime sessions that do not have completion metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Sqlite`] when `SQLite` cannot query the rows.
+    pub fn list_incomplete_runtime_sessions(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<RuntimeSessionRecord>, StoreError> {
+        let mut statement = self.connection.prepare(
+            "SELECT id, project_id, profile_id, policy_name, process_id, process_start_time,
+                    started_at, ended_at, exit_status, secret_names_json,
+                    spawn_audit_sequence, completion_audit_sequence
+             FROM runtime_sessions
+             WHERE project_id = ?1 AND ended_at IS NULL
+             ORDER BY started_at, id",
+        )?;
+        statement
+            .query_map([project_id], runtime_session_from_row)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(StoreError::from)
+    }
+
+    /// Lists runtime sessions whose retained `secret_names` have passed the cutoff.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Sqlite`] when `SQLite` cannot query the rows.
+    pub fn list_runtime_sessions_with_expired_secret_names(
+        &self,
+        project_id: &str,
+        started_before_or_at: i64,
+    ) -> Result<Vec<RuntimeSessionRecord>, StoreError> {
+        let mut statement = self.connection.prepare(
+            "SELECT id, project_id, profile_id, policy_name, process_id, process_start_time,
+                    started_at, ended_at, exit_status, secret_names_json,
+                    spawn_audit_sequence, completion_audit_sequence
+             FROM runtime_sessions
+             WHERE project_id = ?1
+               AND started_at <= ?2
+               AND secret_names_json != '[]'
+             ORDER BY started_at, id",
+        )?;
+        statement
+            .query_map(params![project_id, started_before_or_at], runtime_session_from_row)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(StoreError::from)
+    }
+
+    /// Prunes only the sensitive `secret_names` metadata for sessions at or before a cutoff.
+    ///
+    /// Session timing, process identity, policy name, exit status, and audit sequence
+    /// linkage are preserved.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Sqlite`] when `SQLite` rejects the update.
+    pub fn prune_runtime_session_secret_names(
+        &self,
+        project_id: &str,
+        started_before_or_at: i64,
+    ) -> Result<usize, StoreError> {
+        self.connection
+            .execute(
+                "UPDATE runtime_sessions
+                 SET secret_names_json = '[]'
+                 WHERE project_id = ?1
+                   AND started_at <= ?2
+                   AND secret_names_json != '[]'",
+                params![project_id, started_before_or_at],
+            )
+            .map_err(StoreError::from)
     }
 
     /// Inserts a project metadata row when `id` does not already exist.
@@ -1599,6 +1820,28 @@ fn secret_blob_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Secr
     })
 }
 
+fn runtime_session_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RuntimeSessionRecord> {
+    let secret_names_json = row.get::<_, String>(9)?;
+    let secret_names =
+        serde_json::from_str::<Vec<String>>(&secret_names_json).map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(9, Type::Text, Box::new(error))
+        })?;
+    Ok(RuntimeSessionRecord {
+        id: row.get(0)?,
+        project_id: row.get(1)?,
+        profile_id: row.get(2)?,
+        policy_name: row.get(3)?,
+        process_id: row.get(4)?,
+        process_start_time: row.get(5)?,
+        started_at: row.get(6)?,
+        ended_at: row.get(7)?,
+        exit_status: row.get(8)?,
+        secret_names,
+        spawn_audit_sequence: row.get(10)?,
+        completion_audit_sequence: row.get(11)?,
+    })
+}
+
 fn root_hash_from_row(
     row: &rusqlite::Row<'_>,
     column: usize,
@@ -2053,6 +2296,36 @@ CREATE TABLE IF NOT EXISTS audit_log (
   PRIMARY KEY (project_id, sequence)
 );
 
+CREATE TABLE IF NOT EXISTS runtime_sessions (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  profile_id TEXT NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+  policy_name TEXT,
+  process_id INTEGER NOT NULL CHECK (process_id >= 0 AND process_id <= 4294967295),
+  process_start_time INTEGER NOT NULL,
+  started_at INTEGER NOT NULL,
+  ended_at INTEGER,
+  exit_status INTEGER,
+  secret_names_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(secret_names_json)),
+  spawn_audit_sequence INTEGER CHECK (spawn_audit_sequence IS NULL OR spawn_audit_sequence >= 1),
+  completion_audit_sequence INTEGER CHECK (
+    completion_audit_sequence IS NULL OR completion_audit_sequence >= 1
+  ),
+  CHECK (ended_at IS NULL OR ended_at >= started_at),
+  CHECK ((ended_at IS NULL AND exit_status IS NULL) OR ended_at IS NOT NULL)
+);
+
+CREATE INDEX IF NOT EXISTS runtime_sessions_project_incomplete_idx
+  ON runtime_sessions(project_id, started_at)
+  WHERE ended_at IS NULL;
+
+CREATE INDEX IF NOT EXISTS runtime_sessions_project_secret_names_retention_idx
+  ON runtime_sessions(project_id, started_at)
+  WHERE secret_names_json != '[]';
+
+CREATE INDEX IF NOT EXISTS runtime_sessions_process_identity_idx
+  ON runtime_sessions(process_id, process_start_time);
+
 CREATE TABLE IF NOT EXISTS automation_clients (
   id TEXT PRIMARY KEY,
   project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -2079,14 +2352,16 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 #[cfg(test)]
 mod tests {
     use std::error::Error;
+    use std::str::FromStr;
 
     use serde_json::json;
     use tempfile::{TempDir, tempdir};
 
     use super::{
         AuditContext, AuditWrite, DirectoryGrantRecord, KeyRecord, ProfileRecord, ProjectRecord,
-        ProjectRootRecord, SCHEMA_VERSION, SecretBlobRecord, SecretFingerprintRecord, SecretRecord,
-        SecretVersionRecord, Store, StoreError,
+        ProjectRootRecord, RuntimeSessionRecord, RuntimeSessionSecretNameRetention, SCHEMA_VERSION,
+        SecretBlobRecord, SecretFingerprintRecord, SecretRecord, SecretVersionRecord, Store,
+        StoreError,
     };
 
     struct TestStore {
@@ -2191,6 +2466,23 @@ mod tests {
         }
     }
 
+    fn test_runtime_session(id: &str, started_at: i64) -> RuntimeSessionRecord {
+        RuntimeSessionRecord {
+            id: id.to_owned(),
+            project_id: "lk_proj_test".to_owned(),
+            profile_id: "lk_prof_test".to_owned(),
+            policy_name: Some("dev".to_owned()),
+            process_id: 42,
+            process_start_time: started_at - 10,
+            started_at,
+            ended_at: None,
+            exit_status: None,
+            secret_names: vec!["DATABASE_URL".to_owned(), "API_TOKEN".to_owned()],
+            spawn_audit_sequence: Some(1),
+            completion_audit_sequence: None,
+        }
+    }
+
     #[test]
     fn creates_schema_and_records_migration() -> Result<(), Box<dyn Error>> {
         let test_store = open_initialized_store()?;
@@ -2207,6 +2499,7 @@ mod tests {
             "directory_grants",
             "audit_log",
             "fingerprints",
+            "runtime_sessions",
             "schema_migrations",
             "automation_client_nonces",
         ] {
@@ -2287,6 +2580,152 @@ mod tests {
         );
 
         assert!(result.is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn runtime_sessions_insert_complete_and_list_incomplete() -> Result<(), Box<dyn Error>> {
+        let test_store = open_initialized_store()?;
+        insert_project_profile(&test_store.store)?;
+
+        let first = test_runtime_session("lk_sess_first", 100);
+        let second = test_runtime_session("lk_sess_second", 200);
+        test_store.store.insert_runtime_session(&first)?;
+        test_store.store.insert_runtime_session(&second)?;
+
+        assert_eq!(
+            test_store.store.list_incomplete_runtime_sessions("lk_proj_test")?,
+            vec![first, second.clone()]
+        );
+
+        assert!(test_store.store.mark_runtime_session_completed(
+            "lk_sess_first",
+            150,
+            Some(0),
+            Some(2)
+        )?);
+        assert!(!test_store.store.mark_runtime_session_completed(
+            "lk_sess_first",
+            160,
+            Some(1),
+            Some(3)
+        )?);
+        assert_eq!(
+            test_store.store.list_incomplete_runtime_sessions("lk_proj_test")?,
+            vec![second]
+        );
+
+        let completed = test_store.store.connection().query_row(
+            "SELECT ended_at, exit_status, policy_name, process_id, process_start_time,
+                    spawn_audit_sequence, completion_audit_sequence
+             FROM runtime_sessions
+             WHERE id = 'lk_sess_first'",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i32>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, u32>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, u64>(5)?,
+                    row.get::<_, u64>(6)?,
+                ))
+            },
+        )?;
+        assert_eq!(completed, (150, 0, "dev".to_owned(), 42, 90, 1, 2));
+
+        Ok(())
+    }
+
+    #[test]
+    fn runtime_session_secret_names_are_names_only_and_pruned_alone() -> Result<(), Box<dyn Error>>
+    {
+        let test_store = open_initialized_store()?;
+        insert_project_profile(&test_store.store)?;
+
+        let mut expired = test_runtime_session("lk_sess_expired", 100);
+        expired.secret_names = vec!["DATABASE_URL".to_owned()];
+        let secret_value = "postgres://user:password@example.local/db";
+        test_store.store.insert_runtime_session(&expired)?;
+
+        let raw_secret_names = test_store.store.connection().query_row(
+            "SELECT secret_names_json FROM runtime_sessions WHERE id = 'lk_sess_expired'",
+            [],
+            |row| row.get::<_, String>(0),
+        )?;
+        assert_eq!(raw_secret_names, r#"["DATABASE_URL"]"#);
+        assert!(!raw_secret_names.contains(secret_value));
+
+        assert_eq!(
+            test_store
+                .store
+                .list_runtime_sessions_with_expired_secret_names("lk_proj_test", 100)?,
+            vec![expired]
+        );
+
+        let pruned = test_store.store.prune_runtime_session_secret_names("lk_proj_test", 100)?;
+        assert_eq!(pruned, 1);
+        assert!(
+            test_store
+                .store
+                .list_runtime_sessions_with_expired_secret_names("lk_proj_test", 100)?
+                .is_empty()
+        );
+
+        let preserved = test_store.store.connection().query_row(
+            "SELECT policy_name, process_id, process_start_time, started_at, ended_at,
+                    exit_status, secret_names_json, spawn_audit_sequence,
+                    completion_audit_sequence
+             FROM runtime_sessions
+             WHERE id = 'lk_sess_expired'",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, u32>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, Option<i64>>(4)?,
+                    row.get::<_, Option<i32>>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, u64>(7)?,
+                    row.get::<_, Option<u64>>(8)?,
+                ))
+            },
+        )?;
+        assert_eq!(
+            preserved,
+            ("dev".to_owned(), 42, 90, 100, None, None, "[]".to_owned(), 1, None)
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn runtime_session_retention_off_filters_names_before_storage() -> Result<(), Box<dyn Error>> {
+        let test_store = open_initialized_store()?;
+        insert_project_profile(&test_store.store)?;
+
+        let retention = RuntimeSessionSecretNameRetention::from_str("off")?;
+        let mut session = test_runtime_session("lk_sess_off", 100);
+        session.secret_names = retention
+            .secret_names_for_storage(&["DATABASE_URL".to_owned(), "API_TOKEN".to_owned()]);
+        test_store.store.insert_runtime_session(&session)?;
+
+        let raw_secret_names = test_store.store.connection().query_row(
+            "SELECT secret_names_json FROM runtime_sessions WHERE id = 'lk_sess_off'",
+            [],
+            |row| row.get::<_, String>(0),
+        )?;
+        assert_eq!(raw_secret_names, "[]");
+        match RuntimeSessionSecretNameRetention::from_str("90d")? {
+            RuntimeSessionSecretNameRetention::RetainFor(duration) => {
+                assert_eq!(duration.as_secs(), RuntimeSessionSecretNameRetention::DEFAULT_SECONDS);
+            }
+            RuntimeSessionSecretNameRetention::Off => return Err("90d should retain names".into()),
+        }
+
         Ok(())
     }
 
@@ -2861,16 +3300,15 @@ mod tests {
             [],
         )?;
 
-        let error = test_store
-            .store
-            .verify_audit_chain_and_append("lk_proj_test", &[42; 32], 200)
-            .expect_err("tampered row should fail verification");
-        match error {
-            StoreError::AuditIntegrity { sequence, reason } => {
+        match test_store.store.verify_audit_chain_and_append("lk_proj_test", &[42; 32], 200) {
+            Err(StoreError::AuditIntegrity { sequence, reason }) => {
                 assert_eq!(sequence, 1);
                 assert_eq!(reason, "row hmac mismatch");
             }
-            other => panic!("expected audit integrity error, got {other}"),
+            Ok(verified) => {
+                return Err(format!("tampered row unexpectedly verified {verified} rows").into());
+            }
+            Err(other) => return Err(format!("expected audit integrity error, got {other}").into()),
         }
         let audit_rows = test_store.store.connection().query_row(
             "SELECT COUNT(*) FROM audit_log WHERE project_id = 'lk_proj_test'",
