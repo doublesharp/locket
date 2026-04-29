@@ -520,7 +520,7 @@ to touch. Items marked `[x]` are merged to `main` and verified.
 - [x] Device command surfaces (`device init`, `pubkey`, `add`, `list`,
   `remove`); local private-key persistence/recovery tracked under device
   descriptors and sealed-bundle/team work.
-- [~] Sealed bundle behavior. Metadata-safe command surfaces (`export --sealed`,
+- [ ] Sealed bundle behavior. Metadata-safe command surfaces (`export --sealed`,
   `import-bundle`, `bundle verify`) and structural verification exist.
   Remaining: age-compatible encryption, profile key payloads, decrypted
   `import-bundle` state application, conflict resolution with
@@ -773,7 +773,8 @@ to touch. Items marked `[x]` are merged to `main` and verified.
 - [x] Tray icon state set (Lucide-based; reflects locked/unlocked/scan-warn/
   alert states; macOS template image, Windows/Linux full-color light/dark).
   - Spec: `docs/specs/desktop.md:98-108`.
-- [ ] Tray notification policy: no secret values, no secret names by default
+- [~] [4efea70d] Tray notification policy: no secret values, no secret names by default
+  Claim: branch agent-4efea70d/tray-notification-policy, worktree .worktrees/agent-4efea70d-tray-notification-policy.
   (use generic "secret"/"policy"/"project" labels until the user opens the app).
   - Spec: `docs/specs/desktop.md:94-96`.
 - [ ] Tauri hardening: restrictive CSP, devtools disabled in release,
