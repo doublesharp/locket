@@ -674,7 +674,9 @@ dependencies = [
  "data-encoding",
  "keyring",
  "locket-crypto",
+ "serde",
  "thiserror",
+ "toml",
  "zeroize",
 ]
 
