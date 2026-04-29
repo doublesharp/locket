@@ -222,10 +222,9 @@ to touch. Items marked `[x]` are merged to `main` and verified.
 - [x] `locket meta`.
 - [x] `locket history`.
 - [x] `locket diff`.
-- [x] `locket copy` spec coverage. Role checks and team-managed authorization
-  remain pending under Team.
-- [x] `locket get --copy` and reveal/copy gates. Local user verification remains
-  tracked under the local verification gate.
+- [x] `locket copy` (role/team auth tracked under Team).
+- [x] `locket get --copy` and reveal/copy gates (user verification
+  tracked under the local-verification gate).
 - [x] `locket new --from-template`.
 - [x] `locket config` spec coverage.
 - [x] `locket install-hooks`.
@@ -257,7 +256,7 @@ to touch. Items marked `[x]` are merged to `main` and verified.
   - Files: shared resolver in `crates/locket-store/src/secret/queries.rs`,
     callers in `crates/locket-cli/src/secrets_cmd.rs`.
 - [x] Stable typed CLI error mapping and exit codes across all command families.
-- [ ] Store/schema coverage for the full required-tables set.
+- [x] Store/schema coverage for the full required-tables set.
   - Spec: `docs/specs/storage.md:26-50` (required tables list),
     `docs/specs/storage.md:55-160` (column-level constraints).
   - Errors: `StorageError` (90), `SchemaMismatch` (91), `Concurrency` (92),
@@ -287,20 +286,10 @@ to touch. Items marked `[x]` are merged to `main` and verified.
     `LOCAL_PEERPID` on macOS, named-pipe peer SID on Windows), unlock-key TTL
     cache, grant table with `(pid, process_start_time)` binding,
     `SubscribeStatus` stream wiring.
-- [x] Status-stream heartbeats: `StatusEvent` `kind = "heartbeat"` envelopes at
-  least every 30 seconds with `lock_state` and a monotonically increasing
-  `sequence` counter; clients must not treat them as state changes.
-  - Spec: `docs/specs/agent.md:65`.
-  - Errors: `ProtocolError` (82).
-  - Files: agent daemon stream loop; client decode in
-    `crates/locket-agent/src/protocol.rs`.
-- [x] Process-bound grant binding: validate `(pid, process_start_time)` per
-  platform (`/proc/<pid>/stat` on Linux, platform process creation time on
-  Windows, closest available metadata on macOS) so PIDs are never trusted alone.
-  - Spec: `docs/specs/agent.md:77-78`.
-  - Errors: `GrantRequired` (72), `AgentUnavailable` (80).
-  - Files: `crates/locket-platform/src/helpers.rs` (process-time fetch),
-    agent grant table.
+- [x] Status-stream heartbeats (`StatusEvent kind="heartbeat"`, ≥30 s,
+  monotonic `sequence`, not treated as state change).
+- [x] Process-bound grant binding via `(pid, process_start_time)` per
+  platform; PIDs are never trusted alone.
 - [ ] Replace metadata-only `agent start/status/stop/logs` with real agent
   process behavior and redacted log retention.
   - Spec: `docs/specs/agent.md:99-110` (start/stop/status semantics),
@@ -331,12 +320,8 @@ to touch. Items marked `[x]` are merged to `main` and verified.
   - Files: `crates/locket-core/src/policy/` (enum + validation),
     `crates/locket-exec/src/` (resolver), `crates/locket-cli/src/main.rs`
     (Compose subprocess invocation, IDE socket consumer).
-- [x] Shell prompt indicator that reflects lock state and respects privacy
-  aliases.
-  - Spec: `docs/specs/integrations.md:5-38`.
-  - Errors: none for shellenv output itself; agent unreachability degrades to
-    "stopped" indicator.
-  - Files: `crates/locket-cli/src/shell.rs` (`shellenv` output expansion).
+- [x] Shell prompt indicator renders lock state and respects privacy
+  aliases (degrades to "stopped" when the agent is unreachable).
 - [~] [70c448c4] blocked: policy surface changes require `crates/locket-cli/src/commands/policy.rs`, currently owned by active claim agent-6e4d05db/audit-key-failures.
   Claim: branch agent-70c448c4/policy-surface, worktree .worktrees/agent-70c448c4-policy-surface.
   Policy command surface: `policy add`, `policy allow`, `policy require`,
