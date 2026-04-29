@@ -248,14 +248,24 @@ fn get_copy_writes_metadata_only_audit_without_value_leakage()
     let copy_args =
         crate::GetArgs { key: "DATABASE_URL".to_owned(), reveal: false, force: false, copy: true };
     let mut copy_output = Vec::new();
-    crate::get_command_with_clipboard(&context, &mut copy_output, &copy_args, |value| {
-        assert_eq!(value, "postgres://localhost/app");
-        Ok(())
-    })?;
+    let mut copy_stderr = Vec::new();
+    crate::get_command_with_clipboard(
+        &context,
+        &mut copy_output,
+        &mut copy_stderr,
+        &copy_args,
+        |value| {
+            assert_eq!(value, "postgres://localhost/app");
+            Ok(())
+        },
+    )?;
     let copy_output = String::from_utf8(copy_output)?;
+    let copy_stderr = String::from_utf8(copy_stderr)?;
     assert!(copy_output.contains("metadata_only=yes"));
     assert!(copy_output.contains("clipboard_clear_supported=no"));
     assert!(!copy_output.contains("postgres://localhost/app"));
+    assert!(copy_stderr.contains("clipboard TTL clearing is unsupported"));
+    assert!(!copy_output.contains("clipboard TTL clearing is unsupported"));
 
     let store = locket_store::Store::open(directory.path().join("store.db"))?;
     let metadata: String = store.connection().query_row(
@@ -288,14 +298,21 @@ fn get_copy_unavailable_audits_unsupported_state_without_value_leakage()
     let copy_args =
         crate::GetArgs { key: "DATABASE_URL".to_owned(), reveal: false, force: false, copy: true };
     let mut copy_output = Vec::new();
-    let result =
-        crate::get_command_with_clipboard(&context, &mut copy_output, &copy_args, |_value| {
-            Err("clipboard command unavailable".to_owned())
-        });
+    let mut copy_stderr = Vec::new();
+    let result = crate::get_command_with_clipboard(
+        &context,
+        &mut copy_output,
+        &mut copy_stderr,
+        &copy_args,
+        |_value| Err("clipboard command unavailable".to_owned()),
+    );
     assert_error_contains(result, "clipboard command unavailable");
     let copy_output = String::from_utf8(copy_output)?;
-    assert!(copy_output.contains("clipboard TTL clearing is unsupported"));
+    let copy_stderr = String::from_utf8(copy_stderr)?;
+    assert!(copy_stderr.contains("clipboard TTL clearing is unsupported"));
+    assert!(!copy_output.contains("clipboard TTL clearing is unsupported"));
     assert!(!copy_output.contains("postgres://localhost/app"));
+    assert!(!copy_stderr.contains("postgres://localhost/app"));
 
     let store = locket_store::Store::open(directory.path().join("store.db"))?;
     let metadata: String = store.connection().query_row(

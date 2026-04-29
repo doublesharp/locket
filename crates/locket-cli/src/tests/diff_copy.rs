@@ -202,7 +202,14 @@ fn diff_since_ignores_access_audit_rows() -> Result<(), Box<dyn std::error::Erro
     let copy_args =
         crate::GetArgs { key: "DATABASE_URL".to_owned(), reveal: false, force: false, copy: true };
     let mut copy_output = Vec::new();
-    crate::get_command_with_clipboard(&context, &mut copy_output, &copy_args, |_value| Ok(()))?;
+    let mut copy_stderr = Vec::new();
+    crate::get_command_with_clipboard(
+        &context,
+        &mut copy_output,
+        &mut copy_stderr,
+        &copy_args,
+        |_value| Ok(()),
+    )?;
 
     let mut diff_output = Vec::new();
     run_with_context(

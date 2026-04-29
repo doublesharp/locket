@@ -2156,19 +2156,30 @@ fn get_command(
     output: &mut impl Write,
     args: &GetArgs,
 ) -> Result<(), CliError> {
-    get_command_with_clipboard(context, output, args, copy_secret_to_clipboard)
+    let mut error_output = io::stderr();
+    get_command_with_clipboard(
+        context,
+        output,
+        &mut error_output,
+        args,
+        copy_secret_to_clipboard,
+    )
 }
 
 fn get_command_with_clipboard(
     context: &RuntimeContext,
     output: &mut impl Write,
+    error_output: &mut impl Write,
     args: &GetArgs,
     copy_to_clipboard: impl FnOnce(&str) -> Result<(), String>,
 ) -> Result<(), CliError> {
     let resolved_secret = resolve_active_secret(context, &args.key)?;
     if args.copy {
         let ttl_seconds = reveal_ttl_seconds(context)?;
-        writeln!(output, "warning: clipboard TTL clearing is unsupported in this direct CLI path")?;
+        writeln!(
+            error_output,
+            "warning: clipboard TTL clearing is unsupported in this direct CLI path"
+        )?;
         let value = decrypt_current_secret(context, &resolved_secret)?;
         let result = copy_to_clipboard(value.as_str());
         let status = if result.is_ok() { "SUCCESS" } else { "FAILED" };
