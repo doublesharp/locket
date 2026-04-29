@@ -23,9 +23,9 @@ use locket_scan::{
     FindingKind, KnownRedaction, ScanFinding, redact_text, redact_text_with_known_values, scan_text,
 };
 use locket_store::{
-    AuditContext, AuditWrite, DirectoryGrantRecord, KeyRecord, ProfileRecord, SecretBlobRecord,
-    SecretCopyTarget, SecretFingerprintRecord, SecretRecord, SecretVersionRecord, Store,
-    StoreError, VersionDeprecation,
+    AuditContext, AuditLogRecord, AuditWrite, DirectoryGrantRecord, KeyRecord, ProfileRecord,
+    SecretBlobRecord, SecretCopyTarget, SecretFingerprintRecord, SecretMetadataUpdate,
+    SecretRecord, SecretVersionRecord, Store, StoreError, VersionDeprecation,
 };
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -2448,12 +2448,44 @@ fn meta_command(
     let required = metadata_required_update(&args.metadata);
     let tags =
         if args.metadata.tags.is_empty() { None } else { Some(args.metadata.tags.as_slice()) };
-    let changed = store.update_secret_metadata(
+    let timestamp = now_unix_nanos()?;
+    let audit_key = load_project_key(
+        context,
+        &store,
+        resolved_secret.project.config.project_id.as_str(),
+        KeyPurpose::Audit,
+    )?;
+    let metadata = json!({
+        "schema_version": 1,
+        "action": "SECRET_META_UPDATE",
+        "status": "SUCCESS",
+        "secret_name": &resolved_secret.secret.name,
+        "profile": &resolved_secret.profile.name,
+        "profile_id": &resolved_secret.profile.id,
+        "source": &resolved_secret.secret.source,
+        "version": resolved_secret.secret.current_version,
+        "updated_fields": metadata_update_field_names(&args.metadata),
+    });
+    let audit = AuditWrite {
+        project_id: resolved_secret.project.config.project_id.as_str(),
+        profile_id: Some(&resolved_secret.profile.id),
+        action: "SECRET_META_UPDATE",
+        status: "SUCCESS",
+        secret_name: Some(&resolved_secret.secret.name),
+        command: None,
+        metadata_json: &metadata,
+        timestamp,
+    };
+    let changed = store.update_secret_metadata_with_options(
         &resolved_secret.secret.id,
-        args.metadata.description.as_deref(),
-        args.metadata.owner.as_deref(),
-        tags,
-        required,
+        SecretMetadataUpdate {
+            description: args.metadata.description.as_deref(),
+            owner: args.metadata.owner.as_deref(),
+            tags,
+            required,
+            updated_at: Some(timestamp),
+            audit: Some(AuditContext { key: audit_key.as_ref(), write: &audit }),
+        },
     )?;
     if !changed {
         return Err(CliError::Config("secret not found".to_owned()));
@@ -2474,8 +2506,14 @@ fn diff_command(
     output: &mut impl Write,
     args: &DiffArgs,
 ) -> Result<(), CliError> {
-    if args.since.is_some() {
-        return Err(CliError::Config("diff --since is not wired in this build yet".to_owned()));
+    if let Some(since) = &args.since {
+        if args.profile_a.is_some() || args.profile_b.is_some() {
+            return Err(CliError::Config(
+                "diff --since uses the active profile and does not accept profile arguments"
+                    .to_owned(),
+            ));
+        }
+        return diff_since_command(context, output, since);
     }
 
     let profile_a = args
@@ -2548,6 +2586,154 @@ fn diff_command(
         writeln!(output, "no differences")?;
     }
     Ok(())
+}
+
+fn diff_since_command(
+    context: &RuntimeContext,
+    output: &mut impl Write,
+    since: &str,
+) -> Result<(), CliError> {
+    let resolved = require_project(context)?;
+    let store = open_store(context)?;
+    let profile = default_profile(&store, &resolved.config)?;
+    let since_nanos = resolve_diff_since(&resolved.root, since)?;
+    let changes = collect_diff_since_changes(
+        &store,
+        resolved.config.project_id.as_str(),
+        &profile.id,
+        since_nanos,
+    )?;
+
+    if changes.is_empty() {
+        writeln!(output, "no differences")?;
+        return Ok(());
+    }
+
+    writeln!(output, "profile: {} ({})", profile.name, profile.id)?;
+    writeln!(output, "since: {since}")?;
+    writeln!(output, "since_unix_nanos: {since_nanos}")?;
+    writeln!(output, "metadata_only: yes")?;
+    for change in changes {
+        writeln!(output, "{change}")?;
+    }
+    Ok(())
+}
+
+fn collect_diff_since_changes(
+    store: &Store,
+    project_id: &str,
+    profile_id: &str,
+    since_nanos: i64,
+) -> Result<Vec<String>, CliError> {
+    let mut changes = Vec::<DiffSinceChange>::new();
+    for audit in store.list_audit_rows_since(project_id, profile_id, since_nanos)? {
+        if audit.status != "SUCCESS" || !is_diff_since_mutating_audit_action(&audit.action) {
+            continue;
+        }
+        changes.push(DiffSinceChange {
+            timestamp: audit.timestamp,
+            sequence: audit.sequence,
+            text: diff_since_audit_line(&audit),
+        });
+    }
+    for secret in store.list_secrets_by_profile(project_id, profile_id)? {
+        let mut latest_secret_timestamp = latest_secret_change_timestamp(&secret, since_nanos);
+        let versions = store.list_secret_versions(&secret.id)?;
+        let mut version_changes = Vec::new();
+        for version in versions {
+            if let Some(timestamp) = latest_version_change_timestamp(&version, since_nanos) {
+                latest_secret_timestamp =
+                    Some(latest_secret_timestamp.map_or(timestamp, |latest| latest.max(timestamp)));
+                version_changes.push(DiffSinceChange {
+                    timestamp,
+                    sequence: u64::MAX,
+                    text: format!(
+                    "version {} source={} v{} state={} created_at={} deprecated_at={} grace_until={} purged_at={}",
+                    secret.name,
+                    secret.source,
+                    version.version,
+                    version.state,
+                    version.created_at,
+                    format_optional_i64(version.deprecated_at),
+                    format_optional_i64(version.grace_until),
+                    format_optional_i64(version.purged_at)
+                    ),
+                });
+            }
+        }
+        if let Some(timestamp) = latest_secret_timestamp {
+            changes.push(DiffSinceChange {
+                timestamp,
+                sequence: u64::MAX,
+                text: format!(
+                "changed {} source={} state={} current_version={} created_at={} updated_at={} last_rotated_at={} deleted_at={}",
+                secret.name,
+                secret.source,
+                secret.state,
+                secret.current_version,
+                secret.created_at,
+                secret.updated_at,
+                format_optional_i64(secret.last_rotated_at),
+                format_optional_i64(secret.deleted_at)
+                ),
+            });
+            changes.extend(version_changes);
+        }
+    }
+    changes.sort_by(|left, right| {
+        (left.timestamp, left.sequence, left.text.as_str()).cmp(&(
+            right.timestamp,
+            right.sequence,
+            right.text.as_str(),
+        ))
+    });
+    Ok(changes.into_iter().map(|change| change.text).collect())
+}
+
+fn is_diff_since_mutating_audit_action(action: &str) -> bool {
+    matches!(action, "SET" | "ROTATE" | "DELETE" | "PURGE" | "SECRET_COPY" | "SECRET_META_UPDATE")
+}
+
+struct DiffSinceChange {
+    timestamp: i64,
+    sequence: u64,
+    text: String,
+}
+
+fn latest_secret_change_timestamp(secret: &SecretRecord, since_nanos: i64) -> Option<i64> {
+    [Some(secret.created_at), Some(secret.updated_at), secret.last_rotated_at, secret.deleted_at]
+        .into_iter()
+        .flatten()
+        .filter(|timestamp| *timestamp >= since_nanos)
+        .max()
+}
+
+fn latest_version_change_timestamp(version: &SecretVersionRecord, since_nanos: i64) -> Option<i64> {
+    [Some(version.created_at), version.deprecated_at, version.grace_until, version.purged_at]
+        .into_iter()
+        .flatten()
+        .filter(|timestamp| *timestamp >= since_nanos)
+        .max()
+}
+
+fn diff_since_audit_line(audit: &AuditLogRecord) -> String {
+    format!(
+        "audit sequence={} action={} status={} secret={} command={} timestamp={}",
+        audit.sequence,
+        audit.action,
+        audit.status,
+        format_optional_str(audit.secret_name.as_deref()),
+        format_optional_str(audit.command.as_deref()),
+        audit.timestamp
+    )
+}
+
+fn format_optional_i64(value: Option<i64>) -> String {
+    value.map_or_else(|| "none".to_owned(), |value| value.to_string())
+}
+
+fn format_optional_str(value: Option<&str>) -> &str {
+    value.unwrap_or("none")
 }
 
 fn emit_example_command(context: &RuntimeContext, output: &mut impl Write) -> Result<(), CliError> {
@@ -5723,6 +5909,202 @@ where
     Err(CliError::Config(format!("git command failed: {}", message.trim())))
 }
 
+fn resolve_diff_since(project_root: &Path, value: &str) -> Result<i64, CliError> {
+    if let Some(timestamp) = parse_iso8601_utc_nanos(value)? {
+        return Ok(timestamp);
+    }
+
+    let output = git_output(project_root, ["log", "-1", "--format=%ct", value]).map_err(|error| {
+        CliError::Config(format!(
+            "could not resolve diff --since value {value:?} as an ISO date/time or Git revision: {error}"
+        ))
+    })?;
+    let seconds = String::from_utf8_lossy(&output)
+        .trim()
+        .parse::<i64>()
+        .map_err(|_| CliError::Config("git revision timestamp was not an integer".to_owned()))?;
+    seconds.checked_mul(NANOS_PER_SECOND).ok_or(CliError::Time)
+}
+
+fn parse_iso8601_utc_nanos(value: &str) -> Result<Option<i64>, CliError> {
+    let value = value.trim();
+    if value.len() < 10 || !value.as_bytes().get(0..10).is_some_and(is_iso_date_prefix) {
+        return Ok(None);
+    }
+
+    let year = parse_i32_digits(&value[0..4])?;
+    let month = parse_u32_digits(&value[5..7])?;
+    let day = parse_u32_digits(&value[8..10])?;
+    validate_ymd(year, month, day)?;
+
+    if value.len() == 10 {
+        return unix_nanos_from_iso_parts((year, month, day), (0, 0, 0, 0), 0).map(Some);
+    }
+
+    let separator = value.as_bytes()[10];
+    if !matches!(separator, b'T' | b't' | b' ') {
+        return Ok(None);
+    }
+
+    let (time_part, offset_seconds) = split_iso_time_and_offset(&value[11..])?;
+    let (hour, minute, second, fractional_nanos) = parse_iso_time(time_part)?;
+    unix_nanos_from_iso_parts(
+        (year, month, day),
+        (hour, minute, second, fractional_nanos),
+        offset_seconds,
+    )
+    .map(Some)
+}
+
+fn is_iso_date_prefix(bytes: &[u8]) -> bool {
+    bytes.len() == 10
+        && bytes[0..4].iter().all(u8::is_ascii_digit)
+        && bytes[4] == b'-'
+        && bytes[5..7].iter().all(u8::is_ascii_digit)
+        && bytes[7] == b'-'
+        && bytes[8..10].iter().all(u8::is_ascii_digit)
+}
+
+fn split_iso_time_and_offset(value: &str) -> Result<(&str, i64), CliError> {
+    if let Some(time) = value.strip_suffix('Z').or_else(|| value.strip_suffix('z')) {
+        return Ok((time, 0));
+    }
+    if let Some(index) = value
+        .as_bytes()
+        .iter()
+        .enumerate()
+        .skip(1)
+        .find_map(|(index, byte)| matches!(byte, b'+' | b'-').then_some(index))
+    {
+        let offset = parse_iso_offset_seconds(&value[index..])?;
+        return Ok((&value[..index], offset));
+    }
+    Ok((value, 0))
+}
+
+fn parse_iso_time(value: &str) -> Result<(u32, u32, u32, u32), CliError> {
+    if value.len() < 8 || &value[2..3] != ":" || &value[5..6] != ":" {
+        return Err(CliError::Config("invalid ISO date/time for diff --since".to_owned()));
+    }
+    let hour = parse_u32_digits(&value[0..2])?;
+    let minute = parse_u32_digits(&value[3..5])?;
+    let second = parse_u32_digits(&value[6..8])?;
+    if hour > 23 || minute > 59 || second > 59 {
+        return Err(CliError::Config("invalid ISO date/time for diff --since".to_owned()));
+    }
+    let fractional_nanos = if value.len() == 8 {
+        0
+    } else {
+        if value.as_bytes().get(8) != Some(&b'.') {
+            return Err(CliError::Config("invalid ISO date/time for diff --since".to_owned()));
+        }
+        parse_fractional_nanos(&value[9..])?
+    };
+    Ok((hour, minute, second, fractional_nanos))
+}
+
+fn parse_fractional_nanos(value: &str) -> Result<u32, CliError> {
+    if value.is_empty() || !value.as_bytes().iter().all(u8::is_ascii_digit) {
+        return Err(CliError::Config("invalid ISO date/time for diff --since".to_owned()));
+    }
+    let mut nanos = 0_u32;
+    let mut scale = 100_000_000_u32;
+    for byte in value.as_bytes().iter().take(9) {
+        nanos += u32::from(byte - b'0') * scale;
+        scale /= 10;
+    }
+    Ok(nanos)
+}
+
+fn parse_iso_offset_seconds(value: &str) -> Result<i64, CliError> {
+    let sign = match value.as_bytes().first() {
+        Some(b'+') => 1_i64,
+        Some(b'-') => -1_i64,
+        _ => return Err(CliError::Config("invalid ISO date/time for diff --since".to_owned())),
+    };
+    let offset = &value[1..];
+    let (hours, minutes) = if offset.len() == 5 && &offset[2..3] == ":" {
+        (parse_u32_digits(&offset[0..2])?, parse_u32_digits(&offset[3..5])?)
+    } else if offset.len() == 4 {
+        (parse_u32_digits(&offset[0..2])?, parse_u32_digits(&offset[2..4])?)
+    } else {
+        return Err(CliError::Config("invalid ISO date/time for diff --since".to_owned()));
+    };
+    if hours > 23 || minutes > 59 {
+        return Err(CliError::Config("invalid ISO date/time for diff --since".to_owned()));
+    }
+    Ok(sign * i64::from(hours * 3600 + minutes * 60))
+}
+
+fn parse_i32_digits(value: &str) -> Result<i32, CliError> {
+    if value.is_empty() || !value.as_bytes().iter().all(u8::is_ascii_digit) {
+        return Err(CliError::Config("invalid ISO date/time for diff --since".to_owned()));
+    }
+    value
+        .parse::<i32>()
+        .map_err(|_| CliError::Config("invalid ISO date/time for diff --since".to_owned()))
+}
+
+fn parse_u32_digits(value: &str) -> Result<u32, CliError> {
+    if value.is_empty() || !value.as_bytes().iter().all(u8::is_ascii_digit) {
+        return Err(CliError::Config("invalid ISO date/time for diff --since".to_owned()));
+    }
+    value
+        .parse::<u32>()
+        .map_err(|_| CliError::Config("invalid ISO date/time for diff --since".to_owned()))
+}
+
+fn validate_ymd(year: i32, month: u32, day: u32) -> Result<(), CliError> {
+    if !(1..=12).contains(&month) || day == 0 || day > days_in_month(year, month) {
+        return Err(CliError::Config("invalid ISO date/time for diff --since".to_owned()));
+    }
+    Ok(())
+}
+
+const fn days_in_month(year: i32, month: u32) -> u32 {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if is_leap_year(year) => 29,
+        2 => 28,
+        _ => 0,
+    }
+}
+
+const fn is_leap_year(year: i32) -> bool {
+    (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
+}
+
+fn unix_nanos_from_iso_parts(
+    date: (i32, u32, u32),
+    time: (u32, u32, u32, u32),
+    offset_seconds: i64,
+) -> Result<i64, CliError> {
+    let (year, month, day) = date;
+    let (hour, minute, second, fractional_nanos) = time;
+    let days = days_from_civil(year, month, day);
+    let seconds = days
+        .checked_mul(86_400)
+        .and_then(|seconds| seconds.checked_add(i64::from(hour * 3_600 + minute * 60 + second)))
+        .and_then(|seconds| seconds.checked_sub(offset_seconds))
+        .ok_or(CliError::Time)?;
+    seconds
+        .checked_mul(NANOS_PER_SECOND)
+        .and_then(|nanos| nanos.checked_add(i64::from(fractional_nanos)))
+        .ok_or(CliError::Time)
+}
+
+fn days_from_civil(year: i32, month: u32, day: u32) -> i64 {
+    let year = i64::from(year) - i64::from(month <= 2);
+    let era = if year >= 0 { year } else { year - 399 } / 400;
+    let year_of_era = year - era * 400;
+    let month = i64::from(month);
+    let day = i64::from(day);
+    let day_of_year = (153 * (month + if month > 2 { -3 } else { 9 }) + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    era * 146_097 + day_of_era - 719_468
+}
+
 fn absolutize(cwd: &Path, path: &Path) -> PathBuf {
     if path.is_absolute() { path.to_path_buf() } else { cwd.join(path) }
 }
@@ -5831,6 +6213,23 @@ const fn metadata_required_update(metadata: &SecretMetadataFlags) -> Option<bool
     } else {
         None
     }
+}
+
+fn metadata_update_field_names(metadata: &SecretMetadataFlags) -> Vec<&'static str> {
+    let mut fields = Vec::new();
+    if metadata.description.is_some() {
+        fields.push("description");
+    }
+    if metadata.owner.is_some() {
+        fields.push("owner");
+    }
+    if !metadata.tags.is_empty() {
+        fields.push("tags");
+    }
+    if metadata.required || metadata.optional {
+        fields.push("required");
+    }
+    fields
 }
 
 fn format_versions(versions: &[u32]) -> String {
@@ -8195,16 +8594,24 @@ argv = []
                 ))
             },
         )?;
-        assert_eq!(
-            row,
-            (
-                "primary database".to_owned(),
-                "platform".to_owned(),
-                "[\"database\",\"prod\"]".to_owned(),
-                true,
-                1_000,
-            )
+        assert_eq!(row.0, "primary database");
+        assert_eq!(row.1, "platform");
+        assert_eq!(row.2, "[\"database\",\"prod\"]");
+        assert!(row.3);
+        assert!(row.4 > 1_000);
+
+        let audit_metadata: String = store.connection().query_row(
+            "SELECT metadata_json FROM audit_log WHERE action = 'SECRET_META_UPDATE'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert!(
+            audit_metadata
+                .contains("\"updated_fields\":[\"description\",\"owner\",\"tags\",\"required\"]")
         );
+        assert!(!audit_metadata.contains("primary database"));
+        assert!(!audit_metadata.contains("platform"));
+        assert!(!audit_metadata.contains("postgres://localhost/app"));
         Ok(())
     }
 
@@ -8278,6 +8685,269 @@ argv = []
             &mut empty_diff_output,
         )?;
         assert_eq!(String::from_utf8(empty_diff_output)?, "no differences\n");
+        Ok(())
+    }
+
+    #[test]
+    fn diff_since_reports_active_profile_metadata_only_changes()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        let mut output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut output,
+        )?;
+        let db_args = test_secret_write_args("DATABASE_URL");
+        super::set_secret_value(
+            &context,
+            &db_args,
+            "postgres://localhost/dev-old",
+            "manual",
+            1_000,
+        )?;
+        let rotate_args = test_rotate_args("DATABASE_URL", None);
+        super::rotate_secret_value(
+            &context,
+            &rotate_args,
+            "postgres://localhost/dev-new",
+            2_000,
+            None,
+        )?;
+
+        let mut diff_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "diff", "--since", "1970-01-01T00:00:00Z"])?,
+            &context,
+            &mut diff_output,
+        )?;
+        let diff_output = String::from_utf8(diff_output)?;
+        assert!(diff_output.contains("profile: dev"));
+        assert!(diff_output.contains("metadata_only: yes"));
+        assert!(
+            diff_output
+                .contains("changed DATABASE_URL source=user-local state=active current_version=2")
+        );
+        assert!(diff_output.contains(
+            "version DATABASE_URL source=user-local v1 state=deprecated created_at=1000 deprecated_at=2000"
+        ));
+        assert!(
+            diff_output.contains(
+                "version DATABASE_URL source=user-local v2 state=current created_at=2000"
+            )
+        );
+        assert!(!diff_output.contains("postgres://localhost"));
+
+        let mut empty_diff_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "diff", "--since", "1970-01-01T00:00:01Z"])?,
+            &context,
+            &mut empty_diff_output,
+        )?;
+        assert_eq!(String::from_utf8(empty_diff_output)?, "no differences\n");
+        Ok(())
+    }
+
+    #[test]
+    fn diff_since_rejects_profile_arguments() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        let mut output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut output,
+        )?;
+
+        let result = run_with_context(
+            Cli::try_parse_from([
+                "locket",
+                "diff",
+                "--since",
+                "1970-01-01T00:00:00Z",
+                "dev",
+                "staging",
+            ])?,
+            &context,
+            &mut Vec::new(),
+        );
+        assert_error_contains(result, "diff --since uses the active profile");
+        Ok(())
+    }
+
+    #[test]
+    fn diff_since_reports_only_active_profile() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        let mut output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut output,
+        )?;
+        let dev_args = test_secret_write_args("DEV_ONLY");
+        super::set_secret_value(&context, &dev_args, "dev-secret-value", "manual", 1_000)?;
+
+        let mut create_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "profile", "create", "staging"])?,
+            &context,
+            &mut create_output,
+        )?;
+        let mut use_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "use", "staging"])?,
+            &context,
+            &mut use_output,
+        )?;
+        let staging_args = test_secret_write_args("STAGING_ONLY");
+        super::set_secret_value(&context, &staging_args, "staging-secret-value", "manual", 2_000)?;
+
+        let mut diff_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "diff", "--since", "1970-01-01T00:00:00Z"])?,
+            &context,
+            &mut diff_output,
+        )?;
+        let diff_output = String::from_utf8(diff_output)?;
+        assert!(diff_output.contains("profile: staging"));
+        assert!(diff_output.contains("changed STAGING_ONLY source=user-local"));
+        assert!(!diff_output.contains("DEV_ONLY"));
+        assert!(!diff_output.contains("dev-secret-value"));
+        assert!(!diff_output.contains("staging-secret-value"));
+        Ok(())
+    }
+
+    #[test]
+    fn diff_since_ignores_access_audit_rows() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        let mut output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut output,
+        )?;
+        let db_args = test_secret_write_args("DATABASE_URL");
+        super::set_secret_value(&context, &db_args, "postgres://localhost/dev", "manual", 1_000)?;
+
+        let copy_args = super::GetArgs {
+            key: "DATABASE_URL".to_owned(),
+            reveal: false,
+            force: false,
+            copy: true,
+        };
+        let mut copy_output = Vec::new();
+        super::get_command_with_clipboard(&context, &mut copy_output, &copy_args, |_value| Ok(()))?;
+
+        let mut diff_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "diff", "--since", "1970-01-01T00:00:01Z"])?,
+            &context,
+            &mut diff_output,
+        )?;
+        assert_eq!(String::from_utf8(diff_output)?, "no differences\n");
+        Ok(())
+    }
+
+    #[test]
+    fn diff_since_reports_metadata_updates() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        let mut output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut output,
+        )?;
+        let db_args = test_secret_write_args("DATABASE_URL");
+        super::set_secret_value(&context, &db_args, "postgres://localhost/dev", "manual", 1_000)?;
+
+        let mut meta_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from([
+                "locket",
+                "meta",
+                "DATABASE_URL",
+                "--description",
+                "primary database",
+            ])?,
+            &context,
+            &mut meta_output,
+        )?;
+
+        let mut diff_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "diff", "--since", "1970-01-01T00:00:01Z"])?,
+            &context,
+            &mut diff_output,
+        )?;
+        let diff_output = String::from_utf8(diff_output)?;
+        assert!(diff_output.contains("action=SECRET_META_UPDATE"));
+        assert!(diff_output.contains("changed DATABASE_URL source=user-local"));
+        assert!(!diff_output.contains("postgres://localhost"));
+        assert!(!diff_output.contains("primary database"));
+        Ok(())
+    }
+
+    #[test]
+    fn diff_since_parses_iso_offsets_and_fractional_nanos() -> Result<(), Box<dyn std::error::Error>>
+    {
+        assert_eq!(super::resolve_diff_since(Path::new("."), "1970-01-01T00:00:00.000000001Z")?, 1);
+        assert_eq!(
+            super::resolve_diff_since(Path::new("."), "1969-12-31T16:00:00.000000001-08:00")?,
+            1
+        );
+        assert_eq!(super::resolve_diff_since(Path::new("."), "1970-01-01")?, 0);
+        assert_error_contains(
+            super::resolve_diff_since(Path::new("."), "2024-02-30T00:00:00Z"),
+            "invalid ISO date/time",
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn diff_since_resolves_git_revision_with_direct_args() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let directory = tempdir()?;
+        run_git(directory.path(), &["init"])?;
+        run_git(directory.path(), &["config", "user.email", "locket@example.test"])?;
+        run_git(directory.path(), &["config", "user.name", "Locket Test"])?;
+        run_git(directory.path(), &["commit", "--allow-empty", "-m", "baseline"])?;
+
+        let context = test_context(&directory);
+        let mut output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut output,
+        )?;
+        let args = test_secret_write_args("API_TOKEN");
+        super::set_secret_value(
+            &context,
+            &args,
+            "sk_test_diff_since_git",
+            "manual",
+            super::now_unix_nanos()?,
+        )?;
+
+        let mut diff_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "diff", "--since", "HEAD"])?,
+            &context,
+            &mut diff_output,
+        )?;
+        let diff_output = String::from_utf8(diff_output)?;
+        assert!(diff_output.contains("changed API_TOKEN source=user-local"));
+        assert!(!diff_output.contains("sk_test_diff_since_git"));
+
+        let invalid = run_with_context(
+            Cli::try_parse_from(["locket", "diff", "--since", "not-a-real-rev"])?,
+            &context,
+            &mut Vec::new(),
+        );
+        assert_error_contains(invalid, "could not resolve diff --since value");
         Ok(())
     }
 

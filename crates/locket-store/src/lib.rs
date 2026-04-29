@@ -321,6 +321,42 @@ pub struct AuditWrite<'a> {
     pub timestamp: i64,
 }
 
+/// Metadata-only audit row returned for reporting.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AuditLogRecord {
+    /// Project-scoped audit sequence.
+    pub sequence: u64,
+    /// Event timestamp in nanoseconds since the Unix epoch.
+    pub timestamp: i64,
+    /// Optional profile identifier.
+    pub profile_id: Option<String>,
+    /// Audit action string.
+    pub action: String,
+    /// Audit status string.
+    pub status: String,
+    /// Optional query convenience secret name.
+    pub secret_name: Option<String>,
+    /// Optional query convenience command string.
+    pub command: Option<String>,
+}
+
+/// Mutable secret metadata update plus optional timestamp/audit context.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SecretMetadataUpdate<'a> {
+    /// Optional description replacement.
+    pub description: Option<&'a str>,
+    /// Optional owner replacement.
+    pub owner: Option<&'a str>,
+    /// Optional full tag-list replacement.
+    pub tags: Option<&'a [String]>,
+    /// Optional required flag replacement.
+    pub required: Option<bool>,
+    /// Optional `updated_at` replacement.
+    pub updated_at: Option<i64>,
+    /// Optional audit row appended in the same transaction when the update matches.
+    pub audit: Option<AuditContext<'a>>,
+}
+
 /// Audit key plus row payload for transaction-scoped appends.
 #[derive(Clone, Copy, Debug)]
 pub struct AuditContext<'a> {
@@ -434,6 +470,29 @@ impl Store {
             .collect::<Result<Vec<_>, _>>()?;
         actions.reverse();
         Ok(actions)
+    }
+
+    /// Lists metadata-only audit rows for a profile since the supplied timestamp.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Sqlite`] when `SQLite` cannot query audit rows.
+    pub fn list_audit_rows_since(
+        &self,
+        project_id: &str,
+        profile_id: &str,
+        since: i64,
+    ) -> Result<Vec<AuditLogRecord>, StoreError> {
+        let mut statement = self.connection.prepare(
+            "SELECT sequence, timestamp, profile_id, action, status, secret_name, command
+             FROM audit_log
+             WHERE project_id = ?1 AND profile_id = ?2 AND timestamp >= ?3
+             ORDER BY timestamp, sequence",
+        )?;
+        let rows = statement
+            .query_map((project_id, profile_id, since), audit_log_record_from_row)?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
     }
 
     /// Inserts a runtime-session row at process spawn time.
@@ -1260,21 +1319,58 @@ impl Store {
         tags: Option<&[String]>,
         required: Option<bool>,
     ) -> Result<bool, StoreError> {
-        let tags_json = tags.map(|tags| {
+        self.update_secret_metadata_with_options(
+            secret_id,
+            SecretMetadataUpdate {
+                description,
+                owner,
+                tags,
+                required,
+                updated_at: None,
+                audit: None,
+            },
+        )
+    }
+
+    /// Updates mutable secret metadata and optionally records a metadata-only audit row atomically.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] when `SQLite` rejects the update or audit canonicalization fails.
+    pub fn update_secret_metadata_with_options(
+        &self,
+        secret_id: &str,
+        update: SecretMetadataUpdate<'_>,
+    ) -> Result<bool, StoreError> {
+        let tags_json = update.tags.map(|tags| {
             let tags = tags.iter().map(|tag| Value::String(tag.clone())).collect::<Vec<_>>();
             canonical_json_string(Some(&Value::Array(tags)))
         });
-        self.connection.execute(
+        let transaction = self.connection.unchecked_transaction()?;
+        transaction.execute(
             "UPDATE secrets
              SET description = COALESCE(?2, description),
                  owner = COALESCE(?3, owner),
                  tags_json = COALESCE(?4, tags_json),
-                 required = COALESCE(?5, required)
+                 required = COALESCE(?5, required),
+                 updated_at = COALESCE(?6, updated_at)
              WHERE id = ?1 AND state = 'active'",
-            params![secret_id, description, owner, tags_json.as_deref(), required,],
+            params![
+                secret_id,
+                update.description,
+                update.owner,
+                tags_json.as_deref(),
+                update.required,
+                update.updated_at,
+            ],
         )?;
+        let changed = transaction.changes() == 1;
+        if changed {
+            append_optional_audit(&transaction, update.audit)?;
+        }
+        transaction.commit()?;
 
-        Ok(self.connection.changes() == 1)
+        Ok(changed)
     }
 
     /// Rotates a secret by deprecating the current version and inserting the new current version.
@@ -1805,6 +1901,18 @@ fn secret_version_record_from_row(
         deprecated_at: row.get(6)?,
         grace_until: row.get(7)?,
         purged_at: row.get(8)?,
+    })
+}
+
+fn audit_log_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AuditLogRecord> {
+    Ok(AuditLogRecord {
+        sequence: row.get(0)?,
+        timestamp: row.get(1)?,
+        profile_id: row.get(2)?,
+        action: row.get(3)?,
+        status: row.get(4)?,
+        secret_name: row.get(5)?,
+        command: row.get(6)?,
     })
 }
 
@@ -3266,6 +3374,59 @@ mod tests {
         assert_eq!(verify_metadata["skip_count"], 0);
         assert_eq!(verify_metadata["rows_verified"], 1);
 
+        Ok(())
+    }
+
+    #[test]
+    fn audit_rows_since_filters_profile_and_timestamp() -> Result<(), Box<dyn Error>> {
+        let mut test_store = open_initialized_store()?;
+        insert_project_profile(&test_store.store)?;
+        let metadata = json!({
+            "schema_version": 1,
+            "status": "SUCCESS",
+        });
+        let set_audit = AuditWrite {
+            project_id: "lk_proj_test",
+            profile_id: Some("lk_prof_test"),
+            action: "SET",
+            status: "SUCCESS",
+            secret_name: Some("DATABASE_URL"),
+            command: None,
+            metadata_json: &metadata,
+            timestamp: 100,
+        };
+        let project_audit = AuditWrite {
+            project_id: "lk_proj_test",
+            profile_id: None,
+            action: "DOCTOR",
+            status: "SUCCESS",
+            secret_name: None,
+            command: Some("doctor"),
+            metadata_json: &metadata,
+            timestamp: 200,
+        };
+        let rotate_audit = AuditWrite {
+            project_id: "lk_proj_test",
+            profile_id: Some("lk_prof_test"),
+            action: "ROTATE",
+            status: "SUCCESS",
+            secret_name: Some("DATABASE_URL"),
+            command: None,
+            metadata_json: &metadata,
+            timestamp: 300,
+        };
+
+        test_store.store.append_audit(&[42; 32], &set_audit)?;
+        test_store.store.append_audit(&[42; 32], &project_audit)?;
+        test_store.store.append_audit(&[42; 32], &rotate_audit)?;
+
+        let rows = test_store.store.list_audit_rows_since("lk_proj_test", "lk_prof_test", 150)?;
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].sequence, 3);
+        assert_eq!(rows[0].timestamp, 300);
+        assert_eq!(rows[0].action, "ROTATE");
+        assert_eq!(rows[0].secret_name.as_deref(), Some("DATABASE_URL"));
         Ok(())
     }
 
