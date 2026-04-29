@@ -384,7 +384,8 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
     process-start-time helper landed in
     `agent-4efea70d/process-grant-binding`. Errors: `GrantRequired` (73).
     Audit: `RUN` records `grant_id`, `grant_ttl_seconds`.
-  - [ ] **subtask** — run-audit-metadata: extend the existing `RUN` audit row
+  - [~] [723116e9] **subtask** — run-audit-metadata: extend the existing `RUN` audit row
+    Claim: branch agent-723116e9/run-audit-metadata, worktree .worktrees/agent-723116e9-run-audit-metadata.
     with the spec-required fields (`policy_id`, `allowed_secret_names`,
     `required_secret_names`, `confirmation_source`, `child_exit`,
     `external_sources`). No behavioural changes; pure metadata enrichment
@@ -509,20 +510,11 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
 - [x] Device command surfaces (`device init`, `pubkey`, `add`, `list`,
   `remove`); local private-key persistence/recovery tracked under device
   descriptors and sealed-bundle/team work.
-- [ ] Sealed bundle behavior. Metadata-safe command surfaces (`export --sealed`,
-  `import-bundle`, `bundle verify`) and structural verification exist.
-  Remaining: age-compatible encryption, profile key payloads, decrypted
-  `import-bundle` state application, conflict resolution with
-  `--accept-incoming` / `--accept-local` for divergent versions, decryptability
-  checks in `bundle verify`, audit import.
-  - Spec: `docs/specs/team-sync-recovery.md:111-224`.
-  - Errors: `BundleInvalid` (110), `BundleConflict` (111), `BundleAuthFailed` (112).
-  - Audit actions: `BACKUP_EXPORT` (selected profile ids, recipient
-    fingerprints, bundle digest, output path kind, `include_audit`, counts;
-    never the full output path), `BACKUP_IMPORT`, `TEAM_ACCEPT` for invite-flow
-    imports.
-  - Files: `crates/locket-cli/src/bundle.rs`, new sealing module under
-    `crates/locket-crypto/src/` (age-compatible recipients).
+- [ ] Sealed bundle: age-compatible encryption, profile key payloads,
+  decrypted `import-bundle` state application, conflict resolution
+  (`--accept-incoming`/`--accept-local`), decryptability checks in
+  `bundle verify`, audit import
+  (`docs/specs/team-sync-recovery.md:111-224`).
 - [~] Team command surfaces and behavior: `team init`, `team invite`,
   `team accept`, `team revoke-invite`, `team members`, `team remove`,
   `team revoke-device`. An unclaimed prior worktree exists at
