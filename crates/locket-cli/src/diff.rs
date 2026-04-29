@@ -7,8 +7,8 @@ use locket_core::ProfileName;
 use locket_store::{AuditLogRecord, SecretRecord, SecretVersionRecord, Store};
 
 use crate::{
-    CliError, DiffArgs, RuntimeContext, active_secret_map, default_profile, format_optional_i64,
-    format_optional_str, open_store, require_project, resolve_diff_since,
+    CliError, DiffArgs, RuntimeContext, active_secret_map, default_profile, format_optional_str,
+    open_store, optional_i64, require_project, resolve_diff_since,
 };
 
 pub fn diff_command(
@@ -164,9 +164,9 @@ fn collect_diff_since_changes(
                     version.version,
                     version.state,
                     version.created_at,
-                    format_optional_i64(version.deprecated_at),
-                    format_optional_i64(version.grace_until),
-                    format_optional_i64(version.purged_at)
+                    optional_i64(version.deprecated_at),
+                    optional_i64(version.grace_until),
+                    optional_i64(version.purged_at)
                     ),
                 });
             }
@@ -183,8 +183,8 @@ fn collect_diff_since_changes(
                 secret.current_version,
                 secret.created_at,
                 secret.updated_at,
-                format_optional_i64(secret.last_rotated_at),
-                format_optional_i64(secret.deleted_at)
+                optional_i64(secret.last_rotated_at),
+                optional_i64(secret.deleted_at)
                 ),
             });
             changes.extend(version_changes);

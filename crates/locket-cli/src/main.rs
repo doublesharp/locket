@@ -2883,10 +2883,6 @@ fn docker_error(error: locket_docker::DockerError) -> CliError {
     }
 }
 
-fn format_optional_i64(value: Option<i64>) -> String {
-    value.map_or_else(|| "none".to_owned(), |value| value.to_string())
-}
-
 fn format_optional_str(value: Option<&str>) -> &str {
     value.unwrap_or("none")
 }
