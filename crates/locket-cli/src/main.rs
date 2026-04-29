@@ -4,8 +4,8 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use directories::ProjectDirs;
 use ignore::{WalkBuilder, gitignore::GitignoreBuilder};
 use locket_core::{
-    Duration as LocketDuration, KeyId, ProfileId, ProfileName, ProjectConfig, ProjectId, SecretId,
-    SecretName,
+    CommandPolicy, CommandSpec, Duration as LocketDuration, ExternalEnvSource, KeyId,
+    PolicyDocument, ProfileId, ProfileName, ProjectConfig, ProjectId, SecretId, SecretName,
 };
 use locket_crypto::{
     EncryptedSecretValue, HkdfWrapInfo, KeyPurpose, KeyWrapAad, KeyWrapPurpose, WrappedKeyMaterial,
@@ -81,6 +81,14 @@ enum Command {
     List(ListArgs),
     /// Execute a child process with scoped injection.
     Exec(ExecArgs),
+    /// Execute a named command policy from locket.toml.
+    Run(RunArgs),
+    /// Inspect runtime environment decisions.
+    Env {
+        /// Environment command.
+        #[command(subcommand)]
+        command: EnvCommand,
+    },
     /// Lock local agent-held keys.
     Lock,
     /// Unlock the local vault.
@@ -240,6 +248,25 @@ struct ExecArgs {
     /// Command and arguments after `--`.
     #[arg(last = true, required = true)]
     command: Vec<String>,
+}
+
+#[derive(Debug, Args)]
+struct RunArgs {
+    /// Command policy name from [commands.<policy>].
+    policy: String,
+}
+
+#[derive(Debug, Subcommand)]
+enum EnvCommand {
+    /// Show metadata-only policy environment decisions.
+    Inspect(EnvInspectArgs),
+}
+
+#[derive(Debug, Args)]
+struct EnvInspectArgs {
+    /// Command policy name from [commands.<policy>].
+    #[arg(long)]
+    policy: String,
 }
 
 #[derive(Debug, Args)]
@@ -547,6 +574,8 @@ fn run_with_context(
         Command::Purge(args) => purge_command(context, output, &args)?,
         Command::List(args) => list_command(context, output, &args)?,
         Command::Exec(args) => exec_command(context, output, &args)?,
+        Command::Run(args) => run_command(context, output, &args)?,
+        Command::Env { command } => env_command(context, output, command)?,
         Command::Rotate(args) => rotate_command(context, output, &args)?,
         Command::Meta(args) => meta_command(context, output, &args)?,
         Command::History(args) => history_command(context, output, &args)?,
@@ -1154,6 +1183,154 @@ fn exec_command(
 
     writeln!(output, "child exited with status {status}")?;
     Err(CliError::Config("child process failed".to_owned()))
+}
+
+fn run_command(
+    context: &RuntimeContext,
+    output: &mut impl Write,
+    run_args: &RunArgs,
+) -> Result<(), CliError> {
+    let resolved = require_project(context)?;
+    let policy = load_command_policy(&resolved, &run_args.policy)?;
+
+    if matches!(policy.command, CommandSpec::Shell(_)) {
+        writeln!(output, "policy {}: shell execution is not implemented", policy.name)?;
+        return Err(CliError::Config(
+            "shell policy execution is not wired in this build".to_owned(),
+        ));
+    }
+    if policy.confirm {
+        return Err(CliError::Config("policy confirmation is not wired in this build".to_owned()));
+    }
+    if policy.require_user_verification {
+        return Err(CliError::Config(
+            "policy user verification is not wired in this build".to_owned(),
+        ));
+    }
+    if !policy.external_env_sources.is_empty() {
+        return Err(CliError::Config(
+            "policy external environment sources are not wired in this build".to_owned(),
+        ));
+    }
+
+    let store = open_store(context)?;
+    let profile = default_profile(&store, &resolved.config)?;
+    let selections = policy_secret_selections(&store, &resolved, &profile, &policy)?;
+    let missing_required = selections
+        .iter()
+        .filter(|selection| selection.required && selection.selected.is_none())
+        .map(|selection| selection.name.as_str())
+        .collect::<Vec<_>>();
+    if !missing_required.is_empty() {
+        return Err(CliError::Config(format!(
+            "required secret(s) missing: {}",
+            missing_required.join(",")
+        )));
+    }
+
+    let mut locket_env = locket_exec::EnvMap::new();
+    for selection in &selections {
+        if let Some(secret) = &selection.selected {
+            let value = decrypt_secret_version(
+                context,
+                &store,
+                resolved.config.project_id.as_str(),
+                &profile.id,
+                secret,
+                secret.current_version,
+            )?;
+            locket_env.insert(secret.name.clone(), value.as_str().to_owned());
+        }
+    }
+
+    let command_argv = match &policy.command {
+        CommandSpec::Argv(arguments) => arguments.clone(),
+        CommandSpec::Shell(_) => unreachable!("shell policies are rejected before decryption"),
+    };
+    let request = locket_exec::ExecutionRequest {
+        argv: command_argv,
+        parent_env: std::env::vars().collect(),
+        inherit_env: policy.inherit_env.clone(),
+        external_env: locket_exec::EnvMap::new(),
+        locket_env,
+        env_mode: policy.env_mode,
+        override_mode: policy.override_behavior,
+    };
+    let prepared = locket_exec::prepare_execution(&request)
+        .map_err(|error| CliError::Config(error.to_string()))?;
+    let status = prepared.command().current_dir(&context.cwd).status()?;
+    let audit_status = if status.success() { "SUCCESS" } else { "FAILURE" };
+    write_runtime_policy_audit_if_available(
+        context,
+        &resolved,
+        &profile,
+        &policy,
+        audit_status,
+        &selections,
+    )?;
+    if status.success() {
+        return Ok(());
+    }
+
+    writeln!(output, "child exited with status {status}")?;
+    Err(CliError::ChildExit(status.code().and_then(|code| u8::try_from(code).ok()).unwrap_or(1)))
+}
+
+fn env_command(
+    context: &RuntimeContext,
+    output: &mut impl Write,
+    command: EnvCommand,
+) -> Result<(), CliError> {
+    match command {
+        EnvCommand::Inspect(args) => env_inspect_command(context, output, &args),
+    }
+}
+
+fn env_inspect_command(
+    context: &RuntimeContext,
+    output: &mut impl Write,
+    args: &EnvInspectArgs,
+) -> Result<(), CliError> {
+    let resolved = require_project(context)?;
+    let policy = load_command_policy(&resolved, &args.policy)?;
+    let store = open_store(context)?;
+    let profile = default_profile(&store, &resolved.config)?;
+    let selections = policy_secret_selections(&store, &resolved, &profile, &policy)?;
+    let parent_env = std::env::vars().collect::<locket_exec::EnvMap>();
+
+    writeln!(output, "policy {}", policy.name)?;
+    writeln!(output, "command_type={}", command_type(&policy.command))?;
+    writeln!(output, "env_mode={}", policy.env_mode)?;
+    writeln!(output, "override={}", policy.override_behavior)?;
+    for source in &policy.external_env_sources {
+        writeln!(
+            output,
+            "external_source {} decision=not-implemented",
+            external_env_source_label(source)
+        )?;
+    }
+
+    for selection in &selections {
+        let sources = if selection.sources.is_empty() {
+            "none".to_owned()
+        } else {
+            selection.sources.join(",")
+        };
+        let selected = selection.selected.as_ref().map_or("none", |secret| secret.source.as_str());
+        let conflicts = inspect_conflicts(selection, &parent_env, &policy);
+        let decision = inspect_decision(selection, &parent_env, &policy);
+        writeln!(
+            output,
+            "secret {} kind={} sources={} selected={} conflicts={} decision={}",
+            selection.name,
+            if selection.required { "required" } else { "optional" },
+            sources,
+            selected,
+            conflicts,
+            decision
+        )?;
+    }
+    Ok(())
 }
 
 fn audit_command(
@@ -2635,6 +2812,13 @@ fn secret_audit_metadata(
     })
 }
 
+struct PolicySecretSelection {
+    name: String,
+    required: bool,
+    sources: Vec<String>,
+    selected: Option<SecretRecord>,
+}
+
 struct ResolvedSecret {
     project: ResolvedProject,
     profile: ProfileRecord,
@@ -2721,6 +2905,93 @@ fn decrypt_current_secret(
         &resolved.secret,
         resolved.secret.current_version,
     )
+}
+
+fn policy_secret_selections(
+    store: &Store,
+    resolved: &ResolvedProject,
+    profile: &ProfileRecord,
+    policy: &CommandPolicy,
+) -> Result<Vec<PolicySecretSelection>, CliError> {
+    let active_by_name =
+        active_secrets_by_name(store, resolved.config.project_id.as_str(), &profile.id)?;
+    let mut selections = Vec::new();
+    for name in &policy.required_secrets {
+        selections.push(policy_secret_selection(name.as_str(), true, &active_by_name));
+    }
+    for name in &policy.optional_secrets {
+        selections.push(policy_secret_selection(name.as_str(), false, &active_by_name));
+    }
+    Ok(selections)
+}
+
+fn policy_secret_selection(
+    name: &str,
+    required: bool,
+    active_by_name: &BTreeMap<String, Vec<SecretRecord>>,
+) -> PolicySecretSelection {
+    let secrets = active_by_name.get(name).cloned().unwrap_or_default();
+    let sources = secrets
+        .iter()
+        .map(|secret| secret.source.clone())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let selected = secrets.into_iter().max_by_key(|secret| source_precedence(&secret.source));
+    PolicySecretSelection { name: name.to_owned(), required, sources, selected }
+}
+
+fn inspect_conflicts(
+    selection: &PolicySecretSelection,
+    parent_env: &locket_exec::EnvMap,
+    policy: &CommandPolicy,
+) -> String {
+    let mut conflicts = Vec::new();
+    if selection.sources.len() > 1 {
+        conflicts.push("multiple-active-sources");
+    }
+    if parent_env_conflicts_with_secret(parent_env, policy, &selection.name) {
+        conflicts.push("environment");
+    }
+    if conflicts.is_empty() { "none".to_owned() } else { conflicts.join(",") }
+}
+
+fn inspect_decision(
+    selection: &PolicySecretSelection,
+    parent_env: &locket_exec::EnvMap,
+    policy: &CommandPolicy,
+) -> &'static str {
+    if selection.selected.is_none() {
+        return if selection.required { "missing-required" } else { "skip-missing" };
+    }
+    if parent_env_conflicts_with_secret(parent_env, policy, &selection.name) {
+        return match policy.override_behavior {
+            locket_exec::EnvOverrideMode::Error => "error-conflict",
+            locket_exec::EnvOverrideMode::Preserve => "preserve-existing",
+            locket_exec::EnvOverrideMode::Locket => "inject-overwrite",
+        };
+    }
+    "inject"
+}
+
+fn parent_env_conflicts_with_secret(
+    parent_env: &locket_exec::EnvMap,
+    policy: &CommandPolicy,
+    name: &str,
+) -> bool {
+    if !parent_env.contains_key(name) {
+        return false;
+    }
+    match policy.env_mode {
+        locket_exec::EnvMode::Strict => {
+            policy.inherit_env.iter().any(|inherited| inherited == name)
+        }
+        locket_exec::EnvMode::Minimal => {
+            locket_exec::DEFAULT_SAFE_ALLOWLIST.contains(&name)
+                || policy.inherit_env.iter().any(|inherited| inherited == name)
+        }
+        locket_exec::EnvMode::Merge | locket_exec::EnvMode::Passthrough => true,
+    }
 }
 
 fn decrypt_secret_version(
@@ -2973,6 +3244,39 @@ fn read_project_config(path: &Path) -> Result<ProjectConfig, CliError> {
     Ok(config)
 }
 
+fn load_command_policy(
+    resolved: &ResolvedProject,
+    policy_name: &str,
+) -> Result<CommandPolicy, CliError> {
+    let policy_document = read_policy_document(&resolved.root.join(LOCKET_TOML))?;
+    policy_document
+        .commands
+        .get(policy_name)
+        .cloned()
+        .ok_or_else(|| CliError::Config(format!("command policy not found: {policy_name}")))
+}
+
+fn read_policy_document(path: &Path) -> Result<PolicyDocument, CliError> {
+    let content = fs::read_to_string(path)?;
+    PolicyDocument::from_toml_str(&content).map_err(|error| CliError::Config(error.to_string()))
+}
+
+const fn command_type(command: &CommandSpec) -> &'static str {
+    match command {
+        CommandSpec::Argv(_) => "argv",
+        CommandSpec::Shell(_) => "shell",
+    }
+}
+
+fn external_env_source_label(source: &ExternalEnvSource) -> String {
+    match source {
+        ExternalEnvSource::Parent => "parent".to_owned(),
+        ExternalEnvSource::File(path) => format!("file:{}", path.display()),
+        ExternalEnvSource::Compose => "compose".to_owned(),
+        ExternalEnvSource::Ide => "ide".to_owned(),
+    }
+}
+
 fn write_project_config(path: &Path, config: &ProjectConfig) -> Result<(), CliError> {
     let content = toml::to_string_pretty(config)?;
     fs::write(path, content)?;
@@ -3143,6 +3447,55 @@ fn write_config_update_audit_if_available(
         status: "SUCCESS",
         secret_name: None,
         command: Some("config"),
+        metadata_json: &metadata,
+        timestamp: now_unix_nanos()?,
+    };
+    store.append_audit(audit_key.as_ref(), &audit)?;
+    Ok(())
+}
+
+fn write_runtime_policy_audit_if_available(
+    context: &RuntimeContext,
+    resolved: &ResolvedProject,
+    profile: &ProfileRecord,
+    policy: &CommandPolicy,
+    status: &str,
+    selections: &[PolicySecretSelection],
+) -> Result<(), CliError> {
+    let mut store = open_store(context)?;
+    if store.get_project(resolved.config.project_id.as_str())?.is_none() {
+        return Ok(());
+    }
+    let Ok(audit_key) =
+        load_project_key(context, &store, resolved.config.project_id.as_str(), KeyPurpose::Audit)
+    else {
+        return Ok(());
+    };
+    let secret_names = selections
+        .iter()
+        .filter(|selection| selection.selected.is_some())
+        .map(|selection| selection.name.as_str())
+        .collect::<Vec<_>>();
+    let external_sources =
+        policy.external_env_sources.iter().map(external_env_source_label).collect::<Vec<_>>();
+    let metadata = json!({
+        "schema_version": 1,
+        "action": "RUN_POLICY",
+        "status": status,
+        "policy": policy.name,
+        "command_type": command_type(&policy.command),
+        "env_mode": policy.env_mode.to_string(),
+        "override": policy.override_behavior.to_string(),
+        "secret_names": secret_names,
+        "external_env_sources": external_sources,
+    });
+    let audit = AuditWrite {
+        project_id: resolved.config.project_id.as_str(),
+        profile_id: Some(&profile.id),
+        action: "RUN_POLICY",
+        status,
+        secret_name: None,
+        command: Some("run"),
         metadata_json: &metadata,
         timestamp: now_unix_nanos()?,
     };
@@ -3606,6 +3959,18 @@ fn active_secret_map(
         .collect())
 }
 
+fn active_secrets_by_name(
+    store: &Store,
+    project_id: &str,
+    profile_id: &str,
+) -> Result<BTreeMap<String, Vec<SecretRecord>>, CliError> {
+    let mut by_name = BTreeMap::<String, Vec<SecretRecord>>::new();
+    for secret in store.list_active_secrets_by_profile(project_id, profile_id)? {
+        by_name.entry(secret.name.clone()).or_default().push(secret);
+    }
+    Ok(by_name)
+}
+
 const fn source_arg_to_str(source: SecretSourceArg) -> &'static str {
     match source {
         SecretSourceArg::TeamManaged => "team-managed",
@@ -3802,6 +4167,7 @@ fn now_unix_nanos() -> Result<i64, CliError> {
 mod tests {
     use clap::Parser;
     use locket_platform::MemoryMasterKeyStore;
+    use std::io::Write;
     use std::path::Path;
     use std::process::Command as TestCommand;
     use tempfile::tempdir;
@@ -5015,6 +5381,63 @@ mod tests {
         )?;
 
         assert!(String::from_utf8(exec_output)?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn run_policy_injects_required_and_optional_secrets_without_printing_values()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        let mut output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut output,
+        )?;
+        let db_args = test_secret_write_args("DATABASE_URL");
+        super::set_secret_value(&context, &db_args, "postgres://localhost/app", "manual", 1_000)?;
+        let api_args = test_secret_write_args("OPENAI_API_KEY");
+        super::set_secret_value(&context, &api_args, "sk_test_policy_value", "manual", 2_000)?;
+
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(directory.path().join("locket.toml"))?
+            .write_all(
+                br#"
+[commands.env_check]
+argv = ["/bin/sh", "-c", "printf 'DATABASE_URL=%s\nOPENAI_API_KEY=%s\n' \"${DATABASE_URL:+present}\" \"${OPENAI_API_KEY:+present}\" > env-presence.txt"]
+required_secrets = ["DATABASE_URL"]
+optional_secrets = ["OPENAI_API_KEY"]
+env_mode = "strict"
+inherit_env = ["PATH"]
+"#,
+            )?;
+
+        let mut inspect_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "env", "inspect", "--policy", "env_check"])?,
+            &context,
+            &mut inspect_output,
+        )?;
+        let inspect_output = String::from_utf8(inspect_output)?;
+        assert!(inspect_output.contains("secret DATABASE_URL kind=required sources=user-local"));
+        assert!(inspect_output.contains("secret OPENAI_API_KEY kind=optional sources=user-local"));
+        assert!(inspect_output.contains("decision=inject"));
+        assert!(!inspect_output.contains("postgres://localhost/app"));
+        assert!(!inspect_output.contains("sk_test_policy_value"));
+
+        let mut run_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "run", "env_check"])?,
+            &context,
+            &mut run_output,
+        )?;
+        assert!(String::from_utf8(run_output)?.is_empty());
+        let presence = std::fs::read_to_string(directory.path().join("env-presence.txt"))?;
+        assert_eq!(presence, "DATABASE_URL=present\nOPENAI_API_KEY=present\n");
+        assert!(!presence.contains("postgres://localhost/app"));
+        assert!(!presence.contains("sk_test_policy_value"));
         Ok(())
     }
 
