@@ -857,7 +857,8 @@ editing — they drift. Severity: **blocker** (security/correctness),
     Claim: branch agent-6e4d05db/typed-secret-overflow, worktree .worktrees/agent-6e4d05db-typed-secret-overflow.
     (3 sites) to a new `LocketError::SecretVersionOverflow` variant (input or
     integrity band, per spec). Regression covers a stubbed overflow path.
-  - [ ] **subtask** — typed-config-value-validation: migrate the per-value
+  - [~] [b67f47d6] **subtask** — typed-config-value-validation: migrate the per-value
+    Claim: branch agent-b67f47d6/typed-config-values, worktree .worktrees/agent-b67f47d6-typed-config-values. Scope: map config value validators to typed metadata errors and add per-class regressions.
     config validators in `crates/locket-cli/src/commands/config/spec.rs`
     (`config value must be true or false`, `invalid config duration`,
     `config section is not a table`, `invalid stored config value for {key}`,
