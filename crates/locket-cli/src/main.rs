@@ -299,6 +299,12 @@ struct PurgeArgs {
     /// Purge every version for a deleted source.
     #[arg(long)]
     all_versions: bool,
+    /// Skip the typed confirmation prompt.
+    ///
+    /// Intended for non-interactive automation. Use only when the caller has
+    /// already confirmed the destructive scope through another channel.
+    #[arg(long)]
+    force: bool,
 }
 
 #[derive(Debug, Args)]
@@ -1222,7 +1228,8 @@ fn collect_bootstrap_report(
 ) -> Result<BootstrapReport, CliError> {
     let project_id = resolved.config.project_id.as_str();
     let project = store.get_project(project_id)?;
-    let profile = store.get_profile_by_name(project_id, resolved.config.default_profile.as_str())?;
+    let profile =
+        store.get_profile_by_name(project_id, resolved.config.default_profile.as_str())?;
     let root_hash = root_hash(&resolved.root)?;
     let trusted_root = store.project_root_is_trusted(project_id, &root_hash)?;
     let example_exists = resolved.root.join(EXAMPLE_FILE).exists();
@@ -1359,12 +1366,9 @@ fn write_bootstrap_audit_if_available(
     if store.get_project(resolved.config.project_id.as_str())?.is_none() {
         return Ok(());
     }
-    let Ok(audit_key) = load_project_key(
-        context,
-        &store,
-        resolved.config.project_id.as_str(),
-        KeyPurpose::Audit,
-    ) else {
+    let Ok(audit_key) =
+        load_project_key(context, &store, resolved.config.project_id.as_str(), KeyPurpose::Audit)
+    else {
         return Ok(());
     };
     let profile_id = store
@@ -1809,6 +1813,29 @@ fn copy_command(
     Ok(())
 }
 
+fn confirm_purge_scope(
+    context: &RuntimeContext,
+    output: &mut impl Write,
+    secret: &ResolvedSecret,
+    version_scope: &str,
+) -> Result<(), CliError> {
+    let expected = format!(
+        "purge {}/{}/{}/{}",
+        secret.profile.name, secret.secret.source, secret.secret.name, version_scope,
+    );
+    writeln!(output, "purge_profile: {}", secret.profile.name)?;
+    writeln!(output, "purge_source: {}", secret.secret.source)?;
+    writeln!(output, "purge_secret: {}", secret.secret.name)?;
+    writeln!(output, "purge_version_scope: {version_scope}")?;
+    writeln!(output, "metadata_only: yes")?;
+    writeln!(output, "type '{expected}' to confirm purge")?;
+    let confirmation = context.confirmation_reader.read_confirmation("purge")?;
+    if confirmation.trim_end_matches(['\r', '\n']) != expected {
+        return Err(CliError::Config("confirmation did not match purge scope".to_owned()));
+    }
+    Ok(())
+}
+
 fn purge_command(
     context: &RuntimeContext,
     output: &mut impl Write,
@@ -1826,13 +1853,14 @@ fn purge_command(
         return Ok(());
     }
 
-    let target_versions = if args.all_versions {
+    let (target_versions, version_scope) = if args.all_versions {
         if secret.secret.state != "deleted" {
             return Err(CliError::Config(
                 "purge --all-versions requires a deleted source; run rm first".to_owned(),
             ));
         }
-        versions.iter().map(|version| version.version).collect::<Vec<_>>()
+        let versions = versions.iter().map(|version| version.version).collect::<Vec<_>>();
+        (versions, "all".to_owned())
     } else {
         let Some(version) = args.version else {
             return Err(CliError::Config("purge requires --version N".to_owned()));
@@ -1848,8 +1876,16 @@ fn purge_command(
                 "cannot purge the current version of an active source".to_owned(),
             ));
         }
-        vec![version]
+        (vec![version], format!("v{version}"))
     };
+
+    let already_purged = target_versions.iter().all(|version| {
+        versions.iter().any(|record| record.version == *version && record.state == "purged")
+    });
+
+    if !args.force && !already_purged {
+        confirm_purge_scope(context, output, &secret, &version_scope)?;
+    }
 
     let timestamp = now_unix_nanos()?;
     let audit_key = load_project_key(
@@ -12007,12 +12043,9 @@ required_secrets = ["DATABASE_URL"]
         assert!(!history_output.contains("postgres://localhost/old"));
         assert!(!history_output.contains("postgres://localhost/new"));
 
+        let purge_args = ["locket", "purge", "DATABASE_URL", "--version", "1", "--force"];
         let mut purge_output = Vec::new();
-        run_with_context(
-            Cli::try_parse_from(["locket", "purge", "DATABASE_URL", "--version", "1"])?,
-            &context,
-            &mut purge_output,
-        )?;
+        run_with_context(Cli::try_parse_from(purge_args)?, &context, &mut purge_output)?;
         assert!(String::from_utf8(purge_output)?.contains("versions=1"));
 
         let mut history_after_purge = Vec::new();
@@ -12025,9 +12058,10 @@ required_secrets = ["DATABASE_URL"]
         assert!(history_after_purge.contains("v1 state=purged"));
         assert!(history_after_purge.contains("v2 state=current"));
 
+        let invalid_purge_args = ["locket", "purge", "DATABASE_URL", "--version", "2", "--force"];
         let mut invalid_purge_output = Vec::new();
         let invalid_purge = run_with_context(
-            Cli::try_parse_from(["locket", "purge", "DATABASE_URL", "--version", "2"])?,
+            Cli::try_parse_from(invalid_purge_args)?,
             &context,
             &mut invalid_purge_output,
         );
@@ -12039,12 +12073,9 @@ required_secrets = ["DATABASE_URL"]
             &context,
             &mut rm_output,
         )?;
+        let purge_all_args = ["locket", "purge", "DATABASE_URL", "--all-versions", "--force"];
         let mut purge_all_output = Vec::new();
-        run_with_context(
-            Cli::try_parse_from(["locket", "purge", "DATABASE_URL", "--all-versions"])?,
-            &context,
-            &mut purge_all_output,
-        )?;
+        run_with_context(Cli::try_parse_from(purge_all_args)?, &context, &mut purge_all_output)?;
         assert!(String::from_utf8(purge_all_output)?.contains("versions=1,2"));
 
         let mut audit_output = Vec::new();
@@ -12056,6 +12087,153 @@ required_secrets = ["DATABASE_URL"]
         assert!(String::from_utf8(audit_output)?.contains("verified 6 row(s)"));
 
         assert_lifecycle_audit_log(&directory)?;
+        Ok(())
+    }
+
+    #[test]
+    fn purge_requires_typed_confirmation_of_full_scope() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let key_store: Arc<dyn MasterKeyStore + Send + Sync> =
+            Arc::new(MemoryMasterKeyStore::default());
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &test_context_with_key_store(&directory, Arc::clone(&key_store)),
+            &mut Vec::new(),
+        )?;
+        let setup_context = test_context_with_key_store(&directory, Arc::clone(&key_store));
+        let set_args = test_secret_write_args("DATABASE_URL");
+        super::set_secret_value(
+            &setup_context,
+            &set_args,
+            "postgres://localhost/old",
+            "manual",
+            1_000,
+        )?;
+        let rotate_args = test_rotate_args("DATABASE_URL", Some("24h"));
+        let grace_until = super::grace_until_from_args(rotate_args.grace_ttl.as_deref(), 2_000)?;
+        super::rotate_secret_value(
+            &setup_context,
+            &rotate_args,
+            "postgres://localhost/new",
+            2_000,
+            grace_until,
+        )?;
+
+        let bad_context = test_context_with_key_store_and_confirmation(
+            &directory,
+            Arc::clone(&key_store),
+            "purge dev/user-local/DATABASE_URL/v2\n",
+        );
+        let mut bad_output = Vec::new();
+        let result = run_with_context(
+            Cli::try_parse_from(["locket", "purge", "DATABASE_URL", "--version", "1"])?,
+            &bad_context,
+            &mut bad_output,
+        );
+        assert_error_contains(result, "confirmation did not match");
+        let bad_output = String::from_utf8(bad_output)?;
+        assert!(bad_output.contains("purge_profile: dev"));
+        assert!(bad_output.contains("purge_source: user-local"));
+        assert!(bad_output.contains("purge_secret: DATABASE_URL"));
+        assert!(bad_output.contains("purge_version_scope: v1"));
+        assert!(bad_output.contains("metadata_only: yes"));
+
+        let good_context = test_context_with_key_store_and_confirmation(
+            &directory,
+            Arc::clone(&key_store),
+            "purge dev/user-local/DATABASE_URL/v1\n",
+        );
+        let mut good_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "purge", "DATABASE_URL", "--version", "1"])?,
+            &good_context,
+            &mut good_output,
+        )?;
+        let good_output = String::from_utf8(good_output)?;
+        assert!(good_output.contains("purged DATABASE_URL"));
+        assert!(good_output.contains("versions=1"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn purge_force_skips_confirmation_prompt() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut Vec::new(),
+        )?;
+        let set_args = test_secret_write_args("API_KEY");
+        super::set_secret_value(&context, &set_args, "tok-v1", "manual", 1_000)?;
+        let rotate_args = test_rotate_args("API_KEY", Some("24h"));
+        let grace = super::grace_until_from_args(rotate_args.grace_ttl.as_deref(), 2_000)?;
+        super::rotate_secret_value(&context, &rotate_args, "tok-v2", 2_000, grace)?;
+
+        let mut force_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "purge", "API_KEY", "--version", "1", "--force"])?,
+            &context,
+            &mut force_output,
+        )?;
+        let force_output = String::from_utf8(force_output)?;
+        assert!(force_output.contains("purged API_KEY"));
+        assert!(!force_output.contains("type 'purge"));
+        Ok(())
+    }
+
+    #[test]
+    fn purge_already_purged_skips_confirmation_and_writes_no_audit()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let key_store: Arc<dyn MasterKeyStore + Send + Sync> =
+            Arc::new(MemoryMasterKeyStore::default());
+        let context = test_context_with_key_store(&directory, Arc::clone(&key_store));
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut Vec::new(),
+        )?;
+        let set_args = test_secret_write_args("API_KEY");
+        super::set_secret_value(&context, &set_args, "tok-v1", "manual", 1_000)?;
+        let rotate_args = test_rotate_args("API_KEY", Some("24h"));
+        let grace = super::grace_until_from_args(rotate_args.grace_ttl.as_deref(), 2_000)?;
+        super::rotate_secret_value(&context, &rotate_args, "tok-v2", 2_000, grace)?;
+
+        run_with_context(
+            Cli::try_parse_from(["locket", "purge", "API_KEY", "--version", "1", "--force"])?,
+            &context,
+            &mut Vec::new(),
+        )?;
+        let store_pre = super::open_store(&context)?;
+        let count_before: i64 = store_pre.connection().query_row(
+            "SELECT COUNT(*) FROM audit_log WHERE action = 'PURGE'",
+            [],
+            |row| row.get(0),
+        )?;
+        drop(store_pre);
+
+        let no_confirm_context = test_context_with_key_store_and_confirmation(
+            &directory,
+            Arc::clone(&key_store),
+            "should-not-be-read\n",
+        );
+        let mut output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "purge", "API_KEY", "--version", "1"])?,
+            &no_confirm_context,
+            &mut output,
+        )?;
+        let output = String::from_utf8(output)?;
+        assert!(output.contains("already purged"));
+        let store_post = super::open_store(&no_confirm_context)?;
+        let count_after: i64 = store_post.connection().query_row(
+            "SELECT COUNT(*) FROM audit_log WHERE action = 'PURGE'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(count_before, count_after, "no-op purge must not write audit");
         Ok(())
     }
 
