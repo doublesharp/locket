@@ -9517,5 +9517,5 @@ pub(crate) fn now_unix_nanos() -> Result<i64, CliError> {
 }
 
 #[cfg(test)]
-#[path = "tests.rs"]
+#[path = "tests/mod.rs"]
 mod tests;
