@@ -14,6 +14,7 @@ mod device;
 pub(crate) mod diagnostics;
 mod diff;
 mod emit_example;
+mod get;
 mod init;
 mod install_hooks;
 mod key_access;
@@ -75,12 +76,14 @@ pub(crate) use redact::{
 };
 pub(crate) use runtime::RuntimeContext;
 use secret_helpers::{
-    PolicySecretSelection, ResolvedSecret, SecretEncryptRequest, ValueAccessAudit,
+    PolicySecretSelection, ResolvedSecret, SecretEncryptRequest,
     decrypt_current_secret, decrypt_secret_version, encrypt_secret_version,
     policy_secret_selections, resolve_active_secret, resolve_active_secret_for_source,
-    resolve_secret_for_source, reveal_ttl_seconds, secret_audit_metadata,
-    select_copy_profiles_and_sources, write_value_access_audit_if_available,
+    resolve_secret_for_source, secret_audit_metadata,
+    select_copy_profiles_and_sources,
 };
+#[cfg(test)]
+pub(crate) use get::{ClipboardCommand, copy_secret_to_clipboard_with, get_command_with_clipboard, select_clipboard_command};
 #[cfg(test)]
 pub(crate) use set::set_secret_value;
 pub(crate) use set::{SecretWriteRequest, set_secret_value_in_profile};
@@ -128,7 +131,7 @@ use std::io::{self, IsTerminal, Write};
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::process::{Command as ProcessCommand, ExitCode as ProcessExitCode, ExitStatus, Stdio};
+use std::process::{ExitCode as ProcessExitCode, ExitStatus};
 use std::str::FromStr;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -1051,7 +1054,7 @@ fn run_with_context(
         Command::Init(args) => init::init(context, output, args)?,
         Command::Set(args) => set::set_command(context, output, &args)?,
         Command::Import(args) => import_command(context, output, &args)?,
-        Command::Get(args) => get_command(context, output, &args)?,
+        Command::Get(args) => get::get_command(context, output, &args)?,
         Command::Rm(args) => secrets_cmd::rm_command(context, output, &args)?,
         Command::Purge(args) => secrets_cmd::purge_command(context, output, &args)?,
         Command::List(args) => secrets_cmd::list_command(context, output, &args)?,
@@ -1323,90 +1326,6 @@ fn write_env_delete_prompt(output: &mut impl Write, path: &Path) -> Result<(), C
     } else {
         writeln!(output, "delete_env: kept")?;
     }
-    Ok(())
-}
-
-fn get_command(
-    context: &RuntimeContext,
-    output: &mut impl Write,
-    args: &GetArgs,
-) -> Result<(), CliError> {
-    let mut error_output = io::stderr();
-    get_command_with_clipboard(context, output, &mut error_output, args, copy_secret_to_clipboard)
-}
-
-fn get_command_with_clipboard(
-    context: &RuntimeContext,
-    output: &mut impl Write,
-    error_output: &mut impl Write,
-    args: &GetArgs,
-    copy_to_clipboard: impl FnOnce(&str) -> Result<(), String>,
-) -> Result<(), CliError> {
-    let resolved_secret = resolve_active_secret(context, &args.key)?;
-    if args.copy {
-        let ttl_seconds = reveal_ttl_seconds(context)?;
-        writeln!(
-            error_output,
-            "warning: clipboard TTL clearing is unsupported in this direct CLI path"
-        )?;
-        let value = decrypt_current_secret(context, &resolved_secret)?;
-        let result = copy_to_clipboard(value.as_str());
-        let status = if result.is_ok() { "SUCCESS" } else { "FAILED" };
-        let unsupported_reason = result.as_ref().err().map(String::as_str);
-        write_value_access_audit_if_available(&ValueAccessAudit {
-            context,
-            resolved: &resolved_secret,
-            action: "COPY",
-            status,
-            access_mode: "clipboard",
-            ttl_seconds: Some(ttl_seconds),
-            force: false,
-            clipboard_supported: Some(result.is_ok()),
-            clipboard_clear_supported: Some(false),
-            unsupported_reason,
-        })?;
-        result.map_err(CliError::Config)?;
-        writeln!(
-            output,
-            "copied {} source={} version={} ttl_seconds={} clipboard_clear_supported=no metadata_only=yes",
-            resolved_secret.secret.name,
-            resolved_secret.secret.source,
-            resolved_secret.secret.current_version,
-            ttl_seconds
-        )?;
-        return Ok(());
-    }
-    if args.reveal {
-        if !args.force && !io::stdout().is_terminal() {
-            return Err(CliError::Config(
-                "get --reveal requires an interactive terminal; pass --force for noninteractive stdout"
-                    .to_owned(),
-            ));
-        }
-        let value = decrypt_current_secret(context, &resolved_secret)?;
-        write_value_access_audit_if_available(&ValueAccessAudit {
-            context,
-            resolved: &resolved_secret,
-            action: "REVEAL",
-            status: "SUCCESS",
-            access_mode: "stdout",
-            ttl_seconds: None,
-            force: args.force,
-            clipboard_supported: None,
-            clipboard_clear_supported: None,
-            unsupported_reason: None,
-        })?;
-        writeln!(output, "{}", value.as_str())?;
-        return Ok(());
-    }
-
-    writeln!(
-        output,
-        "{} source={} version={}",
-        resolved_secret.secret.name,
-        resolved_secret.secret.source,
-        resolved_secret.secret.current_version
-    )?;
     Ok(())
 }
 
@@ -2712,89 +2631,6 @@ fn copied_secret_records(
             created_at: timestamp,
         },
     )
-}
-
-#[derive(Debug, Eq, PartialEq)]
-struct ClipboardCommand {
-    program: &'static str,
-    args: &'static [&'static str],
-}
-
-const CLIPBOARD_COMMANDS: &[ClipboardCommand] = if cfg!(target_os = "macos") {
-    &[ClipboardCommand { program: "pbcopy", args: &[] }]
-} else if cfg!(target_os = "windows") {
-    &[ClipboardCommand { program: "clip", args: &[] }]
-} else {
-    &[
-        ClipboardCommand { program: "wl-copy", args: &[] },
-        ClipboardCommand { program: "xclip", args: &["-selection", "clipboard"] },
-        ClipboardCommand { program: "xsel", args: &["--clipboard", "--input"] },
-    ]
-};
-
-fn copy_secret_to_clipboard(value: &str) -> Result<(), String> {
-    copy_secret_to_clipboard_with(value, CLIPBOARD_COMMANDS, command_exists)
-}
-
-fn copy_secret_to_clipboard_with(
-    value: &str,
-    commands: &'static [ClipboardCommand],
-    exists: impl FnMut(&str) -> bool,
-) -> Result<(), String> {
-    let Some(command) = select_clipboard_command(commands, exists) else {
-        return Err("clipboard command unavailable".to_owned());
-    };
-    let mut child = ProcessCommand::new(command.program)
-        .args(command.args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|_| "clipboard command failed to start".to_owned())?;
-    {
-        let Some(mut stdin) = child.stdin.take() else {
-            return Err("clipboard command stdin unavailable".to_owned());
-        };
-        stdin
-            .write_all(value.as_bytes())
-            .map_err(|_| "clipboard command rejected stdin".to_owned())?;
-    }
-    let status = child.wait().map_err(|_| "clipboard command did not finish".to_owned())?;
-    if !status.success() {
-        return Err("clipboard command failed".to_owned());
-    }
-    Ok(())
-}
-
-fn select_clipboard_command(
-    commands: &'static [ClipboardCommand],
-    mut exists: impl FnMut(&str) -> bool,
-) -> Option<&'static ClipboardCommand> {
-    commands.iter().find(|command| exists(command.program))
-}
-
-fn command_exists(program: &str) -> bool {
-    let Some(paths) = std::env::var_os("PATH") else {
-        return false;
-    };
-    std::env::split_paths(&paths).any(|directory| command_exists_in_directory(&directory, program))
-}
-
-fn command_exists_in_directory(directory: &Path, program: &str) -> bool {
-    let candidate = directory.join(program);
-    if candidate.is_file() {
-        return true;
-    }
-    if cfg!(target_os = "windows") {
-        let Some(pathext) = std::env::var_os("PATHEXT") else {
-            return false;
-        };
-        return std::env::split_paths(&pathext).any(|extension| {
-            let extension = extension.to_string_lossy();
-            directory.join(format!("{program}{extension}")).is_file()
-        });
-    }
-    false
 }
 
 fn inspect_conflicts(
