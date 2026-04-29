@@ -13,10 +13,10 @@ use locket_crypto::{
 use locket_store::{AuditWrite, ProfileRecord, SecretRecord, Store};
 use serde_json::{Value, json};
 
+use crate::commands::config::spec::{config_get_value, read_user_config};
 use crate::runtime::RuntimeContext;
 use crate::runtime::error::{CliError, secret_deleted_error};
 use crate::runtime::key_access::{default_profile, load_profile_key, load_project_key};
-use crate::support::config_validation::{config_get_value, read_user_config};
 use crate::{
     CopyArgs, CopySelection, ResolvedProject, SecretSourceArg, active_secrets_by_name,
     ensure_trusted_project_root, now_unix_nanos, open_store, require_project, source_arg_to_str,

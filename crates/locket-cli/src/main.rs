@@ -20,12 +20,6 @@ pub(crate) use runtime::prompts::{
     read_secret_value_from_reader, validate_secret_value,
 };
 
-pub(crate) use support::config_validation::{
-    CONFIG_KEY_SPECS, config_get_value, config_set_value, config_unset_value, format_config_value,
-    parse_config_value, read_user_config, split_config_key, validate_config_key,
-    validate_config_value_not_secret_like, validate_stored_config_value,
-    write_config_update_audit_if_available, write_user_config,
-};
 pub(crate) use support::project_files::{
     EXAMPLE_FILE, GITIGNORE_ENTRIES, GITIGNORE_FILE, collect_example_secret_names,
     config_bool_value, ensure_gitignore, refresh_example_for_project_if_enabled,

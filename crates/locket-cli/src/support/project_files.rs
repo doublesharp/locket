@@ -11,9 +11,10 @@ use locket_store::{AuditWrite, Store};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
+use crate::commands::config::spec::{read_user_config, split_config_key};
 use crate::{
     CliError, LOCKET_TOML, ResolvedProject, RuntimeContext, format_hex, load_project_key,
-    now_unix_nanos, open_store, read_user_config, require_project, split_config_key,
+    now_unix_nanos, open_store, require_project,
 };
 
 pub const EXAMPLE_FILE: &str = ".env.example";

@@ -10,12 +10,12 @@ use std::str::FromStr;
 use locket_core::{CommandSpec, SessionId};
 use locket_store::{ProfileRecord, RuntimeSessionRecord, RuntimeSessionSecretNameRetention, Store};
 
+use crate::commands::config::spec::{config_get_value, read_user_config};
 use crate::runtime::RuntimeContext;
 use crate::runtime::error::{
     CliError, child_exit_error, exec_prepare_error, unimplemented_in_build_error,
 };
 use crate::runtime::key_access::default_profile;
-use crate::support::config_validation::{config_get_value, read_user_config};
 use crate::support::secret_helpers::{decrypt_secret_version, policy_secret_selections};
 use crate::{
     ResolvedProject, RunArgs, ensure_trusted_project_root, load_command_policy, now_unix_nanos,

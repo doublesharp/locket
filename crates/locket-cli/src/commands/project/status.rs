@@ -5,10 +5,11 @@ use std::path::Path;
 
 use locket_store::ProfileRecord;
 
+use crate::commands::config::spec::read_user_config;
 use crate::commands::scan::scanner;
 use crate::{
     CliError, EXAMPLE_FILE, LOCKET_TOML, ResolvedProject, RuntimeContext, config_bool_value,
-    open_store, privacy_alias, read_user_config, resolve_project, root_hash,
+    open_store, privacy_alias, resolve_project, root_hash,
 };
 
 pub fn status(context: &RuntimeContext, output: &mut impl Write) -> Result<(), CliError> {

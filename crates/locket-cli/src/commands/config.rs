@@ -1,13 +1,16 @@
 //! Config command implementations.
 
+pub mod spec;
+
 use std::io::Write;
 
-use crate::{
-    CONFIG_KEY_SPECS, CliError, ConfigCommand, RuntimeContext, config_get_value, config_set_value,
-    config_unset_value, format_config_value, parse_config_value, read_user_config,
-    validate_config_key, validate_config_value_not_secret_like, validate_stored_config_value,
+use self::spec::{
+    CONFIG_KEY_SPECS, config_get_value, config_set_value, config_unset_value, format_config_value,
+    parse_config_value, read_user_config, validate_config_key,
+    validate_config_value_not_secret_like, validate_stored_config_value,
     write_config_update_audit_if_available, write_user_config,
 };
+use crate::{CliError, ConfigCommand, RuntimeContext};
 
 pub fn config_command(
     context: &RuntimeContext,

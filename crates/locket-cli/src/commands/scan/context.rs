@@ -6,10 +6,10 @@ use std::io::Write;
 use locket_core::{CommandPolicy, PolicyDocument, SecretName};
 use locket_store::{ProfileRecord, SecretRecord, Store};
 
+use crate::commands::config::spec::{config_get_value, read_user_config};
 use crate::{
     CliError, LOCKET_TOML, RedactNamesArgs, ResolvedProject, RuntimeContext, command_type,
-    config_get_value, open_store, privacy_alias, read_policy_document, read_user_config,
-    require_project, yes_no,
+    open_store, privacy_alias, read_policy_document, require_project, yes_no,
 };
 
 pub fn context_command(
