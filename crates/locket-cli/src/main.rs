@@ -50,7 +50,8 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command as ProcessCommand, ExitCode as ProcessExitCode, Stdio};
 use std::str::FromStr;
-use std::sync::Arc;
+use std::sync::{Arc, mpsc};
+use std::thread;
 use std::time::{Duration as StdDuration, SystemTime, UNIX_EPOCH};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
@@ -75,6 +76,8 @@ const NANOS_PER_SECOND: i64 = 1_000_000_000;
 const AGENT_LOG_MAX_BYTES: u64 = 1024 * 1024;
 const AGENT_LOG_RETAINED_FILES: u8 = 5;
 const AGENT_LOG_FOLLOW_SLEEP_MS: u64 = 250;
+const AI_SAFE_READ_CHUNK_BYTES: usize = 8 * 1024;
+const AI_SAFE_PARTIAL_LINE_MAX_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Parser)]
 #[command(name = "locket", version, about = "Local-first secrets control plane")]
@@ -4753,21 +4756,25 @@ fn ai_safe_command(
         return Err(CliError::Config("ai-safe requires a command after --".to_owned()));
     }
 
-    let known_redactions = if args.pattern_only {
+    let redact_names = privacy_redact_names_enabled(context, args.redact_names.redact_names)?;
+    let audit_project = if args.pattern_only {
         let mut stderr = io::stderr();
         writeln!(
             stderr,
             "locket: ai-safe running with pattern-only redaction; known values are not loaded"
         )?;
-        Vec::new()
+        resolve_project(&context.cwd)?
     } else {
         let project = require_project(context)?;
-        collect_known_secret_redactions(
-            context,
-            &project,
-            args.redact_names.redact_names,
-            now_unix_nanos()?,
-        )?
+        Some(project)
+    };
+    let known_redactions = if args.pattern_only {
+        Vec::new()
+    } else {
+        let Some(project) = audit_project.as_ref() else {
+            return Err(CliError::Config("project not found".to_owned()));
+        };
+        collect_ai_safe_known_secret_redactions(context, project, redact_names, now_unix_nanos()?)?
     };
 
     let mut transcript = if let Some(path) = args.output.as_deref() {
@@ -4776,29 +4783,20 @@ fn ai_safe_command(
         None
     };
 
-    let child_output = ProcessCommand::new(&args.command[0])
-        .args(&args.command[1..])
-        .current_dir(&context.cwd)
-        .output()?;
-    let stdout = String::from_utf8_lossy(&child_output.stdout);
-    let stderr = String::from_utf8_lossy(&child_output.stderr);
-    let redacted_stdout = redact_input(&stdout, &known_redactions);
-    let redacted_stderr = redact_input(&stderr, &known_redactions);
-
-    write!(output, "{}", redacted_stdout.text)?;
-    io::stderr().write_all(redacted_stderr.text.as_bytes())?;
-
-    if let Some(file) = transcript.as_mut() {
-        write_ai_safe_transcript(file, &redacted_stdout.text, &redacted_stderr.text)?;
+    let result = run_ai_safe_child(context, output, transcript.as_mut(), args, &known_redactions)?;
+    if let Err(error) = write_ai_safe_audit_if_available(
+        context,
+        audit_project.as_ref(),
+        args,
+        &result,
+        !args.pattern_only,
+        redact_names,
+    ) {
+        let mut stderr = io::stderr();
+        let _ignored = writeln!(stderr, "locket: ai-safe audit skipped: {error}");
     }
 
-    if child_output.status.success() {
-        Ok(())
-    } else {
-        Err(CliError::ChildExit(
-            child_output.status.code().and_then(|code| u8::try_from(code).ok()).unwrap_or(1),
-        ))
-    }
+    if result.exit_code == 0 { Ok(()) } else { Err(CliError::ChildExit(result.exit_code)) }
 }
 
 fn open_ai_safe_transcript(path: &Path, force: bool) -> Result<fs::File, CliError> {
@@ -4812,28 +4810,391 @@ fn open_ai_safe_transcript(path: &Path, force: bool) -> Result<fs::File, CliErro
     #[cfg(unix)]
     options.mode(0o600);
 
-    Ok(options.open(path)?)
+    let file = options.open(path)?;
+    set_user_only_file_permissions(path)?;
+    Ok(file)
 }
 
-fn write_ai_safe_transcript(
-    file: &mut impl Write,
-    stdout: &str,
-    stderr: &str,
+fn collect_ai_safe_known_secret_redactions(
+    context: &RuntimeContext,
+    project: &ResolvedProject,
+    redact_names: bool,
+    timestamp: i64,
+) -> Result<Vec<KnownSecretRedaction>, CliError> {
+    collect_known_secret_redactions(context, project, redact_names, timestamp).map_err(|error| {
+        if matches!(error, CliError::Platform(locket_platform::PlatformError::MasterKeyNotFound)) {
+            CliError::Config(
+                "UnlockRequired: ai-safe requires known-value redaction coverage; run locket unlock or pass --pattern-only"
+                    .to_owned(),
+            )
+        } else {
+            error
+        }
+    })
+}
+
+#[derive(Clone, Copy, Debug)]
+enum AiSafeStream {
+    Stdout,
+    Stderr,
+}
+
+impl AiSafeStream {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Stdout => "stdout",
+            Self::Stderr => "stderr",
+        }
+    }
+}
+
+struct AiSafeRawChunk {
+    stream: AiSafeStream,
+    bytes: Vec<u8>,
+}
+
+struct AiSafeRedactedChunk {
+    stream: AiSafeStream,
+    text: String,
+    counts: BTreeMap<FindingKind, usize>,
+    redacted_secret_names: BTreeSet<String>,
+    buffer_limit_reached: bool,
+    unterminated_partial_line: bool,
+}
+
+#[derive(Default)]
+struct AiSafeRunResult {
+    exit_code: u8,
+    counts: BTreeMap<FindingKind, usize>,
+    redacted_secret_names: BTreeSet<String>,
+    stdout_chunks: usize,
+    stderr_chunks: usize,
+    buffer_limit_flushes: usize,
+    partial_line_flushes: usize,
+}
+
+struct AiSafeStreamState {
+    stream: AiSafeStream,
+    pending: Vec<u8>,
+}
+
+impl AiSafeStreamState {
+    const fn new(stream: AiSafeStream) -> Self {
+        Self { stream, pending: Vec::new() }
+    }
+}
+
+struct AiSafeStreamRedactor<'a> {
+    stdout: AiSafeStreamState,
+    stderr: AiSafeStreamState,
+    known_redactions: &'a [KnownSecretRedaction],
+}
+
+impl<'a> AiSafeStreamRedactor<'a> {
+    const fn new(known_redactions: &'a [KnownSecretRedaction]) -> Self {
+        Self {
+            stdout: AiSafeStreamState::new(AiSafeStream::Stdout),
+            stderr: AiSafeStreamState::new(AiSafeStream::Stderr),
+            known_redactions,
+        }
+    }
+
+    fn push(&mut self, raw: AiSafeRawChunk) -> Vec<AiSafeRedactedChunk> {
+        let stream = raw.stream;
+        let bytes = raw.bytes;
+        let state = match stream {
+            AiSafeStream::Stdout => &mut self.stdout,
+            AiSafeStream::Stderr => &mut self.stderr,
+        };
+        state.pending.extend(bytes);
+        drain_ai_safe_pending(state, self.known_redactions, false)
+    }
+
+    fn finish(&mut self) -> Vec<AiSafeRedactedChunk> {
+        let mut chunks = drain_ai_safe_pending(&mut self.stdout, self.known_redactions, true);
+        chunks.extend(drain_ai_safe_pending(&mut self.stderr, self.known_redactions, true));
+        chunks
+    }
+}
+
+fn drain_ai_safe_pending(
+    state: &mut AiSafeStreamState,
+    known_redactions: &[KnownSecretRedaction],
+    final_flush: bool,
+) -> Vec<AiSafeRedactedChunk> {
+    let mut chunks = Vec::new();
+    loop {
+        if let Some(newline_index) = state.pending.iter().position(|byte| *byte == b'\n') {
+            let bytes = state.pending.drain(..=newline_index).collect::<Vec<_>>();
+            chunks.push(redact_ai_safe_bytes(state.stream, &bytes, known_redactions, false, false));
+            continue;
+        }
+        if state.pending.len() >= AI_SAFE_PARTIAL_LINE_MAX_BYTES {
+            let bytes = state.pending.drain(..).collect::<Vec<_>>();
+            chunks.push(redact_ai_safe_bytes(state.stream, &bytes, known_redactions, true, false));
+            continue;
+        }
+        break;
+    }
+
+    if final_flush && !state.pending.is_empty() {
+        let bytes = state.pending.drain(..).collect::<Vec<_>>();
+        chunks.push(redact_ai_safe_bytes(state.stream, &bytes, known_redactions, false, true));
+    }
+    chunks
+}
+
+fn redact_ai_safe_bytes(
+    stream: AiSafeStream,
+    bytes: &[u8],
+    known_redactions: &[KnownSecretRedaction],
+    buffer_limit_reached: bool,
+    unterminated_partial_line: bool,
+) -> AiSafeRedactedChunk {
+    let input = String::from_utf8_lossy(bytes);
+    let redacted_secret_names = known_redactions
+        .iter()
+        .filter(|entry| input.contains(entry.value.as_str()))
+        .filter_map(|entry| entry.secret_name.clone())
+        .collect::<BTreeSet<_>>();
+    let result = redact_input(&input, known_redactions);
+    AiSafeRedactedChunk {
+        stream,
+        text: result.text,
+        counts: result.counts,
+        redacted_secret_names,
+        buffer_limit_reached,
+        unterminated_partial_line,
+    }
+}
+
+fn run_ai_safe_child(
+    context: &RuntimeContext,
+    output: &mut impl Write,
+    transcript: Option<&mut fs::File>,
+    args: &AiSafeArgs,
+    known_redactions: &[KnownSecretRedaction],
+) -> Result<AiSafeRunResult, CliError> {
+    let mut child = ProcessCommand::new(&args.command[0])
+        .args(&args.command[1..])
+        .current_dir(&context.cwd)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| CliError::Config("failed to capture child stdout".to_owned()))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| CliError::Config("failed to capture child stderr".to_owned()))?;
+    let (sender, receiver) = mpsc::channel::<Result<AiSafeRawChunk, io::Error>>();
+    let stdout_reader = spawn_ai_safe_reader(AiSafeStream::Stdout, stdout, sender.clone());
+    let stderr_reader = spawn_ai_safe_reader(AiSafeStream::Stderr, stderr, sender);
+
+    let mut redactor = AiSafeStreamRedactor::new(known_redactions);
+    let mut result = AiSafeRunResult::default();
+    let mut stderr_output = io::stderr();
+    let mut transcript = transcript;
+    for message in receiver {
+        let raw = message?;
+        for chunk in redactor.push(raw) {
+            emit_ai_safe_chunk(
+                output,
+                &mut stderr_output,
+                transcript.as_deref_mut(),
+                &mut result,
+                chunk,
+            )?;
+        }
+    }
+    stdout_reader
+        .join()
+        .map_err(|_| CliError::Config("ai-safe stdout reader panicked".to_owned()))?;
+    stderr_reader
+        .join()
+        .map_err(|_| CliError::Config("ai-safe stderr reader panicked".to_owned()))?;
+    for chunk in redactor.finish() {
+        emit_ai_safe_chunk(
+            output,
+            &mut stderr_output,
+            transcript.as_deref_mut(),
+            &mut result,
+            chunk,
+        )?;
+    }
+    let status = child.wait()?;
+    result.exit_code = status.code().and_then(|code| u8::try_from(code).ok()).unwrap_or(1);
+    Ok(result)
+}
+
+fn spawn_ai_safe_reader<R: Read + Send + 'static>(
+    stream: AiSafeStream,
+    mut reader: R,
+    sender: mpsc::Sender<Result<AiSafeRawChunk, io::Error>>,
+) -> thread::JoinHandle<()> {
+    thread::spawn(move || {
+        let mut buffer = [0_u8; AI_SAFE_READ_CHUNK_BYTES];
+        loop {
+            match reader.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(length) => {
+                    let chunk = AiSafeRawChunk { stream, bytes: buffer[..length].to_vec() };
+                    if sender.send(Ok(chunk)).is_err() {
+                        break;
+                    }
+                }
+                Err(error) => {
+                    let _ignored = sender.send(Err(error));
+                    break;
+                }
+            }
+        }
+    })
+}
+
+fn emit_ai_safe_chunk(
+    output: &mut impl Write,
+    stderr_output: &mut impl Write,
+    transcript: Option<&mut fs::File>,
+    result: &mut AiSafeRunResult,
+    chunk: AiSafeRedactedChunk,
 ) -> Result<(), CliError> {
-    if !stdout.is_empty() {
-        writeln!(file, "[stdout]")?;
-        write!(file, "{stdout}")?;
-        if !stdout.ends_with('\n') {
-            writeln!(file)?;
+    if chunk.buffer_limit_reached {
+        writeln!(
+            stderr_output,
+            "locket: ai-safe warning: {} partial-line buffer limit reached; emitted redacted buffered output",
+            chunk.stream.as_str()
+        )?;
+        result.buffer_limit_flushes += 1;
+    }
+    if chunk.unterminated_partial_line {
+        writeln!(
+            stderr_output,
+            "locket: ai-safe warning: {} ended with an unterminated partial line; emitted redacted buffered output",
+            chunk.stream.as_str()
+        )?;
+        result.partial_line_flushes += 1;
+    }
+
+    match chunk.stream {
+        AiSafeStream::Stdout => {
+            write!(output, "{}", chunk.text)?;
+            result.stdout_chunks += 1;
+        }
+        AiSafeStream::Stderr => {
+            write!(stderr_output, "{}", chunk.text)?;
+            result.stderr_chunks += 1;
         }
     }
-    if !stderr.is_empty() {
-        writeln!(file, "[stderr]")?;
-        write!(file, "{stderr}")?;
-        if !stderr.ends_with('\n') {
-            writeln!(file)?;
-        }
+    if let Some(file) = transcript {
+        write_ai_safe_transcript_chunk(file, chunk.stream, &chunk.text)?;
     }
+    merge_finding_counts(&mut result.counts, &chunk.counts);
+    result.redacted_secret_names.extend(chunk.redacted_secret_names);
+    Ok(())
+}
+
+fn write_ai_safe_transcript_chunk(
+    file: &mut impl Write,
+    stream: AiSafeStream,
+    text: &str,
+) -> Result<(), CliError> {
+    if text.is_empty() {
+        return Ok(());
+    }
+    let timestamp =
+        unix_nanos_to_rfc3339(now_unix_nanos()?).unwrap_or_else(|| "unknown".to_owned());
+    writeln!(file, "[{} timestamp={}]", stream.as_str(), timestamp)?;
+    write!(file, "{text}")?;
+    if !text.ends_with('\n') {
+        writeln!(file)?;
+    }
+    Ok(())
+}
+
+fn merge_finding_counts(
+    target: &mut BTreeMap<FindingKind, usize>,
+    source: &BTreeMap<FindingKind, usize>,
+) {
+    for (kind, count) in source {
+        *target.entry(*kind).or_default() += count;
+    }
+}
+
+fn finding_counts_json(counts: &BTreeMap<FindingKind, usize>) -> BTreeMap<&'static str, usize> {
+    counts.iter().map(|(kind, count)| (finding_kind_name(*kind), *count)).collect()
+}
+
+const fn finding_kind_name(kind: FindingKind) -> &'static str {
+    match kind {
+        FindingKind::HighEntropy => "high_entropy",
+        FindingKind::ProviderTokenPattern => "provider_token_pattern",
+        FindingKind::EnvFileMarker => "env_file_marker",
+        FindingKind::KnownSecretValue => "known_secret_value",
+    }
+}
+
+fn write_ai_safe_audit_if_available(
+    context: &RuntimeContext,
+    resolved: Option<&ResolvedProject>,
+    args: &AiSafeArgs,
+    result: &AiSafeRunResult,
+    known_value_coverage: bool,
+    redact_names: bool,
+) -> Result<(), CliError> {
+    let Some(resolved) = resolved else {
+        return Ok(());
+    };
+    let mut store = open_store(context)?;
+    if store.get_project(resolved.config.project_id.as_str())?.is_none() {
+        return Ok(());
+    }
+    let audit_key = match load_project_key(
+        context,
+        &store,
+        resolved.config.project_id.as_str(),
+        KeyPurpose::Audit,
+    ) {
+        Ok(key) => key,
+        Err(CliError::Platform(locket_platform::PlatformError::MasterKeyNotFound)) => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    let metadata = json!({
+        "schema_version": 1,
+        "action": "REDACT",
+        "status": "SUCCESS",
+        "scope": "ai-safe",
+        "argv0": args.command.first().map(String::as_str).unwrap_or_default(),
+        "arg_count": args.command.len().saturating_sub(1),
+        "pattern_only": args.pattern_only,
+        "redact_names": redact_names,
+        "known_value_coverage": known_value_coverage,
+        "output_destinations": {
+            "stdout": true,
+            "stderr": true,
+            "transcript": args.output.is_some(),
+        },
+        "child_exit_code": result.exit_code,
+        "finding_counts": finding_counts_json(&result.counts),
+        "redacted_secret_names": result.redacted_secret_names.iter().cloned().collect::<Vec<_>>(),
+        "stdout_chunks": result.stdout_chunks,
+        "stderr_chunks": result.stderr_chunks,
+        "buffer_limit_flushes": result.buffer_limit_flushes,
+        "partial_line_flushes": result.partial_line_flushes,
+    });
+    let audit = AuditWrite {
+        project_id: resolved.config.project_id.as_str(),
+        profile_id: None,
+        action: "REDACT",
+        status: "SUCCESS",
+        secret_name: None,
+        command: Some("ai-safe"),
+        metadata_json: &metadata,
+        timestamp: now_unix_nanos()?,
+    };
+    store.append_audit(audit_key.as_ref(), &audit)?;
     Ok(())
 }
 
@@ -11902,14 +12263,7 @@ required_secrets = ["DATABASE_URL"]
         assert!(!rotate_output.contains("postgres://localhost/app"));
         let recovery_code = rotate_output
             .lines()
-            .find(|line| {
-                line.len() == 38
-                    && line.chars().all(|character| {
-                        character == '-'
-                            || character.is_ascii_digit()
-                            || character.is_ascii_uppercase()
-                    })
-            })
+            .find(|line| locket_crypto::recovery_code_decode(line).is_ok())
             .ok_or("recovery code line should be printed once")?;
         let recovery_code_bytes = locket_crypto::recovery_code_decode(recovery_code)?;
 
@@ -15440,7 +15794,7 @@ required_secrets = ["DATABASE_URL"]
                 "--",
                 "/bin/sh",
                 "-c",
-                "printf 'db=postgres://localhost/app\n'",
+                "printf 'db=postgres://localhost/app\n'; printf 'err=postgres://localhost/app\n' >&2",
             ])?,
             &context,
             &mut ai_safe_output,
@@ -15450,8 +15804,209 @@ required_secrets = ["DATABASE_URL"]
         let transcript = std::fs::read_to_string(directory.path().join("transcript.log"))?;
         assert!(ai_safe_output.contains("lk_redacted_DATABASE_URL"));
         assert!(transcript.contains("lk_redacted_DATABASE_URL"));
+        assert!(transcript.contains("[stdout timestamp="));
+        assert!(transcript.contains("[stderr timestamp="));
         assert!(!ai_safe_output.contains("postgres://localhost/app"));
         assert!(!transcript.contains("postgres://localhost/app"));
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let mode =
+                std::fs::metadata(directory.path().join("transcript.log"))?.permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+
+        let store = locket_store::Store::open(directory.path().join("store.db"))?;
+        let metadata: String = store.connection().query_row(
+            "SELECT metadata_json FROM audit_log WHERE action = 'REDACT'",
+            [],
+            |row| row.get(0),
+        )?;
+        let metadata: serde_json::Value = serde_json::from_str(&metadata)?;
+        assert_eq!(metadata["scope"], "ai-safe");
+        assert_eq!(metadata["pattern_only"], false);
+        assert_eq!(metadata["known_value_coverage"], true);
+        assert_eq!(metadata["output_destinations"]["transcript"], true);
+        assert_eq!(metadata["redacted_secret_names"], json!(["DATABASE_URL"]));
+        assert_eq!(metadata["finding_counts"]["known_secret_value"], 2);
+        assert!(!metadata.to_string().contains("postgres://localhost/app"));
+        Ok(())
+    }
+
+    #[test]
+    fn ai_safe_fails_closed_when_locked_unless_pattern_only()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        let mut output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut output,
+        )?;
+        let args = test_secret_write_args("DATABASE_URL");
+        super::set_secret_value(&context, &args, "postgres://localhost/app", "manual", 1_000)?;
+        let (project_id, _) = test_project_id_and_master_key(&context)?;
+        context.key_store.delete_master_key(&project_id)?;
+
+        let mut default_output = Vec::new();
+        let default_result = run_with_context(
+            Cli::try_parse_from([
+                "locket",
+                "ai-safe",
+                "--",
+                "/bin/sh",
+                "-c",
+                "touch spawned-default",
+            ])?,
+            &context,
+            &mut default_output,
+        );
+        assert_error_contains(default_result, "UnlockRequired");
+        assert!(!directory.path().join("spawned-default").exists());
+
+        let mut pattern_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from([
+                "locket",
+                "ai-safe",
+                "--pattern-only",
+                "--",
+                "/bin/sh",
+                "-c",
+                "printf 'token=sk_test_sampleTokenValue123\n'; touch spawned-pattern",
+            ])?,
+            &context,
+            &mut pattern_output,
+        )?;
+        let pattern_output = String::from_utf8(pattern_output)?;
+        assert!(pattern_output.contains("lk_redacted_PROVIDER_TOKEN"));
+        assert!(!pattern_output.contains("sk_test_sampleTokenValue123"));
+        assert!(directory.path().join("spawned-pattern").exists());
+        Ok(())
+    }
+
+    #[test]
+    fn ai_safe_uses_privacy_config_aliases_but_audits_exact_names()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        let mut output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut output,
+        )?;
+        run_with_context(
+            Cli::try_parse_from(["locket", "config", "set", "privacy.redact_names", "true"])?,
+            &context,
+            &mut Vec::new(),
+        )?;
+        let args = test_secret_write_args("DATABASE_URL");
+        super::set_secret_value(&context, &args, "postgres://localhost/app", "manual", 1_000)?;
+
+        let mut ai_safe_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from([
+                "locket",
+                "ai-safe",
+                "--",
+                "/bin/sh",
+                "-c",
+                "printf 'db=postgres://localhost/app\n'",
+            ])?,
+            &context,
+            &mut ai_safe_output,
+        )?;
+        let ai_safe_output = String::from_utf8(ai_safe_output)?;
+        assert!(ai_safe_output.contains("lk_redacted_secret-"));
+        assert!(!ai_safe_output.contains("lk_redacted_DATABASE_URL"));
+        assert!(!ai_safe_output.contains("postgres://localhost/app"));
+
+        let store = locket_store::Store::open(directory.path().join("store.db"))?;
+        let metadata: String = store.connection().query_row(
+            "SELECT metadata_json FROM audit_log WHERE action = 'REDACT'",
+            [],
+            |row| row.get(0),
+        )?;
+        let metadata: serde_json::Value = serde_json::from_str(&metadata)?;
+        assert_eq!(metadata["redact_names"], true);
+        assert_eq!(metadata["redacted_secret_names"], json!(["DATABASE_URL"]));
+        assert!(!metadata.to_string().contains("postgres://localhost/app"));
+        Ok(())
+    }
+
+    #[test]
+    fn ai_safe_transcript_force_repairs_permissions_and_child_exit_is_forwarded()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        let transcript_path = directory.path().join("transcript.log");
+        std::fs::write(&transcript_path, "old\n")?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let mut permissions = std::fs::metadata(&transcript_path)?.permissions();
+            permissions.set_mode(0o644);
+            std::fs::set_permissions(&transcript_path, permissions)?;
+        }
+
+        let mut no_force_output = Vec::new();
+        let no_force_result = run_with_context(
+            Cli::try_parse_from([
+                "locket",
+                "ai-safe",
+                "--pattern-only",
+                "--output",
+                "transcript.log",
+                "--",
+                "/bin/sh",
+                "-c",
+                "true",
+            ])?,
+            &context,
+            &mut no_force_output,
+        );
+        assert!(no_force_result.is_err());
+
+        let mut forced_output = Vec::new();
+        let forced_result = run_with_context(
+            Cli::try_parse_from([
+                "locket",
+                "ai-safe",
+                "--pattern-only",
+                "--force",
+                "--output",
+                "transcript.log",
+                "--",
+                "/bin/sh",
+                "-c",
+                "printf 'token=sk_test_sampleTokenValue123'; exit 7",
+            ])?,
+            &context,
+            &mut forced_output,
+        );
+        let Err(error) = forced_result else {
+            return Err("ai-safe should forward child exit status".into());
+        };
+        assert_eq!(error.exit_code(), 7);
+        let forced_output = String::from_utf8(forced_output)?;
+        let transcript = std::fs::read_to_string(&transcript_path)?;
+        assert!(forced_output.contains("lk_redacted_PROVIDER_TOKEN"));
+        assert!(transcript.contains("lk_redacted_PROVIDER_TOKEN"));
+        assert!(!transcript.contains("sk_test_sampleTokenValue123"));
+        assert!(!transcript.contains("old"));
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let mode = std::fs::metadata(&transcript_path)?.permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
         Ok(())
     }
 }
