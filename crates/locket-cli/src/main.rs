@@ -1,11 +1,14 @@
 //! Locket command-line entry point.
 
 mod agent;
+mod audit;
 mod bootstrap;
 mod bundle;
 mod client;
+mod debug_cmd;
 mod device;
 pub(crate) mod diagnostics;
+mod lock;
 mod onboarding;
 mod passkey;
 mod policy_authoring;
@@ -992,7 +995,7 @@ fn run_with_context(
         Command::Bootstrap => bootstrap::bootstrap_command(context, output)?,
         Command::Completion(args) => completion_command(output, args.shell)?,
         Command::Doctor => return diagnostics::doctor_command(context, output),
-        Command::Debug { command } => debug_command(context, output, command)?,
+        Command::Debug { command } => debug_cmd::debug_command(context, output, command)?,
         Command::Init(args) => init(context, output, args)?,
         Command::Set(args) => set_command(context, output, &args)?,
         Command::Import(args) => import_command(context, output, &args)?,
@@ -1009,9 +1012,9 @@ fn run_with_context(
         Command::History(args) => history_command(context, output, &args)?,
         Command::Diff(args) => diff_command(context, output, &args)?,
         Command::Copy(args) => copy_command(context, output, &args)?,
-        Command::Audit { command } => audit_command(context, output, command)?,
-        Command::Lock => lock_command(context, output)?,
-        Command::Unlock(args) => unlock_command(context, output, &args)?,
+        Command::Audit { command } => audit::audit_command(context, output, command)?,
+        Command::Lock => lock::lock_command(context, output)?,
+        Command::Unlock(args) => lock::unlock_command(context, output, &args)?,
         Command::EmitExample => emit_example_command(context, output)?,
         Command::InstallHooks => install_hooks_command(context, output)?,
         Command::Profile { command } => profile_command(context, output, command)?,
@@ -3192,47 +3195,6 @@ fn docker_error(error: locket_docker::DockerError) -> CliError {
     }
 }
 
-fn audit_command(
-    context: &RuntimeContext,
-    output: &mut impl Write,
-    command: AuditCommand,
-) -> Result<(), CliError> {
-    match command {
-        AuditCommand::Verify => {
-            let resolved = require_project(context)?;
-            let mut store = open_store(context)?;
-            let audit_key = load_project_key(
-                context,
-                &store,
-                resolved.config.project_id.as_str(),
-                KeyPurpose::Audit,
-            )?;
-            let rows = store.verify_audit_chain_and_append(
-                resolved.config.project_id.as_str(),
-                audit_key.as_ref(),
-                now_unix_nanos()?,
-            )?;
-            writeln!(output, "audit: verified {rows} row(s)")?;
-            Ok(())
-        }
-    }
-}
-
-fn debug_command(
-    context: &RuntimeContext,
-    output: &mut impl Write,
-    command: DebugCommand,
-) -> Result<(), CliError> {
-    match command {
-        DebugCommand::Bundle(args) => diagnostics::debug_bundle_command(
-            context,
-            output,
-            args.redacted,
-            args.output.as_deref(),
-        ),
-    }
-}
-
 fn config_command(
     context: &RuntimeContext,
     output: &mut impl Write,
@@ -4209,49 +4171,6 @@ fn emit_example_command(context: &RuntimeContext, output: &mut impl Write) -> Re
     let result = write_example_block_for_emit(&resolved.root, &names, output)?;
     write_example_emit_audit(context, &mut store, &resolved, &result)?;
     writeln!(output, "updated {}", result.path.display())?;
-    Ok(())
-}
-
-fn lock_command(context: &RuntimeContext, output: &mut impl Write) -> Result<(), CliError> {
-    writeln!(output, "lock: no agent-held keys to clear")?;
-    writeln!(output, "agent: unavailable")?;
-    writeln!(output, "metadata_only: yes")?;
-    if let Some(project) = resolve_project(&context.cwd)? {
-        writeln!(output, "project_id: {}", project.config.project_id)?;
-    }
-    Ok(())
-}
-
-fn unlock_command(
-    context: &RuntimeContext,
-    output: &mut impl Write,
-    args: &UnlockArgs,
-) -> Result<(), CliError> {
-    let resolved = require_project(context)?;
-    let store = open_store(context)?;
-    ensure_project_exists(&store, resolved.config.project_id.as_str())?;
-    let profile = default_profile(&store, &resolved.config)?;
-    let (_audit_key, source) = load_project_key_with_source(
-        context,
-        &store,
-        resolved.config.project_id.as_str(),
-        KeyPurpose::Audit,
-    )?;
-
-    writeln!(output, "unlock: metadata-only direct CLI unlock succeeded")?;
-    writeln!(output, "project_id: {}", resolved.config.project_id)?;
-    writeln!(output, "active_profile: {} ({})", resolved.config.default_profile, profile.id)?;
-    writeln!(output, "unlock_source: {}", source.as_str())?;
-    writeln!(output, "agent: unavailable")?;
-    writeln!(output, "cached_keys: no")?;
-    if args.verify_user {
-        writeln!(
-            output,
-            "verify_user: requested, but platform user verification is not implemented in this build; no interactive verification was performed"
-        )?;
-    } else {
-        writeln!(output, "verify_user: not requested")?;
-    }
     Ok(())
 }
 
