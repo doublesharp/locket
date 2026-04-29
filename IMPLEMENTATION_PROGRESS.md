@@ -701,7 +701,8 @@ against the named spec file.
   Claim: branch agent-70c448c4/product-gate, worktree .worktrees/agent-70c448c4-product-gate.
 - [~] [6e4d05db] `invariants.md`
   Claim: branch agent-6e4d05db/spec-invariants-gate, worktree .worktrees/agent-6e4d05db-spec-invariants-gate.
-- [~] [b64508c7] `architecture.md`
+- [~] [b64508c7] blocked: `architecture.md` gate depends on the `locket-app`
+  workspace crate, currently owned by active claim agent-4efea70d/locket-app-crate.
   Claim: branch agent-b64508c7/architecture-gate, worktree .worktrees/agent-b64508c7-architecture-gate.
 - [ ] `data-model.md`
 - [ ] `storage.md`
