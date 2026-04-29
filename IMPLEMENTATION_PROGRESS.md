@@ -540,8 +540,7 @@ to touch. Items marked `[x]` are merged to `main` and verified.
 - [ ] Execution/session monitor view.
   - Spec: `docs/specs/desktop.md:17`; data source is the existing
     `runtime_sessions` table.
-- [~] [4efea70d] Tray icon state set (Lucide-based; reflects locked/unlocked/scan-warn/
-  Claim: branch agent-4efea70d/tray-icon-states, worktree .worktrees/agent-4efea70d-tray-icon-states.
+- [x] Tray icon state set (Lucide-based; reflects locked/unlocked/scan-warn/
   alert states; macOS template image, Windows/Linux full-color light/dark).
   - Spec: `docs/specs/desktop.md:98-108`.
 - [ ] Tray notification policy: no secret values, no secret names by default
@@ -574,17 +573,55 @@ editing — they drift. Severity: **blocker** (security/correctness),
 - [x] **important** — `EnvMap` values now wrap in `Zeroizing` so
   decrypted secrets clear on drop.
 
-- [~] [723116e9] **important** — Typed error system underused: ~6 typed callers vs ~249
-  Claim: branch agent-723116e9/typed-iso-date, worktree .worktrees/agent-723116e9-typed-iso-date.
+- [~] **important** — Typed error system underused: ~6 typed callers vs ~249
   `CliError::Config`.
-  Partial: SecretNotFound (77), ProfileNotFound (78), ConfirmationFailed (68)
-  variants added in `e6e2447` and the highest-frequency callsites (`secret not
-  found` 8x, `profile not found` 4x, `confirmation did not match` 6x) migrated
-  to typed helpers. Remaining: sweep the rest of the `CliError::Config(...)`
-  callsites (`invalid secret name` 9x, `invalid profile name` 8x, `invalid ISO
-  date/time` 12x, recovery save/load `format!`-ed errors, `unsupported config
-  key`, `secret version overflow`, `command policy not found`, `project not
-  found`, etc.).
+  Partial: `SecretNotFound` (77), `ProfileNotFound` (78), `ConfirmationFailed`
+  (68), `InvalidSecretName` / `InvalidProfileName` (64) variants added across
+  `e6e2447`, `52c14ce`, `49bb397`, `7a17462`. Highest-frequency callsites and
+  ISO-date / config-key migrations are done. Remaining sweep is decomposed
+  below; pick any open subtask:
+  - [ ] **subtask** — typed-recovery-format: migrate the 5 recovery file
+    `format!`-ed errors in `crates/locket-cli/src/commands/vault/recovery.rs`
+    (`recovery/kdf.toml: {error}` 2x, `recovery/envelope.bin: {error}` 2x,
+    `recovery kdf salt: {error}` 2x, `save recovery kdf: {error}`,
+    `save recovery envelope: {error}`) to a typed `MetadataInvalid` or new
+    `RecoveryEnvelopeInvalid` variant. Add a regression test that a corrupted
+    `recovery/envelope.bin` exits in the documented band.
+  - [ ] **subtask** — typed-policy-not-found: migrate `command policy not
+    found: {name}` (3 sites in `main.rs`/`commands/policy.rs`) and
+    `automation client not found: {client_ref}` (1 site) to a new
+    `LocketError::PolicyNotFound` typed variant (band 64-69). Update the
+    Reference Quick-Index. Add per-site exit-code regression.
+  - [ ] **subtask** — typed-project-not-found: migrate `project not found`
+    (2 sites: `main.rs`, `commands/scan/redact.rs`) to a new
+    `LocketError::ProjectNotFound` typed variant (input band) — semantically
+    distinct from `ProjectRootUntrusted`. Regression covers both callers.
+  - [ ] **subtask** — typed-secret-overflow: migrate `secret version overflow`
+    (3 sites) to a new `LocketError::SecretVersionOverflow` variant (input or
+    integrity band, per spec). Regression covers a stubbed overflow path.
+  - [ ] **subtask** — typed-config-value-validation: migrate the per-value
+    config validators in `crates/locket-cli/src/commands/config/spec.rs`
+    (`config value must be true or false`, `invalid config duration`,
+    `config section is not a table`, `invalid stored config value for {key}`,
+    `runtime.session_secret_name_retention must be a duration or off`,
+    `updates.manifest_url must be an HTTPS URL` 3x, enum-message strings,
+    `config value looks like a secret`) to typed `MetadataInvalid` or
+    `MetadataLooksLikeSecret`. Regression per validator class.
+  - [ ] **subtask** — typed-tty-confirmation: migrate the two `format!`-ed
+    `{prompt} requires interactive confirmation` and `{reason} requires an
+    interactive TTY` callsites to a new `LocketError::TtyRequired` variant
+    (or reuse `ConfirmationFailed` if the spec treats them equivalently).
+  - [ ] **subtask** — typed-template-validation: migrate the
+    `commands/project/onboarding.rs` template validators (`template profile
+    name is invalid`, `template expected secret name is invalid`, `invalid
+    template command policy: {error}`, `{field} must be an array`) to typed
+    `MetadataInvalid`. Regression on at least one rejected template.
+  - [ ] **subtask** — typed-residual-strings: sweep the residual long tail
+    in `crates/locket-cli/src/` (anything still as `CliError::Config(...)`
+    after the above subtasks) and either map each to an existing typed
+    variant or document the remainder as intentional generic-input failures.
+  - Where: `crates/locket-cli/src/` (verify scope with `grep -rn
+    "CliError::Config(" crates/locket-cli/src/ | wc -l`).
   - Where: `crates/locket-cli/src/` (verify with
     `grep -rn "typed_cli_error\|CliError::Typed " crates/locket-cli/src/`
     and `grep -rn "CliError::Config(" crates/locket-cli/src/`). A
@@ -833,7 +870,7 @@ echoed inside `metadata_json` so the HMAC chain covers them. Never write
 
 ## Latest Verified Checkpoint
 
-- Tip of `main`: `2d89050` ("Merge branch 'agent-4efea70d/locket-app-crate'").
+- Tip of `main`: `d0506aa` ("Define tray icon state descriptors").
 - `cargo fmt --all -- --check` clean on `main`.
 - `cargo test --workspace --all-targets --all-features` passes on `main`.
 - `cargo clippy --workspace --all-targets --all-features -- -D warnings` clean
