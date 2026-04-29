@@ -562,26 +562,16 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
 - [x] Tray notification policy: no secret values, no secret names by default
   (use generic "secret"/"policy"/"project" labels until the user opens the app).
   - Spec: `docs/specs/desktop.md:94-96`.
-- [ ] Tauri hardening: restrictive CSP, devtools disabled in release,
-  scoped Tauri commands, deny-by-default capabilities for filesystem,
-  shell, network, updater, and clipboard.
-  - Spec: `docs/specs/desktop.md`.
-  - Files: `crates/locket-app/src-tauri/`.
-- [ ] Search and filter UI across projects, profiles, secrets,
-  policies, audit events, scan findings, devices, and members
-  (privacy-aware: never reveals values).
-  - Spec: `docs/specs/desktop.md`.
-  - Files: `crates/locket-app/ui/`.
-- [ ] Accessibility baseline: keyboard nav, visible focus, screen-reader
-  labels, contrast, reduced-motion, no post-TTL value exposure via
-  accessibility metadata.
-  - Spec: `docs/specs/desktop.md`.
-  - Files: `crates/locket-app/ui/`.
-- [ ] Empty-state guidance for unbootstrapped surfaces (`locket init`,
-  `team accept`, `profile create dev`, `set`, `import`, `policy add`,
-  `agent start`, `device init`).
-  - Spec: `docs/specs/desktop.md` UX Requirements.
-  - Files: `crates/locket-app/ui/`.
+- [ ] Tauri hardening: restrictive CSP, release devtools off, scoped
+  commands, deny-by-default capabilities (fs/shell/network/updater/
+  clipboard).
+- [ ] Search/filter UI across projects, profiles, secrets, policies,
+  audit, scan findings, devices, members (never reveals values).
+- [ ] Accessibility: keyboard nav, focus states, screen-reader labels,
+  contrast, reduced motion, no post-TTL value leak via a11y metadata.
+- [ ] Empty-state guidance for `locket init`/`team accept`/
+  `profile create dev`/`set`/`import`/`policy add`/`agent start`/
+  `device init`.
 - [~] [4efea70d] Denial UX differentiates locked vault, missing grant, policy
   Claim: branch agent-4efea70d/denial-ux-descriptors, worktree .worktrees/agent-4efea70d-denial-ux-descriptors.
   Status: in progress; `crates/locket-app/src/lib.rs` has uncommitted denial
