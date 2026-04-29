@@ -6316,6 +6316,24 @@ argv = []
         assert!(doctor_output.contains("pass trusted_roots"));
         assert!(doctor_output.contains("skip audit_hmac_verification"));
         assert!(doctor_output.contains("summary:"));
+
+        let store = locket_store::Store::open(directory.path().join("store.db"))?;
+        let doctor_metadata = store.connection().query_row(
+            "SELECT metadata_json FROM audit_log WHERE action = 'DOCTOR'",
+            [],
+            |row| row.get::<_, String>(0),
+        )?;
+        let doctor_metadata: serde_json::Value = serde_json::from_str(&doctor_metadata)?;
+        assert_eq!(doctor_metadata["action"], "DOCTOR");
+        assert_eq!(doctor_metadata["status"], "SUCCESS");
+        assert_eq!(doctor_metadata["fail_count"], 0);
+        assert_eq!(doctor_metadata["skip_count"], 5);
+        assert!(
+            doctor_metadata["check_names"]
+                .as_array()
+                .is_some_and(|names| names.iter().any(|name| name == "sqlite_integrity"))
+        );
+        assert!(!doctor_metadata.to_string().contains(directory.path().to_string_lossy().as_ref()));
         Ok(())
     }
 
