@@ -1111,7 +1111,7 @@ fn new_command(
     let rendered = template.render_project_config(template.name.clone())?;
     fs::write(&config_path, rendered)?;
     let config = read_project_config(&config_path)?;
-    let store = open_store(context)?;
+    let mut store = open_store(context)?;
     let timestamp = now_unix_nanos()?;
     let mut master_key_source = MasterKeySource::OsKeyStore;
 
@@ -1122,6 +1122,7 @@ fn new_command(
         trust_root(&store, &config, &context.cwd, timestamp)?;
         ensure_gitignore(&context.cwd)?;
         write_example_block(&context.cwd, &template.expected_secrets)?;
+        write_new_audit(context, &mut store, &config, &template, &args.from_template, timestamp)?;
         Ok(())
     })() {
         let _ignored = fs::remove_file(&config_path);
@@ -1137,6 +1138,57 @@ fn new_command(
     writeln!(output, "expected_secrets: {}", template.expected_secrets.len())?;
     writeln!(output, "commands: {}", template.command_count())?;
     writeln!(output, "secrets: not written")?;
+    Ok(())
+}
+
+fn write_new_audit(
+    context: &RuntimeContext,
+    store: &mut Store,
+    config: &ProjectConfig,
+    template: &commands::project::onboarding::ProjectTemplate,
+    requested_template: &str,
+    timestamp: i64,
+) -> Result<(), CliError> {
+    let audit_key =
+        load_project_key(context, store, config.project_id.as_str(), KeyPurpose::Audit)?;
+    let profile = default_profile(store, config)?;
+    let mut generated_files = Vec::new();
+    if context.cwd.join(".gitignore").exists() {
+        generated_files.push(GITIGNORE_FILE);
+    }
+    if context.cwd.join(".env.example").exists() {
+        generated_files.push(EXAMPLE_FILE);
+    }
+    let template_source_kind = match &template.source {
+        commands::project::onboarding::TemplateSource::BuiltIn => "built-in",
+        commands::project::onboarding::TemplateSource::Local(_) => "local",
+    };
+    let metadata = json!({
+        "schema_version": 1,
+        "action": "INIT",
+        "status": "SUCCESS",
+        "command": "new",
+        "project_id": config.project_id.as_str(),
+        "default_profile_id": profile.id,
+        "template_name": requested_template,
+        "template_source_kind": template_source_kind,
+        "profile_count": template.profiles.len(),
+        "expected_secret_count": template.expected_secrets.len(),
+        "command_count": template.command_count(),
+        "trust_root_recorded": true,
+        "generated_files": generated_files,
+    });
+    let audit = AuditWrite {
+        project_id: config.project_id.as_str(),
+        profile_id: Some(&profile.id),
+        action: "INIT",
+        status: "SUCCESS",
+        secret_name: None,
+        command: Some("new"),
+        metadata_json: &metadata,
+        timestamp,
+    };
+    store.append_audit(audit_key.as_ref(), &audit)?;
     Ok(())
 }
 

@@ -732,3 +732,177 @@ fn init_rejects_unsupported_locket_toml_schema_without_rewriting_file()
     assert_eq!(std::fs::read_to_string(config_path)?, unsupported);
     Ok(())
 }
+
+#[test]
+fn new_from_builtin_template_writes_init_audit_row() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    let mut output = Vec::new();
+
+    run_with_context(
+        Cli::try_parse_from(["locket", "new", "--from-template", "basic"])?,
+        &context,
+        &mut output,
+    )?;
+
+    let store = crate::open_store(&context)?;
+    let config = crate::read_project_config(&directory.path().join("locket.toml"))?;
+    let (sequence, action, status, command, secret_name, profile_id, metadata, hmac_len) =
+        store.connection().query_row(
+            "SELECT sequence, action, status, command, secret_name, profile_id, metadata_json,
+                length(hmac)
+         FROM audit_log WHERE action = 'INIT'",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, i64>(7)?,
+                ))
+            },
+        )?;
+    assert_eq!(sequence, 1);
+    assert_eq!(action, "INIT");
+    assert_eq!(status, "SUCCESS");
+    assert_eq!(command.as_deref(), Some("new"));
+    assert_eq!(secret_name, None);
+    assert!(profile_id.is_some(), "INIT row must populate profile_id");
+    assert_eq!(hmac_len, 32);
+    let metadata: serde_json::Value = serde_json::from_str(&metadata)?;
+    assert_eq!(metadata["schema_version"], json!(1));
+    assert_eq!(metadata["action"], json!("INIT"));
+    assert_eq!(metadata["status"], json!("SUCCESS"));
+    assert_eq!(metadata["command"], json!("new"));
+    assert_eq!(metadata["template_name"], json!("basic"));
+    assert_eq!(metadata["template_source_kind"], json!("built-in"));
+    assert_eq!(metadata["trust_root_recorded"], json!(true));
+    assert_eq!(metadata["profile_count"], json!(1));
+    assert_eq!(metadata["expected_secret_count"], json!(1));
+    assert_eq!(metadata["command_count"], json!(1));
+    assert_eq!(metadata["generated_files"], json!([".gitignore", ".env.example"]));
+    assert!(metadata.get("secret_name").is_none());
+    assert_eq!(metadata["project_id"].as_str(), Some(config.project_id.as_str()));
+    assert_eq!(metadata["default_profile_id"].as_str(), profile_id.as_deref());
+
+    let total: i64 = store.connection().query_row(
+        "SELECT COUNT(*) FROM audit_log WHERE action = 'INIT'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(total, 1);
+    Ok(())
+}
+
+#[test]
+fn new_from_local_template_records_local_source_kind() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    let templates_dir = context.template_dir.clone();
+    std::fs::create_dir_all(&templates_dir)?;
+    std::fs::write(
+        templates_dir.join("web.toml"),
+        r#"
+name = "web-app"
+default_profile = "dev"
+profiles = ["dev", "staging"]
+expected_secrets = ["DATABASE_URL", "API_KEY"]
+
+[commands.test]
+argv = ["cargo", "test"]
+optional_secrets = ["API_KEY"]
+"#,
+    )?;
+    let mut output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "new", "--from-template", "web"])?,
+        &context,
+        &mut output,
+    )?;
+
+    let store = crate::open_store(&context)?;
+    let metadata: String = store.connection().query_row(
+        "SELECT metadata_json FROM audit_log WHERE action = 'INIT'",
+        [],
+        |row| row.get(0),
+    )?;
+    let metadata: serde_json::Value = serde_json::from_str(&metadata)?;
+    assert_eq!(metadata["template_name"], json!("web"));
+    assert_eq!(metadata["template_source_kind"], json!("local"));
+    assert_eq!(metadata["profile_count"], json!(2));
+    assert_eq!(metadata["expected_secret_count"], json!(2));
+    assert_eq!(metadata["command_count"], json!(1));
+    assert_eq!(metadata["generated_files"], json!([".gitignore", ".env.example"]));
+    assert_eq!(metadata["command"], json!("new"));
+    assert!(!metadata.to_string().contains(&templates_dir.display().to_string()));
+    Ok(())
+}
+
+#[test]
+fn new_already_initialized_writes_no_audit_row() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    let mut output = Vec::new();
+
+    run_with_context(
+        Cli::try_parse_from(["locket", "new", "--from-template", "basic"])?,
+        &context,
+        &mut output,
+    )?;
+    let store = crate::open_store(&context)?;
+    let init_rows_before: i64 = store.connection().query_row(
+        "SELECT COUNT(*) FROM audit_log WHERE action = 'INIT'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(init_rows_before, 1);
+    drop(store);
+
+    let result = run_with_context(
+        Cli::try_parse_from(["locket", "new", "--from-template", "basic"])?,
+        &context,
+        &mut Vec::new(),
+    );
+    assert_error_contains(result, "project already initialized");
+
+    let store = crate::open_store(&context)?;
+    let init_rows_after: i64 = store.connection().query_row(
+        "SELECT COUNT(*) FROM audit_log WHERE action = 'INIT'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(init_rows_after, 1, "second `new` must not append a second INIT row");
+    Ok(())
+}
+
+#[test]
+fn new_rejects_invalid_template_without_writing_audit() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    std::fs::create_dir_all(&context.template_dir)?;
+    std::fs::write(
+        context.template_dir.join("bad.toml"),
+        r#"
+name = "bad-app"
+expected_secrets = ["database-url"]
+"#,
+    )?;
+
+    let result = run_with_context(
+        Cli::try_parse_from(["locket", "new", "--from-template", "bad"])?,
+        &context,
+        &mut Vec::new(),
+    );
+    assert_error_contains(result, "template expected secret name is invalid");
+    assert!(!directory.path().join("locket.toml").exists());
+
+    let store = crate::open_store(&context)?;
+    let total: i64 =
+        store.connection().query_row("SELECT COUNT(*) FROM audit_log", [], |row| row.get(0))?;
+    assert_eq!(total, 0, "rejected template must not write any audit row");
+    Ok(())
+}
