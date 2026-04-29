@@ -2,7 +2,10 @@
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use directories::ProjectDirs;
-use locket_core::{KeyId, ProfileId, ProfileName, ProjectConfig, ProjectId, SecretId, SecretName};
+use locket_core::{
+    Duration as LocketDuration, KeyId, ProfileId, ProfileName, ProjectConfig, ProjectId, SecretId,
+    SecretName,
+};
 use locket_crypto::{
     EncryptedSecretValue, HkdfWrapInfo, KeyPurpose, KeyWrapAad, KeyWrapPurpose, WrappedKeyMaterial,
     decrypt_secret_value_v1, derive_wrapping_key_v1, encrypt_secret_value_v1, generate_key,
@@ -23,6 +26,7 @@ use std::fs;
 use std::io::{self, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode as ProcessExitCode;
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -32,6 +36,8 @@ const GITIGNORE_FILE: &str = ".gitignore";
 const EXAMPLE_BEGIN: &str = "# --- BEGIN LOCKET MANAGED ---";
 const EXAMPLE_END: &str = "# --- END LOCKET MANAGED ---";
 const GITIGNORE_ENTRIES: [&str; 4] = [".env", ".env.*", ".locket.local", ".locketignore"];
+const DEFAULT_MAX_GRACE_TTL_SECONDS: u64 = 7 * 24 * 60 * 60;
+const NANOS_PER_SECOND: i64 = 1_000_000_000;
 
 #[derive(Debug, Parser)]
 #[command(name = "locket", version, about = "Local-first secrets control plane")]
@@ -411,8 +417,11 @@ fn run_with_context(
         Command::Import(args) => import_command(context, output, &args)?,
         Command::Get(args) => get_command(context, output, &args)?,
         Command::Rm(args) => rm_command(context, output, &args)?,
+        Command::Purge(args) => purge_command(context, output, &args)?,
         Command::List(args) => list_command(context, output, &args)?,
         Command::Exec(args) => exec_command(context, output, &args)?,
+        Command::Rotate(args) => rotate_command(context, output, &args)?,
+        Command::History(args) => history_command(context, output, &args)?,
         Command::EmitExample => emit_example_command(context, output)?,
         Command::Profile { command } => profile_command(context, output, command)?,
         Command::Scan(args) => scan_command(context, output, args)?,
@@ -725,6 +734,135 @@ fn rm_command(
     Ok(())
 }
 
+fn rotate_command(
+    context: &RuntimeContext,
+    output: &mut impl Write,
+    args: &RotateArgs,
+) -> Result<(), CliError> {
+    let timestamp = now_unix_nanos()?;
+    let grace_until = grace_until_from_args(args.grace_ttl.as_deref(), timestamp)?;
+    let value = read_secret_value_from_stdin()?;
+    let (source, version) = rotate_secret_value(context, args, &value, timestamp, grace_until)?;
+    refresh_example_for_project(context)?;
+    writeln!(output, "rotated {} ({source}) version={version}", args.key)?;
+    Ok(())
+}
+
+fn purge_command(
+    context: &RuntimeContext,
+    output: &mut impl Write,
+    args: &PurgeArgs,
+) -> Result<(), CliError> {
+    if args.version.is_none() && !args.all_versions {
+        return Err(CliError::Config("purge requires --version N or --all-versions".to_owned()));
+    }
+
+    let secret = resolve_secret_for_source(context, &args.key, args.source.source)?;
+    let mut store = open_store(context)?;
+    let versions = store.list_secret_versions(&secret.secret.id)?;
+    if versions.is_empty() {
+        writeln!(output, "purge: no versions")?;
+        return Ok(());
+    }
+
+    let target_versions = if args.all_versions {
+        if secret.secret.state != "deleted" {
+            return Err(CliError::Config(
+                "purge --all-versions requires a deleted source; run rm first".to_owned(),
+            ));
+        }
+        versions.iter().map(|version| version.version).collect::<Vec<_>>()
+    } else {
+        let Some(version) = args.version else {
+            return Err(CliError::Config("purge requires --version N".to_owned()));
+        };
+        let Some(record) = versions.iter().find(|record| record.version == version) else {
+            return Err(CliError::Config("secret version not found".to_owned()));
+        };
+        if secret.secret.state == "active"
+            && version == secret.secret.current_version
+            && record.state == "current"
+        {
+            return Err(CliError::Config(
+                "cannot purge the current version of an active source".to_owned(),
+            ));
+        }
+        vec![version]
+    };
+
+    let changed =
+        store.purge_secret_versions(&secret.secret.id, &target_versions, now_unix_nanos()?)?;
+    refresh_example_for_project(context)?;
+    if changed {
+        writeln!(
+            output,
+            "purged {} ({}) versions={}",
+            secret.secret.name,
+            secret.secret.source,
+            format_versions(&target_versions)
+        )?;
+    } else {
+        writeln!(
+            output,
+            "purge: {} ({}) already purged",
+            secret.secret.name, secret.secret.source
+        )?;
+    }
+    Ok(())
+}
+
+fn history_command(
+    context: &RuntimeContext,
+    output: &mut impl Write,
+    args: &HistoryArgs,
+) -> Result<(), CliError> {
+    let name = SecretName::new(args.key.clone())
+        .map_err(|_| CliError::Config("invalid secret name".to_owned()))?;
+    let resolved = require_project(context)?;
+    let store = open_store(context)?;
+    let profile = if let Some(profile_name) = &args.profile {
+        store
+            .get_profile_by_name(resolved.config.project_id.as_str(), profile_name)?
+            .ok_or_else(|| CliError::Config("profile not found".to_owned()))?
+    } else {
+        default_profile(&store, &resolved.config)?
+    };
+    let secrets = store.list_secrets_by_name(
+        resolved.config.project_id.as_str(),
+        &profile.id,
+        name.as_str(),
+    )?;
+    if secrets.is_empty() {
+        return Err(CliError::Config("secret not found".to_owned()));
+    }
+
+    let mut displayed = 0_u32;
+    for secret in secrets {
+        writeln!(
+            output,
+            "{} source={} state={} current_version={}",
+            secret.name, secret.source, secret.state, secret.current_version
+        )?;
+        for version in store.list_secret_versions(&secret.id)? {
+            displayed += 1;
+            writeln!(
+                output,
+                "  v{} state={} created_at={} deprecated_at={} grace_until={} purged_at={}",
+                version.version,
+                version.state,
+                version.created_at,
+                optional_i64(version.deprecated_at),
+                optional_i64(version.grace_until),
+                optional_i64(version.purged_at)
+            )?;
+        }
+    }
+    if displayed == 0 {
+        writeln!(output, "history: no versions")?;
+    }
+    Ok(())
+}
+
 fn list_command(
     context: &RuntimeContext,
     output: &mut impl Write,
@@ -733,11 +871,11 @@ fn list_command(
     let resolved = require_project(context)?;
     let store = open_store(context)?;
     let profile = default_profile(&store, &resolved.config)?;
-    let secrets =
-        store.list_active_secrets_by_profile(resolved.config.project_id.as_str(), &profile.id)?;
-    if args.all {
-        writeln!(output, "list: deleted and deprecated rows are not wired in this build yet")?;
-    }
+    let secrets = if args.all {
+        store.list_secrets_by_profile(resolved.config.project_id.as_str(), &profile.id)?
+    } else {
+        store.list_active_secrets_by_profile(resolved.config.project_id.as_str(), &profile.id)?
+    };
     if secrets.is_empty() {
         writeln!(output, "no secrets")?;
         return Ok(());
@@ -745,8 +883,8 @@ fn list_command(
     for secret in secrets {
         writeln!(
             output,
-            "{} source={} version={}",
-            secret.name, secret.source, secret.current_version
+            "{} source={} version={} state={}",
+            secret.name, secret.source, secret.current_version, secret.state
         )?;
     }
     Ok(())
@@ -1085,10 +1223,17 @@ fn set_secret_value(
     let resolved = require_project(context)?;
     let mut store = open_store(context)?;
     let profile = default_profile(&store, &resolved.config)?;
-    if store
-        .get_active_secret(resolved.config.project_id.as_str(), &profile.id, name.as_str(), source)?
-        .is_some()
-    {
+    if let Some(existing) = store.get_secret_by_source(
+        resolved.config.project_id.as_str(),
+        &profile.id,
+        name.as_str(),
+        source,
+    )? {
+        if existing.state == "deleted" {
+            return Err(CliError::Config(
+                "secret source is deleted; v1 does not reactivate tombstones".to_owned(),
+            ));
+        }
         return Err(CliError::Config("secret already exists; use rotate".to_owned()));
     }
 
@@ -1171,6 +1316,91 @@ fn set_secret_value(
     Ok(())
 }
 
+fn rotate_secret_value(
+    context: &RuntimeContext,
+    args: &RotateArgs,
+    value: &str,
+    timestamp: i64,
+    grace_until: Option<i64>,
+) -> Result<(String, u32), CliError> {
+    let name = SecretName::new(args.key.clone())
+        .map_err(|_| CliError::Config("invalid secret name".to_owned()))?;
+    let resolved_secret =
+        resolve_active_secret_for_source(context, name.as_str(), args.source.source)?;
+    let new_version = resolved_secret
+        .secret
+        .current_version
+        .checked_add(1)
+        .ok_or_else(|| CliError::Config("secret version overflow".to_owned()))?;
+    let mut store = open_store(context)?;
+    let profile_secret_key = load_profile_key(
+        context,
+        &store,
+        resolved_secret.project.config.project_id.as_str(),
+        &resolved_secret.profile.id,
+        KeyPurpose::ProfileSecret,
+    )?;
+    let profile_fingerprint_key = load_profile_key(
+        context,
+        &store,
+        resolved_secret.project.config.project_id.as_str(),
+        &resolved_secret.profile.id,
+        KeyPurpose::ProfileFingerprint,
+    )?;
+    let value_aad = secret_blob_aad_v1(&locket_crypto::SecretBlobAad::new(
+        resolved_secret.project.config.project_id.as_str(),
+        &resolved_secret.profile.id,
+        &resolved_secret.secret.id,
+        &resolved_secret.secret.name,
+        new_version,
+    ))?;
+    let wrap_aad = key_wrap_aad_v1(&KeyWrapAad::new(
+        resolved_secret.project.config.project_id.as_str(),
+        &resolved_secret.secret.id,
+        Some(&resolved_secret.profile.id),
+        new_version,
+        KeyWrapPurpose::SecretDek,
+    ))?;
+    let encrypted = encrypt_secret_value_v1(&profile_secret_key, value, &value_aad, &wrap_aad)?;
+    let fingerprint = secret_fingerprint_v1(&profile_fingerprint_key, value)?;
+    let source = resolved_secret.secret.source.clone();
+    let origin = resolved_secret.secret.origin.clone();
+
+    store.rotate_secret(
+        &resolved_secret.secret,
+        &SecretVersionRecord {
+            secret_id: resolved_secret.secret.id.clone(),
+            version: new_version,
+            source: source.clone(),
+            origin,
+            state: "current".to_owned(),
+            created_at: timestamp,
+            deprecated_at: None,
+            grace_until: None,
+            purged_at: None,
+        },
+        &SecretBlobRecord {
+            secret_id: resolved_secret.secret.id.clone(),
+            version: new_version,
+            encrypted_dek: encrypted.encrypted_dek,
+            ciphertext: encrypted.ciphertext,
+            value_nonce: encrypted.value_nonce,
+            aad_schema_version: encrypted.aad_schema_version,
+            created_at: timestamp,
+        },
+        &SecretFingerprintRecord {
+            secret_id: resolved_secret.secret.id.clone(),
+            version: new_version,
+            fingerprint: fingerprint.to_vec(),
+            created_at: timestamp,
+        },
+        timestamp,
+        grace_until,
+    )?;
+
+    Ok((source, new_version))
+}
+
 fn load_profile_key(
     context: &RuntimeContext,
     store: &Store,
@@ -1216,6 +1446,57 @@ fn resolve_active_secret(context: &RuntimeContext, key: &str) -> Result<Resolved
         .filter(|secret| secret.name == name.as_str())
         .max_by_key(|secret| source_precedence(&secret.source))
         .ok_or_else(|| CliError::Config("secret not found".to_owned()))?;
+    Ok(ResolvedSecret { project, profile, secret })
+}
+
+fn resolve_active_secret_for_source(
+    context: &RuntimeContext,
+    key: &str,
+    source: Option<SecretSourceArg>,
+) -> Result<ResolvedSecret, CliError> {
+    let resolved = resolve_secret_for_source(context, key, source)?;
+    if resolved.secret.state == "deleted" {
+        return Err(CliError::Config("secret source is deleted".to_owned()));
+    }
+    Ok(resolved)
+}
+
+fn resolve_secret_for_source(
+    context: &RuntimeContext,
+    key: &str,
+    source: Option<SecretSourceArg>,
+) -> Result<ResolvedSecret, CliError> {
+    let name = SecretName::new(key.to_owned())
+        .map_err(|_| CliError::Config("invalid secret name".to_owned()))?;
+    let project = require_project(context)?;
+    let store = open_store(context)?;
+    let profile = default_profile(&store, &project.config)?;
+    let secret = if let Some(source) = source {
+        let source = source_arg_to_str(source);
+        store
+            .get_secret_by_source(
+                project.config.project_id.as_str(),
+                &profile.id,
+                name.as_str(),
+                source,
+            )?
+            .ok_or_else(|| CliError::Config("secret not found".to_owned()))?
+    } else {
+        let secrets = store.list_secrets_by_name(
+            project.config.project_id.as_str(),
+            &profile.id,
+            name.as_str(),
+        )?;
+        match secrets.as_slice() {
+            [] => return Err(CliError::Config("secret not found".to_owned())),
+            [secret] => secret.clone(),
+            _ => {
+                return Err(CliError::Config(
+                    "multiple sources exist for this secret; pass --source".to_owned(),
+                ));
+            }
+        }
+    };
     Ok(ResolvedSecret { project, profile, secret })
 }
 
@@ -1586,6 +1867,30 @@ fn unquote_env_value(value: &str) -> String {
     value.to_owned()
 }
 
+fn grace_until_from_args(value: Option<&str>, timestamp: i64) -> Result<Option<i64>, CliError> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let duration = LocketDuration::from_str(value)
+        .map_err(|_| CliError::Config("invalid grace TTL duration".to_owned()))?;
+    if duration.as_secs() > DEFAULT_MAX_GRACE_TTL_SECONDS {
+        return Err(CliError::Config("grace TTL exceeds the default 7d cap".to_owned()));
+    }
+    let nanos = i64::try_from(duration.as_secs())
+        .ok()
+        .and_then(|seconds| seconds.checked_mul(NANOS_PER_SECOND))
+        .ok_or(CliError::Time)?;
+    timestamp.checked_add(nanos).map(Some).ok_or(CliError::Time)
+}
+
+fn optional_i64(value: Option<i64>) -> String {
+    value.map_or_else(|| "-".to_owned(), |value| value.to_string())
+}
+
+fn format_versions(versions: &[u32]) -> String {
+    versions.iter().map(u32::to_string).collect::<Vec<_>>().join(",")
+}
+
 const fn source_arg_to_str(source: SecretSourceArg) -> &'static str {
     match source {
         SecretSourceArg::TeamManaged => "team-managed",
@@ -1639,6 +1944,35 @@ mod tests {
         }
     }
 
+    fn test_secret_write_args(key: &str) -> super::SecretWriteArgs {
+        super::SecretWriteArgs {
+            key: key.to_owned(),
+            source: super::SourceArg { source: Some(super::SecretSourceArg::UserLocal) },
+            metadata: super::SecretMetadataFlags {
+                description: None,
+                owner: None,
+                tags: Vec::new(),
+                required: false,
+                optional: false,
+            },
+        }
+    }
+
+    fn test_rotate_args(key: &str, grace_ttl: Option<&str>) -> super::RotateArgs {
+        super::RotateArgs {
+            key: key.to_owned(),
+            source: super::SourceArg { source: Some(super::SecretSourceArg::UserLocal) },
+            metadata: super::SecretMetadataFlags {
+                description: None,
+                owner: None,
+                tags: Vec::new(),
+                required: false,
+                optional: false,
+            },
+            grace_ttl: grace_ttl.map(ToOwned::to_owned),
+        }
+    }
+
     #[test]
     fn parses_bare_status() {
         let cli = Cli::try_parse_from(["locket"]);
@@ -1655,6 +1989,7 @@ mod tests {
             &["locket", "rm", "DATABASE_URL"],
             &["locket", "purge", "DATABASE_URL", "--all-versions"],
             &["locket", "rotate", "DATABASE_URL", "--grace-ttl", "24h"],
+            &["locket", "history", "DATABASE_URL"],
             &["locket", "exec", "--secret", "DATABASE_URL", "--", "/bin/sh", "-c", "true"],
         ] {
             assert!(Cli::try_parse_from(args).is_ok(), "{args:?}");
@@ -1784,6 +2119,104 @@ mod tests {
         let mut list_after_rm = Vec::new();
         run_with_context(Cli::try_parse_from(["locket", "list"])?, &context, &mut list_after_rm)?;
         assert!(String::from_utf8(list_after_rm)?.contains("no secrets"));
+        Ok(())
+    }
+
+    #[test]
+    fn rotate_history_and_purge_keep_values_hidden() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        let mut output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut output,
+        )?;
+
+        let set_args = test_secret_write_args("DATABASE_URL");
+        super::set_secret_value(&context, &set_args, "postgres://localhost/old", "manual", 1_000)?;
+
+        let rotate_args = test_rotate_args("DATABASE_URL", Some("24h"));
+        let grace_until = super::grace_until_from_args(rotate_args.grace_ttl.as_deref(), 2_000)?;
+        let (_source, version) = super::rotate_secret_value(
+            &context,
+            &rotate_args,
+            "postgres://localhost/new",
+            2_000,
+            grace_until,
+        )?;
+        assert_eq!(version, 2);
+
+        let mut get_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "get", "DATABASE_URL"])?,
+            &context,
+            &mut get_output,
+        )?;
+        let get_output = String::from_utf8(get_output)?;
+        assert!(get_output.contains("version=2"));
+        assert!(!get_output.contains("postgres://localhost/new"));
+
+        let mut reveal_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "get", "DATABASE_URL", "--reveal"])?,
+            &context,
+            &mut reveal_output,
+        )?;
+        assert_eq!(String::from_utf8(reveal_output)?, "postgres://localhost/new\n");
+
+        let mut history_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "history", "DATABASE_URL"])?,
+            &context,
+            &mut history_output,
+        )?;
+        let history_output = String::from_utf8(history_output)?;
+        assert!(history_output.contains("v1 state=deprecated"));
+        assert!(history_output.contains("v2 state=current"));
+        assert!(history_output.contains("grace_until="));
+        assert!(!history_output.contains("postgres://localhost/old"));
+        assert!(!history_output.contains("postgres://localhost/new"));
+
+        let mut purge_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "purge", "DATABASE_URL", "--version", "1"])?,
+            &context,
+            &mut purge_output,
+        )?;
+        assert!(String::from_utf8(purge_output)?.contains("versions=1"));
+
+        let mut history_after_purge = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "history", "DATABASE_URL"])?,
+            &context,
+            &mut history_after_purge,
+        )?;
+        let history_after_purge = String::from_utf8(history_after_purge)?;
+        assert!(history_after_purge.contains("v1 state=purged"));
+        assert!(history_after_purge.contains("v2 state=current"));
+
+        let mut invalid_purge_output = Vec::new();
+        let invalid_purge = run_with_context(
+            Cli::try_parse_from(["locket", "purge", "DATABASE_URL", "--version", "2"])?,
+            &context,
+            &mut invalid_purge_output,
+        );
+        assert!(invalid_purge.is_err());
+
+        let mut rm_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "rm", "DATABASE_URL"])?,
+            &context,
+            &mut rm_output,
+        )?;
+        let mut purge_all_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "purge", "DATABASE_URL", "--all-versions"])?,
+            &context,
+            &mut purge_all_output,
+        )?;
+        assert!(String::from_utf8(purge_all_output)?.contains("versions=1,2"));
         Ok(())
     }
 

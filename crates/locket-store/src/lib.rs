@@ -511,6 +511,59 @@ impl Store {
             .map_err(StoreError::from)
     }
 
+    /// Returns a secret by project/profile/name/source regardless of active or deleted state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Sqlite`] when `SQLite` cannot query the secret row.
+    pub fn get_secret_by_source(
+        &self,
+        project_id: &str,
+        profile_id: &str,
+        name: &str,
+        source: &str,
+    ) -> Result<Option<SecretRecord>, StoreError> {
+        self.connection
+            .query_row(
+                "SELECT id, project_id, profile_id, name, source, origin, current_version, state,
+                        created_at, updated_at, last_rotated_at, deleted_at
+                 FROM secrets
+                 WHERE project_id = ?1
+                   AND profile_id = ?2
+                   AND name = ?3
+                   AND source = ?4",
+                (project_id, profile_id, name, source),
+                secret_record_from_row,
+            )
+            .optional()
+            .map_err(StoreError::from)
+    }
+
+    /// Lists secrets for a project/profile/name across all sources and states.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Sqlite`] when `SQLite` cannot query secret rows.
+    pub fn list_secrets_by_name(
+        &self,
+        project_id: &str,
+        profile_id: &str,
+        name: &str,
+    ) -> Result<Vec<SecretRecord>, StoreError> {
+        let mut statement = self.connection.prepare(
+            "SELECT id, project_id, profile_id, name, source, origin, current_version, state,
+                    created_at, updated_at, last_rotated_at, deleted_at
+             FROM secrets
+             WHERE project_id = ?1 AND profile_id = ?2 AND name = ?3
+             ORDER BY name, source",
+        )?;
+        let secrets = statement
+            .query_map((project_id, profile_id, name), secret_record_from_row)?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(secrets)
+    }
+
     /// Lists active secrets for a profile ordered by name and source.
     ///
     /// # Errors
@@ -533,6 +586,215 @@ impl Store {
             .collect::<Result<Vec<_>, _>>()?;
 
         Ok(secrets)
+    }
+
+    /// Lists all secrets for a profile ordered by name and source.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Sqlite`] when `SQLite` cannot query secret rows.
+    pub fn list_secrets_by_profile(
+        &self,
+        project_id: &str,
+        profile_id: &str,
+    ) -> Result<Vec<SecretRecord>, StoreError> {
+        let mut statement = self.connection.prepare(
+            "SELECT id, project_id, profile_id, name, source, origin, current_version, state,
+                    created_at, updated_at, last_rotated_at, deleted_at
+             FROM secrets
+             WHERE project_id = ?1 AND profile_id = ?2
+             ORDER BY name, source",
+        )?;
+        let secrets = statement
+            .query_map((project_id, profile_id), secret_record_from_row)?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(secrets)
+    }
+
+    /// Lists version metadata for a secret ordered by version.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Sqlite`] when `SQLite` cannot query version rows.
+    pub fn list_secret_versions(
+        &self,
+        secret_id: &str,
+    ) -> Result<Vec<SecretVersionRecord>, StoreError> {
+        let mut statement = self.connection.prepare(
+            "SELECT secret_id, version, source, origin, state, created_at,
+                    deprecated_at, grace_until, purged_at
+             FROM secret_versions
+             WHERE secret_id = ?1
+             ORDER BY version",
+        )?;
+        let versions = statement
+            .query_map([secret_id], secret_version_record_from_row)?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(versions)
+    }
+
+    /// Returns version metadata for a secret version.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Sqlite`] when `SQLite` cannot query the version row.
+    pub fn get_secret_version(
+        &self,
+        secret_id: &str,
+        version: u32,
+    ) -> Result<Option<SecretVersionRecord>, StoreError> {
+        self.connection
+            .query_row(
+                "SELECT secret_id, version, source, origin, state, created_at,
+                        deprecated_at, grace_until, purged_at
+                 FROM secret_versions
+                 WHERE secret_id = ?1 AND version = ?2",
+                params![secret_id, version],
+                secret_version_record_from_row,
+            )
+            .optional()
+            .map_err(StoreError::from)
+    }
+
+    /// Rotates a secret by deprecating the current version and inserting the new current version.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Sqlite`] when `SQLite` rejects any update or insert.
+    /// The transaction is rolled back when any row fails.
+    pub fn rotate_secret(
+        &mut self,
+        secret: &SecretRecord,
+        new_version: &SecretVersionRecord,
+        blob: &SecretBlobRecord,
+        fingerprint: &SecretFingerprintRecord,
+        deprecated_at: i64,
+        grace_until: Option<i64>,
+    ) -> Result<(), StoreError> {
+        let transaction = self.connection.transaction()?;
+        transaction.execute(
+            "UPDATE secret_versions
+             SET state = 'deprecated', deprecated_at = ?3, grace_until = ?4
+             WHERE secret_id = ?1 AND version = ?2 AND state = 'current'",
+            params![secret.id.as_str(), secret.current_version, deprecated_at, grace_until],
+        )?;
+        transaction.execute(
+            "INSERT INTO secret_versions(
+               secret_id, version, source, origin, state, created_at,
+               deprecated_at, grace_until, purged_at
+             )
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                new_version.secret_id.as_str(),
+                new_version.version,
+                new_version.source.as_str(),
+                new_version.origin.as_str(),
+                new_version.state.as_str(),
+                new_version.created_at,
+                new_version.deprecated_at,
+                new_version.grace_until,
+                new_version.purged_at,
+            ],
+        )?;
+        transaction.execute(
+            "INSERT INTO blobs(
+               secret_id, version, encrypted_dek, ciphertext, value_nonce,
+               aad_schema_version, created_at
+             )
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                blob.secret_id.as_str(),
+                blob.version,
+                blob.encrypted_dek.as_slice(),
+                blob.ciphertext.as_slice(),
+                blob.value_nonce.as_slice(),
+                blob.aad_schema_version,
+                blob.created_at,
+            ],
+        )?;
+        transaction.execute(
+            "INSERT INTO fingerprints(secret_id, version, fingerprint, created_at)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![
+                fingerprint.secret_id.as_str(),
+                fingerprint.version,
+                fingerprint.fingerprint.as_slice(),
+                fingerprint.created_at,
+            ],
+        )?;
+        transaction.execute(
+            "UPDATE secrets
+             SET current_version = ?2, updated_at = ?3, last_rotated_at = ?3
+             WHERE id = ?1 AND state = 'active'",
+            params![secret.id.as_str(), new_version.version, new_version.created_at],
+        )?;
+        transaction.commit()?;
+
+        Ok(())
+    }
+
+    /// Purges encrypted material and fingerprints for one version.
+    ///
+    /// Returns `true` when material was newly purged and `false` when the
+    /// version was already purged.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Sqlite`] when `SQLite` rejects the updates.
+    pub fn purge_secret_version(
+        &mut self,
+        secret_id: &str,
+        version: u32,
+        purged_at: i64,
+    ) -> Result<bool, StoreError> {
+        self.purge_secret_versions(secret_id, &[version], purged_at)
+    }
+
+    /// Purges encrypted material and fingerprints for multiple versions atomically.
+    ///
+    /// Returns `true` when at least one version was newly purged and `false`
+    /// when all selected versions were already purged.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Sqlite`] when `SQLite` rejects the updates.
+    pub fn purge_secret_versions(
+        &mut self,
+        secret_id: &str,
+        versions: &[u32],
+        purged_at: i64,
+    ) -> Result<bool, StoreError> {
+        let transaction = self.connection.transaction()?;
+        let mut changed_any = false;
+        for version in versions {
+            let changed = transaction.execute(
+                "UPDATE secret_versions
+                 SET state = 'purged', grace_until = NULL, purged_at = ?3
+                 WHERE secret_id = ?1 AND version = ?2 AND state != 'purged'",
+                params![secret_id, version, purged_at],
+            )?;
+            if changed == 0 {
+                continue;
+            }
+            changed_any = true;
+            transaction.execute(
+                "DELETE FROM blobs WHERE secret_id = ?1 AND version = ?2",
+                params![secret_id, version],
+            )?;
+            transaction.execute(
+                "DELETE FROM fingerprints WHERE secret_id = ?1 AND version = ?2",
+                params![secret_id, version],
+            )?;
+        }
+        if !changed_any {
+            transaction.commit()?;
+            return Ok(false);
+        }
+        transaction.commit()?;
+
+        Ok(true)
     }
 
     /// Tombstones a secret by id.
@@ -615,6 +877,22 @@ fn secret_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SecretRec
         updated_at: row.get(9)?,
         last_rotated_at: row.get(10)?,
         deleted_at: row.get(11)?,
+    })
+}
+
+fn secret_version_record_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<SecretVersionRecord> {
+    Ok(SecretVersionRecord {
+        secret_id: row.get(0)?,
+        version: row.get(1)?,
+        source: row.get(2)?,
+        origin: row.get(3)?,
+        state: row.get(4)?,
+        created_at: row.get(5)?,
+        deprecated_at: row.get(6)?,
+        grace_until: row.get(7)?,
+        purged_at: row.get(8)?,
     })
 }
 
@@ -1331,6 +1609,85 @@ mod tests {
             |row| row.get::<_, i64>(0),
         )?;
         assert_eq!(deleted_at, 300);
+
+        Ok(())
+    }
+
+    #[test]
+    fn rotate_secret_advances_current_and_deprecates_prior() -> Result<(), Box<dyn Error>> {
+        let mut test_store = open_initialized_store()?;
+        insert_project_profile(&test_store.store)?;
+        test_store.store.create_active_secret(
+            &test_secret(),
+            &test_secret_version(),
+            &test_secret_blob(),
+            &test_secret_fingerprint(),
+        )?;
+
+        test_store.store.rotate_secret(
+            &test_secret(),
+            &SecretVersionRecord { version: 2, created_at: 400, ..test_secret_version() },
+            &SecretBlobRecord { version: 2, created_at: 400, ..test_secret_blob() },
+            &SecretFingerprintRecord { version: 2, created_at: 400, ..test_secret_fingerprint() },
+            300,
+            Some(500),
+        )?;
+
+        let secret = test_store
+            .store
+            .get_active_secret("lk_proj_test", "lk_prof_test", "DATABASE_URL", "user-local")?
+            .ok_or("active secret should exist")?;
+        assert_eq!(secret.current_version, 2);
+        assert_eq!(secret.last_rotated_at, Some(400));
+
+        let versions = test_store.store.list_secret_versions("lk_sec_test")?;
+        assert_eq!(versions.len(), 2);
+        assert_eq!(versions[0].state, "deprecated");
+        assert_eq!(versions[0].deprecated_at, Some(300));
+        assert_eq!(versions[0].grace_until, Some(500));
+        assert_eq!(versions[1].state, "current");
+        assert_eq!(versions[1].version, 2);
+
+        Ok(())
+    }
+
+    #[test]
+    fn purge_secret_versions_removes_material_but_keeps_version_rows() -> Result<(), Box<dyn Error>>
+    {
+        let mut test_store = open_initialized_store()?;
+        insert_project_profile(&test_store.store)?;
+        test_store.store.create_active_secret(
+            &test_secret(),
+            &test_secret_version(),
+            &test_secret_blob(),
+            &test_secret_fingerprint(),
+        )?;
+        test_store.store.rotate_secret(
+            &test_secret(),
+            &SecretVersionRecord { version: 2, created_at: 400, ..test_secret_version() },
+            &SecretBlobRecord { version: 2, created_at: 400, ..test_secret_blob() },
+            &SecretFingerprintRecord { version: 2, created_at: 400, ..test_secret_fingerprint() },
+            300,
+            Some(500),
+        )?;
+
+        assert!(test_store.store.purge_secret_version("lk_sec_test", 1, 600)?);
+        assert!(!test_store.store.purge_secret_version("lk_sec_test", 1, 700)?);
+
+        let versions = test_store.store.list_secret_versions("lk_sec_test")?;
+        assert_eq!(versions[0].state, "purged");
+        assert_eq!(versions[0].grace_until, None);
+        assert_eq!(versions[0].purged_at, Some(600));
+        assert_eq!(versions[1].state, "current");
+        assert_eq!(test_store.store.get_blob("lk_sec_test", 1)?, None);
+        assert!(test_store.store.get_blob("lk_sec_test", 2)?.is_some());
+
+        let fingerprint_rows = test_store.store.connection().query_row(
+            "SELECT COUNT(*) FROM fingerprints WHERE secret_id = 'lk_sec_test' AND version = 1",
+            [],
+            |row| row.get::<_, i64>(0),
+        )?;
+        assert_eq!(fingerprint_rows, 0);
 
         Ok(())
     }
