@@ -689,8 +689,7 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
     `runtime_sessions` table.
 - [x] Tray icon state set (Lucide-based) reflects
   locked/unlocked/scan-warn/alert with platform-appropriate styling.
-- [~] [4efea70d] Tray notification policy: no secret values, no secret names by default
-  Claim: branch agent-4efea70d/tray-notification-policy, worktree .worktrees/agent-4efea70d-tray-notification-policy.
+- [x] Tray notification policy: no secret values, no secret names by default
   (use generic "secret"/"policy"/"project" labels until the user opens the app).
   - Spec: `docs/specs/desktop.md:94-96`.
 - [ ] Tauri hardening: restrictive CSP, devtools disabled in release,
@@ -1101,6 +1100,7 @@ echoed inside `metadata_json` so the HMAC chain covers them. Never write
 
 ## Latest Verified Checkpoint
 
+- Tip of `main`: `98487fd` ("Define tray notification privacy policy").
 - `cargo fmt --all -- --check` clean on `main`.
 - `cargo test --workspace --all-targets --all-features` passes on `main`.
 - `cargo clippy --workspace --all-targets --all-features -- -D warnings` clean
