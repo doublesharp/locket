@@ -767,6 +767,7 @@ struct RuntimeContext {
     key_store: Arc<dyn MasterKeyStore + Send + Sync>,
     passphrase_store: PassphraseFallbackMasterKeyStore,
     passphrase_reader: Arc<dyn PassphraseReader + Send + Sync>,
+    confirmation_reader: Arc<dyn ConfirmationReader + Send + Sync>,
 }
 
 impl RuntimeContext {
@@ -792,7 +793,26 @@ impl RuntimeContext {
                 data_dir.join("passphrase-fallback"),
             ),
             passphrase_reader: Arc::new(EnvOrPromptPassphraseReader),
+            confirmation_reader: Arc::new(StdinConfirmationReader),
         })
+    }
+}
+
+trait ConfirmationReader {
+    fn read_confirmation(&self, prompt: &str) -> Result<String, CliError>;
+}
+
+#[derive(Debug, Clone, Copy)]
+struct StdinConfirmationReader;
+
+impl ConfirmationReader for StdinConfirmationReader {
+    fn read_confirmation(&self, prompt: &str) -> Result<String, CliError> {
+        if !io::stdin().is_terminal() {
+            return Err(CliError::Config(format!("{prompt} requires interactive confirmation")));
+        }
+        let mut confirmation = String::new();
+        io::stdin().read_line(&mut confirmation)?;
+        Ok(confirmation)
     }
 }
 
@@ -2597,14 +2617,24 @@ fn install_hooks_command(
         Err(error) if error.kind() == io::ErrorKind::NotFound => String::new(),
         Err(error) => return Err(error.into()),
     };
-    let updated = upsert_pre_commit_hook(&existing)?;
-    if updated != existing {
-        fs::write(&hook_path, updated)?;
+    let plan = plan_pre_commit_hook(&existing)?;
+    if plan.change == HookInstallChange::PrependUnmanaged {
+        confirm_unmanaged_pre_commit_hook(
+            context,
+            output,
+            resolved.config.name.as_str(),
+            &hook_path,
+            &existing,
+        )?;
+    }
+    if plan.updated != existing {
+        fs::write(&hook_path, plan.updated)?;
     }
     make_executable(&hook_path)?;
     write_hook_install_audit_if_available(context, &resolved)?;
 
     writeln!(output, "installed {}", hook_path.display())?;
+    writeln!(output, "hook_change: {}", plan.change.as_str())?;
     writeln!(output, "hook: locket scan --staged")?;
     writeln!(output, "secrets: not written")?;
     Ok(())
@@ -2614,10 +2644,38 @@ fn managed_pre_commit_block() -> String {
     format!("{HOOK_BEGIN}\nlocket scan --staged\n{HOOK_END}\n")
 }
 
-fn upsert_pre_commit_hook(existing: &str) -> Result<String, CliError> {
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum HookInstallChange {
+    Created,
+    RewroteManaged,
+    PrependUnmanaged,
+    Unchanged,
+}
+
+impl HookInstallChange {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Created => "created",
+            Self::RewroteManaged => "rewrote-managed-block",
+            Self::PrependUnmanaged => "prepended-after-confirmation",
+            Self::Unchanged => "unchanged",
+        }
+    }
+}
+
+#[derive(Debug)]
+struct HookInstallPlan {
+    updated: String,
+    change: HookInstallChange,
+}
+
+fn plan_pre_commit_hook(existing: &str) -> Result<HookInstallPlan, CliError> {
     let block = managed_pre_commit_block();
     if existing.is_empty() {
-        return Ok(format!("#!/bin/sh\n\n{block}"));
+        return Ok(HookInstallPlan {
+            updated: format!("#!/bin/sh\n\n{block}"),
+            change: HookInstallChange::Created,
+        });
     }
     if let Some(begin) = existing.find(HOOK_BEGIN) {
         let Some(relative_end) = existing[begin..].find(HOOK_END) else {
@@ -2632,12 +2690,20 @@ fn upsert_pre_commit_hook(existing: &str) -> Result<String, CliError> {
         updated.push_str(&existing[..begin]);
         updated.push_str(&block);
         updated.push_str(&existing[replace_end..]);
-        return Ok(updated);
+        let change = if updated == existing {
+            HookInstallChange::Unchanged
+        } else {
+            HookInstallChange::RewroteManaged
+        };
+        return Ok(HookInstallPlan { updated, change });
     }
 
-    if let Some(rest) = existing.strip_prefix("#!") {
+    let updated = if let Some(rest) = existing.strip_prefix("#!") {
         let Some(newline_index) = rest.find('\n') else {
-            return Ok(format!("{existing}\n\n{block}"));
+            return Ok(HookInstallPlan {
+                updated: format!("{existing}\n\n{block}"),
+                change: HookInstallChange::PrependUnmanaged,
+            });
         };
         let shebang_end = "#!".len() + newline_index + 1;
         let mut updated = String::new();
@@ -2646,10 +2712,37 @@ fn upsert_pre_commit_hook(existing: &str) -> Result<String, CliError> {
         updated.push_str(&block);
         updated.push('\n');
         updated.push_str(&existing[shebang_end..]);
-        Ok(updated)
+        updated
     } else {
-        Ok(format!("{block}\n{existing}"))
+        format!("{block}\n{existing}")
+    };
+    Ok(HookInstallPlan { updated, change: HookInstallChange::PrependUnmanaged })
+}
+
+fn confirm_unmanaged_pre_commit_hook(
+    context: &RuntimeContext,
+    output: &mut dyn Write,
+    project_name: &str,
+    hook_path: &Path,
+    existing: &str,
+) -> Result<(), CliError> {
+    writeln!(output, "pre_commit_hook: unmanaged")?;
+    writeln!(output, "path: {}", hook_path.display())?;
+    writeln!(output, "existing_lines: {}", existing.lines().count())?;
+    writeln!(output, "existing_bytes: {}", existing.len())?;
+    writeln!(output, "metadata_only: yes")?;
+    writeln!(output, "preview: prepend Locket managed block and preserve existing hook content")?;
+    writeln!(output, "managed_begin: {HOOK_BEGIN}")?;
+    writeln!(output, "managed_command: locket scan --staged")?;
+    writeln!(output, "managed_end: {HOOK_END}")?;
+    writeln!(output, "type project name '{project_name}' to confirm")?;
+    let confirmation = context
+        .confirmation_reader
+        .read_confirmation("install-hooks unmanaged hook replacement")?;
+    if confirmation.trim_end_matches(['\r', '\n']) != project_name {
+        return Err(CliError::Config("confirmation did not match project name".to_owned()));
     }
+    Ok(())
 }
 
 fn git_dir_for_worktree(start: &Path) -> Result<PathBuf, CliError> {
@@ -5997,6 +6090,23 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
+    struct StaticConfirmationReader {
+        confirmation: String,
+    }
+
+    impl StaticConfirmationReader {
+        fn new(confirmation: &str) -> Self {
+            Self { confirmation: confirmation.to_owned() }
+        }
+    }
+
+    impl super::ConfirmationReader for StaticConfirmationReader {
+        fn read_confirmation(&self, _prompt: &str) -> Result<String, super::CliError> {
+            Ok(self.confirmation.clone())
+        }
+    }
+
     #[derive(Debug, Default)]
     struct UnavailableMasterKeyStore;
 
@@ -6049,9 +6159,28 @@ mod tests {
         test_context_with_key_store(directory, Arc::new(MemoryMasterKeyStore::default()))
     }
 
+    fn test_context_with_confirmation(
+        directory: &tempfile::TempDir,
+        confirmation: &str,
+    ) -> RuntimeContext {
+        test_context_with_key_store_and_confirmation(
+            directory,
+            Arc::new(MemoryMasterKeyStore::default()),
+            confirmation,
+        )
+    }
+
     fn test_context_with_key_store(
         directory: &tempfile::TempDir,
         key_store: Arc<dyn MasterKeyStore + Send + Sync>,
+    ) -> RuntimeContext {
+        test_context_with_key_store_and_confirmation(directory, key_store, "app\n")
+    }
+
+    fn test_context_with_key_store_and_confirmation(
+        directory: &tempfile::TempDir,
+        key_store: Arc<dyn MasterKeyStore + Send + Sync>,
+        confirmation: &str,
     ) -> RuntimeContext {
         RuntimeContext {
             cwd: directory.path().to_path_buf(),
@@ -6063,6 +6192,7 @@ mod tests {
                 directory.path().join("passphrase-fallback"),
             ),
             passphrase_reader: Arc::new(StaticPassphraseReader::new("test fallback passphrase")),
+            confirmation_reader: Arc::new(StaticConfirmationReader::new(confirmation)),
         }
     }
 
@@ -7588,13 +7718,53 @@ argv = []
     }
 
     #[test]
-    fn install_hooks_prepends_managed_block_and_preserves_existing_hook()
+    fn install_hooks_requires_confirmation_for_unmanaged_hook()
     -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempdir()?;
-        let context = test_context(&directory);
+        let context = test_context_with_confirmation(&directory, "wrong\n");
         let hooks_dir = directory.path().join(".git/hooks");
         std::fs::create_dir_all(&hooks_dir)?;
         std::fs::write(hooks_dir.join("pre-commit"), "echo existing\n")?;
+
+        let mut init_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut init_output,
+        )?;
+
+        let mut install_output = Vec::new();
+        let result = run_with_context(
+            Cli::try_parse_from(["locket", "install-hooks"])?,
+            &context,
+            &mut install_output,
+        );
+        assert_error_contains(result, "confirmation did not match");
+        let install_output = String::from_utf8(install_output)?;
+        assert!(install_output.contains("pre_commit_hook: unmanaged"));
+        assert!(install_output.contains("metadata_only: yes"));
+        assert!(install_output.contains("type project name 'app'"));
+        assert!(!install_output.contains("echo existing"));
+        assert_eq!(std::fs::read_to_string(hooks_dir.join("pre-commit"))?, "echo existing\n");
+
+        let store = locket_store::Store::open(directory.path().join("store.db"))?;
+        let hook_installs: u32 = store.connection().query_row(
+            "SELECT COUNT(*) FROM audit_log WHERE action = 'HOOK_INSTALL'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(hook_installs, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn install_hooks_confirms_unmanaged_hook_and_preserves_existing_hook()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context_with_confirmation(&directory, "app\n");
+        let hooks_dir = directory.path().join(".git/hooks");
+        std::fs::create_dir_all(&hooks_dir)?;
+        std::fs::write(hooks_dir.join("pre-commit"), "#!/bin/sh\necho existing\n")?;
 
         let mut init_output = Vec::new();
         run_with_context(
@@ -7610,15 +7780,17 @@ argv = []
             &mut install_output,
         )?;
         let install_output = String::from_utf8(install_output)?;
+        assert!(install_output.contains("pre_commit_hook: unmanaged"));
+        assert!(install_output.contains("hook_change: prepended-after-confirmation"));
         assert!(install_output.contains("hook: locket scan --staged"));
         assert!(install_output.contains("secrets: not written"));
+        assert!(!install_output.contains("echo existing"));
 
         let hook = std::fs::read_to_string(hooks_dir.join("pre-commit"))?;
-        assert!(hook.starts_with(super::HOOK_BEGIN));
+        assert!(hook.starts_with("#!/bin/sh\n\n"));
         assert!(hook.contains("locket scan --staged"));
         assert!(hook.contains(super::HOOK_END));
         assert!(hook.contains("echo existing"));
-        assert!(!hook.contains("secret-value"));
 
         #[cfg(unix)]
         {
@@ -7633,6 +7805,7 @@ argv = []
             &context,
             &mut reinstall_output,
         )?;
+        assert!(String::from_utf8(reinstall_output)?.contains("hook_change: unchanged"));
         let reinstalled_hook = std::fs::read_to_string(hooks_dir.join("pre-commit"))?;
         assert_eq!(reinstalled_hook, hook);
         assert_eq!(reinstalled_hook.matches(super::HOOK_BEGIN).count(), 1);
@@ -7645,6 +7818,54 @@ argv = []
             |row| row.get(0),
         )?;
         assert_eq!(hook_installs, 2);
+        Ok(())
+    }
+
+    #[test]
+    fn install_hooks_creates_missing_hook_without_confirmation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context_with_confirmation(&directory, "wrong\n");
+        let hooks_dir = directory.path().join(".git/hooks");
+        std::fs::create_dir_all(&hooks_dir)?;
+
+        let mut init_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut init_output,
+        )?;
+
+        let mut install_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "install-hooks"])?,
+            &context,
+            &mut install_output,
+        )?;
+        let install_output = String::from_utf8(install_output)?;
+        assert!(install_output.contains("hook_change: created"));
+        assert!(!install_output.contains("pre_commit_hook: unmanaged"));
+
+        let hook = std::fs::read_to_string(hooks_dir.join("pre-commit"))?;
+        assert!(hook.starts_with("#!/bin/sh"));
+        assert!(hook.contains(super::HOOK_BEGIN));
+        assert!(hook.contains("locket scan --staged"));
+        assert!(hook.contains(super::HOOK_END));
+
+        let stale_managed = hook.replace("locket scan --staged", "locket scan --staged --old");
+        std::fs::write(hooks_dir.join("pre-commit"), stale_managed)?;
+        let mut reinstall_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "install-hooks"])?,
+            &context,
+            &mut reinstall_output,
+        )?;
+        assert!(
+            String::from_utf8(reinstall_output)?.contains("hook_change: rewrote-managed-block")
+        );
+        let rewritten_hook = std::fs::read_to_string(hooks_dir.join("pre-commit"))?;
+        assert!(rewritten_hook.contains("locket scan --staged"));
+        assert!(!rewritten_hook.contains("--old"));
         Ok(())
     }
 
