@@ -565,41 +565,14 @@ item is independently claimable; re-verify file:line references before
 editing — they drift. Severity: **blocker** (security/correctness),
 **important** (real defect), **nit** (cleanup).
 
-- [x] **blocker** — String-matched error detection in `import --overwrite`.
-  - Where: `crates/locket-cli/src/commands/secrets/import.rs:78` and `:94`
-    (verify before editing). The `import` overwrite path catches the
-    duplicate-key failure with `CliError::Config(message)` and gates overwrite
-    on `message.contains("already exists")` — a localized English string
-    produced at `crates/locket-cli/src/commands/secrets/set.rs:58` and `:133`.
-    Any reword silently breaks `--overwrite`.
-  - Fix: add a typed `SecretAlreadyExists` variant to `LocketError`
-    (`crates/locket-core/src/error.rs`), exit code 64-69 band per
-    `docs/specs/errors.md`. Replace the `CliError::Config(... "already
-    exists" ...)` callsites in `commands/secrets/set.rs`,
-    `commands/trust/profile.rs:63,75`, `commands/policy.rs:80`, and
-    `commands/vault/recovery.rs:117` with the typed variant. Update the
-    import overwrite branch to match on the typed variant.
-  - Tests: cover the overwrite branch with the typed error and a regression
-    test that proves the import succeeds when the message text changes.
+- [x] **blocker** — `import --overwrite` matched the literal string
+  `"already exists"`; now uses the typed `SecretAlreadyExists` (67)
+  across set/profile/policy/recovery callsites.
 
-- [x] **blocker** — `locket recover` writes no audit row.
-  - Where: `crates/locket-cli/src/commands/vault/recovery.rs::restore_from_recovery_code`
-    around line 102 (verify). Decrypts the recovery envelope, writes the
-    master key to the keychain at line 150, and returns `Ok(())` without
-    appending any audit row. The most security-relevant action a user can
-    take leaves no signed local trace. `recovery rotate` is correctly
-    audited as `RECOVERY_ROTATE` (line 239); `recover` is not.
-  - Fix: append a `RECOVER` (or `RECOVERY_RESTORE`, choose to match
-    `docs/specs/data-model.md` action enum) audit row in the same path,
-    metadata-only: project id, KDF profile id, envelope checksum, restored
-    entry kinds and counts, force flag. Append occurs after successful
-    keychain write, inside the same logical operation; if audit append
-    fails, surface the error rather than swallowing.
-  - Tests: assert the audit row exists and has the documented shape on
-    successful restore; assert no row is written if envelope validation
-    fails before keychain write.
+- [x] **blocker** — `locket recover` now appends a `RECOVER` audit row
+  (metadata-only) after successful keychain write.
 
-- [x] **blocker** — `locket new` writes no audit row.
+- [x] **blocker** — `locket new` now appends an `INIT` audit row.
 
 - [x] **important** — `commands/config.rs` is a thin shell of `main.rs`.
   - Where: `crates/locket-cli/src/commands/config.rs` reaches back into
