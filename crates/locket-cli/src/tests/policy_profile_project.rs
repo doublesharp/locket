@@ -204,6 +204,37 @@ fn profile_create_existing_profile_errors_without_audit_row()
 }
 
 #[test]
+fn profile_create_rejects_reserved_default_name_without_audit_row()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+
+    let result = run_with_context(
+        Cli::try_parse_from(["locket", "profile", "create", "_default"])?,
+        &context,
+        &mut Vec::new(),
+    );
+    let Err(error) = result else {
+        return Err("creating the _default profile must fail".into());
+    };
+    assert_eq!(error.exit_code(), locket_core::LocketError::InvalidProfileName.exit_code());
+
+    let store = crate::open_store(&context)?;
+    let count: i64 = store.connection().query_row(
+        "SELECT COUNT(*) FROM audit_log WHERE action = 'PROFILE_CREATE'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(count, 0);
+    Ok(())
+}
+
+#[test]
 fn use_profile_writes_profile_change_audit_row() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempdir()?;
     let context = test_context(&directory);

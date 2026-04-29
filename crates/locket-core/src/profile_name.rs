@@ -155,6 +155,16 @@ mod tests {
     }
 
     #[test]
+    fn rejects_reserved_default_profile_name() {
+        for value in ["_default", "_DEFAULT", "_Default"] {
+            assert!(
+                ProfileName::new(value).is_err(),
+                "{value} is reserved for tool internals and must not validate"
+            );
+        }
+    }
+
+    #[test]
     fn exposes_validated_string() {
         let name = ProfileName::new("dev-local");
         assert!(matches!(name.as_ref().map(ProfileName::as_str), Ok("dev-local")));
