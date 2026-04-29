@@ -13,8 +13,13 @@ use hkdf::Hkdf;
 use hmac::{Hmac, Mac};
 use rand::TryRngCore as _;
 use sha2::Sha256;
-use thiserror::Error;
 use zeroize::{Zeroize, Zeroizing};
+
+mod error;
+mod purpose;
+
+pub use error::{CryptoError, CryptoResult};
+pub use purpose::{KeyPurpose, KeyWrapPurpose};
 
 /// Current deterministic AAD schema version for encrypted secret values.
 pub const AAD_SCHEMA_V1: u16 = 1;
@@ -68,7 +73,6 @@ const AAD_V1_PREFIX: &[u8] = b"locket-aad-v1";
 const KEY_WRAP_V1_PREFIX: &[u8] = b"locket-key-wrap-v1";
 const HKDF_WRAP_INFO_V1_PREFIX: &[u8] = b"locket-wrap-v1";
 const PASSPHRASE_FALLBACK_AAD_V1_PREFIX: &[u8] = b"locket-passphrase-fallback-v1";
-const SECRET_DEK_PURPOSE: &str = "secret-dek";
 const RECOVERY_ENTRY_AAD_V1_PREFIX: &[u8] = b"locket-recovery-envelope-v1";
 const RECOVERY_ENTRY_HKDF_V1_PREFIX: &[u8] = b"locket-recovery-entry-v1";
 
@@ -96,42 +100,6 @@ pub type NonceBytes = [u8; NONCE_LEN];
 /// Fixed-size keyed fingerprint bytes.
 pub type FingerprintBytes = [u8; FINGERPRINT_LEN];
 
-/// Result type used by this crate.
-pub type CryptoResult<T> = Result<T, CryptoError>;
-
-/// Error returned by Locket crypto helpers.
-#[derive(Debug, Clone, Copy, Eq, Error, PartialEq)]
-#[non_exhaustive]
-pub enum CryptoError {
-    /// A canonical field name is too large for the v1 encoding.
-    #[error("canonical field name is too long")]
-    FieldNameTooLong,
-    /// A canonical field value is too large for the v1 encoding.
-    #[error("canonical field value is too long")]
-    FieldValueTooLong,
-    /// Secret values must be UTF-8 and must not contain NUL bytes.
-    #[error("invalid secret value")]
-    InvalidSecretValue,
-    /// The operating system random number generator failed.
-    #[error("random generation failed")]
-    RandomFailed,
-    /// HKDF expansion failed.
-    #[error("key derivation failed")]
-    KeyDerivationFailed,
-    /// Stored passphrase KDF parameters are unsupported or malformed.
-    #[error("invalid kdf parameters")]
-    InvalidKdfParameters,
-    /// Encryption failed.
-    #[error("encryption failed")]
-    EncryptionFailed,
-    /// Decryption failed.
-    #[error("decryption failed")]
-    DecryptionFailed,
-    /// A wrapped DEK did not use the canonical embedded nonce layout.
-    #[error("invalid wrapped key layout")]
-    InvalidWrappedKey,
-}
-
 /// Argon2id parameters for recovery envelope key derivation.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct RecoveryKdfParams {
@@ -157,74 +125,6 @@ impl RecoveryKdfParams {
             t_cost: RECOVERY_T_COST,
             p_cost: RECOVERY_P_COST,
             output_len,
-        }
-    }
-}
-
-/// Persisted key purpose strings from the `keys.purpose` column.
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-#[non_exhaustive]
-pub enum KeyPurpose {
-    /// Project metadata key.
-    ProjectMetadata,
-    /// Project audit key, serialized as `project-audit`.
-    Audit,
-    /// Profile secret key.
-    ProfileSecret,
-    /// Profile fingerprint key.
-    ProfileFingerprint,
-}
-
-impl KeyPurpose {
-    /// Returns the canonical persisted purpose string.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::ProjectMetadata => "project-metadata",
-            Self::Audit => "project-audit",
-            Self::ProfileSecret => "profile-secret",
-            Self::ProfileFingerprint => "profile-fingerprint",
-        }
-    }
-}
-
-/// Purpose strings accepted by `key_wrap_aad_v1`.
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-#[non_exhaustive]
-pub enum KeyWrapPurpose {
-    /// Project metadata key.
-    ProjectMetadata,
-    /// Project audit key.
-    Audit,
-    /// Profile secret key.
-    ProfileSecret,
-    /// Profile fingerprint key.
-    ProfileFingerprint,
-    /// Per-version secret DEK.
-    SecretDek,
-}
-
-impl KeyWrapPurpose {
-    /// Returns the canonical key-wrap purpose string.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::ProjectMetadata => KeyPurpose::ProjectMetadata.as_str(),
-            Self::Audit => KeyPurpose::Audit.as_str(),
-            Self::ProfileSecret => KeyPurpose::ProfileSecret.as_str(),
-            Self::ProfileFingerprint => KeyPurpose::ProfileFingerprint.as_str(),
-            Self::SecretDek => SECRET_DEK_PURPOSE,
-        }
-    }
-}
-
-impl From<KeyPurpose> for KeyWrapPurpose {
-    fn from(value: KeyPurpose) -> Self {
-        match value {
-            KeyPurpose::ProjectMetadata => Self::ProjectMetadata,
-            KeyPurpose::Audit => Self::Audit,
-            KeyPurpose::ProfileSecret => Self::ProfileSecret,
-            KeyPurpose::ProfileFingerprint => Self::ProfileFingerprint,
         }
     }
 }
