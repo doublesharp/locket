@@ -1,112 +1,19 @@
 //! Local agent and protocol types for Locket.
 
-use std::str::FromStr;
-
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use thiserror::Error;
+
+mod error;
+mod method;
+
+pub use error::ProtocolError;
+pub use method::{AgentMethod, UnknownMethod};
 
 /// Maximum v1 protocol message size in bytes.
 pub const DEFAULT_MAX_MESSAGE_SIZE: usize = 1024 * 1024;
 
 /// Agent protocol version supported by this crate.
 pub const PROTOCOL_VERSION: u16 = 1;
-
-/// V1 agent RPC method names.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum AgentMethod {
-    /// Return metadata-only agent status.
-    Status,
-    /// Unlock local key material.
-    Unlock,
-    /// Clear local key material and live grants.
-    Lock,
-    /// Register an automation client.
-    RegisterClient,
-    /// Revoke an automation client.
-    RevokeClient,
-    /// Request a live TTL grant.
-    RequestGrant,
-    /// Revoke a live TTL grant.
-    RevokeGrant,
-    /// Lazily record an expired grant.
-    ExpireGrant,
-    /// Resolve an authorized `lk://` reference.
-    ResolveReference,
-    /// Prepare a command policy for execution.
-    PrepareExec,
-    /// Provide known-value scan matching.
-    ScanKnownValues,
-    /// Reveal one secret value through a gated path.
-    Reveal,
-    /// Copy one secret value through a gated path.
-    Copy,
-    /// Subscribe to metadata-only status events.
-    SubscribeStatus,
-    /// Cancel a status subscription.
-    CancelSubscription,
-    /// Automation client challenge handshake.
-    ClientHello,
-}
-
-impl AgentMethod {
-    /// Returns the exact v1 wire method name.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Status => "Status",
-            Self::Unlock => "Unlock",
-            Self::Lock => "Lock",
-            Self::RegisterClient => "RegisterClient",
-            Self::RevokeClient => "RevokeClient",
-            Self::RequestGrant => "RequestGrant",
-            Self::RevokeGrant => "RevokeGrant",
-            Self::ExpireGrant => "ExpireGrant",
-            Self::ResolveReference => "ResolveReference",
-            Self::PrepareExec => "PrepareExec",
-            Self::ScanKnownValues => "ScanKnownValues",
-            Self::Reveal => "Reveal",
-            Self::Copy => "Copy",
-            Self::SubscribeStatus => "SubscribeStatus",
-            Self::CancelSubscription => "CancelSubscription",
-            Self::ClientHello => "ClientHello",
-        }
-    }
-}
-
-impl FromStr for AgentMethod {
-    type Err = UnknownMethod;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        match value {
-            "Status" => Ok(Self::Status),
-            "Unlock" => Ok(Self::Unlock),
-            "Lock" => Ok(Self::Lock),
-            "RegisterClient" => Ok(Self::RegisterClient),
-            "RevokeClient" => Ok(Self::RevokeClient),
-            "RequestGrant" => Ok(Self::RequestGrant),
-            "RevokeGrant" => Ok(Self::RevokeGrant),
-            "ExpireGrant" => Ok(Self::ExpireGrant),
-            "ResolveReference" => Ok(Self::ResolveReference),
-            "PrepareExec" => Ok(Self::PrepareExec),
-            "ScanKnownValues" => Ok(Self::ScanKnownValues),
-            "Reveal" => Ok(Self::Reveal),
-            "Copy" => Ok(Self::Copy),
-            "SubscribeStatus" => Ok(Self::SubscribeStatus),
-            "CancelSubscription" => Ok(Self::CancelSubscription),
-            "ClientHello" => Ok(Self::ClientHello),
-            other => Err(UnknownMethod { method: other.to_owned() }),
-        }
-    }
-}
-
-/// Unknown v1 agent method name.
-#[derive(Clone, Debug, Eq, Error, PartialEq)]
-#[error("unknown agent method: {method}")]
-pub struct UnknownMethod {
-    /// Method string found in the envelope.
-    pub method: String,
-}
 
 /// JSON request envelope sent after the v1 length prefix.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -246,37 +153,6 @@ impl StatusPayload {
             agent_version: agent_version.into(),
         }
     }
-}
-
-/// Error returned while encoding or decoding agent protocol frames.
-#[derive(Debug, Error)]
-pub enum ProtocolError {
-    /// Frame length is larger than the configured maximum.
-    #[error("agent protocol message exceeds maximum size: {length} > {maximum}")]
-    MessageTooLarge {
-        /// Encoded payload length.
-        length: usize,
-        /// Maximum allowed payload length.
-        maximum: usize,
-    },
-    /// The byte stream does not contain a complete frame yet.
-    #[error("incomplete agent protocol frame")]
-    IncompleteFrame,
-    /// JSON serialization or deserialization failed.
-    #[error(transparent)]
-    Json(#[from] serde_json::Error),
-    /// The frame length cannot be represented by the v1 32-bit prefix.
-    #[error("agent protocol message is too large for v1 framing")]
-    LengthPrefixOverflow,
-    /// The protocol version is not supported.
-    #[error("unsupported agent protocol version: {version}")]
-    UnsupportedVersion {
-        /// Version found in the envelope.
-        version: u16,
-    },
-    /// Request kind is not a supported v1 method.
-    #[error(transparent)]
-    UnknownMethod(#[from] UnknownMethod),
 }
 
 /// Serializes an envelope payload into a length-prefixed v1 frame.
