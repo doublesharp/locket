@@ -318,7 +318,8 @@ to touch. Items marked `[x]` are merged to `main` and verified.
   - Audit actions: `RUN` (with policy id, allowed/required secret name lists,
     confirmation source, child exit).
   - Files: `crates/locket-exec/src/`, `crates/locket-cli/src/main.rs` run path.
-- [ ] External env source resolution: `ExternalEnvSource::Parent` (re-inject
+- [~] [70c448c4] External env source resolution: `ExternalEnvSource::Parent` (re-inject
+  Claim: branch agent-70c448c4/external-env-parent, worktree .worktrees/agent-70c448c4-external-env-parent. Scope: implement parent external env resolution first; leave File/Compose/Ide follow-ups explicit if still pending.
   only allowed names), `::File(path)` (canonical, in-project, non-symlink-escape;
   `policy doctor` warns), `::Compose` (shell out to `docker compose config
   --format json`, names-only audit), `::Ide` (consume VS Code terminal
