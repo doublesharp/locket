@@ -481,6 +481,35 @@ to touch. Items marked `[x]` are merged to `main` and verified.
 - [x] Runtime session storage/retention primitives and runtime execution
   recording for `exec`/`run` (doctor process-liveness classification is a
   follow-up under doctor enhancements).
+- [ ] Env layering modes: `merge` and `passthrough` distinct from
+  `minimal`/`strict`, plus `override = "preserve"` / `"error"` modes
+  with a warning when a policy doesn't choose an override mode.
+  - Spec: `docs/specs/runtime.md` Runtime Execution.
+  - Errors: `InvalidPolicy` (65), `EnvironmentConflict` (66).
+  - Files: `crates/locket-exec/src/`,
+    `crates/locket-core/src/policy/`.
+- [ ] Conservative env allowlist
+  (`PATH HOME USER SHELL TMPDIR LANG LC_* TERM CI`) applied in `minimal`
+  mode and surfaced in `policy doctor`.
+  - Spec: `docs/specs/runtime.md` Runtime Execution.
+  - Files: `crates/locket-exec/src/env_layer.rs` (or equivalent).
+- [ ] Ephemeral env-file fallback for child processes that cannot accept
+  an env map: 0700 parent / 0600 file, randomized name outside the
+  project tree, post-spawn deletion, audited delivery mode, secure-erase
+  warning when not supported.
+  - Spec: `docs/specs/runtime.md` Runtime Execution.
+  - Audit: `RUN`/`EXEC` extended with `delivery_mode = "ephemeral_file"`.
+  - Files: `crates/locket-exec/src/`.
+- [ ] Clipboard clear-after-TTL only when clipboard still contains the
+  copied value, plus pre-copy warning on platforms that can't reliably
+  clear (e.g. some Wayland compositors).
+  - Spec: `docs/specs/runtime.md` Reveal/Copy.
+  - Files: `crates/locket-platform/src/` clipboard module.
+- [ ] `locket diff --since` git-revision resolution via direct
+  `git log -1 --format=%ct <rev>` (no shell construction; never echo the
+  revision back into a shell).
+  - Spec: `docs/specs/runtime.md` Rotation & History.
+  - Files: `crates/locket-cli/src/commands/secrets/diff.rs`.
 
 ### Security/Recovery/Team
 
