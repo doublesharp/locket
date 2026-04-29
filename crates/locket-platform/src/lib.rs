@@ -29,6 +29,116 @@ pub const fn platform_name() -> &'static str {
     std::env::consts::OS
 }
 
+/// Request metadata for a local user-verification ceremony.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalUserVerificationRequest {
+    /// Metadata-only action name, such as `unlock`, `reveal`, or `team_accept`.
+    pub action: String,
+    /// Metadata-only reason shown to the user by platform prompts when supported.
+    pub reason: String,
+}
+
+impl LocalUserVerificationRequest {
+    /// Creates a metadata-only user-verification request.
+    #[must_use]
+    pub fn new(action: impl Into<String>, reason: impl Into<String>) -> Self {
+        Self { action: action.into(), reason: reason.into() }
+    }
+}
+
+/// Platform or fallback mechanism that satisfied a local user-verification gate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum LocalUserVerificationMethod {
+    /// OS-native user-presence prompt such as Touch ID or Windows Hello.
+    PlatformPrompt,
+    /// Direct CTAP2/FIDO2 user-presence or user-verification ceremony.
+    HardwareKey,
+    /// Explicitly configured passphrase fallback.
+    PassphraseFallback,
+    /// In-memory test-only verifier.
+    Test,
+}
+
+/// Successful local user-verification result.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LocalUserVerification {
+    /// Mechanism that satisfied the gate.
+    pub method: LocalUserVerificationMethod,
+    /// Metadata-only platform label for diagnostics.
+    pub platform: String,
+}
+
+impl LocalUserVerification {
+    /// Creates a verified result with metadata-only platform context.
+    #[must_use]
+    pub fn new(method: LocalUserVerificationMethod, platform: impl Into<String>) -> Self {
+        Self { method, platform: platform.into() }
+    }
+}
+
+/// Interface for local user verification used by sensitive CLI, UI, and agent gates.
+pub trait LocalUserVerifier {
+    /// Performs a local user-verification ceremony.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PlatformError::LocalUserVerificationUnavailable`] when the
+    /// current build has no platform verifier, and
+    /// [`PlatformError::LocalUserVerificationFailed`] when a configured
+    /// verifier rejects or cannot complete the ceremony.
+    fn verify_user(
+        &self,
+        request: &LocalUserVerificationRequest,
+    ) -> Result<LocalUserVerification, PlatformError>;
+}
+
+/// Default verifier for builds where platform presence APIs are not yet wired.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct UnavailableLocalUserVerifier;
+
+impl LocalUserVerifier for UnavailableLocalUserVerifier {
+    fn verify_user(
+        &self,
+        _request: &LocalUserVerificationRequest,
+    ) -> Result<LocalUserVerification, PlatformError> {
+        Err(PlatformError::LocalUserVerificationUnavailable)
+    }
+}
+
+/// Deterministic in-memory verifier for tests and integration harnesses.
+#[derive(Debug, Clone)]
+pub struct MemoryLocalUserVerifier {
+    allow: bool,
+}
+
+impl MemoryLocalUserVerifier {
+    /// Creates a verifier that always succeeds with a test-only method.
+    #[must_use]
+    pub const fn allowing() -> Self {
+        Self { allow: true }
+    }
+
+    /// Creates a verifier that always fails local user verification.
+    #[must_use]
+    pub const fn denying() -> Self {
+        Self { allow: false }
+    }
+}
+
+impl LocalUserVerifier for MemoryLocalUserVerifier {
+    fn verify_user(
+        &self,
+        _request: &LocalUserVerificationRequest,
+    ) -> Result<LocalUserVerification, PlatformError> {
+        if self.allow {
+            Ok(LocalUserVerification::new(LocalUserVerificationMethod::Test, platform_name()))
+        } else {
+            Err(PlatformError::LocalUserVerificationFailed)
+        }
+    }
+}
+
 /// Interface for local master-key storage.
 pub trait MasterKeyStore {
     /// Stores a master key for `project_id`.
@@ -324,6 +434,12 @@ pub enum PlatformError {
     /// Project id cannot be used as a local fallback-envelope filename.
     #[error("invalid project id for local path")]
     InvalidProjectId,
+    /// Local user verification is not available in this build or platform.
+    #[error("local user verification unavailable")]
+    LocalUserVerificationUnavailable,
+    /// Local user verification was rejected or failed.
+    #[error("local user verification failed")]
+    LocalUserVerificationFailed,
     /// Local filesystem operation failed.
     #[error(transparent)]
     Io(#[from] std::io::Error),
@@ -426,8 +542,10 @@ fn write_user_only_file(path: &Path, contents: &[u8]) -> Result<(), PlatformErro
 #[cfg(test)]
 mod tests {
     use super::{
-        KEY_LEN, MasterKeyStore, MemoryMasterKeyStore, PassphraseFallbackMasterKeyStore,
-        PlatformError, decode_key, encode_key, master_key_account,
+        KEY_LEN, LocalUserVerificationMethod, LocalUserVerificationRequest, LocalUserVerifier,
+        MasterKeyStore, MemoryLocalUserVerifier, MemoryMasterKeyStore,
+        PassphraseFallbackMasterKeyStore, PlatformError, UnavailableLocalUserVerifier, decode_key,
+        encode_key, master_key_account,
     };
 
     const PROJECT_ID: &str = "lk_proj_test";
@@ -493,6 +611,30 @@ mod tests {
     #[test]
     fn keyring_account_is_project_scoped() {
         assert_eq!(master_key_account(PROJECT_ID), "master:lk_proj_test");
+    }
+
+    #[test]
+    fn unavailable_user_verifier_fails_closed() {
+        let verifier = UnavailableLocalUserVerifier;
+        let request = LocalUserVerificationRequest::new("reveal", "Reveal DATABASE_URL");
+
+        let result = verifier.verify_user(&request);
+
+        assert!(matches!(result, Err(PlatformError::LocalUserVerificationUnavailable)));
+    }
+
+    #[test]
+    fn memory_user_verifier_supports_success_and_failure() -> Result<(), PlatformError> {
+        let request = LocalUserVerificationRequest::new("unlock", "Unlock local vault");
+        let success = MemoryLocalUserVerifier::allowing().verify_user(&request)?;
+
+        assert_eq!(success.method, LocalUserVerificationMethod::Test);
+        assert_eq!(success.platform, super::platform_name());
+        assert!(matches!(
+            MemoryLocalUserVerifier::denying().verify_user(&request),
+            Err(PlatformError::LocalUserVerificationFailed)
+        ));
+        Ok(())
     }
 
     #[test]
