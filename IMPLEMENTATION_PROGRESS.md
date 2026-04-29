@@ -583,7 +583,7 @@ editing — they drift. Severity: **blocker** (security/correctness),
     callsites in `commands/vault/recovery.rs` migrated to
     `metadata_invalid_error(...)` (exit 64) in `8013f25`. Regression covers
     a corrupted `recovery/kdf.toml` exiting 64.
-  - [~] [bec7ddfc] ready: agent-bec7ddfc/typed-policy-not-found @ d3c4355 —
+  - [x] **subtask** — typed-policy-not-found @ 4671015:
     `PolicyNotFound` (exit 64) added and wired for command-policy misses in
     `main.rs` / `commands/policy.rs` plus automation-client revoke misses;
     docs/spec error tables and focused CLI/core regressions updated. Verified:
