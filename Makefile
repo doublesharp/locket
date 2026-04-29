@@ -9,7 +9,11 @@ CARGO_JOBS ?= 12
 OFFLINE ?= 1
 STRICT ?= 0
 FUZZ_TARGET ?=
+FUZZ_ARTIFACT ?=
 FUZZ_TIME ?= 60
+FUZZ_MAX_LEN ?= 65536
+FUZZ_TIMEOUT ?= 30
+FUZZ_RSS_LIMIT_MB ?= 2048
 
 ifeq ($(OFFLINE),1)
 CARGO_OFFLINE_FLAG := --offline
@@ -17,7 +21,7 @@ else
 CARGO_OFFLINE_FLAG :=
 endif
 
-.PHONY: ci ci-local ci-strict fmt fmt-check clippy test nextest coverage coverage-html coverage-branch mutation supply-chain supply-chain-local audit deny unsafe-inventory sbom bench bench-ci bench-report fuzz-list fuzz-smoke fuzz fuzz-nightly leak-canary docs-check clean
+.PHONY: ci ci-local ci-strict fmt fmt-check clippy test nextest coverage coverage-html coverage-branch mutation supply-chain supply-chain-local audit deny unsafe-inventory sbom bench bench-ci bench-report fuzz-list fuzz-smoke fuzz fuzz-nightly fuzz-minimize leak-canary docs-check clean
 
 # Local default gate. It avoids network by default and skips missing optional tools
 # with explicit warnings. Use `make ci-strict OFFLINE=0 STRICT=1` for release-style
@@ -82,17 +86,22 @@ bench-report:
 	scripts/bench-smoke.sh report
 
 fuzz-list:
-	$(CARGO_FUZZ) list
+	CARGO_FUZZ="$(CARGO_FUZZ)" scripts/fuzz-smoke.sh list
 
 fuzz-smoke:
-	scripts/fuzz-smoke.sh
+	CARGO_FUZZ="$(CARGO_FUZZ)" FUZZ_TIME="$(FUZZ_TIME)" FUZZ_MAX_LEN="$(FUZZ_MAX_LEN)" FUZZ_TIMEOUT="$(FUZZ_TIMEOUT)" FUZZ_RSS_LIMIT_MB="$(FUZZ_RSS_LIMIT_MB)" STRICT="$(STRICT)" scripts/fuzz-smoke.sh
 
 fuzz:
 	@test -n "$(FUZZ_TARGET)" || (echo "Set FUZZ_TARGET=<target>"; exit 2)
-	$(CARGO_FUZZ) run $(FUZZ_TARGET) -- -max_total_time=$(FUZZ_TIME)
+	CARGO_FUZZ="$(CARGO_FUZZ)" FUZZ_TARGETS="$(FUZZ_TARGET)" FUZZ_TIME="$(FUZZ_TIME)" FUZZ_MAX_LEN="$(FUZZ_MAX_LEN)" FUZZ_TIMEOUT="$(FUZZ_TIMEOUT)" FUZZ_RSS_LIMIT_MB="$(FUZZ_RSS_LIMIT_MB)" STRICT="$(STRICT)" scripts/fuzz-smoke.sh run
 
 fuzz-nightly:
-	FUZZ_TIME=900 STRICT=1 scripts/fuzz-smoke.sh
+	CARGO_FUZZ="$(CARGO_FUZZ)" FUZZ_TIME=900 FUZZ_MAX_LEN="$(FUZZ_MAX_LEN)" FUZZ_TIMEOUT="$(FUZZ_TIMEOUT)" FUZZ_RSS_LIMIT_MB="$(FUZZ_RSS_LIMIT_MB)" STRICT=1 scripts/fuzz-smoke.sh nightly
+
+fuzz-minimize:
+	@test -n "$(FUZZ_TARGET)" || (echo "Set FUZZ_TARGET=<target>"; exit 2)
+	@test -n "$(FUZZ_ARTIFACT)" || (echo "Set FUZZ_ARTIFACT=<path-to-crash>"; exit 2)
+	CARGO_FUZZ="$(CARGO_FUZZ)" FUZZ_TARGET="$(FUZZ_TARGET)" FUZZ_ARTIFACT="$(FUZZ_ARTIFACT)" FUZZ_MAX_LEN="$(FUZZ_MAX_LEN)" FUZZ_TIMEOUT="$(FUZZ_TIMEOUT)" FUZZ_RSS_LIMIT_MB="$(FUZZ_RSS_LIMIT_MB)" scripts/fuzz-minimize.sh
 
 leak-canary:
 	scripts/leak-canary.sh
