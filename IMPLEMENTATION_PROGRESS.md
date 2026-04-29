@@ -300,19 +300,9 @@ to touch. Items marked `[x]` are merged to `main` and verified.
     `docs/specs/scan-redaction.md`.
   - Errors: `UnlockRequired` (72), `ProjectRootUntrusted` (71).
   - Files: `crates/locket-cli/src/commands/scan/scanner.rs`.
-- [x] Store/schema coverage for the full required-tables set.
-  - Spec: `docs/specs/storage.md:26-50` (required tables list),
-    `docs/specs/storage.md:55-160` (column-level constraints).
-  - Errors: `StorageError` (90), `SchemaMismatch` (91), `Concurrency` (92),
-    `IntegrityFailure` (93).
-  - Audit actions: `SCHEMA_MIGRATE` for migrations.
-  - Files: `crates/locket-store/src/schema.rs` (migrations + column DDL),
-    new modules under `crates/locket-store/src/` per missing table family.
-  - Required tables not yet covered (verify each): `automation_clients`,
-    `automation_client_private_key_refs`, `automation_client_nonces`, `teams`,
-    `team_members`, `team_invites`, `command_policies` index/cache,
-    `imported_audit_chains`, `passkey_credentials` PRF wrapping, plus indexes,
-    triggers, and concurrency tests for all of the above.
+- [x] Store/schema coverage for the full required-tables set
+  (automation/teams/passkey/imported-audit tables + indexes/triggers,
+  with `SCHEMA_MIGRATE` audit on migrations).
 
 ### Runtime/DX
 
@@ -671,15 +661,10 @@ to touch. Items marked `[x]` are merged to `main` and verified.
     includes degraded flags.
   - Files: `crates/locket-platform/src/` (per-OS hardening modules),
     `crates/locket-agent/src/`.
-- [x] Metadata privacy validation for secret metadata, config, policies,
-  templates, team/member/device labels, and UI edits.
-  - Spec: `docs/specs/data-model.md` (metadata validation rules);
-    `docs/specs/audit.md:40+` (no plaintext secrets in metadata).
-  - Errors: `MetadataInvalid` (64), `MetadataLooksLikeSecret` (66).
-  - Audit actions: validation-failure rows where the spec already requires
-    them (e.g. `META` failure path).
-  - Files: shared validator in `crates/locket-core/src/metadata.rs` (used by
-    every editor of metadata).
+- [x] Metadata privacy validation across secret/config/policy/template/
+  team/member/device editors via the shared
+  `crates/locket-core/src/metadata.rs` validator
+  (`MetadataInvalid` 64, `MetadataLooksLikeSecret` 66).
 - [ ] Member/device revocation produces a rotation checklist for every
   profile/secret the member or device could access.
   - Spec: `docs/specs/invariants.md` Fixed Implementation Decisions.
@@ -747,9 +732,7 @@ to touch. Items marked `[x]` are merged to `main` and verified.
 
 ### App/UI
 
-- [x] Add the `locket-app` workspace crate/application.
-  - Spec: `docs/specs/architecture.md`, `docs/specs/desktop.md`.
-  - Files: `crates/locket-app/` (new), workspace `Cargo.toml`.
+- [x] `locket-app` workspace crate scaffolded under `crates/locket-app/`.
 - [ ] Build the Tauri desktop app.
   - Spec: `docs/specs/desktop.md:5-65`.
   - Files: `crates/locket-app/src-tauri/`, `crates/locket-app/ui/`.
@@ -770,9 +753,8 @@ to touch. Items marked `[x]` are merged to `main` and verified.
 - [ ] Execution/session monitor view.
   - Spec: `docs/specs/desktop.md:17`; data source is the existing
     `runtime_sessions` table.
-- [x] Tray icon state set (Lucide-based; reflects locked/unlocked/scan-warn/
-  alert states; macOS template image, Windows/Linux full-color light/dark).
-  - Spec: `docs/specs/desktop.md:98-108`.
+- [x] Tray icon state set (Lucide-based) reflects
+  locked/unlocked/scan-warn/alert with platform-appropriate styling.
 - [~] [4efea70d] Tray notification policy: no secret values, no secret names by default
   Claim: branch agent-4efea70d/tray-notification-policy, worktree .worktrees/agent-4efea70d-tray-notification-policy.
   (use generic "secret"/"policy"/"project" labels until the user opens the app).
@@ -931,10 +913,8 @@ editing — they drift. Severity: **blocker** (security/correctness),
   recovery, bundles, team invite accept, and UI/editor smoke flows.
   - Spec: `docs/specs/testing.md`.
   - Files: new `tests/e2e/` workspace under each integration owner crate.
-- [x] Full fuzz coverage for required parsers/protocols.
-  - Spec: `docs/specs/fuzzing.md`.
-  - Files: `fuzz/fuzz_targets/` — current targets are smoke only; spec lists
-    required corpora and sanitizer/nightly cadence.
+- [x] Required fuzz targets landed under `fuzz/fuzz_targets/` (cadence
+  and sanitizer gates tracked under the fuzz tooling TODO below).
 - [~] Bench harnesses and performance gates. Local bench smoke/report scaffolding
   exists. Remaining: full spec fixtures (metadata: 3 profiles / 150 secret
   metadata rows / 50 active secrets / 10 policies / 5 trusted roots / valid
