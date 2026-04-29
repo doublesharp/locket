@@ -15,3 +15,4 @@ workspace = true
 
 [dependencies]
 locket-core = { path = "../locket-core" }
+thiserror = { workspace = true }

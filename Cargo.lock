@@ -506,6 +506,7 @@ name = "locket-exec"
 version = "0.1.0"
 dependencies = [
  "locket-core",
+ "thiserror",
 ]
 
 [[package]]
