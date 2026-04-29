@@ -13,7 +13,7 @@ use ignore::{WalkBuilder, gitignore::GitignoreBuilder};
 use locket_core::{
     ClientId, CommandPolicy, CommandSpec, DeviceId, Duration as LocketDuration, ExternalEnvSource,
     KeyId, LocketError, PROJECT_CONFIG_SCHEMA_VERSION, PolicyDocument, ProfileId, ProfileName,
-    ProjectConfig, ProjectId, SecretId, SecretName,
+    ProjectConfig, ProjectId, SecretId, SecretName, SessionId,
 };
 use locket_crypto::{
     EncryptedSecretValue, HkdfWrapInfo, KeyPurpose, KeyWrapAad, KeyWrapPurpose, WrappedKeyMaterial,
@@ -34,7 +34,7 @@ use locket_scan::{
 };
 use locket_store::{
     AuditContext, AuditLogRecord, AuditWrite, AutomationClientRecord, DeviceRecord,
-    DirectoryGrantRecord, KeyRecord, PasskeyCredentialRecord, ProfileRecord,
+    DirectoryGrantRecord, KeyRecord, PasskeyCredentialRecord, ProfileRecord, RuntimeSessionRecord,
     RuntimeSessionSecretNameRetention, SecretBlobRecord, SecretCopyTarget, SecretFingerprintRecord,
     SecretMetadataUpdate, SecretRecord, SecretVersionRecord, Store, StoreError, VersionDeprecation,
 };
@@ -50,7 +50,7 @@ use std::io::{self, IsTerminal, Read, Seek, SeekFrom, Write};
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::process::{Command as ProcessCommand, ExitCode as ProcessExitCode, Stdio};
+use std::process::{Command as ProcessCommand, ExitCode as ProcessExitCode, ExitStatus, Stdio};
 use std::str::FromStr;
 use std::sync::{Arc, mpsc};
 use std::thread;
@@ -2789,16 +2789,20 @@ fn exec_command(
         confirm_exec_all_scope(context, output, &profile, &args.command, &secret_names)?;
     }
 
+    let mut resolved_secrets = Vec::with_capacity(args.secrets.len());
     let mut locket_env = locket_exec::EnvMap::new();
     let mut injected_names = Vec::with_capacity(secret_names.len());
     for key in &secret_names {
         let resolved = resolve_active_secret(context, key)?;
         let value = decrypt_current_secret(context, &resolved)?;
         injected_names.push(resolved.secret.name.clone());
-        locket_env.insert(resolved.secret.name, value.as_str().to_owned());
+        locket_env.insert(resolved.secret.name.clone(), value.as_str().to_owned());
+        resolved_secrets.push(resolved);
     }
     injected_names.sort();
     injected_names.dedup();
+    let unique_names = unique_secret_names(injected_names.iter().map(String::as_str));
+    let first_secret = resolved_secrets.first();
 
     let argv_program = args.command.first().cloned().unwrap_or_default();
     let arg_count = args.command.len();
@@ -2812,7 +2816,23 @@ fn exec_command(
         override_mode: locket_exec::EnvOverrideMode::Locket,
     };
     let prepared = locket_exec::prepare_execution(&request).map_err(exec_prepare_error)?;
-    let status = prepared.command().status()?;
+    let _ = first_secret;
+    let status = if unique_names.is_empty() {
+        prepared.command().status()?
+    } else {
+        execute_prepared_with_runtime_session(
+            context,
+            &RuntimeExecutionRequest {
+                store: &store,
+                resolved: &resolved_project,
+                profile: &profile,
+                policy_name: None,
+                secret_names: &unique_names,
+                prepared: &prepared,
+                current_dir: None,
+            },
+        )?
+    };
     let exit_code = status.code();
 
     write_exec_audit_if_available(
@@ -2980,7 +3000,22 @@ fn run_command(
         override_mode: policy.override_behavior,
     };
     let prepared = locket_exec::prepare_execution(&request).map_err(exec_prepare_error)?;
-    let status = prepared.command().current_dir(&context.cwd).status()?;
+    let secret_names =
+        unique_secret_names(selections.iter().filter_map(|selection| {
+            selection.selected.as_ref().map(|secret| secret.name.as_str())
+        }));
+    let status = execute_prepared_with_runtime_session(
+        context,
+        &RuntimeExecutionRequest {
+            store: &store,
+            resolved: &resolved,
+            profile: &profile,
+            policy_name: Some(&policy.name),
+            secret_names: &secret_names,
+            prepared: &prepared,
+            current_dir: Some(&context.cwd),
+        },
+    )?;
     let audit_status = if status.success() { "SUCCESS" } else { "FAILED" };
     write_runtime_policy_audit_if_available(
         context,
@@ -2996,6 +3031,84 @@ fn run_command(
 
     writeln!(output, "child exited with status {status}")?;
     Err(child_exit_error(status))
+}
+
+struct RuntimeExecutionRequest<'a> {
+    store: &'a Store,
+    resolved: &'a ResolvedProject,
+    profile: &'a ProfileRecord,
+    policy_name: Option<&'a str>,
+    secret_names: &'a [String],
+    prepared: &'a locket_exec::PreparedExecution,
+    current_dir: Option<&'a Path>,
+}
+
+fn execute_prepared_with_runtime_session(
+    context: &RuntimeContext,
+    request: &RuntimeExecutionRequest<'_>,
+) -> Result<ExitStatus, CliError> {
+    let started_at = now_unix_nanos()?;
+    let mut command = request.prepared.command();
+    if let Some(current_dir) = request.current_dir {
+        command.current_dir(current_dir);
+    }
+    let mut child = command.spawn()?;
+    let process_id = child.id();
+    let session = RuntimeSessionRecord {
+        id: SessionId::generate()
+            .map_err(|_| CliError::Config("runtime session id generation failed".to_owned()))?
+            .into_string(),
+        project_id: request.resolved.config.project_id.to_string(),
+        profile_id: request.profile.id.clone(),
+        policy_name: request.policy_name.map(ToOwned::to_owned),
+        process_id,
+        process_start_time: started_at,
+        started_at,
+        ended_at: None,
+        exit_status: None,
+        secret_names: runtime_session_retention(context)?
+            .secret_names_for_storage(request.secret_names),
+        spawn_audit_sequence: None,
+        completion_audit_sequence: None,
+    };
+
+    if let Err(error) = request.store.insert_runtime_session(&session) {
+        let _ignored = child.kill();
+        let _ignored = child.wait();
+        return Err(error.into());
+    }
+
+    let status = child.wait()?;
+    request.store.mark_runtime_session_completed(
+        &session.id,
+        now_unix_nanos()?,
+        status.code(),
+        None,
+    )?;
+    Ok(status)
+}
+
+fn runtime_session_retention(
+    context: &RuntimeContext,
+) -> Result<RuntimeSessionSecretNameRetention, CliError> {
+    let config = read_user_config(context)?;
+    let Some(value) = config_get_value(&config, "runtime.session_secret_name_retention") else {
+        return Ok(RuntimeSessionSecretNameRetention::default());
+    };
+    let Some(value) = value.as_str() else {
+        return Err(CliError::Config(
+            "runtime.session_secret_name_retention must be a duration or off".to_owned(),
+        ));
+    };
+    RuntimeSessionSecretNameRetention::from_str(value).map_err(|_| {
+        CliError::Config(
+            "runtime.session_secret_name_retention must be a duration or off".to_owned(),
+        )
+    })
+}
+
+fn unique_secret_names<'a>(names: impl Iterator<Item = &'a str>) -> Vec<String> {
+    names.map(ToOwned::to_owned).collect::<BTreeSet<_>>().into_iter().collect()
 }
 
 fn env_command(
@@ -17183,6 +17296,25 @@ required_secrets = ["DATABASE_URL"]
         )?;
 
         assert!(String::from_utf8(exec_output)?.is_empty());
+        let store = locket_store::Store::open(directory.path().join("store.db"))?;
+        let session = store.connection().query_row(
+            "SELECT policy_name, ended_at IS NOT NULL, exit_status, secret_names_json
+             FROM runtime_sessions",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, Option<String>>(0)?,
+                    row.get::<_, bool>(1)?,
+                    row.get::<_, Option<i32>>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            },
+        )?;
+        assert_eq!(session.0, None);
+        assert!(session.1);
+        assert_eq!(session.2, Some(0));
+        assert_eq!(session.3, "[\"DATABASE_URL\"]");
+        assert!(!session.3.contains("postgres://localhost/app"));
         Ok(())
     }
 
@@ -17240,6 +17372,24 @@ inherit_env = ["PATH"]
         assert_eq!(presence, "DATABASE_URL=present\nOPENAI_API_KEY=present\n");
         assert!(!presence.contains("postgres://localhost/app"));
         assert!(!presence.contains("sk_test_policy_value"));
+        let store = locket_store::Store::open(directory.path().join("store.db"))?;
+        let session = store.connection().query_row(
+            "SELECT policy_name, ended_at IS NOT NULL, exit_status, secret_names_json
+             FROM runtime_sessions",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, Option<String>>(0)?,
+                    row.get::<_, bool>(1)?,
+                    row.get::<_, Option<i32>>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            },
+        )?;
+        assert_eq!(session.0.as_deref(), Some("env_check"));
+        assert!(session.1);
+        assert_eq!(session.2, Some(0));
+        assert_eq!(session.3, "[\"DATABASE_URL\",\"OPENAI_API_KEY\"]");
         Ok(())
     }
 
