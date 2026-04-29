@@ -2776,7 +2776,7 @@ fn initialize_profile_keys_with_master(
         config.project_id.as_str(),
         Some(profile_id),
         KeyPurpose::ProfileSecret,
-        &master_key,
+        master_key,
         timestamp,
     )?;
     insert_wrapped_key(
@@ -2784,7 +2784,7 @@ fn initialize_profile_keys_with_master(
         config.project_id.as_str(),
         Some(profile_id),
         KeyPurpose::ProfileFingerprint,
-        &master_key,
+        master_key,
         timestamp,
     )?;
     Ok(())
@@ -3424,7 +3424,7 @@ fn load_project_key_with_master(
         .get_key_by_scope(project_id, None, purpose.as_str())?
         .ok_or_else(|| CliError::Config("project key is missing".to_owned()))?;
     let wrapping_key =
-        derive_wrapping_key_v1(&master_key, &HkdfWrapInfo::new(project_id, None, purpose))?;
+        derive_wrapping_key_v1(master_key, &HkdfWrapInfo::new(project_id, None, purpose))?;
     let aad = key_wrap_aad_v1(&KeyWrapAad::new(
         project_id,
         &record.id,

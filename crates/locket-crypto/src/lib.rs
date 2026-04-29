@@ -48,7 +48,7 @@ pub const PASSPHRASE_FALLBACK_T_COST: u32 = 2;
 pub const PASSPHRASE_FALLBACK_P_COST: u32 = 4;
 
 /// Argon2id output length for passphrase fallback envelopes.
-pub const PASSPHRASE_FALLBACK_OUTPUT_LEN: u32 = KEY_LEN as u32;
+pub const PASSPHRASE_FALLBACK_OUTPUT_LEN: u32 = 32;
 
 /// Salt length in bytes for new passphrase fallback envelopes.
 pub const PASSPHRASE_FALLBACK_SALT_LEN: usize = 32;
