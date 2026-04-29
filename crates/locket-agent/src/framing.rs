@@ -3,7 +3,7 @@
 use serde::Serialize;
 
 use crate::PROTOCOL_VERSION;
-use crate::envelope::RequestEnvelope;
+use crate::envelope::{RequestEnvelope, ResponseEnvelope};
 use crate::error::ProtocolError;
 
 /// Serializes an envelope payload into a length-prefixed v1 frame.
@@ -52,6 +52,30 @@ pub fn decode_request_frame(
         return Err(ProtocolError::UnsupportedVersion { version: envelope.v });
     }
     envelope.method()?;
+    Ok((envelope, consumed))
+}
+
+/// Decodes one v1 response frame from `bytes`.
+///
+/// # Errors
+///
+/// Returns [`ProtocolError::IncompleteFrame`] when fewer than one complete
+/// frame is available, [`ProtocolError::MessageTooLarge`] when the frame
+/// declares an oversized payload, [`ProtocolError::Json`] for malformed JSON,
+/// and [`ProtocolError::UnsupportedVersion`] for non-v1 responses.
+pub fn decode_response_frame(
+    bytes: &[u8],
+    maximum_size: usize,
+) -> Result<(ResponseEnvelope, usize), ProtocolError> {
+    let (payload, consumed) = frame_payload(bytes, maximum_size)?;
+    let envelope: ResponseEnvelope = serde_json::from_slice(payload)?;
+    let version = match &envelope {
+        ResponseEnvelope::Success(success) => success.v,
+        ResponseEnvelope::Error(error) => error.v,
+    };
+    if version != PROTOCOL_VERSION {
+        return Err(ProtocolError::UnsupportedVersion { version });
+    }
     Ok((envelope, consumed))
 }
 

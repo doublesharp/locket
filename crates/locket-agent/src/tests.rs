@@ -2,8 +2,9 @@
 
 use super::{
     AgentMethod, DEFAULT_MAX_MESSAGE_SIZE, ErrorEnvelope, LockState, PROTOCOL_VERSION,
-    ProtocolError, RequestEnvelope, ResponseEnvelope, StatusPayload, SuccessEnvelope,
-    UnknownMethod, decode_request_frame, encode_frame,
+    ProtocolError, RequestEnvelope, ResponseEnvelope, STATUS_HEARTBEAT_INTERVAL_SECS, StatusEvent,
+    StatusEventKind, StatusEventSequence, StatusPayload, SuccessEnvelope, UnknownMethod,
+    decode_request_frame, decode_response_frame, encode_frame,
 };
 use serde_json::json;
 
@@ -186,4 +187,63 @@ fn status_payload_is_metadata_only() {
     assert_eq!(payload.live_grant_count, 0);
     assert!(payload.project_id.is_none());
     assert!(payload.profile_name.is_none());
+}
+
+#[test]
+fn heartbeat_status_event_uses_spec_wire_shape() -> Result<(), serde_json::Error> {
+    let payload = StatusPayload::locked("0.1.0");
+    let event = StatusEvent::heartbeat(7, payload);
+    let value = serde_json::to_value(&event)?;
+
+    assert_eq!(STATUS_HEARTBEAT_INTERVAL_SECS, 30);
+    assert_eq!(event.kind, StatusEventKind::Heartbeat);
+    assert!(event.is_heartbeat());
+    assert!(!event.is_state_change());
+    assert_eq!(
+        value,
+        json!({
+            "kind": "heartbeat",
+            "sequence": 7,
+            "lock_state": "locked",
+            "project_id": null,
+            "profile_name": null,
+            "live_grant_count": 0,
+            "agent_version": "0.1.0"
+        })
+    );
+    Ok(())
+}
+
+#[test]
+fn status_event_sequence_is_monotonic_and_marks_heartbeat_as_keepalive() {
+    let mut sequence = StatusEventSequence::new();
+    let first = sequence.status(StatusPayload::locked("0.1.0"));
+    let heartbeat = sequence.heartbeat(StatusPayload::locked("0.1.0"));
+    let third = sequence.status(StatusPayload::locked("0.1.0"));
+
+    assert_eq!(first.sequence, 1);
+    assert_eq!(heartbeat.sequence, 2);
+    assert_eq!(third.sequence, 3);
+    assert!(first.is_state_change());
+    assert!(!heartbeat.is_state_change());
+}
+
+#[test]
+fn status_event_success_envelope_decodes_for_stream_clients() -> Result<(), ProtocolError> {
+    let event = StatusEvent::heartbeat(9, StatusPayload::locked("0.1.0"));
+    let response = SuccessEnvelope::new("sub-1", serde_json::to_value(&event)?);
+    let frame = encode_frame(&response, DEFAULT_MAX_MESSAGE_SIZE)?;
+
+    let (decoded, consumed) = decode_response_frame(&frame, DEFAULT_MAX_MESSAGE_SIZE)?;
+    assert_eq!(consumed, frame.len());
+    assert!(matches!(decoded, ResponseEnvelope::Success(_)));
+    let ResponseEnvelope::Success(success) = decoded else {
+        return Ok(());
+    };
+    let decoded_event: StatusEvent = serde_json::from_value(success.payload)?;
+
+    assert!(decoded_event.is_heartbeat());
+    assert_eq!(decoded_event.sequence, 9);
+    assert_eq!(decoded_event.status.lock_state, LockState::Locked);
+    Ok(())
 }

@@ -8,9 +8,12 @@ mod status;
 
 pub use envelope::{ErrorEnvelope, RequestEnvelope, ResponseEnvelope, SuccessEnvelope};
 pub use error::ProtocolError;
-pub use framing::{decode_request_frame, encode_frame};
+pub use framing::{decode_request_frame, decode_response_frame, encode_frame};
 pub use method::{AgentMethod, UnknownMethod};
-pub use status::{LockState, StatusPayload};
+pub use status::{
+    LockState, STATUS_HEARTBEAT_INTERVAL_SECS, StatusEvent, StatusEventKind, StatusEventSequence,
+    StatusPayload,
+};
 
 /// Maximum v1 protocol message size in bytes.
 pub const DEFAULT_MAX_MESSAGE_SIZE: usize = 1024 * 1024;
