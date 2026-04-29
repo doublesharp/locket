@@ -438,6 +438,7 @@ fn run_with_context(
         Command::Audit { command } => audit_command(context, output, command)?,
         Command::EmitExample => emit_example_command(context, output)?,
         Command::Profile { command } => profile_command(context, output, command)?,
+        Command::Use(args) => use_profile_command(context, output, args)?,
         Command::Scan(args) => scan_command(context, output, args)?,
         Command::Redact(args) => redact_command(context, output, args)?,
         Command::Context(args) => context_command(context, output, args)?,
@@ -1121,6 +1122,24 @@ fn create_profile(
     )?;
 
     writeln!(output, "created profile {profile_name} ({profile_id})")?;
+    Ok(())
+}
+
+fn use_profile_command(
+    context: &RuntimeContext,
+    output: &mut impl Write,
+    args: ProfileNameArgs,
+) -> Result<(), CliError> {
+    let profile_name = ProfileName::new(args.profile)
+        .map_err(|_| CliError::Config("invalid profile name".to_owned()))?;
+    let mut resolved = require_project(context)?;
+    let store = open_store(context)?;
+    let profile = store
+        .get_profile_by_name(resolved.config.project_id.as_str(), profile_name.as_str())?
+        .ok_or_else(|| CliError::Config("profile not found".to_owned()))?;
+    resolved.config.default_profile = profile_name;
+    write_project_config(&resolved.root.join(LOCKET_TOML), &resolved.config)?;
+    writeln!(output, "active profile: {} ({})", profile.name, profile.id)?;
     Ok(())
 }
 
@@ -2409,6 +2428,28 @@ mod tests {
         )?;
         let profiles_output = String::from_utf8(profiles_output)?;
         assert!(profiles_output.contains("* dev"));
+
+        let mut create_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "profile", "create", "staging"])?,
+            &context,
+            &mut create_output,
+        )?;
+        let mut use_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "use", "staging"])?,
+            &context,
+            &mut use_output,
+        )?;
+        assert!(String::from_utf8(use_output)?.contains("active profile: staging"));
+
+        let mut profiles_after_use = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "profile", "list"])?,
+            &context,
+            &mut profiles_after_use,
+        )?;
+        assert!(String::from_utf8(profiles_after_use)?.contains("* staging"));
         Ok(())
     }
 
