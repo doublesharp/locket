@@ -50,6 +50,9 @@ pub enum LocketError {
     /// Project root is not trusted.
     #[error("project root untrusted")]
     ProjectRootUntrusted,
+    /// No Locket project could be resolved from the current directory.
+    #[error("project not found")]
+    ProjectNotFound,
     /// Vault or required key is locked.
     #[error("unlock required")]
     UnlockRequired,
@@ -136,7 +139,8 @@ impl LocketError {
             | Self::GitWorktreeRequired
             | Self::MetadataInvalid
             | Self::InvalidSecretName
-            | Self::InvalidProfileName => 64,
+            | Self::InvalidProfileName
+            | Self::ProjectNotFound => 64,
             Self::PolicyValidationIncomplete => 65,
             Self::EnvironmentConflict | Self::MetadataLooksLikeSecret => 66,
             Self::SecretAlreadyExists => 67,
@@ -188,6 +192,7 @@ mod tests {
         assert_eq!(LocketError::GitWorktreeRequired.exit_code(), 64);
         assert_eq!(LocketError::InvalidSecretName.exit_code(), 64);
         assert_eq!(LocketError::InvalidProfileName.exit_code(), 64);
+        assert_eq!(LocketError::ProjectNotFound.exit_code(), 64);
         assert_eq!(LocketError::PolicyValidationIncomplete.exit_code(), 65);
         assert_eq!(LocketError::EnvironmentConflict.exit_code(), 66);
         assert_eq!(LocketError::MetadataInvalid.exit_code(), 64);
@@ -261,6 +266,7 @@ mod tests {
             (LocketError::SecretNotFound, "secret not found"),
             (LocketError::ProfileNotFound, "profile not found"),
             (LocketError::SecretVersionOverflow, "secret version overflow"),
+            (LocketError::ProjectNotFound, "project not found"),
             (LocketError::InvalidSecretName, "invalid secret name"),
             (LocketError::InvalidProfileName, "invalid profile name"),
         ];

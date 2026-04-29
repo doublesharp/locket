@@ -14,8 +14,8 @@ use crate::{
     AI_SAFE_PARTIAL_LINE_MAX_BYTES, AI_SAFE_READ_CHUNK_BYTES, AiSafeArgs, CliError, RedactArgs,
     ResolvedProject, RuntimeContext, absolutize, decrypt_secret_version, default_profile,
     ensure_trusted_project_root, load_project_key, now_unix_nanos, open_store, privacy_alias,
-    privacy_redact_names_enabled, require_project, resolve_project, set_user_only_file_permissions,
-    should_scan_known_version, unix_nanos_to_rfc3339,
+    privacy_redact_names_enabled, project_not_found_error, require_project, resolve_project,
+    set_user_only_file_permissions, should_scan_known_version, unix_nanos_to_rfc3339,
 };
 
 pub fn redact_command(
@@ -213,7 +213,7 @@ pub fn ai_safe_command(
         Vec::new()
     } else {
         let Some(project) = audit_project.as_ref() else {
-            return Err(CliError::Config("project not found".to_owned()));
+            return Err(project_not_found_error());
         };
         collect_ai_safe_known_secret_redactions(context, project, redact_names, now_unix_nanos()?)?
     };

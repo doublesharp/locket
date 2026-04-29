@@ -140,6 +140,28 @@ fn ai_safe_fails_closed_when_locked_unless_pattern_only() -> Result<(), Box<dyn 
 }
 
 #[test]
+fn ai_safe_without_project_uses_project_not_found() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+
+    let result = run_with_context(
+        Cli::try_parse_from(["locket", "ai-safe", "--", "/bin/sh", "-c", "true"])?,
+        &context,
+        &mut Vec::new(),
+    );
+    let Err(error) = result else {
+        return Err("ai-safe should fail closed outside a Locket project".into());
+    };
+    assert_eq!(error.exit_code(), 64);
+    let crate::CliError::Typed { kind, message } = error else {
+        return Err("ai-safe should return a typed project-not-found error".into());
+    };
+    assert_eq!(kind, locket_core::LocketError::ProjectNotFound);
+    assert_eq!(message, "project not found");
+    Ok(())
+}
+
+#[test]
 fn ai_safe_uses_privacy_config_aliases_but_audits_exact_names()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempdir()?;

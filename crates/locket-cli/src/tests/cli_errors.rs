@@ -115,6 +115,32 @@ fn project_root_untrusted_exits_71() {
 }
 
 #[test]
+fn project_not_found_errors_exit_64() {
+    let error = crate::project_not_found_error();
+
+    assert_eq!(error.exit_code(), 64);
+    assert_eq!(error.to_string(), "project not found");
+}
+
+#[test]
+fn require_project_without_project_uses_project_not_found() -> Result<(), Box<dyn std::error::Error>>
+{
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+
+    let Err(error) = crate::require_project(&context) else {
+        return Err("require_project should fail outside a Locket project".into());
+    };
+    assert_eq!(error.exit_code(), 64);
+    let crate::CliError::Typed { kind, message } = error else {
+        return Err("require_project should return a typed error".into());
+    };
+    assert_eq!(kind, locket_core::LocketError::ProjectNotFound);
+    assert_eq!(message, "project not found");
+    Ok(())
+}
+
+#[test]
 fn confirmation_failed_errors_exit_68() {
     let error = crate::confirmation_failed_error("confirmation did not match project name");
 

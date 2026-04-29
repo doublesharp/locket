@@ -8,9 +8,10 @@ pub(crate) use runtime::context::RuntimeContext;
 pub(crate) use runtime::error::{
     CliError, access_denied_error, bundle_verification_error, confirmation_failed_error,
     invalid_profile_name_error, invalid_secret_name_error, metadata_invalid_error,
-    metadata_looks_like_secret_error, profile_not_found_error, project_root_untrusted_error,
-    scan_finding_blocked_error, secret_already_exists_error, secret_deleted_error,
-    secret_not_found_error, secret_version_overflow_error, unimplemented_in_build_error,
+    metadata_looks_like_secret_error, profile_not_found_error, project_not_found_error,
+    project_root_untrusted_error, scan_finding_blocked_error, secret_already_exists_error,
+    secret_deleted_error, secret_not_found_error, secret_version_overflow_error,
+    unimplemented_in_build_error,
 };
 pub(crate) use runtime::key_access::{
     MasterKeySource, default_profile, ensure_project_exists, load_master_key,
@@ -2062,7 +2063,7 @@ pub struct ResolvedProject {
 }
 
 pub(crate) fn require_project(context: &RuntimeContext) -> Result<ResolvedProject, CliError> {
-    resolve_project(&context.cwd)?.ok_or_else(|| CliError::Config("project not found".to_owned()))
+    resolve_project(&context.cwd)?.ok_or_else(project_not_found_error)
 }
 
 pub(crate) fn resolve_project(start: &Path) -> Result<Option<ResolvedProject>, CliError> {
