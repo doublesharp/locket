@@ -60,7 +60,6 @@ const DIRECTORY_GRANT_SCOPE_PROJECT_ROOT: &str = "project-root";
 const GITIGNORE_ENTRIES: [&str; 4] = [".env", ".env.*", ".locket.local", ".locketignore"];
 const DEFAULT_MAX_GRACE_TTL_SECONDS: u64 = 7 * 24 * 60 * 60;
 const NANOS_PER_SECOND: i64 = 1_000_000_000;
-const LOCKET_PASSPHRASE_ENV: &str = "LOCKET_PASSPHRASE";
 
 #[derive(Debug, Parser)]
 #[command(name = "locket", version, about = "Local-first secrets control plane")]
@@ -764,17 +763,11 @@ struct EnvOrPromptPassphraseReader;
 
 impl PassphraseReader for EnvOrPromptPassphraseReader {
     fn existing_passphrase(&self) -> Result<zeroize::Zeroizing<String>, CliError> {
-        if let Some(passphrase) = env_passphrase()? {
-            return Ok(passphrase);
-        }
         require_interactive_passphrase("passphrase fallback unlock")?;
         read_hidden_passphrase("locket passphrase: ")
     }
 
     fn new_passphrase(&self) -> Result<zeroize::Zeroizing<String>, CliError> {
-        if let Some(passphrase) = env_passphrase()? {
-            return Ok(passphrase);
-        }
         require_interactive_passphrase("passphrase fallback setup")?;
         let first = read_hidden_passphrase("new locket passphrase: ")?;
         let second = read_hidden_passphrase("confirm locket passphrase: ")?;
@@ -785,26 +778,11 @@ impl PassphraseReader for EnvOrPromptPassphraseReader {
     }
 }
 
-fn env_passphrase() -> Result<Option<zeroize::Zeroizing<String>>, CliError> {
-    let Some(value) = std::env::var_os(LOCKET_PASSPHRASE_ENV) else {
-        return Ok(None);
-    };
-    let passphrase = value.into_string().map_err(|_| {
-        CliError::Config(format!("{LOCKET_PASSPHRASE_ENV} must contain valid UTF-8"))
-    })?;
-    if passphrase.is_empty() {
-        return Err(CliError::Config(format!("{LOCKET_PASSPHRASE_ENV} must not be empty")));
-    }
-    Ok(Some(zeroize::Zeroizing::new(passphrase)))
-}
-
 fn require_interactive_passphrase(reason: &str) -> Result<(), CliError> {
     if io::stdin().is_terminal() && io::stderr().is_terminal() {
         Ok(())
     } else {
-        Err(CliError::Config(format!(
-            "{reason} requires an interactive TTY or {LOCKET_PASSPHRASE_ENV}"
-        )))
+        Err(CliError::Config(format!("{reason} requires an interactive TTY")))
     }
 }
 
