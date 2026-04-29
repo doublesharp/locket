@@ -259,13 +259,9 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
   - Files: shared resolver in `crates/locket-store/src/secret/queries.rs`,
     callers in `crates/locket-cli/src/secrets_cmd.rs`.
 - [x] Stable typed CLI error mapping and exit codes across all command families.
-- [~] [bec7ddfc] Secret-name (`^[A-Z_][A-Z0-9_]*$`) and profile-name
+- [x] Secret-name (`^[A-Z_][A-Z0-9_]*$`) and profile-name
   (`^[a-z][a-z0-9_-]{0,63}$`) regex validation plus `_default` reserved
   name; reject at every editor before write.
-  Claim: branch agent-bec7ddfc/name-validation-tests, worktree .worktrees/agent-bec7ddfc-name-validation-tests. Scope: confirm `_default` is rejected by the existing `ProfileName` regex (it cannot start with `_`), add a focused regression test that pins it down at the core validator and at every CLI-facing editor entry point.
-  - Spec: `docs/specs/project-cli.md` CLI Contract.
-  - Errors: `MetadataInvalid` (64).
-  - Files: shared validator in `crates/locket-core/src/metadata.rs`.
 - [ ] `locket init` atomic rollback and resumable-partial-state when
   store/keychain/recovery-envelope creation fails mid-flight.
   - Spec: `docs/specs/project-cli.md` CLI Contract.
