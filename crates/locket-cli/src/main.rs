@@ -1,5 +1,7 @@
 //! Locket command-line entry point.
 
+pub(crate) mod diagnostics;
+
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use directories::ProjectDirs;
 use ignore::{WalkBuilder, gitignore::GitignoreBuilder};
@@ -65,6 +67,14 @@ struct Cli {
 enum Command {
     /// Show metadata-only status.
     Status,
+    /// Run locked-safe local diagnostics.
+    Doctor,
+    /// Create metadata-only debug artifacts.
+    Debug {
+        /// Debug command.
+        #[command(subcommand)]
+        command: DebugCommand,
+    },
     /// Initialize a Locket project.
     Init(InitArgs),
     /// Store a new secret.
@@ -464,7 +474,33 @@ enum AgentCommand {
     /// Stop the local agent.
     Stop,
     /// Print redacted agent logs.
-    Logs,
+    Logs(AgentLogsArgs),
+}
+
+#[derive(Clone, Copy, Debug, Args)]
+struct AgentLogsArgs {
+    /// Number of lines to print.
+    #[arg(long, default_value_t = 200)]
+    lines: usize,
+    /// Unix timestamp in seconds or nanoseconds to filter from.
+    #[arg(long)]
+    since: Option<i64>,
+}
+
+#[derive(Debug, Subcommand)]
+enum DebugCommand {
+    /// Emit a redacted metadata-only support bundle summary.
+    Bundle(DebugBundleArgs),
+}
+
+#[derive(Debug, Args)]
+struct DebugBundleArgs {
+    /// Confirm that only redacted metadata may be emitted.
+    #[arg(long)]
+    redacted: bool,
+    /// Write bundle summary to this path instead of stdout.
+    #[arg(long)]
+    output: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Subcommand)]
@@ -566,7 +602,7 @@ fn main() -> ProcessExitCode {
 
     let mut output = io::stdout();
     match run_with_context(cli, &context, &mut output) {
-        Ok(()) => ProcessExitCode::SUCCESS,
+        Ok(code) => ProcessExitCode::from(code),
         Err(error) => write_error_and_exit(&error),
     }
 }
@@ -581,11 +617,13 @@ fn run_with_context(
     cli: Cli,
     context: &RuntimeContext,
     output: &mut impl Write,
-) -> Result<(), CliError> {
+) -> Result<u8, CliError> {
     let command = cli.command.unwrap_or(Command::Status);
 
     match command {
         Command::Status => status(context, output)?,
+        Command::Doctor => return diagnostics::doctor_command(context, output),
+        Command::Debug { command } => debug_command(context, output, command)?,
         Command::Init(args) => init(context, output, args)?,
         Command::Set(args) => set_command(context, output, &args)?,
         Command::Import(args) => import_command(context, output, &args)?,
@@ -622,7 +660,7 @@ fn run_with_context(
         Command::Passkey { command } => passkey_command(output, command)?,
     }
 
-    Ok(())
+    Ok(0)
 }
 
 #[derive(Clone)]
@@ -1401,6 +1439,21 @@ fn audit_command(
     }
 }
 
+fn debug_command(
+    context: &RuntimeContext,
+    output: &mut impl Write,
+    command: DebugCommand,
+) -> Result<(), CliError> {
+    match command {
+        DebugCommand::Bundle(args) => diagnostics::debug_bundle_command(
+            context,
+            output,
+            args.redacted,
+            args.output.as_deref(),
+        ),
+    }
+}
+
 fn config_command(
     context: &RuntimeContext,
     output: &mut impl Write,
@@ -2139,7 +2192,7 @@ fn agent_command(
         AgentCommand::Start => agent_start_command(context, output),
         AgentCommand::Status => agent_status_command(context, output),
         AgentCommand::Stop => agent_stop_command(context, output),
-        AgentCommand::Logs => agent_logs_command(context, output),
+        AgentCommand::Logs(args) => agent_logs_command(context, output, args),
     }
 }
 
@@ -2186,7 +2239,14 @@ fn agent_stop_command(context: &RuntimeContext, output: &mut impl Write) -> Resu
     Ok(())
 }
 
-fn agent_logs_command(context: &RuntimeContext, output: &mut impl Write) -> Result<(), CliError> {
+fn agent_logs_command(
+    context: &RuntimeContext,
+    output: &mut impl Write,
+    args: AgentLogsArgs,
+) -> Result<(), CliError> {
+    if args.lines > 10_000 {
+        return Err(CliError::Config("agent logs --lines is capped at 10000".to_owned()));
+    }
     let log_path = agent_log_path(context);
     let log_text = match fs::read_to_string(&log_path) {
         Ok(log_text) => log_text,
@@ -2197,11 +2257,31 @@ fn agent_logs_command(context: &RuntimeContext, output: &mut impl Write) -> Resu
         Err(error) => return Err(error.into()),
     };
 
-    let lines = log_text.lines().rev().take(200).collect::<Vec<_>>();
+    let since = args.since.map(normalize_log_since);
+    let lines = log_text
+        .lines()
+        .filter(|line| agent_log_line_is_since(line, since))
+        .rev()
+        .take(args.lines)
+        .collect::<Vec<_>>();
     for line in lines.iter().rev() {
         writeln!(output, "{line}")?;
     }
     Ok(())
+}
+
+const fn normalize_log_since(value: i64) -> i64 {
+    if value.abs() < 10_000_000_000 { value.saturating_mul(NANOS_PER_SECOND) } else { value }
+}
+
+fn agent_log_line_is_since(line: &str, since: Option<i64>) -> bool {
+    let Some(since) = since else {
+        return true;
+    };
+    serde_json::from_str::<Value>(line)
+        .ok()
+        .and_then(|value| value.get("timestamp").and_then(Value::as_i64))
+        .is_some_and(|timestamp| timestamp >= since)
 }
 
 fn scan_command(
@@ -4568,6 +4648,7 @@ fn now_unix_nanos() -> Result<i64, CliError> {
 mod tests {
     use clap::Parser;
     use locket_platform::MemoryMasterKeyStore;
+    use std::fs;
     use std::io::Write;
     use std::path::Path;
     use std::process::Command as TestCommand;
@@ -4638,7 +4719,7 @@ mod tests {
         Ok(())
     }
 
-    fn assert_error_contains(result: Result<(), super::CliError>, expected: &str) {
+    fn assert_error_contains(result: Result<u8, super::CliError>, expected: &str) {
         assert!(result.is_err(), "expected error containing {expected:?}");
         if let Err(error) = result {
             assert!(error.to_string().contains(expected), "{error}");
@@ -4680,6 +4761,9 @@ mod tests {
                 "machine-local",
             ],
             &["locket", "audit", "verify"],
+            &["locket", "doctor"],
+            &["locket", "debug", "bundle", "--redacted"],
+            &["locket", "debug", "bundle", "--redacted", "--output", "bundle.json"],
             &["locket", "exec", "--secret", "DATABASE_URL", "--", "/bin/sh", "-c", "true"],
             &["locket", "config", "list"],
             &["locket", "config", "get", "privacy.redact_names"],
@@ -4712,6 +4796,7 @@ mod tests {
             &["locket", "agent", "status"],
             &["locket", "agent", "stop"],
             &["locket", "agent", "logs"],
+            &["locket", "agent", "logs", "--lines", "10", "--since", "1700000000"],
         ] {
             assert!(Cli::try_parse_from(args).is_ok(), "{args:?}");
         }
@@ -5061,13 +5146,12 @@ mod tests {
         )?;
 
         let mut allow_output = Vec::new();
-        let error = match run_with_context(
+        let Err(error) = run_with_context(
             Cli::try_parse_from(["locket", "allow"])?,
             &context,
             &mut allow_output,
-        ) {
-            Ok(()) => return Err("allow should fail for untrusted roots".into()),
-            Err(error) => error,
+        ) else {
+            return Err("allow should fail for untrusted roots".into());
         };
         assert!(error.to_string().contains("ProjectRootNotTrusted"));
 
@@ -5124,6 +5208,100 @@ mod tests {
         assert!(logs_output.contains("\"action\":\"start\""));
         assert!(logs_output.contains("\"action\":\"stop\""));
         assert!(!logs_output.contains("secret"));
+
+        let mut limited_logs_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "agent", "logs", "--lines", "1"])?,
+            &context,
+            &mut limited_logs_output,
+        )?;
+        let limited_logs_output = String::from_utf8(limited_logs_output)?;
+        assert!(limited_logs_output.contains("\"action\":\"stop\""));
+        assert!(!limited_logs_output.contains("\"action\":\"start\""));
+        Ok(())
+    }
+
+    #[test]
+    fn doctor_reports_locked_safe_diagnostics_and_exit_codes()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+
+        let mut missing_output = Vec::new();
+        let code = run_with_context(
+            Cli::try_parse_from(["locket", "doctor"])?,
+            &context,
+            &mut missing_output,
+        )?;
+        assert_eq!(code, 1);
+        let missing_output = String::from_utf8(missing_output)?;
+        assert!(missing_output.contains("fail project_resolution"));
+        assert!(missing_output.contains("pass store_open_schema_bootstrap"));
+
+        let mut init_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut init_output,
+        )?;
+        run_git(directory.path(), &["init"])?;
+        let mut hook_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "install-hooks"])?,
+            &context,
+            &mut hook_output,
+        )?;
+
+        let mut doctor_output = Vec::new();
+        let code = run_with_context(
+            Cli::try_parse_from(["locket", "doctor"])?,
+            &context,
+            &mut doctor_output,
+        )?;
+        assert_eq!(code, 0);
+        let doctor_output = String::from_utf8(doctor_output)?;
+        assert!(doctor_output.contains("pass locket_toml_parseability"));
+        assert!(doctor_output.contains("pass sqlite_integrity"));
+        assert!(doctor_output.contains("pass trusted_roots"));
+        assert!(doctor_output.contains("skip audit_hmac_verification"));
+        assert!(doctor_output.contains("summary:"));
+        Ok(())
+    }
+
+    #[test]
+    fn debug_bundle_redacted_writes_metadata_only_summary() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        let mut init_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut init_output,
+        )?;
+        let output_path = directory.path().join("bundle.json");
+
+        let mut bundle_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from([
+                "locket",
+                "debug",
+                "bundle",
+                "--redacted",
+                "--output",
+                output_path.to_str().ok_or("utf8 path")?,
+            ])?,
+            &context,
+            &mut bundle_output,
+        )?;
+        assert!(String::from_utf8(bundle_output)?.contains("redacted: yes"));
+
+        let bundle = fs::read_to_string(output_path)?;
+        assert!(bundle.contains("\"redacted\": true"));
+        assert!(bundle.contains("\"project\""));
+        assert!(bundle.contains("\"diagnostics\""));
+        assert!(bundle.contains("\"store_path_hash\""));
+        assert!(!bundle.contains(directory.path().to_string_lossy().as_ref()));
         Ok(())
     }
 

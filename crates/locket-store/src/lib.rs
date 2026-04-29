@@ -314,6 +314,43 @@ impl Store {
         Ok(())
     }
 
+    /// Runs `SQLite`'s metadata-only integrity check.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Sqlite`] when `SQLite` cannot execute the check.
+    pub fn integrity_check(&self) -> Result<Vec<String>, StoreError> {
+        let mut statement = self.connection.prepare("PRAGMA integrity_check")?;
+        let rows = statement
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// Lists recent metadata-only audit action names for a project.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Sqlite`] when `SQLite` cannot query audit rows.
+    pub fn list_recent_audit_actions(
+        &self,
+        project_id: &str,
+        limit: u32,
+    ) -> Result<Vec<String>, StoreError> {
+        let mut statement = self.connection.prepare(
+            "SELECT action
+             FROM audit_log
+             WHERE project_id = ?1
+             ORDER BY sequence DESC
+             LIMIT ?2",
+        )?;
+        let mut actions = statement
+            .query_map((project_id, limit), |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        actions.reverse();
+        Ok(actions)
+    }
+
     /// Inserts a project metadata row when `id` does not already exist.
     ///
     /// Returns `true` when the project was inserted and `false` when a project
