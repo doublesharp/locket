@@ -77,6 +77,68 @@ pub struct TrayIconDescriptor {
     pub label: &'static str,
 }
 
+/// Passive tray notification event classes covered by the desktop privacy spec.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TrayNotificationKind {
+    /// A reveal or copy flow completed or needs user attention.
+    RevealOrCopy,
+    /// A reveal, copy, run, or grant request was denied.
+    DeniedAccess,
+    /// Scan findings are present.
+    ScanFinding,
+    /// A saved command policy failed during execution.
+    ExecutionFailure,
+}
+
+/// Potentially sensitive event metadata from core or agent surfaces.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct TrayNotificationContext<'a> {
+    /// Exact secret name, if known. Passive notifications ignore it.
+    pub secret_name: Option<&'a str>,
+    /// Exact policy name, if known. Passive notifications ignore it.
+    pub policy_name: Option<&'a str>,
+    /// Exact project name, if known. Passive notifications ignore it.
+    pub project_name: Option<&'a str>,
+    /// Secret value, if a caller accidentally provides one. Passive notifications ignore it.
+    pub secret_value: Option<&'a str>,
+    /// Metadata-only scan finding count.
+    pub finding_count: Option<u32>,
+}
+
+/// Metadata-only passive tray notification copy.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TrayNotification {
+    /// Generic notification title.
+    pub title: String,
+    /// Generic notification body.
+    pub body: String,
+}
+
+impl TrayNotificationKind {
+    /// Render the default passive notification without exact names or values.
+    #[must_use]
+    pub fn passive_notification(self, context: &TrayNotificationContext<'_>) -> TrayNotification {
+        match self {
+            Self::RevealOrCopy => TrayNotification {
+                title: "Secret ready".to_owned(),
+                body: "The requested secret action completed.".to_owned(),
+            },
+            Self::DeniedAccess => TrayNotification {
+                title: "Access denied".to_owned(),
+                body: "A secret or policy action needs attention in the app.".to_owned(),
+            },
+            Self::ScanFinding => TrayNotification {
+                title: "Scan warning".to_owned(),
+                body: scan_notification_body(context.finding_count),
+            },
+            Self::ExecutionFailure => TrayNotification {
+                title: "Policy failed".to_owned(),
+                body: "A saved policy failed. Open the app for details.".to_owned(),
+            },
+        }
+    }
+}
+
 impl TrayIconState {
     /// Return the metadata-only icon descriptor for this state.
     #[must_use]
@@ -185,10 +247,19 @@ pub fn tray_icon_descriptors() -> Vec<TrayIconDescriptor> {
     tray_icon_states().iter().map(|state| state.descriptor()).collect()
 }
 
+fn scan_notification_body(finding_count: Option<u32>) -> String {
+    match finding_count {
+        Some(1) => "1 scan warning needs attention.".to_owned(),
+        Some(count) => format!("{count} scan warnings need attention."),
+        None => "Scan warnings need attention.".to_owned(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        CapabilityAccess, ReleaseWebviewPolicy, TrayIconAssetStyle, TrayIconState, primary_views,
+        CapabilityAccess, ReleaseWebviewPolicy, TrayIconAssetStyle, TrayIconState,
+        TrayNotificationContext, TrayNotificationKind, primary_views,
         tray_icon_asset_styles_for_os, tray_icon_descriptors, tray_icon_states,
     };
 
@@ -235,6 +306,57 @@ mod tests {
             tray_icon_asset_styles_for_os("linux"),
             &[TrayIconAssetStyle::FullColorLight, TrayIconAssetStyle::FullColorDark,]
         );
+    }
+
+    #[test]
+    fn passive_tray_notifications_use_generic_labels_by_default() {
+        let context = TrayNotificationContext {
+            secret_name: Some("DATABASE_URL"),
+            policy_name: Some("deploy-prod"),
+            project_name: Some("payments-api"),
+            secret_value: Some("postgres://user:pass@example.invalid/db"),
+            finding_count: Some(3),
+        };
+
+        let notifications = [
+            TrayNotificationKind::RevealOrCopy.passive_notification(&context),
+            TrayNotificationKind::DeniedAccess.passive_notification(&context),
+            TrayNotificationKind::ScanFinding.passive_notification(&context),
+            TrayNotificationKind::ExecutionFailure.passive_notification(&context),
+        ];
+
+        for notification in notifications {
+            let rendered = format!("{} {}", notification.title, notification.body);
+            assert!(!rendered.contains("DATABASE_URL"));
+            assert!(!rendered.contains("deploy-prod"));
+            assert!(!rendered.contains("payments-api"));
+            assert!(!rendered.contains("postgres://"));
+            assert!(
+                rendered.contains("secret")
+                    || rendered.contains("policy")
+                    || rendered.contains("Scan")
+                    || rendered.contains("scan")
+            );
+        }
+    }
+
+    #[test]
+    fn scan_notifications_show_metadata_counts_only() {
+        let one =
+            TrayNotificationKind::ScanFinding.passive_notification(&TrayNotificationContext {
+                finding_count: Some(1),
+                ..TrayNotificationContext::default()
+            });
+        let many =
+            TrayNotificationKind::ScanFinding.passive_notification(&TrayNotificationContext {
+                finding_count: Some(12),
+                secret_name: Some("API_TOKEN"),
+                ..TrayNotificationContext::default()
+            });
+
+        assert_eq!(one.body, "1 scan warning needs attention.");
+        assert_eq!(many.body, "12 scan warnings need attention.");
+        assert!(!many.body.contains("API_TOKEN"));
     }
 
     #[test]
