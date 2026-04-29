@@ -320,8 +320,14 @@ struct ExecArgs {
     #[arg(long = "secret")]
     secrets: Vec<String>,
     /// Inject every active profile secret after confirmation.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "secrets")]
     all: bool,
+    /// Skip the typed confirmation prompt for `--all`.
+    ///
+    /// Intended for non-interactive automation. The active-profile secret
+    /// names are still recorded in the EXEC audit row.
+    #[arg(long)]
+    force: bool,
     /// Command and arguments after `--`.
     #[arg(last = true, required = true)]
     command: Vec<String>,
@@ -2060,24 +2066,45 @@ fn exec_command(
     output: &mut impl Write,
     args: &ExecArgs,
 ) -> Result<(), CliError> {
-    if args.all {
-        return Err(CliError::Config(
-            "exec --all confirmation is not wired in this build yet".to_owned(),
-        ));
+    if !args.all && args.secrets.is_empty() {
+        return Err(CliError::Config("exec requires --all or at least one --secret".to_owned()));
     }
-    if args.secrets.is_empty() {
-        return Err(CliError::Config(
-            "exec requires at least one --secret in this build".to_owned(),
-        ));
+
+    let resolved_project = require_project(context)?;
+    let store = open_store(context)?;
+    let profile = default_profile(&store, &resolved_project.config)?;
+
+    let secret_names = if args.all {
+        let mut names = active_profile_secret_names(
+            &store,
+            resolved_project.config.project_id.as_str(),
+            &profile.id,
+        )?
+        .into_iter()
+        .collect::<Vec<_>>();
+        names.sort();
+        names
+    } else {
+        args.secrets.clone()
+    };
+
+    if args.all && !args.force {
+        confirm_exec_all_scope(context, output, &profile, &args.command, &secret_names)?;
     }
 
     let mut locket_env = locket_exec::EnvMap::new();
-    for key in &args.secrets {
+    let mut injected_names = Vec::with_capacity(secret_names.len());
+    for key in &secret_names {
         let resolved = resolve_active_secret(context, key)?;
         let value = decrypt_current_secret(context, &resolved)?;
+        injected_names.push(resolved.secret.name.clone());
         locket_env.insert(resolved.secret.name, value.as_str().to_owned());
     }
+    injected_names.sort();
+    injected_names.dedup();
 
+    let argv_program = args.command.first().cloned().unwrap_or_default();
+    let arg_count = args.command.len();
     let request = locket_exec::ExecutionRequest {
         argv: args.command.clone(),
         parent_env: std::env::vars().collect(),
@@ -2090,12 +2117,98 @@ fn exec_command(
     let prepared = locket_exec::prepare_execution(&request)
         .map_err(|error| CliError::Config(error.to_string()))?;
     let status = prepared.command().status()?;
+    let exit_code = status.code();
+
+    write_exec_audit_if_available(
+        context,
+        &resolved_project,
+        &profile,
+        &argv_program,
+        arg_count,
+        &injected_names,
+        args.all,
+        exit_code,
+        if status.success() { "SUCCESS" } else { "FAILED" },
+    )?;
+
     if status.success() {
         return Ok(());
     }
-
     writeln!(output, "child exited with status {status}")?;
     Err(CliError::Config("child process failed".to_owned()))
+}
+
+fn confirm_exec_all_scope(
+    context: &RuntimeContext,
+    output: &mut impl Write,
+    profile: &ProfileRecord,
+    command: &[String],
+    secret_names: &[String],
+) -> Result<(), CliError> {
+    let argv_program = command.first().map_or("", String::as_str);
+    writeln!(output, "exec_profile: {}", profile.name)?;
+    writeln!(output, "exec_argv_program: {argv_program}")?;
+    writeln!(output, "exec_arg_count: {}", command.len())?;
+    writeln!(output, "exec_secret_count: {}", secret_names.len())?;
+    writeln!(output, "exec_secret_names: {}", join_or_none(secret_names))?;
+    writeln!(output, "metadata_only: yes")?;
+    let expected = format!("exec --all {}", profile.name);
+    writeln!(output, "type '{expected}' to confirm injection")?;
+    let confirmation = context.confirmation_reader.read_confirmation("exec --all")?;
+    if confirmation.trim_end_matches(['\r', '\n']) != expected {
+        return Err(CliError::Config("confirmation did not match exec --all scope".to_owned()));
+    }
+    Ok(())
+}
+
+fn join_or_none(names: &[String]) -> String {
+    if names.is_empty() { "none".to_owned() } else { names.join(",") }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn write_exec_audit_if_available(
+    context: &RuntimeContext,
+    resolved: &ResolvedProject,
+    profile: &ProfileRecord,
+    argv_program: &str,
+    arg_count: usize,
+    injected_names: &[String],
+    all_mode: bool,
+    exit_code: Option<i32>,
+    status: &str,
+) -> Result<(), CliError> {
+    let mut store = open_store(context)?;
+    if store.get_project(resolved.config.project_id.as_str())?.is_none() {
+        return Ok(());
+    }
+    let Ok(audit_key) =
+        load_project_key(context, &store, resolved.config.project_id.as_str(), KeyPurpose::Audit)
+    else {
+        return Ok(());
+    };
+    let metadata = json!({
+        "schema_version": 1,
+        "action": "EXEC",
+        "status": status,
+        "profile_id": profile.id,
+        "argv_program": argv_program,
+        "arg_count": arg_count,
+        "secret_names": injected_names,
+        "all_mode": all_mode,
+        "exit_code": exit_code,
+    });
+    let audit = AuditWrite {
+        project_id: resolved.config.project_id.as_str(),
+        profile_id: Some(&profile.id),
+        action: "EXEC",
+        status,
+        secret_name: None,
+        command: Some("exec"),
+        metadata_json: &metadata,
+        timestamp: now_unix_nanos()?,
+    };
+    store.append_audit(audit_key.as_ref(), &audit)?;
+    Ok(())
 }
 
 fn run_command(
@@ -12618,6 +12731,140 @@ required_secrets = ["DATABASE_URL"]
             .ok_or("prod import should exist")?;
         assert_eq!(secret.current_version, 1);
         Ok(())
+    }
+
+    #[test]
+    fn exec_all_force_injects_active_profile_secrets_and_writes_audit()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut Vec::new(),
+        )?;
+        let db = test_secret_write_args("DATABASE_URL");
+        super::set_secret_value(&context, &db, "postgres://localhost/app", "manual", 1_000)?;
+        let api = test_secret_write_args("API_KEY");
+        super::set_secret_value(&context, &api, "tok-v1", "manual", 2_000)?;
+
+        let mut output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from([
+                "locket",
+                "exec",
+                "--all",
+                "--force",
+                "--",
+                "/bin/sh",
+                "-c",
+                "test \"$DATABASE_URL\" = \"postgres://localhost/app\" \
+                 && test \"$API_KEY\" = \"tok-v1\"",
+            ])?,
+            &context,
+            &mut output,
+        )?;
+        assert!(String::from_utf8(output)?.is_empty());
+
+        let store = super::open_store(&context)?;
+        let metadata: String = store.connection().query_row(
+            "SELECT metadata_json FROM audit_log WHERE action = 'EXEC'
+             ORDER BY sequence DESC LIMIT 1",
+            [],
+            |row| row.get(0),
+        )?;
+        assert!(metadata.contains("\"action\":\"EXEC\""));
+        assert!(metadata.contains("\"all_mode\":true"));
+        assert!(metadata.contains("\"argv_program\":\"/bin/sh\""));
+        assert!(metadata.contains("\"arg_count\":3"));
+        assert!(metadata.contains("\"API_KEY\""));
+        assert!(metadata.contains("\"DATABASE_URL\""));
+        assert!(!metadata.contains("postgres://localhost/app"));
+        assert!(!metadata.contains("tok-v1"));
+        Ok(())
+    }
+
+    #[test]
+    fn exec_all_requires_typed_confirmation_when_not_forced()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let key_store: Arc<dyn MasterKeyStore + Send + Sync> =
+            Arc::new(MemoryMasterKeyStore::default());
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &test_context_with_key_store(&directory, Arc::clone(&key_store)),
+            &mut Vec::new(),
+        )?;
+        let setup = test_context_with_key_store(&directory, Arc::clone(&key_store));
+        let db = test_secret_write_args("DATABASE_URL");
+        super::set_secret_value(&setup, &db, "postgres://localhost/app", "manual", 1_000)?;
+
+        let bad_context = test_context_with_key_store_and_confirmation(
+            &directory,
+            Arc::clone(&key_store),
+            "wrong\n",
+        );
+        let mut output = Vec::new();
+        let result = run_with_context(
+            Cli::try_parse_from(["locket", "exec", "--all", "--", "/bin/sh", "-c", "true"])?,
+            &bad_context,
+            &mut output,
+        );
+        assert_error_contains(result, "confirmation did not match exec --all scope");
+        let output = String::from_utf8(output)?;
+        assert!(output.contains("exec_profile: dev"));
+        assert!(output.contains("exec_argv_program: /bin/sh"));
+        assert!(output.contains("exec_secret_count: 1"));
+        assert!(output.contains("exec_secret_names: DATABASE_URL"));
+        assert!(output.contains("metadata_only: yes"));
+
+        let good_context = test_context_with_key_store_and_confirmation(
+            &directory,
+            Arc::clone(&key_store),
+            "exec --all dev\n",
+        );
+        let mut good_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "exec", "--all", "--", "/bin/sh", "-c", "true"])?,
+            &good_context,
+            &mut good_output,
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn exec_without_secrets_or_all_errors() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut Vec::new(),
+        )?;
+        let mut output = Vec::new();
+        let result = run_with_context(
+            Cli::try_parse_from(["locket", "exec", "--", "/bin/sh", "-c", "true"])?,
+            &context,
+            &mut output,
+        );
+        assert_error_contains(result, "exec requires --all or at least one --secret");
+        Ok(())
+    }
+
+    #[test]
+    fn exec_all_and_secret_flags_are_mutually_exclusive() {
+        let result = Cli::try_parse_from([
+            "locket",
+            "exec",
+            "--all",
+            "--secret",
+            "DATABASE_URL",
+            "--",
+            "/bin/sh",
+            "-c",
+            "true",
+        ]);
+        assert!(result.is_err(), "clap should reject combining --all and --secret");
     }
 
     #[test]
