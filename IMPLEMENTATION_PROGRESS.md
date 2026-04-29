@@ -23,6 +23,10 @@ There are multiple agents working so it is imperative that you maintain an agent
   `cargo clippy --workspace --all-targets --all-features -- -D warnings`, and the
   workspace test suite (`cargo test --workspace --all-targets --all-features` or
   scoped equivalents for the touched crates).
+- Don't repeat info that already lives in another spec doc or in the
+  Reference Quick-Index. A TODO line should name the work, point at the
+  spec section once if needed, and stop. Skip routine error/audit/file
+  enumerations — agents can read the spec.
 
 ## Definition of Done
 
@@ -193,9 +197,9 @@ _(no active claims)_
 
 ## Full Spec Coverage TODO
 
-Each item describes the spec-complete behavior and lists, when open, the spec
-pointer, the error variants and audit actions to use, and the primary file/crate
-to touch. Items marked `[x]` are merged to `main` and verified.
+Open items name the work and, if the location isn't obvious, point at one
+spec section. Don't restate error variants, audit actions, or file paths
+the spec already covers. Closed items are 1–2 lines about what shipped.
 
 ### Near-Term CLI/Core
 
@@ -1171,7 +1175,6 @@ echoed inside `metadata_json` so the HMAC chain covers them. Never write
 
 ## Latest Verified Checkpoint
 
-- Tip of `main`: `c789e8e` ("Add typed TTY required error").
 - `cargo fmt --all -- --check` clean on `main`.
 - `cargo test --workspace --all-targets --all-features` passes on `main`.
 - `cargo clippy --workspace --all-targets --all-features -- -D warnings` clean
