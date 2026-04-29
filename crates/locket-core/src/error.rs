@@ -86,6 +86,9 @@ pub enum LocketError {
     /// Update manifest signature, schema, or metadata validation failed.
     #[error("update manifest invalid")]
     UpdateManifestInvalid,
+    /// Secret version counter cannot be advanced.
+    #[error("secret version overflow")]
+    SecretVersionOverflow,
     /// Database contents are corrupt.
     #[error("corrupt database")]
     CorruptDb,
@@ -153,7 +156,7 @@ impl LocketError {
             Self::AutomationClientNotTrusted => 82,
             Self::AutomationClientReplayDetected => 83,
             Self::UpdateManifestInvalid => 89,
-            Self::CorruptDb => 90,
+            Self::SecretVersionOverflow | Self::CorruptDb => 90,
             Self::StorageBusy => 91,
             Self::SchemaNewerThanBinary => 92,
             Self::AuditIntegrityFailed => 93,
@@ -216,6 +219,7 @@ mod tests {
             (LocketError::AutomationClientNotTrusted, 82),
             (LocketError::AutomationClientReplayDetected, 83),
             (LocketError::UpdateManifestInvalid, 89),
+            (LocketError::SecretVersionOverflow, 90),
             (LocketError::CorruptDb, 90),
             (LocketError::StorageBusy, 91),
             (LocketError::SchemaNewerThanBinary, 92),
@@ -256,6 +260,7 @@ mod tests {
             (LocketError::TtyRequired, "interactive TTY required"),
             (LocketError::SecretNotFound, "secret not found"),
             (LocketError::ProfileNotFound, "profile not found"),
+            (LocketError::SecretVersionOverflow, "secret version overflow"),
             (LocketError::InvalidSecretName, "invalid secret name"),
             (LocketError::InvalidProfileName, "invalid profile name"),
         ];

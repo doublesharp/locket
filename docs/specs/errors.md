@@ -36,6 +36,7 @@ Exit-code ranges:
 | Storage/schema/integrity | Two Locket processes writing | One writer proceeds; the other waits or returns typed storage busy error | 91 | Retry after first command exits |
 | Storage/schema/integrity | Schema newer than binary | Fail closed before opening mutable store | 92 | Upgrade Locket binary |
 | Storage/schema/integrity | Audit chain broken | Refuse to append success verification row and report first break | 93 | Investigate store tampering or restore from backup |
+| Storage/schema/integrity | Secret version overflow | Refuse to advance a secret version counter that cannot be represented | 90 | Inspect store metadata for corruption before retrying |
 | Keychain/recovery | Keychain unavailable | Fail closed unless passphrase fallback is configured | 100 | Unlock with passphrase fallback or run `locket recover` |
 | Keychain/recovery | Lost recovery code | Cannot recover a future lost keychain entry or local device private key from this device alone | 101 | Generate a new recovery envelope while the vault is still unlocked, restore from an already trusted device, or request a fresh team invite |
 | Keychain/recovery | Lost keychain entry | Vault remains encrypted but is recoverable if the recovery code and envelope are present | 102 | Run `locket recover` |

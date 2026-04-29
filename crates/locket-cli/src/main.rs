@@ -10,7 +10,7 @@ pub(crate) use runtime::error::{
     invalid_profile_name_error, invalid_secret_name_error, metadata_invalid_error,
     metadata_looks_like_secret_error, profile_not_found_error, project_root_untrusted_error,
     scan_finding_blocked_error, secret_already_exists_error, secret_deleted_error,
-    secret_not_found_error, unimplemented_in_build_error,
+    secret_not_found_error, secret_version_overflow_error, unimplemented_in_build_error,
 };
 pub(crate) use runtime::key_access::{
     MasterKeySource, default_profile, ensure_project_exists, load_master_key,
@@ -122,6 +122,12 @@ const AGENT_LOG_RETAINED_FILES: u8 = 5;
 const AGENT_LOG_FOLLOW_SLEEP_MS: u64 = 250;
 const AI_SAFE_READ_CHUNK_BYTES: usize = 8 * 1024;
 const AI_SAFE_PARTIAL_LINE_MAX_BYTES: usize = 64 * 1024;
+
+pub(crate) fn next_secret_version(current_version: u32) -> Result<u32, CliError> {
+    current_version
+        .checked_add(1)
+        .ok_or_else(|| secret_version_overflow_error("secret version overflow"))
+}
 
 #[derive(Debug, Parser)]
 #[command(name = "locket", version, about = "Local-first secrets control plane")]
@@ -1393,11 +1399,7 @@ fn rotate_secret_value(
         .map_err(|_| invalid_secret_name_error("invalid secret name"))?;
     let resolved_secret =
         resolve_active_secret_for_source(context, name.as_str(), args.source.source)?;
-    let new_version = resolved_secret
-        .secret
-        .current_version
-        .checked_add(1)
-        .ok_or_else(|| CliError::Config("secret version overflow".to_owned()))?;
+    let new_version = next_secret_version(resolved_secret.secret.current_version)?;
     let mut store = open_store(context)?;
     let audit_key = load_project_key(
         context,
@@ -1702,9 +1704,7 @@ fn plan_copy_target(
         return Err(secret_deleted_error("SecretDeleted: target secret source is deleted"));
     }
     let prior_version = existing.as_ref().map(|secret| secret.current_version);
-    let version = prior_version.map_or(Ok(1), |version| {
-        version.checked_add(1).ok_or_else(|| CliError::Config("secret version overflow".to_owned()))
-    })?;
+    let version = prior_version.map_or(Ok(1), next_secret_version)?;
     let secret_id = existing.as_ref().map_or_else(
         || SecretId::generate().map(SecretId::into_string).map_err(|_| CliError::Time),
         |secret| Ok(secret.id.clone()),
