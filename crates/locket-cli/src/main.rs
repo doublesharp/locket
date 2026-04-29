@@ -13,7 +13,9 @@ use locket_crypto::{
     wrap_key_material_v1,
 };
 use locket_platform::{KeyringMasterKeyStore, MasterKeyStore};
-use locket_scan::{FindingKind, ScanFinding, redact_text, scan_text};
+use locket_scan::{
+    FindingKind, KnownRedaction, ScanFinding, redact_text, redact_text_with_known_values, scan_text,
+};
 use locket_store::{
     AuditContext, AuditWrite, KeyRecord, ProfileRecord, SecretBlobRecord, SecretFingerprintRecord,
     SecretRecord, SecretVersionRecord, Store, StoreError, VersionDeprecation,
@@ -25,8 +27,10 @@ use std::error::Error;
 use std::fmt::{self, Display};
 use std::fs;
 use std::io::{self, IsTerminal, Read, Write};
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
-use std::process::ExitCode as ProcessExitCode;
+use std::process::{Command as ProcessCommand, ExitCode as ProcessExitCode};
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -442,6 +446,7 @@ fn run_with_context(
         Command::Scan(args) => scan_command(context, output, args)?,
         Command::Redact(args) => redact_command(context, output, args)?,
         Command::Context(args) => context_command(context, output, args)?,
+        Command::AiSafe(args) => ai_safe_command(context, output, &args)?,
         _ => {
             writeln!(output, "locket: command parsed but not implemented yet")?;
         }
@@ -476,6 +481,7 @@ impl RuntimeContext {
 #[derive(Debug)]
 enum CliError {
     Config(String),
+    ChildExit(u8),
     Io(io::Error),
     Store(StoreError),
     TomlDe(toml::de::Error),
@@ -489,6 +495,7 @@ impl CliError {
     const fn exit_code(&self) -> u8 {
         match self {
             Self::Config(_) | Self::TomlDe(_) | Self::TomlSer(_) => 64,
+            Self::ChildExit(code) => *code,
             Self::Platform(locket_platform::PlatformError::MasterKeyNotFound) => 72,
             Self::Store(StoreError::AuditIntegrity { .. }) => 93,
             Self::Io(_) | Self::Store(_) | Self::Crypto(_) | Self::Platform(_) | Self::Time => 90,
@@ -500,6 +507,7 @@ impl Display for CliError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Config(message) => formatter.write_str(message),
+            Self::ChildExit(code) => write!(formatter, "child process exited with code {code}"),
             Self::Io(error) => error.fmt(formatter),
             Self::Store(error) => error.fmt(formatter),
             Self::TomlDe(error) => error.fmt(formatter),
@@ -1218,8 +1226,138 @@ fn redact_command(
         return Err(CliError::Config("redact requires a file path or --stdin".to_owned()));
     };
 
-    let result = redact_text(&input);
+    let known_redactions = collect_redaction_values_for_redact(
+        context,
+        args.redact_names.redact_names,
+        now_unix_nanos()?,
+    )?;
+    let result = redact_input(&input, &known_redactions);
     write!(output, "{}", result.text)?;
+    Ok(())
+}
+
+fn collect_redaction_values_for_redact(
+    context: &RuntimeContext,
+    redact_names: bool,
+    timestamp: i64,
+) -> Result<Vec<KnownSecretRedaction>, CliError> {
+    let Some(project) = resolve_project(&context.cwd)? else {
+        return Ok(Vec::new());
+    };
+    match collect_known_secret_redactions(context, &project, redact_names, timestamp) {
+        Ok(redactions) => Ok(redactions),
+        Err(error) => {
+            let mut stderr = io::stderr();
+            let _ignored = writeln!(stderr, "locket: known-value redaction skipped: {error}");
+            Ok(Vec::new())
+        }
+    }
+}
+
+fn redact_input(
+    input: &str,
+    known_redactions: &[KnownSecretRedaction],
+) -> locket_scan::RedactionResult {
+    if known_redactions.is_empty() {
+        return redact_text(input);
+    }
+    let known_values = known_redactions
+        .iter()
+        .map(|entry| KnownRedaction { value: entry.value.as_str(), marker: entry.marker.as_str() })
+        .collect::<Vec<_>>();
+    redact_text_with_known_values(input, &known_values)
+}
+
+fn ai_safe_command(
+    context: &RuntimeContext,
+    output: &mut impl Write,
+    args: &AiSafeArgs,
+) -> Result<(), CliError> {
+    if args.command.is_empty() {
+        return Err(CliError::Config("ai-safe requires a command after --".to_owned()));
+    }
+
+    let known_redactions = if args.pattern_only {
+        let mut stderr = io::stderr();
+        writeln!(
+            stderr,
+            "locket: ai-safe running with pattern-only redaction; known values are not loaded"
+        )?;
+        Vec::new()
+    } else {
+        let project = require_project(context)?;
+        collect_known_secret_redactions(
+            context,
+            &project,
+            args.redact_names.redact_names,
+            now_unix_nanos()?,
+        )?
+    };
+
+    let mut transcript = if let Some(path) = args.output.as_deref() {
+        Some(open_ai_safe_transcript(&absolutize(&context.cwd, Path::new(path)), args.force)?)
+    } else {
+        None
+    };
+
+    let child_output = ProcessCommand::new(&args.command[0])
+        .args(&args.command[1..])
+        .current_dir(&context.cwd)
+        .output()?;
+    let stdout = String::from_utf8_lossy(&child_output.stdout);
+    let stderr = String::from_utf8_lossy(&child_output.stderr);
+    let redacted_stdout = redact_input(&stdout, &known_redactions);
+    let redacted_stderr = redact_input(&stderr, &known_redactions);
+
+    write!(output, "{}", redacted_stdout.text)?;
+    io::stderr().write_all(redacted_stderr.text.as_bytes())?;
+
+    if let Some(file) = transcript.as_mut() {
+        write_ai_safe_transcript(file, &redacted_stdout.text, &redacted_stderr.text)?;
+    }
+
+    if child_output.status.success() {
+        Ok(())
+    } else {
+        Err(CliError::ChildExit(
+            child_output.status.code().and_then(|code| u8::try_from(code).ok()).unwrap_or(1),
+        ))
+    }
+}
+
+fn open_ai_safe_transcript(path: &Path, force: bool) -> Result<fs::File, CliError> {
+    let mut options = fs::OpenOptions::new();
+    options.write(true);
+    if force {
+        options.create(true).truncate(true);
+    } else {
+        options.create_new(true);
+    }
+    #[cfg(unix)]
+    options.mode(0o600);
+
+    Ok(options.open(path)?)
+}
+
+fn write_ai_safe_transcript(
+    file: &mut impl Write,
+    stdout: &str,
+    stderr: &str,
+) -> Result<(), CliError> {
+    if !stdout.is_empty() {
+        writeln!(file, "[stdout]")?;
+        write!(file, "{stdout}")?;
+        if !stdout.ends_with('\n') {
+            writeln!(file)?;
+        }
+    }
+    if !stderr.is_empty() {
+        writeln!(file, "[stderr]")?;
+        write!(file, "{stderr}")?;
+        if !stderr.ends_with('\n') {
+            writeln!(file)?;
+        }
+    }
     Ok(())
 }
 
@@ -1820,6 +1958,57 @@ fn collect_known_secret_values(
         }
     }
     Ok(values)
+}
+
+struct KnownSecretRedaction {
+    value: zeroize::Zeroizing<String>,
+    marker: String,
+}
+
+fn collect_known_secret_redactions(
+    context: &RuntimeContext,
+    project: &ResolvedProject,
+    redact_names: bool,
+    timestamp: i64,
+) -> Result<Vec<KnownSecretRedaction>, CliError> {
+    let store = open_store(context)?;
+    let profile = default_profile(&store, &project.config)?;
+    let mut values = Vec::new();
+    for secret in store.list_secrets_by_profile(project.config.project_id.as_str(), &profile.id)? {
+        let marker = known_secret_redaction_marker(&secret, redact_names);
+        for version in store.list_secret_versions(&secret.id)? {
+            if should_scan_known_version(&secret, &version, timestamp)
+                && store.get_blob(&secret.id, version.version)?.is_some()
+            {
+                values.push(KnownSecretRedaction {
+                    value: decrypt_secret_version(
+                        context,
+                        &store,
+                        project.config.project_id.as_str(),
+                        &profile.id,
+                        &secret,
+                        version.version,
+                    )?,
+                    marker: marker.clone(),
+                });
+            }
+        }
+    }
+    Ok(values)
+}
+
+fn known_secret_redaction_marker(secret: &SecretRecord, redact_names: bool) -> String {
+    let label =
+        if redact_names { privacy_alias("secret", &secret.id) } else { secret.name.clone() };
+    format!("lk_redacted_{label}")
+}
+
+fn privacy_alias(kind: &str, id: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"locket-privacy-alias-v1");
+    hasher.update(format!("kind:{kind};id:{id}").as_bytes());
+    let digest = hasher.finalize();
+    format!("{kind}-{:02x}{:02x}{:02x}{:02x}", digest[0], digest[1], digest[2], digest[3])
 }
 
 fn should_scan_known_version(
@@ -2783,6 +2972,116 @@ mod tests {
         let output = String::from_utf8(output)?;
         assert!(output.contains("lk_redacted_PROVIDER_TOKEN"));
         assert!(!output.contains("ghp_sampleTokenValue123"));
+        Ok(())
+    }
+
+    #[test]
+    fn redact_replaces_active_and_grace_known_values() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        let mut output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut output,
+        )?;
+
+        let set_args = test_secret_write_args("DATABASE_URL");
+        super::set_secret_value(&context, &set_args, "postgres://localhost/old", "manual", 1_000)?;
+        let timestamp = super::now_unix_nanos()?;
+        let rotate_args = test_rotate_args("DATABASE_URL", Some("24h"));
+        let grace_until =
+            super::grace_until_from_args(rotate_args.grace_ttl.as_deref(), timestamp)?;
+        super::rotate_secret_value(
+            &context,
+            &rotate_args,
+            "postgres://localhost/new",
+            timestamp,
+            grace_until,
+        )?;
+
+        std::fs::write(
+            directory.path().join("sample.log"),
+            "old=postgres://localhost/old\nnew=postgres://localhost/new\n",
+        )?;
+        let mut redact_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "redact", "sample.log"])?,
+            &context,
+            &mut redact_output,
+        )?;
+
+        let redact_output = String::from_utf8(redact_output)?;
+        assert_eq!(redact_output.matches("lk_redacted_DATABASE_URL").count(), 2);
+        assert!(!redact_output.contains("postgres://localhost/old"));
+        assert!(!redact_output.contains("postgres://localhost/new"));
+        Ok(())
+    }
+
+    #[test]
+    fn redact_names_uses_privacy_alias_for_known_values() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        let mut output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut output,
+        )?;
+        let args = test_secret_write_args("DATABASE_URL");
+        super::set_secret_value(&context, &args, "postgres://localhost/app", "manual", 1_000)?;
+        std::fs::write(directory.path().join("sample.log"), "db=postgres://localhost/app\n")?;
+
+        let mut redact_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "redact", "--redact-names", "sample.log"])?,
+            &context,
+            &mut redact_output,
+        )?;
+
+        let redact_output = String::from_utf8(redact_output)?;
+        assert!(redact_output.contains("lk_redacted_secret-"));
+        assert!(!redact_output.contains("lk_redacted_DATABASE_URL"));
+        assert!(!redact_output.contains("postgres://localhost/app"));
+        Ok(())
+    }
+
+    #[test]
+    fn ai_safe_redacts_child_output_and_transcript() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        let mut output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut output,
+        )?;
+        let args = test_secret_write_args("DATABASE_URL");
+        super::set_secret_value(&context, &args, "postgres://localhost/app", "manual", 1_000)?;
+
+        let mut ai_safe_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from([
+                "locket",
+                "ai-safe",
+                "--output",
+                "transcript.log",
+                "--",
+                "/bin/sh",
+                "-c",
+                "printf 'db=postgres://localhost/app\n'",
+            ])?,
+            &context,
+            &mut ai_safe_output,
+        )?;
+
+        let ai_safe_output = String::from_utf8(ai_safe_output)?;
+        let transcript = std::fs::read_to_string(directory.path().join("transcript.log"))?;
+        assert!(ai_safe_output.contains("lk_redacted_DATABASE_URL"));
+        assert!(transcript.contains("lk_redacted_DATABASE_URL"));
+        assert!(!ai_safe_output.contains("postgres://localhost/app"));
+        assert!(!transcript.contains("postgres://localhost/app"));
         Ok(())
     }
 }
