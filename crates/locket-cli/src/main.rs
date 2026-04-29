@@ -11,7 +11,8 @@ use directories::{BaseDirs, ProjectDirs};
 use ignore::{WalkBuilder, gitignore::GitignoreBuilder};
 use locket_core::{
     CommandPolicy, CommandSpec, DeviceId, Duration as LocketDuration, ExternalEnvSource, KeyId,
-    PolicyDocument, ProfileId, ProfileName, ProjectConfig, ProjectId, SecretId, SecretName,
+    LocketError, PolicyDocument, ProfileId, ProfileName, ProjectConfig, ProjectId, SecretId,
+    SecretName,
 };
 use locket_crypto::{
     EncryptedSecretValue, HkdfWrapInfo, KeyPurpose, KeyWrapAad, KeyWrapPurpose, WrappedKeyMaterial,
@@ -1021,6 +1022,7 @@ impl SecretValueReader for StdinOrPromptSecretValueReader {
 #[derive(Debug)]
 enum CliError {
     Config(String),
+    Typed { kind: LocketError, message: String },
     ChildExit(u8),
     Io(io::Error),
     Store(StoreError),
@@ -1033,21 +1035,86 @@ enum CliError {
 }
 
 impl CliError {
-    const fn exit_code(&self) -> u8 {
+    fn exit_code(&self) -> u8 {
         match self {
-            Self::Config(_) | Self::Json(_) | Self::TomlDe(_) | Self::TomlSer(_) => 64,
+            Self::Config(_) | Self::Json(_) | Self::TomlDe(_) | Self::TomlSer(_) => {
+                LocketError::InvalidReference.exit_code()
+            }
+            Self::Typed { kind, .. } => kind.exit_code(),
             Self::ChildExit(code) => *code,
-            Self::Platform(locket_platform::PlatformError::MasterKeyNotFound) => 72,
-            Self::Store(StoreError::AuditIntegrity { .. }) => 93,
-            Self::Io(_) | Self::Store(_) | Self::Crypto(_) | Self::Platform(_) | Self::Time => 90,
+            Self::Io(_) | Self::Time => LocketError::CorruptDb.exit_code(),
+            Self::Store(error) => error.locket_error().exit_code(),
+            Self::Crypto(error) => crypto_error_exit_code(*error),
+            Self::Platform(error) => platform_error_exit_code(error),
         }
     }
+}
+
+const fn crypto_error_exit_code(error: locket_crypto::CryptoError) -> u8 {
+    match error {
+        locket_crypto::CryptoError::InvalidSecretValue => LocketError::InvalidReference.exit_code(),
+        _ => LocketError::CorruptDb.exit_code(),
+    }
+}
+
+const fn platform_error_exit_code(error: &locket_platform::PlatformError) -> u8 {
+    match error {
+        locket_platform::PlatformError::MasterKeyNotFound
+        | locket_platform::PlatformError::InvalidPassphrase => {
+            LocketError::UnlockRequired.exit_code()
+        }
+        locket_platform::PlatformError::LocalUserVerificationFailed
+        | locket_platform::PlatformError::LocalUserVerificationUnavailable => {
+            LocketError::UserVerificationFailed.exit_code()
+        }
+        locket_platform::PlatformError::RecoveryEnvelopeSchemaUnsupported(_)
+        | locket_platform::PlatformError::InvalidRecoveryEnvelope(_)
+        | locket_platform::PlatformError::InvalidPassphraseFallback
+        | locket_platform::PlatformError::InvalidMasterKey
+        | locket_platform::PlatformError::InvalidProjectId
+        | locket_platform::PlatformError::Keyring(_)
+        | locket_platform::PlatformError::Io(_)
+        | locket_platform::PlatformError::TomlDe(_)
+        | locket_platform::PlatformError::TomlSer(_)
+        | locket_platform::PlatformError::Crypto(_)
+        | locket_platform::PlatformError::MemoryPoisoned => {
+            LocketError::KeychainUnavailable.exit_code()
+        }
+    }
+}
+
+fn typed_cli_error(kind: LocketError, message: impl Into<String>) -> CliError {
+    CliError::Typed { kind, message: message.into() }
+}
+
+fn project_root_untrusted_error() -> CliError {
+    typed_cli_error(
+        LocketError::ProjectRootUntrusted,
+        "ProjectRootNotTrusted: current project root is not trusted; run locket project trust-root",
+    )
+}
+
+fn secret_deleted_error(message: impl Into<String>) -> CliError {
+    typed_cli_error(LocketError::SecretDeleted, message)
+}
+
+fn exec_prepare_error(error: locket_exec::ExecError) -> CliError {
+    match error {
+        locket_exec::ExecError::Environment(error) => {
+            typed_cli_error(LocketError::EnvironmentConflict, error.to_string())
+        }
+        locket_exec::ExecError::EmptyCommand => CliError::Config("empty command".to_owned()),
+    }
+}
+
+fn child_exit_error(status: std::process::ExitStatus) -> CliError {
+    CliError::ChildExit(status.code().and_then(|code| u8::try_from(code).ok()).unwrap_or(1))
 }
 
 impl Display for CliError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Config(message) => formatter.write_str(message),
+            Self::Config(message) | Self::Typed { message, .. } => formatter.write_str(message),
             Self::ChildExit(code) => write!(formatter, "child process exited with code {code}"),
             Self::Io(error) => error.fmt(formatter),
             Self::Store(error) => error.fmt(formatter),
@@ -2212,8 +2279,7 @@ fn exec_command(
         env_mode: locket_exec::EnvMode::Strict,
         override_mode: locket_exec::EnvOverrideMode::Locket,
     };
-    let prepared = locket_exec::prepare_execution(&request)
-        .map_err(|error| CliError::Config(error.to_string()))?;
+    let prepared = locket_exec::prepare_execution(&request).map_err(exec_prepare_error)?;
     let status = prepared.command().status()?;
     let exit_code = status.code();
 
@@ -2233,7 +2299,7 @@ fn exec_command(
         return Ok(());
     }
     writeln!(output, "child exited with status {status}")?;
-    Err(CliError::Config("child process failed".to_owned()))
+    Err(child_exit_error(status))
 }
 
 fn confirm_exec_all_scope(
@@ -2381,8 +2447,7 @@ fn run_command(
         env_mode: policy.env_mode,
         override_mode: policy.override_behavior,
     };
-    let prepared = locket_exec::prepare_execution(&request)
-        .map_err(|error| CliError::Config(error.to_string()))?;
+    let prepared = locket_exec::prepare_execution(&request).map_err(exec_prepare_error)?;
     let status = prepared.command().current_dir(&context.cwd).status()?;
     let audit_status = if status.success() { "SUCCESS" } else { "FAILED" };
     write_runtime_policy_audit_if_available(
@@ -2398,7 +2463,7 @@ fn run_command(
     }
 
     writeln!(output, "child exited with status {status}")?;
-    Err(CliError::ChildExit(status.code().and_then(|code| u8::try_from(code).ok()).unwrap_or(1)))
+    Err(child_exit_error(status))
 }
 
 fn env_command(
@@ -2486,7 +2551,7 @@ fn docker_policy_command(
     }
 
     writeln!(output, "child exited with status {status}")?;
-    Err(CliError::ChildExit(status.code().and_then(|code| u8::try_from(code).ok()).unwrap_or(1)))
+    Err(child_exit_error(status))
 }
 
 fn compose_policy_command(
@@ -2510,7 +2575,7 @@ fn compose_policy_command(
     }
 
     writeln!(output, "child exited with status {status}")?;
-    Err(CliError::ChildExit(status.code().and_then(|code| u8::try_from(code).ok()).unwrap_or(1)))
+    Err(child_exit_error(status))
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2597,8 +2662,7 @@ fn prepare_docker_helper_policy_execution(
         env_mode: policy.env_mode,
         override_mode: policy.override_behavior,
     };
-    let execution = locket_exec::prepare_execution(&request)
-        .map_err(|error| CliError::Config(error.to_string()))?;
+    let execution = locket_exec::prepare_execution(&request).map_err(exec_prepare_error)?;
     debug_assert_eq!(
         plan.injected_names.len(),
         selections.iter().filter(|s| s.selected.is_some()).count()
@@ -3413,10 +3477,7 @@ fn allow_command(context: &RuntimeContext, output: &mut impl Write) -> Result<()
     let profile = default_profile(&store, &resolved.config)?;
     let root_hash = root_hash(&resolved.root)?;
     if !store.project_root_is_trusted(resolved.config.project_id.as_str(), &root_hash)? {
-        return Err(CliError::Config(
-            "ProjectRootNotTrusted: current project root is not trusted; run locket project trust-root"
-                .to_owned(),
-        ));
+        return Err(project_root_untrusted_error());
     }
 
     let timestamp = now_unix_nanos()?;
@@ -5718,8 +5779,8 @@ fn set_secret_value_in_profile(
         request.source,
     )? {
         if existing.state == "deleted" {
-            return Err(CliError::Config(
-                "secret source is deleted; v1 does not reactivate tombstones".to_owned(),
+            return Err(secret_deleted_error(
+                "secret source is deleted; v1 does not reactivate tombstones",
             ));
         }
         return Err(CliError::Config("secret already exists; use rotate".to_owned()));
@@ -5942,7 +6003,7 @@ fn rotate_import_secret_value_in_profile(
         )?
         .ok_or_else(|| CliError::Config("secret does not exist".to_owned()))?;
     if secret.state == "deleted" {
-        return Err(CliError::Config("secret source is deleted".to_owned()));
+        return Err(secret_deleted_error("secret source is deleted"));
     }
     let new_version = secret
         .current_version
@@ -6279,7 +6340,7 @@ fn plan_copy_target(
 ) -> Result<CopyTargetPlan, CliError> {
     let existing = store.get_secret_by_source(project_id, profile_id, name, source)?;
     if existing.as_ref().is_some_and(|secret| secret.state == "deleted") {
-        return Err(CliError::Config("SecretDeleted: target secret source is deleted".to_owned()));
+        return Err(secret_deleted_error("SecretDeleted: target secret source is deleted"));
     }
     let prior_version = existing.as_ref().map(|secret| secret.current_version);
     let version = prior_version.map_or(Ok(1), |version| {
@@ -6720,7 +6781,7 @@ fn resolve_active_secret_for_source(
 ) -> Result<ResolvedSecret, CliError> {
     let resolved = resolve_secret_for_source(context, key, source)?;
     if resolved.secret.state == "deleted" {
-        return Err(CliError::Config("secret source is deleted".to_owned()));
+        return Err(secret_deleted_error("secret source is deleted"));
     }
     Ok(resolved)
 }
@@ -6778,7 +6839,7 @@ fn select_copy_source_secret(
             .get_secret_by_source(project_id, profile_id, name, source)?
             .ok_or_else(|| CliError::Config("secret not found".to_owned()))?;
         if secret.state == "deleted" {
-            return Err(CliError::Config("secret source is deleted".to_owned()));
+            return Err(secret_deleted_error("secret source is deleted"));
         }
         return Ok(secret);
     }
@@ -7097,10 +7158,7 @@ fn ensure_trusted_project_root(store: &Store, resolved: &ResolvedProject) -> Res
     if store.project_root_is_trusted(resolved.config.project_id.as_str(), &root_hash)? {
         return Ok(());
     }
-    Err(CliError::Config(
-        "ProjectRootNotTrusted: current project root is not trusted; run locket project trust-root"
-            .to_owned(),
-    ))
+    Err(project_root_untrusted_error())
 }
 
 fn agent_data_dir(context: &RuntimeContext) -> PathBuf {
@@ -9686,6 +9744,124 @@ mod tests {
         }
     }
 
+    #[test]
+    fn cli_error_exit_codes_follow_reserved_spec_ranges() {
+        assert_eq!(super::CliError::Config("bad input".to_owned()).exit_code(), 64);
+        assert_eq!(super::CliError::ChildExit(42).exit_code(), 42);
+        assert_eq!(
+            super::CliError::Crypto(locket_crypto::CryptoError::InvalidSecretValue).exit_code(),
+            64
+        );
+        assert_eq!(
+            super::CliError::Crypto(locket_crypto::CryptoError::InvalidWrappedKey).exit_code(),
+            90
+        );
+        assert_eq!(
+            super::CliError::Store(locket_store::StoreError::UnsupportedSchema {
+                found: 2,
+                supported: 1,
+            })
+            .exit_code(),
+            92
+        );
+        assert_eq!(
+            super::CliError::Store(locket_store::StoreError::AuditIntegrity {
+                sequence: 1,
+                reason: "row hmac mismatch".to_owned(),
+            })
+            .exit_code(),
+            93
+        );
+        assert_eq!(
+            super::CliError::Platform(locket_platform::PlatformError::MasterKeyNotFound)
+                .exit_code(),
+            72
+        );
+        assert_eq!(
+            super::CliError::Platform(locket_platform::PlatformError::LocalUserVerificationFailed)
+                .exit_code(),
+            74
+        );
+        assert_eq!(
+            super::CliError::Platform(locket_platform::PlatformError::InvalidPassphrase)
+                .exit_code(),
+            72
+        );
+    }
+
+    #[test]
+    fn exec_prepare_environment_conflict_exits_66() -> Result<(), Box<dyn std::error::Error>> {
+        let mut request = locket_exec::ExecutionRequest::strict(vec!["tool".to_owned()]);
+        request.external_env =
+            std::iter::once(("DATABASE_URL".to_owned(), "external".to_owned())).collect();
+        request.locket_env =
+            std::iter::once(("DATABASE_URL".to_owned(), "locket".to_owned())).collect();
+        request.override_mode = locket_exec::EnvOverrideMode::Error;
+
+        let Err(error) =
+            locket_exec::prepare_execution(&request).map_err(super::exec_prepare_error)
+        else {
+            return Err("environment conflict should fail before spawn".into());
+        };
+
+        assert_eq!(error.exit_code(), 66);
+        assert!(error.to_string().contains("environment variable conflict"));
+        Ok(())
+    }
+
+    #[test]
+    fn secret_deleted_errors_exit_76() {
+        let error = super::secret_deleted_error("secret source is deleted");
+
+        assert_eq!(error.exit_code(), 76);
+        assert_eq!(error.to_string(), "secret source is deleted");
+    }
+
+    #[test]
+    fn project_root_untrusted_exits_71() {
+        let error = super::project_root_untrusted_error();
+
+        assert_eq!(error.exit_code(), 71);
+        assert!(error.to_string().contains("ProjectRootNotTrusted"));
+    }
+
+    #[test]
+    fn exec_passthrough_preserves_child_exit_code() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        let mut output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut output,
+        )?;
+        let args = test_secret_write_args("DATABASE_URL");
+        super::set_secret_value(&context, &args, "postgres://localhost/app", "manual", 1_000)?;
+
+        let mut exec_output = Vec::new();
+        let result = run_with_context(
+            Cli::try_parse_from([
+                "locket",
+                "exec",
+                "--secret",
+                "DATABASE_URL",
+                "--",
+                "/bin/sh",
+                "-c",
+                "exit 7",
+            ])?,
+            &context,
+            &mut exec_output,
+        );
+
+        let Err(error) = result else {
+            return Err("exec should return the child exit status as an error".into());
+        };
+        assert_eq!(error.exit_code(), 7);
+        assert!(matches!(error, super::CliError::ChildExit(7)));
+        Ok(())
+    }
+
     fn read_debug_bundle_json(path: &Path) -> Result<String, Box<dyn std::error::Error>> {
         let file = fs::File::open(path)?;
         let decoder = flate2::read::GzDecoder::new(file);
@@ -11347,6 +11523,7 @@ required_secrets = ["DATABASE_URL"]
         ) else {
             return Err("allow should fail for untrusted roots".into());
         };
+        assert_eq!(error.exit_code(), 71);
         assert!(error.to_string().contains("ProjectRootNotTrusted"));
 
         let mut list_output = Vec::new();

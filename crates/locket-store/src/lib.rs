@@ -7,7 +7,7 @@ use std::time::Duration;
 use hmac::{Hmac, Mac};
 use locket_core::{
     AUDIT_HMAC_LEN, AuditCanonicalizationError, AuditHmacInput, Duration as LocketDuration,
-    Timestamp, audit_hmac_v1_bytes, canonical_json_string,
+    LocketError, Timestamp, audit_hmac_v1_bytes, canonical_json_string,
 };
 use rusqlite::types::Type;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
@@ -2413,6 +2413,34 @@ pub enum StoreError {
     },
 }
 
+impl StoreError {
+    /// Returns the stable high-level Locket failure represented by this store error.
+    #[must_use]
+    pub fn locket_error(&self) -> LocketError {
+        match self {
+            Self::Sqlite(error) => sqlite_locket_error(error),
+            Self::UnsupportedSchema { .. } => LocketError::SchemaNewerThanBinary,
+            Self::AuditIntegrity { .. }
+            | Self::InvalidAuditHmacLength { .. }
+            | Self::InvalidAuditKeyLength { .. }
+            | Self::AuditCanonicalization(_) => LocketError::AuditIntegrityFailed,
+            Self::Json(_) => LocketError::CorruptDb,
+        }
+    }
+}
+
+fn sqlite_locket_error(error: &rusqlite::Error) -> LocketError {
+    match error.sqlite_error_code() {
+        Some(rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked) => {
+            LocketError::StorageBusy
+        }
+        Some(rusqlite::ErrorCode::DatabaseCorrupt | rusqlite::ErrorCode::NotADatabase) => {
+            LocketError::CorruptDb
+        }
+        _ => LocketError::CorruptDb,
+    }
+}
+
 fn configure_connection(connection: &Connection) -> Result<(), rusqlite::Error> {
     connection.busy_timeout(Duration::from_millis(BUSY_TIMEOUT_MS))?;
     connection.pragma_update(None, "foreign_keys", "ON")?;
@@ -2946,6 +2974,28 @@ mod tests {
             other => return Err(format!("unexpected schema result: {other:?}").into()),
         }
         Ok(())
+    }
+
+    #[test]
+    fn store_errors_map_to_stable_locket_failures() {
+        let unsupported = StoreError::UnsupportedSchema { found: 2, supported: SCHEMA_VERSION };
+        assert_eq!(unsupported.locket_error(), locket_core::LocketError::SchemaNewerThanBinary);
+
+        let audit =
+            StoreError::AuditIntegrity { sequence: 1, reason: "row hmac mismatch".to_owned() };
+        assert_eq!(audit.locket_error(), locket_core::LocketError::AuditIntegrityFailed);
+
+        let busy = StoreError::Sqlite(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
+            None,
+        ));
+        assert_eq!(busy.locket_error(), locket_core::LocketError::StorageBusy);
+
+        let corrupt = StoreError::Sqlite(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CORRUPT),
+            None,
+        ));
+        assert_eq!(corrupt.locket_error(), locket_core::LocketError::CorruptDb);
     }
 
     #[test]
