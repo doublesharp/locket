@@ -255,6 +255,50 @@ to touch. Items marked `[x]` are merged to `main` and verified.
   - Files: shared resolver in `crates/locket-store/src/secret/queries.rs`,
     callers in `crates/locket-cli/src/secrets_cmd.rs`.
 - [x] Stable typed CLI error mapping and exit codes across all command families.
+- [ ] Secret-name (`^[A-Z_][A-Z0-9_]*$`) and profile-name
+  (`^[a-z][a-z0-9_-]{0,63}$`) regex validation plus `_default` reserved
+  name; reject at every editor before write.
+  - Spec: `docs/specs/project-cli.md` CLI Contract.
+  - Errors: `MetadataInvalid` (64).
+  - Files: shared validator in `crates/locket-core/src/metadata.rs`.
+- [ ] `locket init` atomic rollback and resumable-partial-state when
+  store/keychain/recovery-envelope creation fails mid-flight.
+  - Spec: `docs/specs/project-cli.md` CLI Contract.
+  - Errors: `StorageError` (90), `KeychainEntryMissing` (100).
+  - Files: `crates/locket-cli/src/commands/project/init.rs`.
+- [ ] Dotenv import: name-level migration parity check (never run user
+  app) and explicit post-import confirmation prompt to delete `.env`.
+  - Spec: `docs/specs/project-cli.md` Onboarding Flows.
+  - Errors: `ConfirmationFailed` (68).
+  - Audit: `IMPORT` plus an explicit deletion audit when accepted.
+  - Files: `crates/locket-cli/src/commands/secrets/import.rs`.
+- [ ] `.env.example` Locket-managed block markers
+  (`# --- BEGIN/END LOCKET MANAGED ---`) with rewrite-only-between-markers
+  semantics; tombstoned secrets excluded from the cross-profile union.
+  - Spec: `docs/specs/integrations.md` Git Integration & Pre-Commit.
+  - Files: `crates/locket-cli/src/` example-emitter.
+- [ ] `example.auto_refresh` config key (default `true`,
+  project-override-wins) governing automatic `.env.example` refresh on
+  set/rotate/rm/purge/import/copy/team accept.
+  - Spec: `docs/specs/integrations.md` Git Integration & Pre-Commit;
+    `docs/specs/storage.md` Config schema.
+  - Files: `crates/locket-cli/src/commands/config/spec.rs`,
+    example-emitter callers.
+- [ ] Pre-commit hook block markers
+  (`# --- BEGIN/END LOCKET PRE-COMMIT ---`), idempotent rewrite, typed
+  confirmation when prepending to a non-Locket hook, and `HOOK_INSTALL`
+  audit row when project context is available.
+  - Spec: `docs/specs/integrations.md` Git Integration & Pre-Commit.
+  - Errors: `ConfirmationFailed` (68).
+  - Audit: `HOOK_INSTALL`.
+  - Files: `crates/locket-cli/src/commands/project/install_hooks.rs`.
+- [ ] `locket scan --no-gitignore` flag and `--require-known` pre-commit
+  mode (fails with `UnlockRequired` when locked, `ProjectNotFound`
+  outside any project).
+  - Spec: `docs/specs/integrations.md`,
+    `docs/specs/scan-redaction.md`.
+  - Errors: `UnlockRequired` (72), `ProjectRootUntrusted` (71).
+  - Files: `crates/locket-cli/src/commands/scan/scanner.rs`.
 - [x] Store/schema coverage for the full required-tables set.
   - Spec: `docs/specs/storage.md:26-50` (required tables list),
     `docs/specs/storage.md:55-160` (column-level constraints).
@@ -665,7 +709,8 @@ editing — they drift. Severity: **blocker** (security/correctness),
   `e6e2447`, `52c14ce`, `49bb397`, `7a17462`. Highest-frequency callsites and
   ISO-date / config-key migrations are done. Remaining sweep is decomposed
   below; pick any open subtask:
-  - [ ] **subtask** — typed-recovery-format: migrate the 5 recovery file
+  - [~] [723116e9] **subtask** — typed-recovery-format: migrate the 5 recovery file
+    Claim: branch agent-723116e9/typed-recovery-format, worktree .worktrees/agent-723116e9-typed-recovery-format.
     `format!`-ed errors in `crates/locket-cli/src/commands/vault/recovery.rs`
     (`recovery/kdf.toml: {error}` 2x, `recovery/envelope.bin: {error}` 2x,
     `recovery kdf salt: {error}` 2x, `save recovery kdf: {error}`,
