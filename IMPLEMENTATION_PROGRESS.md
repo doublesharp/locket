@@ -518,8 +518,7 @@ to touch. Items marked `[x]` are merged to `main` and verified.
 
 ### App/UI
 
-- [~] [4efea70d] Add the `locket-app` workspace crate/application.
-  Claim: branch agent-4efea70d/locket-app-crate, worktree .worktrees/agent-4efea70d-locket-app-crate.
+- [x] Add the `locket-app` workspace crate/application.
   - Spec: `docs/specs/architecture.md`, `docs/specs/desktop.md`.
   - Files: `crates/locket-app/` (new), workspace `Cargo.toml`.
 - [ ] Build the Tauri desktop app.
@@ -810,7 +809,7 @@ echoed inside `metadata_json` so the HMAC chain covers them. Never write
 | Docker / Docker Compose policy helpers | `crates/locket-docker/` |
 | OS keychain, passphrase fallback, user verification, hardening | `crates/locket-platform/` |
 | Pattern/entropy/known-value scanner, redactor | `crates/locket-scan/` |
-| Tauri desktop, tray (planned) | `crates/locket-app/` (not yet created) |
+| Tauri desktop, tray (planned) | `crates/locket-app/` |
 
 ### Where each command lives
 
@@ -833,7 +832,7 @@ echoed inside `metadata_json` so the HMAC chain covers them. Never write
 
 ## Latest Verified Checkpoint
 
-- Tip of `main`: `147fbd5` ("Add typed metadata privacy validation").
+- Tip of `main`: `2d89050` ("Merge branch 'agent-4efea70d/locket-app-crate'").
 - `cargo fmt --all -- --check` clean on `main`.
 - `cargo test --workspace --all-targets --all-features` passes on `main`.
 - `cargo clippy --workspace --all-targets --all-features -- -D warnings` clean
