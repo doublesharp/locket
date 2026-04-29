@@ -11,7 +11,8 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     CliError, HOOK_BEGIN, HOOK_END, ResolvedProject, RuntimeContext, confirmation_failed_error,
-    load_project_key, now_unix_nanos, open_store, require_project,
+    invalid_reference_error, load_project_key, metadata_invalid_error, now_unix_nanos, open_store,
+    require_project,
 };
 
 pub fn install_hooks_command(
@@ -90,8 +91,8 @@ fn plan_pre_commit_hook(existing: &str) -> Result<HookInstallPlan, CliError> {
     }
     if let Some(begin) = existing.find(HOOK_BEGIN) {
         let Some(relative_end) = existing[begin..].find(HOOK_END) else {
-            return Err(CliError::Config(
-                ".git/hooks/pre-commit has an unterminated Locket pre-commit block".to_owned(),
+            return Err(metadata_invalid_error(
+                ".git/hooks/pre-commit has an unterminated Locket pre-commit block",
             ));
         };
         let end = begin + relative_end + HOOK_END.len();
@@ -167,7 +168,7 @@ pub fn git_dir_for_worktree(start: &Path) -> Result<PathBuf, CliError> {
 
             let pointer = fs::read_to_string(&dot_git)?;
             let Some(path) = pointer.trim().strip_prefix("gitdir:") else {
-                return Err(CliError::Config("unsupported .git worktree pointer".to_owned()));
+                return Err(metadata_invalid_error("unsupported .git worktree pointer"));
             };
             let path = path.trim();
             return Ok(if Path::new(path).is_absolute() {
@@ -178,7 +179,7 @@ pub fn git_dir_for_worktree(start: &Path) -> Result<PathBuf, CliError> {
         }
 
         if !current.pop() {
-            return Err(CliError::Config("git worktree required for install-hooks".to_owned()));
+            return Err(invalid_reference_error("git worktree required for install-hooks"));
         }
     }
 }

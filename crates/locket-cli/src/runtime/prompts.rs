@@ -2,7 +2,10 @@
 
 use std::io::{self, IsTerminal, Read};
 
-use crate::runtime::error::{CliError, tty_required_error};
+use crate::runtime::error::{
+    CliError, confirmation_failed_error, invalid_reference_error, metadata_invalid_error,
+    tty_required_error,
+};
 
 pub trait ConfirmationReader {
     fn read_confirmation(&self, prompt: &str) -> Result<String, CliError>;
@@ -55,7 +58,7 @@ impl PassphraseReader for EnvOrPromptPassphraseReader {
         let first = read_hidden_passphrase("new locket passphrase: ")?;
         let second = read_hidden_passphrase("confirm locket passphrase: ")?;
         if *first != *second {
-            return Err(CliError::Config("passphrases did not match".to_owned()));
+            return Err(confirmation_failed_error("passphrases did not match"));
         }
         Ok(first)
     }
@@ -72,7 +75,7 @@ pub fn require_interactive_passphrase(reason: &str) -> Result<(), CliError> {
 pub fn read_hidden_passphrase(prompt: &str) -> Result<zeroize::Zeroizing<String>, CliError> {
     let passphrase = zeroize::Zeroizing::new(rpassword::prompt_password(prompt)?);
     if passphrase.is_empty() {
-        return Err(CliError::Config("passphrase must not be empty".to_owned()));
+        return Err(invalid_reference_error("passphrase must not be empty"));
     }
     Ok(passphrase)
 }
@@ -109,7 +112,7 @@ pub fn read_secret_value_from_reader(
     let mut bytes = Vec::new();
     reader.read_to_end(&mut bytes)?;
     let mut value = String::from_utf8(bytes)
-        .map_err(|_| CliError::Config("secret value must be valid UTF-8".to_owned()))?;
+        .map_err(|_| metadata_invalid_error("secret value must be valid UTF-8"))?;
     if value.ends_with('\n') {
         value.pop();
         if value.ends_with('\r') {
@@ -123,10 +126,10 @@ pub fn validate_secret_value(
     value: zeroize::Zeroizing<String>,
 ) -> Result<zeroize::Zeroizing<String>, CliError> {
     if value.is_empty() {
-        return Err(CliError::Config("secret value cannot be empty".to_owned()));
+        return Err(invalid_reference_error("secret value cannot be empty"));
     }
     if value.contains('\0') {
-        return Err(CliError::Config("secret value cannot contain NUL bytes".to_owned()));
+        return Err(metadata_invalid_error("secret value cannot contain NUL bytes"));
     }
     Ok(value)
 }

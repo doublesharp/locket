@@ -12,11 +12,12 @@ use locket_store::{AuditWrite, SCHEMA_VERSION};
 use serde_json::{Value, json};
 
 use crate::commands::config::spec::{CONFIG_KEY_SPECS, read_user_config};
+use crate::runtime::error::corrupt_db_error;
 use crate::{
     CliError, GITIGNORE_ENTRIES, GITIGNORE_FILE, HOOK_BEGIN, LOCKET_TOML, RuntimeContext,
     agent_log_path, agent_pid_path, agent_socket_path, format_hex, git_dir_for_worktree,
-    load_project_key, now_unix_nanos, open_store, privacy_alias, privacy_redact_names_enabled,
-    read_project_config, resolve_project, root_hash,
+    invalid_reference_error, load_project_key, metadata_invalid_error, now_unix_nanos, open_store,
+    privacy_alias, privacy_redact_names_enabled, read_project_config, resolve_project, root_hash,
 };
 
 const SKIPPED_LOCKED_CHECKS: [&str; 5] = [
@@ -165,9 +166,8 @@ pub fn debug_bundle_command(
     output_path: Option<&str>,
 ) -> Result<(), CliError> {
     if !redacted {
-        return Err(CliError::Config(
-            "debug bundle currently requires --redacted; unredacted bundles are not supported"
-                .to_owned(),
+        return Err(invalid_reference_error(
+            "debug bundle currently requires --redacted; unredacted bundles are not supported",
         ));
     }
 
@@ -228,7 +228,7 @@ pub fn debug_bundle_command(
         "diagnostics": diagnostics_json,
     });
     let text = serde_json::to_string_pretty(&bundle)
-        .map_err(|error| CliError::Config(error.to_string()))?;
+        .map_err(|error| metadata_invalid_error(error.to_string()))?;
 
     let path = output_path.map_or_else(
         || default_debug_bundle_path(context),
@@ -559,7 +559,7 @@ fn default_debug_bundle_path(context: &RuntimeContext) -> Result<PathBuf, CliErr
     let parent = context
         .store_path
         .parent()
-        .ok_or_else(|| CliError::Config("could not resolve diagnostics directory".to_owned()))?;
+        .ok_or_else(|| corrupt_db_error("could not resolve diagnostics directory"))?;
     Ok(parent.join("diagnostics").join(format!("locket-debug-{}.tar.gz", now_unix_nanos()?)))
 }
 
@@ -573,7 +573,7 @@ fn write_debug_bundle_file(path: &Path, text: &str) -> Result<(), CliError> {
     set_user_only_file_options(&mut options);
     let file = options.open(path).map_err(|error| {
         if error.kind() == io::ErrorKind::AlreadyExists {
-            CliError::Config("debug bundle output already exists".to_owned())
+            invalid_reference_error("debug bundle output already exists")
         } else {
             CliError::Io(error)
         }

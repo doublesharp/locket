@@ -12,7 +12,10 @@ use serde_json::{Value, json};
 
 use crate::ResolvedProject;
 use crate::runtime::RuntimeContext;
-use crate::runtime::error::{CliError, exec_prepare_error, unimplemented_in_build_error};
+use crate::runtime::error::{
+    CliError, access_denied_error, exec_prepare_error, invalid_reference_error,
+    metadata_invalid_error, secret_not_found_error, unimplemented_in_build_error,
+};
 use crate::runtime::key_access::{default_profile, load_project_key};
 use crate::support::secret_helpers::{
     PolicySecretSelection, decrypt_secret_version, policy_secret_selections,
@@ -175,7 +178,7 @@ pub fn resolve_policy_locket_env(
         .map(|selection| selection.name.as_str())
         .collect::<Vec<_>>();
     if !missing_required.is_empty() {
-        return Err(CliError::Config(format!(
+        return Err(secret_not_found_error(format!(
             "required secret(s) missing: {}",
             missing_required.join(",")
         )));
@@ -218,7 +221,7 @@ pub fn compose_argv_with_options(
     }
     for profile in profiles {
         if profile.is_empty() {
-            return Err(CliError::Config("compose profile must not be empty".to_owned()));
+            return Err(invalid_reference_error("compose profile must not be empty"));
         }
         prepared.push("--profile".to_owned());
         prepared.push(profile.clone());
@@ -229,11 +232,10 @@ pub fn compose_argv_with_options(
 
 pub fn docker_error(error: locket_docker::DockerError) -> CliError {
     match error {
-        locket_docker::DockerError::RemoteContextDenied => CliError::Config(
-            "remote Docker context is denied by default; policy allow_remote_docker support is default-deny unless explicitly enabled"
-                .to_owned(),
+        locket_docker::DockerError::RemoteContextDenied => access_denied_error(
+            "remote Docker context is denied by default; policy allow_remote_docker support is default-deny unless explicitly enabled",
         ),
-        other => CliError::Config(other.to_string()),
+        other => metadata_invalid_error(other.to_string()),
     }
 }
 

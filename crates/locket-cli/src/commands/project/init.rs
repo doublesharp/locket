@@ -20,7 +20,9 @@ use locket_store::{AuditWrite, Store};
 use serde_json::json;
 
 use crate::runtime::RuntimeContext;
-use crate::runtime::error::{CliError, confirmation_failed_error, invalid_profile_name_error};
+use crate::runtime::error::{
+    CliError, confirmation_failed_error, invalid_profile_name_error, metadata_invalid_error,
+};
 use crate::runtime::key_access::{
     MasterKeySource, default_profile, load_master_key_verified_by_project_key, load_project_key,
     store_master_key_with_fallback,
@@ -86,9 +88,7 @@ pub fn init(
 
     let config_path = context.cwd.join(LOCKET_TOML);
     if config_path.exists() {
-        return Err(CliError::Config(
-            "locket.toml already exists but could not be resolved".to_owned(),
-        ));
+        return Err(metadata_invalid_error("locket.toml already exists but could not be resolved"));
     }
 
     let rollback = InitRollback::capture(&context.cwd, config.project_id.as_str(), true)?;
@@ -397,9 +397,9 @@ fn ensure_initial_recovery_envelope(
         entries: vec![entry],
     };
     save_recovery_kdf_toml(&recovery_dir, &kdf)
-        .map_err(|error| CliError::Config(format!("save recovery kdf: {error}")))?;
+        .map_err(|error| metadata_invalid_error(format!("save recovery kdf: {error}")))?;
     save_recovery_envelope(&recovery_dir, &envelope)
-        .map_err(|error| CliError::Config(format!("save recovery envelope: {error}")))?;
+        .map_err(|error| metadata_invalid_error(format!("save recovery envelope: {error}")))?;
     Ok(Some(code_bytes))
 }
 

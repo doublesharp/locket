@@ -13,15 +13,16 @@ pub fn resolve_diff_since(project_root: &Path, value: &str) -> Result<i64, CliEr
         return Ok(timestamp);
     }
 
-    let output = scanner::git_output(project_root, ["log", "-1", "--format=%ct", value]).map_err(|error| {
-        CliError::Config(format!(
-            "could not resolve diff --since value {value:?} as an ISO date/time or Git revision: {error}"
-        ))
-    })?;
+    let output =
+        scanner::git_output(project_root, ["log", "-1", "--format=%ct", value]).map_err(|error| {
+            metadata_invalid_error(format!(
+                "could not resolve diff --since value {value:?} as an ISO date/time or Git revision: {error}"
+            ))
+        })?;
     let seconds = String::from_utf8_lossy(&output)
         .trim()
         .parse::<i64>()
-        .map_err(|_| CliError::Config("git revision timestamp was not an integer".to_owned()))?;
+        .map_err(|_| metadata_invalid_error("git revision timestamp was not an integer"))?;
     seconds.checked_mul(NANOS_PER_SECOND).ok_or(CliError::Time)
 }
 

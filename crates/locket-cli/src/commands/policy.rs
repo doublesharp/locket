@@ -7,8 +7,9 @@ use std::fs;
 use std::io::Write;
 
 use crate::{
-    CliError, LOCKET_TOML, RuntimeContext, load_project_key, now_unix_nanos, open_store,
-    require_project, secret_already_exists_error,
+    CliError, LOCKET_TOML, RuntimeContext, confirmation_failed_error, invalid_reference_error,
+    invalid_secret_name_error, load_project_key, metadata_invalid_error, now_unix_nanos,
+    open_store, require_project, secret_already_exists_error,
 };
 
 #[derive(Debug, Subcommand)]
@@ -131,14 +132,14 @@ fn delete(
 ) -> Result<(), CliError> {
     let PolicyDeleteArgs { name, yes } = args;
     if !yes {
-        return Err(CliError::Config("policy delete requires --yes".to_owned()));
+        return Err(confirmation_failed_error("policy delete requires --yes"));
     }
     let resolved = require_project(context)?;
     let path = resolved.root.join(LOCKET_TOML);
     let mut document = read_locket_toml(&path)?;
     let commands = commands_table_mut(&mut document)?;
     if commands.remove(&name).is_none() {
-        return Err(CliError::Config(format!("command policy not found: {name}")));
+        return Err(invalid_reference_error(format!("command policy not found: {name}")));
     }
     write_validated_locket_toml(&path, &document)?;
     write_policy_update_audit_if_available(context, "delete", &name)?;
@@ -150,7 +151,7 @@ fn doctor(context: &RuntimeContext, output: &mut impl Write) -> Result<(), CliEr
     let path = resolved.root.join(LOCKET_TOML);
     let policy_text = fs::read_to_string(&path)?;
     let document = PolicyDocument::from_toml_str(&policy_text)
-        .map_err(|error| CliError::Config(error.to_string()))?;
+        .map_err(|error| metadata_invalid_error(error.to_string()))?;
 
     writeln!(output, "policy_doctor: ok")?;
     writeln!(output, "policies: {}", document.commands.len())?;
@@ -171,7 +172,8 @@ fn write_validated_locket_toml(
     document: &toml::Value,
 ) -> Result<(), CliError> {
     let content = toml::to_string_pretty(document)?;
-    PolicyDocument::from_toml_str(&content).map_err(|error| CliError::Config(error.to_string()))?;
+    PolicyDocument::from_toml_str(&content)
+        .map_err(|error| metadata_invalid_error(error.to_string()))?;
     fs::write(path, content)?;
     Ok(())
 }
@@ -180,12 +182,12 @@ fn commands_table_mut(
     document: &mut toml::Value,
 ) -> Result<&mut toml::map::Map<String, toml::Value>, CliError> {
     let Some(root) = document.as_table_mut() else {
-        return Err(CliError::Config("locket.toml root must be a table".to_owned()));
+        return Err(metadata_invalid_error("locket.toml root must be a table"));
     };
     let commands = root
         .entry("commands".to_owned())
         .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
-    commands.as_table_mut().ok_or_else(|| CliError::Config("commands must be a table".to_owned()))
+    commands.as_table_mut().ok_or_else(|| metadata_invalid_error("commands must be a table"))
 }
 
 fn policy_table_mut<'a>(
@@ -196,12 +198,12 @@ fn policy_table_mut<'a>(
     commands
         .get_mut(name)
         .and_then(toml::Value::as_table_mut)
-        .ok_or_else(|| CliError::Config(format!("command policy not found: {name}")))
+        .ok_or_else(|| invalid_reference_error(format!("command policy not found: {name}")))
 }
 
 fn validate_policy_name(name: &str) -> Result<(), CliError> {
     if name.is_empty() {
-        return Err(CliError::Config("policy name must not be empty".to_owned()));
+        return Err(invalid_reference_error("policy name must not be empty"));
     }
     Ok(())
 }
@@ -210,7 +212,7 @@ fn validate_secret_names(keys: Vec<String>) -> Result<Vec<String>, CliError> {
     keys.into_iter()
         .map(|key| {
             if SecretName::new(key.clone()).is_err() {
-                return Err(CliError::Config(format!("invalid secret name: {key}")));
+                return Err(invalid_secret_name_error(format!("invalid secret name: {key}")));
             }
             Ok(key)
         })
@@ -240,7 +242,7 @@ fn remove_values(
         return Ok(());
     };
     let Some(array) = value.as_array_mut() else {
-        return Err(CliError::Config(format!("{field} must be an array")));
+        return Err(metadata_invalid_error(format!("{field} must be an array")));
     };
     array.retain(|value| !value.as_str().is_some_and(|name| keys.iter().any(|key| key == name)));
     Ok(())
@@ -251,7 +253,7 @@ fn string_array_mut<'a>(
     field: &str,
 ) -> Result<&'a mut Vec<toml::Value>, CliError> {
     let value = policy.entry(field.to_owned()).or_insert_with(|| toml::Value::Array(Vec::new()));
-    value.as_array_mut().ok_or_else(|| CliError::Config(format!("{field} must be an array")))
+    value.as_array_mut().ok_or_else(|| metadata_invalid_error(format!("{field} must be an array")))
 }
 
 fn string_array(values: Vec<String>) -> toml::Value {

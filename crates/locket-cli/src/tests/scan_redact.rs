@@ -387,10 +387,11 @@ fn redact_require_known_without_project_fails_closed() -> Result<(), Box<dyn std
         &context,
         &mut redact_output,
     );
-    let Err(crate::CliError::Config(message)) = result else {
-        return Err(format!("expected CliError::Config, got {result:?}").into());
+    let Err(crate::CliError::Typed { kind, message }) = result else {
+        return Err(format!("expected typed project-not-found error, got {result:?}").into());
     };
-    assert!(message.contains("known-value redaction"));
+    assert_eq!(kind, locket_core::LocketError::ProjectNotFound);
+    assert_eq!(message, "project not found");
     Ok(())
 }
 

@@ -15,6 +15,7 @@ use crate::commands::config::spec::{read_user_config, split_config_key};
 use crate::{
     CliError, LOCKET_TOML, ResolvedProject, RuntimeContext, confirmation_failed_error, format_hex,
     load_project_key, metadata_invalid_error, now_unix_nanos, open_store, require_project,
+    tty_required_error,
 };
 
 pub const EXAMPLE_FILE: &str = ".env.example";
@@ -111,14 +112,13 @@ pub fn ensure_example_file(root: &Path) -> Result<(), CliError> {
     };
 
     let Some(begin) = existing.find(EXAMPLE_BEGIN) else {
-        return Err(CliError::Config(
-            ".env.example exists without Locket managed markers; refusing silent overwrite"
-                .to_owned(),
+        return Err(metadata_invalid_error(
+            ".env.example exists without Locket managed markers; refusing silent overwrite",
         ));
     };
     let Some(relative_end) = existing[begin..].find(EXAMPLE_END) else {
-        return Err(CliError::Config(
-            ".env.example has an unterminated Locket managed block".to_owned(),
+        return Err(metadata_invalid_error(
+            ".env.example has an unterminated Locket managed block",
         ));
     };
     let end = begin + relative_end + EXAMPLE_END.len();
@@ -167,7 +167,7 @@ pub fn config_bool_value(config: &toml::Table, key: &str) -> Result<Option<bool>
         return Ok(None);
     };
     let Some(section_table) = section_value.as_table() else {
-        return Err(CliError::Config(format!("config section {section:?} must be a table")));
+        return Err(metadata_invalid_error(format!("config section {section:?} must be a table")));
     };
     let Some(value) = section_table.get(name) else {
         return Ok(None);
@@ -175,7 +175,7 @@ pub fn config_bool_value(config: &toml::Table, key: &str) -> Result<Option<bool>
     value
         .as_bool()
         .map(Some)
-        .ok_or_else(|| CliError::Config(format!("config key {key:?} must be boolean")))
+        .ok_or_else(|| metadata_invalid_error(format!("config key {key:?} must be boolean")))
 }
 
 fn refresh_example_for_resolved(
@@ -247,8 +247,8 @@ fn write_example_block_with_policy(
         return replace_unmanaged_example(path, names, &managed_block, unmanaged_policy, output);
     };
     let Some(relative_end) = existing[begin..].find(EXAMPLE_END) else {
-        return Err(CliError::Config(
-            ".env.example has an unterminated Locket managed block".to_owned(),
+        return Err(metadata_invalid_error(
+            ".env.example has an unterminated Locket managed block",
         ));
     };
     let end = begin + relative_end + EXAMPLE_END.len();
@@ -274,22 +274,21 @@ fn replace_unmanaged_example(
     output: Option<&mut dyn Write>,
 ) -> Result<ExampleWriteResult, CliError> {
     match unmanaged_policy {
-        UnmanagedExamplePolicy::Refuse => Err(CliError::Config(
-            ".env.example exists without Locket managed markers; refusing automatic overwrite"
-                .to_owned(),
+        UnmanagedExamplePolicy::Refuse => Err(metadata_invalid_error(
+            ".env.example exists without Locket managed markers; refusing automatic overwrite",
         )),
         UnmanagedExamplePolicy::Confirm => {
             let Some(output) = output else {
-                return Err(CliError::Config(
-                    ".env.example replacement requires interactive confirmation".to_owned(),
+                return Err(tty_required_error(
+                    ".env.example replacement requires interactive confirmation",
                 ));
             };
             writeln!(output, ".env.example: unmanaged")?;
             writeln!(output, "secret_name_count: {}", names.len())?;
             writeln!(output, "metadata_only: yes")?;
             if !io::stdin().is_terminal() {
-                return Err(CliError::Config(
-                    ".env.example replacement requires interactive confirmation".to_owned(),
+                return Err(tty_required_error(
+                    ".env.example replacement requires interactive confirmation",
                 ));
             }
             writeln!(output, "type 'replace .env.example' to replace the unmanaged file")?;

@@ -89,6 +89,18 @@ pub fn project_not_found_error() -> CliError {
     typed_cli_error(LocketError::ProjectNotFound, "project not found")
 }
 
+pub fn invalid_reference_error(message: impl Into<String>) -> CliError {
+    typed_cli_error(LocketError::InvalidReference, message)
+}
+
+pub fn git_worktree_required_error(message: impl Into<String>) -> CliError {
+    typed_cli_error(LocketError::GitWorktreeRequired, message)
+}
+
+pub fn corrupt_db_error(message: impl Into<String>) -> CliError {
+    typed_cli_error(LocketError::CorruptDb, message)
+}
+
 pub fn secret_deleted_error(message: impl Into<String>) -> CliError {
     typed_cli_error(LocketError::SecretDeleted, message)
 }
@@ -119,6 +131,10 @@ pub fn tty_required_error(message: impl Into<String>) -> CliError {
 
 pub fn access_denied_error(message: impl Into<String>) -> CliError {
     typed_cli_error(LocketError::AccessDenied, message)
+}
+
+pub fn unlock_required_error(message: impl Into<String>) -> CliError {
+    typed_cli_error(LocketError::UnlockRequired, message)
 }
 
 pub fn scan_finding_blocked_error(message: impl Into<String>) -> CliError {
@@ -154,7 +170,7 @@ pub fn exec_prepare_error(error: locket_exec::ExecError) -> CliError {
         locket_exec::ExecError::Environment(error) => {
             typed_cli_error(LocketError::EnvironmentConflict, error.to_string())
         }
-        locket_exec::ExecError::EmptyCommand => CliError::Config("empty command".to_owned()),
+        locket_exec::ExecError::EmptyCommand => invalid_reference_error("empty command"),
     }
 }
 

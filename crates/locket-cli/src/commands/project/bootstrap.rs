@@ -7,8 +7,8 @@ use std::path::Path;
 
 use crate::{
     CliError, EXAMPLE_FILE, HOOK_BEGIN, HOOK_END, LOCKET_TOML, ResolvedProject, RuntimeContext,
-    git_dir_for_worktree, load_project_key, now_unix_nanos, open_store, read_policy_document,
-    require_project, root_hash, yes_no,
+    git_dir_for_worktree, load_project_key, metadata_invalid_error, now_unix_nanos, open_store,
+    read_policy_document, require_project, root_hash, yes_no,
 };
 
 pub fn bootstrap_command(
@@ -178,16 +178,14 @@ fn read_bootstrap_settings(path: &Path) -> Result<Option<BootstrapSettings>, Cli
         return Ok(None);
     };
     let Some(table) = table.as_table() else {
-        return Err(CliError::Config("bootstrap settings must be a table".to_owned()));
+        return Err(metadata_invalid_error("bootstrap settings must be a table"));
     };
     let smoke_policy = match table.get("smoke_policy") {
         None => None,
         Some(value) => Some(
             value
                 .as_str()
-                .ok_or_else(|| {
-                    CliError::Config("bootstrap.smoke_policy must be a string".to_owned())
-                })?
+                .ok_or_else(|| metadata_invalid_error("bootstrap.smoke_policy must be a string"))?
                 .to_owned(),
         ),
     };

@@ -8,7 +8,8 @@ use locket_store::{AuditLogRecord, SecretRecord, SecretVersionRecord, Store};
 
 use crate::{
     CliError, DiffArgs, RuntimeContext, active_secret_map, default_profile, format_optional_str,
-    invalid_profile_name_error, open_store, optional_i64, require_project, resolve_diff_since,
+    invalid_profile_name_error, invalid_reference_error, open_store, optional_i64,
+    profile_not_found_error, require_project, resolve_diff_since,
 };
 
 pub fn diff_command(
@@ -18,9 +19,8 @@ pub fn diff_command(
 ) -> Result<(), CliError> {
     if let Some(since) = &args.since {
         if args.profile_a.is_some() || args.profile_b.is_some() {
-            return Err(CliError::Config(
-                "diff --since uses the active profile and does not accept profile arguments"
-                    .to_owned(),
+            return Err(invalid_reference_error(
+                "diff --since uses the active profile and does not accept profile arguments",
             ));
         }
         return diff_since_command(context, output, since);
@@ -29,11 +29,11 @@ pub fn diff_command(
     let profile_a = args
         .profile_a
         .as_deref()
-        .ok_or_else(|| CliError::Config("diff requires two profile names".to_owned()))?;
+        .ok_or_else(|| invalid_reference_error("diff requires two profile names"))?;
     let profile_b = args
         .profile_b
         .as_deref()
-        .ok_or_else(|| CliError::Config("diff requires two profile names".to_owned()))?;
+        .ok_or_else(|| invalid_reference_error("diff requires two profile names"))?;
     let lhs = ProfileName::new(profile_a.to_owned())
         .map_err(|_| invalid_profile_name_error("invalid profile name"))?;
     let rhs = ProfileName::new(profile_b.to_owned())
@@ -43,10 +43,10 @@ pub fn diff_command(
     let store = open_store(context)?;
     let profile_a = store
         .get_profile_by_name(resolved.config.project_id.as_str(), lhs.as_str())?
-        .ok_or_else(|| CliError::Config("first profile not found".to_owned()))?;
+        .ok_or_else(|| profile_not_found_error("first profile not found"))?;
     let profile_b = store
         .get_profile_by_name(resolved.config.project_id.as_str(), rhs.as_str())?
-        .ok_or_else(|| CliError::Config("second profile not found".to_owned()))?;
+        .ok_or_else(|| profile_not_found_error("second profile not found"))?;
 
     let lhs_secrets =
         active_secret_map(&store, resolved.config.project_id.as_str(), &profile_a.id)?;

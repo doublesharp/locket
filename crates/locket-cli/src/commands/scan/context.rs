@@ -9,7 +9,8 @@ use locket_store::{ProfileRecord, SecretRecord, Store};
 use crate::commands::config::spec::{config_get_value, read_user_config};
 use crate::{
     CliError, LOCKET_TOML, RedactNamesArgs, ResolvedProject, RuntimeContext, command_type,
-    open_store, privacy_alias, read_policy_document, require_project, yes_no,
+    metadata_invalid_error, open_store, privacy_alias, read_policy_document, require_project,
+    yes_no,
 };
 
 pub fn context_command(
@@ -109,9 +110,7 @@ pub fn privacy_redact_names_enabled(
     let Some(value) = config_get_value(&config, "privacy.redact_names") else {
         return Ok(false);
     };
-    value
-        .as_bool()
-        .ok_or_else(|| CliError::Config("privacy.redact_names must be boolean".to_owned()))
+    value.as_bool().ok_or_else(|| metadata_invalid_error("privacy.redact_names must be boolean"))
 }
 
 fn context_project_label(resolved: &ResolvedProject, redact_names: bool) -> String {

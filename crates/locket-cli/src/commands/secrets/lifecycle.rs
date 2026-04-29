@@ -9,12 +9,13 @@ use serde_json::json;
 
 use crate::{
     CliError, CopyArgs, HistoryArgs, ListArgs, PurgeArgs, ResolvedSecret, RotateArgs,
-    RuntimeContext, SourceKeyArgs, copy_secret_value, default_profile, ensure_trusted_project_root,
-    format_optional_unix_nanos, format_unix_nanos, format_versions, grace_until_from_args,
-    invalid_secret_name_error, load_project_key, now_unix_nanos, open_store,
-    preflight_rotate_secret_value, profile_not_found_error, refresh_example_for_project_if_enabled,
-    require_project, resolve_secret_for_source, rotate_secret_value, secret_audit_metadata,
-    secret_not_found_error, source_arg_to_str,
+    RuntimeContext, SourceKeyArgs, confirmation_failed_error, copy_secret_value, default_profile,
+    ensure_trusted_project_root, format_optional_unix_nanos, format_unix_nanos, format_versions,
+    grace_until_from_args, invalid_reference_error, invalid_secret_name_error, load_project_key,
+    metadata_invalid_error, now_unix_nanos, open_store, preflight_rotate_secret_value,
+    profile_not_found_error, refresh_example_for_project_if_enabled, require_project,
+    resolve_secret_for_source, rotate_secret_value, secret_audit_metadata, secret_not_found_error,
+    source_arg_to_str,
 };
 
 pub fn rm_command(
@@ -124,7 +125,7 @@ fn confirm_purge_scope(
     writeln!(output, "type '{expected}' to confirm purge")?;
     let confirmation = context.confirmation_reader.read_confirmation("purge")?;
     if confirmation.trim_end_matches(['\r', '\n']) != expected {
-        return Err(CliError::Config("confirmation did not match purge scope".to_owned()));
+        return Err(confirmation_failed_error("confirmation did not match purge scope"));
     }
     Ok(())
 }
@@ -135,7 +136,7 @@ pub fn purge_command(
     args: &PurgeArgs,
 ) -> Result<(), CliError> {
     if args.version.is_none() && !args.all_versions {
-        return Err(CliError::Config("purge requires --version N or --all-versions".to_owned()));
+        return Err(invalid_reference_error("purge requires --version N or --all-versions"));
     }
 
     let secret = resolve_secret_for_source(context, &args.key, args.source.source)?;
@@ -148,25 +149,25 @@ pub fn purge_command(
 
     let (target_versions, version_scope) = if args.all_versions {
         if secret.secret.state != "deleted" {
-            return Err(CliError::Config(
-                "purge --all-versions requires a deleted source; run rm first".to_owned(),
+            return Err(metadata_invalid_error(
+                "purge --all-versions requires a deleted source; run rm first",
             ));
         }
         let versions = versions.iter().map(|version| version.version).collect::<Vec<_>>();
         (versions, "all".to_owned())
     } else {
         let Some(version) = args.version else {
-            return Err(CliError::Config("purge requires --version N".to_owned()));
+            return Err(invalid_reference_error("purge requires --version N"));
         };
         let Some(record) = versions.iter().find(|record| record.version == version) else {
-            return Err(CliError::Config("secret version not found".to_owned()));
+            return Err(secret_not_found_error("secret version not found"));
         };
         if secret.secret.state == "active"
             && version == secret.secret.current_version
             && record.state == "current"
         {
-            return Err(CliError::Config(
-                "cannot purge the current version of an active source".to_owned(),
+            return Err(metadata_invalid_error(
+                "cannot purge the current version of an active source",
             ));
         }
         (vec![version], format!("v{version}"))
@@ -262,10 +263,7 @@ pub fn history_command(
         let filtered =
             all_secrets.into_iter().filter(|secret| secret.source == target).collect::<Vec<_>>();
         if filtered.is_empty() {
-            return Err(CliError::Config(format!(
-                "secret {} has no source {target}",
-                name.as_str()
-            )));
+            return Err(secret_not_found_error(format!("secret {name} has no source {target}")));
         }
         filtered
     } else {
