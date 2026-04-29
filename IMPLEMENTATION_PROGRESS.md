@@ -271,20 +271,48 @@ to touch. Items marked `[x]` are merged to `main` and verified.
 
 ### Runtime/DX
 
-- [ ] Local agent daemon: socket/pipe server, peer validation, unlock cache,
-  TTL grants, grant revocation, status streaming.
+- [~] Local agent daemon: socket/pipe server, peer validation, unlock cache,
+  TTL grants, grant revocation, status streaming. Decomposed into subtasks
+  below; pick any open one (later subtasks depend on `agent-socket-server` —
+  note the dependency on the claim line if you take a downstream task).
   - Spec: `docs/specs/agent.md` (whole file). RPC method list at `:81-96`.
   - Errors: `AgentUnavailable` (80), `AgentSocketInUse` (81),
     `ProtocolError` (82), `GrantRequired` (72).
   - Audit actions: `LOCK`, `UNLOCK`, `AGENT_REVOKE`, `GRANT_EXPIRED`,
     `CLIENT_ADD`, `CLIENT_REVOKE`.
   - Files: `crates/locket-agent/src/` (daemon, socket, IPC); CLI client wiring
-    in `crates/locket-cli/src/agent.rs`.
-  - Sub-tasks (call out as separate slices if useful): socket/pipe creation +
-    user-only permissions, peer credential validation (`SO_PEERCRED` on Linux,
-    `LOCAL_PEERPID` on macOS, named-pipe peer SID on Windows), unlock-key TTL
-    cache, grant table with `(pid, process_start_time)` binding,
-    `SubscribeStatus` stream wiring.
+    in `crates/locket-cli/src/commands/agent.rs`.
+  - [ ] **subtask** — agent-socket-server: bind a per-user Unix domain
+    socket on Linux/macOS (and a named pipe on Windows) with 0600/equivalent
+    permissions, accept connections in a loop, decode the existing
+    length-prefixed framing, dispatch to a stub RPC handler covering
+    `Status` and `Heartbeat`. Errors: `AgentSocketInUse` (81). Tests: socket
+    is created with the right permissions, a second daemon fails closed,
+    framing round-trips. Pre-req for the other agent subtasks.
+  - [ ] **subtask** — agent-peer-validation: validate the connecting peer
+    against the daemon's uid (`SO_PEERCRED` on Linux, `LOCAL_PEERPID` +
+    `LOCAL_PEEREPID` on macOS, named-pipe peer SID on Windows). Reject
+    cross-user connections with `AccessDenied`. Tests: a non-matching uid
+    is closed with the typed error. Depends on `agent-socket-server`.
+  - [ ] **subtask** — agent-unlock-cache: in-memory unlock-key cache keyed
+    by project_id with TTL eviction that fires `LOCK` audit on expiry. Add
+    `Lock`/`Unlock`/`Status` RPC handlers. Errors: `UnlockRequired` (72).
+    Audit: `LOCK`, `UNLOCK` with `method = OsKeychain | Passphrase |
+    RecoveryEnvelope` and `ttl_seconds`. Tests: unlock-then-lock writes both
+    audit rows; cache entry honors TTL. Depends on `agent-socket-server`.
+  - [ ] **subtask** — agent-grant-table: SQLite-backed grant table from
+    `docs/specs/agent.md` with `(pid, process_start_time)` binding (helper
+    landed in `agent-4efea70d/process-grant-binding`).
+    `RequestGrant`/`ExpireGrant`/`RevokeGrant` RPC handlers. Errors:
+    `GrantRequired` (72). Audit: `AGENT_REVOKE`, `GRANT_EXPIRED` with
+    `grant_id`. Tests: a pid-recycle case correctly invalidates a stale
+    grant. Depends on `agent-socket-server`.
+  - [ ] **subtask** — agent-subscribe-status: wire `SubscribeStatus` stream
+    on top of the existing heartbeat envelope. Stream `lock_state` change
+    events plus the documented heartbeat cadence. Errors: `ProtocolError`
+    (82). Tests: client receives initial state, a state change, and at
+    least one heartbeat within the documented window. Depends on
+    `agent-socket-server` and `agent-unlock-cache`.
 - [x] Status-stream heartbeats (`StatusEvent kind="heartbeat"`, ≥30 s,
   monotonic `sequence`, not treated as state change).
 - [x] Process-bound grant binding via `(pid, process_start_time)` per
@@ -729,8 +757,8 @@ editing — they drift. Severity: **blocker** (security/correctness),
   exist. Remaining: broader CLI/agent/UI artifact scanning.
   - Spec: `docs/specs/testing.md` leak-canary section.
   - Files: `scripts/leak-canary*` and the canary test harness.
-- [~] [b67f47d6] Signed distribution packaging and opt-in update-check verification
-  Claim: branch agent-b67f47d6/update-manifest-verifier, worktree .worktrees/agent-b67f47d6-update-manifest-verifier. Scope: add offline signed update-manifest schema/verifier and typed `UpdateManifestInvalid`; leave package builders/signing workflows as follow-ups.
+- [~] [b67f47d6] ready: agent-b67f47d6/update-manifest-verifier @ ed8dfde — offline signed update-manifest verifier and typed `UpdateManifestInvalid` landed; package builders/signing workflows remain.
+  Signed distribution packaging and opt-in update-check verification
   (Homebrew, signed macOS package, signed Windows MSI, Linux package, signed
   VS Code extension).
   - Spec: `docs/specs/operations.md:27-53`.
@@ -803,7 +831,8 @@ Auth/trust/secret-access band (70-79): `AccessDenied` (70),
 `SecretDeleted` (76), `SecretNotFound` (77), `ProfileNotFound` (78).
 
 Agent/automation band (80-89): `AgentUnavailable` (80), `AgentSocketInUse` (81),
-`ProtocolError` (82), `ClientUnknown` / `ClientRevoked` / `ReplayDetected` (83).
+`ProtocolError` (82), `ClientUnknown` / `ClientRevoked` / `ReplayDetected` (83),
+`UpdateManifestInvalid` (89).
 
 Storage/schema/integrity band (90-99): `StorageError` (90),
 `SchemaMismatch` (91), `Concurrency` (92), `IntegrityFailure` (93).
