@@ -43,7 +43,7 @@ Every audit row stores a typed JSON object in `metadata_json`. The object must i
 
 | Action family | Required metadata fields |
 | --- | --- |
-| Secret value lifecycle: `SET`, `ROTATE`, `DELETE`, `PURGE`, `IMPORT`, `SECRET_COPY` | `secret_name`, `profile_id`, `source`, `version` or `target_version`; rotation/copy additionally include `prior_version`, `deprecated_at`, and `grace_until` when present |
+| Secret value lifecycle: `SET`, `ROTATE`, `DELETE`, `PURGE`, `IMPORT`, `SECRET_COPY`, `SECRET_META_UPDATE` | `secret_name`, `profile_id`, `source`, `version` or `target_version`; rotation/copy additionally include `prior_version`, `deprecated_at`, and `grace_until` when present; metadata updates include updated field names/counts, required-state changes when present, status, and failure reason when applicable, but never description, owner, tag text, or secret values |
 | Secret value access: `GET`, `REVEAL`, `COPY` | `secret_name`, `profile_id`, `source`, `access_mode`; clipboard copy additionally includes `ttl_seconds` |
 | Execution: `EXEC`, `RUN` | `command` or `policy_name`, `argv0`, `arg_count`, `profile_id`, `env_mode`, `override`, `secret_names`, `exit_status` when available, and `delivery_mode` for Docker/Compose/ephemeral-file paths |
 | Scan/redaction: `SCAN`, `REDACT` | `scope`, `known_value_coverage`, `finding_counts`, `redacted_secret_names` when known, `pattern_only`, and child `argv0`/`arg_count` for `ai-safe` |

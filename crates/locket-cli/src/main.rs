@@ -2930,28 +2930,31 @@ fn meta_command(
     }
 
     let resolved_secret = resolve_active_secret_for_source(context, &args.key, args.source.source)?;
-    let store = open_store(context)?;
+    let mut store = open_store(context)?;
     let required = metadata_required_update(&args.metadata);
     let tags =
         if args.metadata.tags.is_empty() { None } else { Some(args.metadata.tags.as_slice()) };
     let timestamp = now_unix_nanos()?;
+    if let Err(error) =
+        validate_secret_metadata_update(context, &resolved_secret, &args.metadata, timestamp)
+    {
+        write_secret_meta_update_failure_audit_if_available(
+            context,
+            &mut store,
+            &resolved_secret,
+            &args.metadata,
+            timestamp,
+        );
+        return Err(error);
+    }
     let audit_key = load_project_key(
         context,
         &store,
         resolved_secret.project.config.project_id.as_str(),
         KeyPurpose::Audit,
     )?;
-    let metadata = json!({
-        "schema_version": 1,
-        "action": "SECRET_META_UPDATE",
-        "status": "SUCCESS",
-        "secret_name": &resolved_secret.secret.name,
-        "profile": &resolved_secret.profile.name,
-        "profile_id": &resolved_secret.profile.id,
-        "source": &resolved_secret.secret.source,
-        "version": resolved_secret.secret.current_version,
-        "updated_fields": metadata_update_field_names(&args.metadata),
-    });
+    let metadata =
+        secret_meta_update_audit_metadata(&resolved_secret, &args.metadata, "SUCCESS", None);
     let audit = AuditWrite {
         project_id: resolved_secret.project.config.project_id.as_str(),
         profile_id: Some(&resolved_secret.profile.id),
@@ -2969,7 +2972,7 @@ fn meta_command(
             owner: args.metadata.owner.as_deref(),
             tags,
             required,
-            updated_at: Some(timestamp),
+            updated_at: None,
             audit: Some(AuditContext { key: audit_key.as_ref(), write: &audit }),
         },
     )?;
@@ -2984,6 +2987,8 @@ fn meta_command(
         resolved_secret.secret.source,
         resolved_secret.secret.current_version
     )?;
+    writeln!(output, "updated_fields: {}", metadata_update_field_names(&args.metadata).join(","))?;
+    writeln!(output, "metadata_only: yes")?;
     Ok(())
 }
 
@@ -7339,6 +7344,120 @@ fn metadata_update_field_names(metadata: &SecretMetadataFlags) -> Vec<&'static s
     fields
 }
 
+fn validate_secret_metadata_update(
+    context: &RuntimeContext,
+    resolved_secret: &ResolvedSecret,
+    metadata: &SecretMetadataFlags,
+    timestamp: i64,
+) -> Result<(), CliError> {
+    let fields = secret_metadata_text_fields(metadata);
+    for (field, value) in &fields {
+        validate_secret_metadata_field(field, value)?;
+    }
+
+    if let Ok(known_values) =
+        collect_known_secret_values(context, &resolved_secret.project, timestamp)
+    {
+        for (field, value) in fields {
+            if known_values.iter().any(|known_value| known_value.as_str() == value) {
+                return Err(CliError::Config(format!(
+                    "metadata field {field} matches an existing secret value; refusing to store it"
+                )));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn secret_metadata_text_fields(metadata: &SecretMetadataFlags) -> Vec<(&'static str, &str)> {
+    let mut fields = Vec::new();
+    if let Some(description) = metadata.description.as_deref() {
+        fields.push(("description", description));
+    }
+    if let Some(owner) = metadata.owner.as_deref() {
+        fields.push(("owner", owner));
+    }
+    for tag in &metadata.tags {
+        fields.push(("tag", tag.as_str()));
+    }
+    fields
+}
+
+fn validate_secret_metadata_field(field: &str, value: &str) -> Result<(), CliError> {
+    if value.chars().any(char::is_control) {
+        return Err(CliError::Config(format!(
+            "metadata field {field} contains control characters; refusing to store it"
+        )));
+    }
+    let secret_like = scan_text(&format!("metadata:{field}"), value).iter().any(|finding| {
+        matches!(finding.kind, FindingKind::HighEntropy | FindingKind::ProviderTokenPattern)
+    });
+    if secret_like {
+        return Err(CliError::Config(format!(
+            "metadata field {field} looks like a secret; refusing to store it"
+        )));
+    }
+    Ok(())
+}
+
+fn write_secret_meta_update_failure_audit_if_available(
+    context: &RuntimeContext,
+    store: &mut Store,
+    resolved_secret: &ResolvedSecret,
+    metadata: &SecretMetadataFlags,
+    timestamp: i64,
+) {
+    let project_id = resolved_secret.project.config.project_id.as_str();
+    let Ok(audit_key) = load_project_key(context, store, project_id, KeyPurpose::Audit) else {
+        return;
+    };
+    let audit_metadata = secret_meta_update_audit_metadata(
+        resolved_secret,
+        metadata,
+        "FAILED",
+        Some("metadata_privacy_validation"),
+    );
+    let audit = AuditWrite {
+        project_id,
+        profile_id: Some(&resolved_secret.profile.id),
+        action: "SECRET_META_UPDATE",
+        status: "FAILED",
+        secret_name: Some(&resolved_secret.secret.name),
+        command: None,
+        metadata_json: &audit_metadata,
+        timestamp,
+    };
+    let _ignored = store.append_audit(audit_key.as_ref(), &audit);
+}
+
+fn secret_meta_update_audit_metadata(
+    resolved_secret: &ResolvedSecret,
+    metadata: &SecretMetadataFlags,
+    status: &str,
+    failure_reason: Option<&str>,
+) -> Value {
+    let updated_fields = metadata_update_field_names(metadata);
+    let updated_field_count = updated_fields.len();
+    json!({
+        "schema_version": 1,
+        "action": "SECRET_META_UPDATE",
+        "status": status,
+        "secret_name": &resolved_secret.secret.name,
+        "profile": &resolved_secret.profile.name,
+        "profile_id": &resolved_secret.profile.id,
+        "source": &resolved_secret.secret.source,
+        "version": resolved_secret.secret.current_version,
+        "updated_fields": updated_fields,
+        "updated_field_count": updated_field_count,
+        "description_updated": metadata.description.is_some(),
+        "owner_updated": metadata.owner.is_some(),
+        "tag_update_count": metadata.tags.len(),
+        "required_update": metadata_required_update(metadata),
+        "failure_reason": failure_reason,
+    })
+}
+
 fn format_versions(versions: &[u32]) -> String {
     versions.iter().map(u32::to_string).collect::<Vec<_>>().join(",")
 }
@@ -10481,6 +10600,8 @@ argv = []
         )?;
         let meta_output = String::from_utf8(meta_output)?;
         assert!(meta_output.contains("metadata updated DATABASE_URL"));
+        assert!(meta_output.contains("updated_fields: description,owner,tags,required"));
+        assert!(meta_output.contains("metadata_only: yes"));
         assert!(!meta_output.contains("postgres://localhost/app"));
 
         let store = locket_store::Store::open(directory.path().join("store.db"))?;
@@ -10503,7 +10624,7 @@ argv = []
         assert_eq!(row.1, "platform");
         assert_eq!(row.2, "[\"database\",\"prod\"]");
         assert!(row.3);
-        assert!(row.4 > 1_000);
+        assert_eq!(row.4, 1_000);
 
         let audit_metadata: String = store.connection().query_row(
             "SELECT metadata_json FROM audit_log WHERE action = 'SECRET_META_UPDATE'",
@@ -10514,9 +10635,224 @@ argv = []
             audit_metadata
                 .contains("\"updated_fields\":[\"description\",\"owner\",\"tags\",\"required\"]")
         );
+        assert!(audit_metadata.contains("\"updated_field_count\":4"));
+        assert!(audit_metadata.contains("\"tag_update_count\":2"));
+        assert!(audit_metadata.contains("\"required_update\":true"));
         assert!(!audit_metadata.contains("primary database"));
         assert!(!audit_metadata.contains("platform"));
         assert!(!audit_metadata.contains("postgres://localhost/app"));
+        Ok(())
+    }
+
+    #[test]
+    fn meta_rejects_secret_like_metadata_without_storing_value()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        let mut output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut output,
+        )?;
+        let args = test_secret_write_args("DATABASE_URL");
+        super::set_secret_value(&context, &args, "postgres://localhost/app", "manual", 1_000)?;
+
+        let provider = "sk_test_sampleTokenValue123";
+        let result = run_with_context(
+            Cli::try_parse_from(["locket", "meta", "DATABASE_URL", "--description", provider])?,
+            &context,
+            &mut Vec::new(),
+        );
+        assert_error_contains(result, "metadata field description looks like a secret");
+
+        let store = locket_store::Store::open(directory.path().join("store.db"))?;
+        let row = store.connection().query_row(
+            "SELECT description, updated_at FROM secrets WHERE name = 'DATABASE_URL'",
+            [],
+            |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, i64>(1)?)),
+        )?;
+        assert_eq!(row, (None, 1_000));
+
+        let audit_metadata: String = store.connection().query_row(
+            "SELECT metadata_json FROM audit_log
+             WHERE action = 'SECRET_META_UPDATE' AND status = 'FAILED'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert!(audit_metadata.contains("\"failure_reason\":\"metadata_privacy_validation\""));
+        assert!(!audit_metadata.contains(provider));
+        assert!(!audit_metadata.contains("postgres://localhost/app"));
+        Ok(())
+    }
+
+    #[test]
+    fn meta_rejects_known_secret_value_metadata() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        let mut output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut output,
+        )?;
+        let args = test_secret_write_args("DATABASE_URL");
+        super::set_secret_value(&context, &args, "postgres://localhost/app", "manual", 1_000)?;
+
+        let result = run_with_context(
+            Cli::try_parse_from([
+                "locket",
+                "meta",
+                "DATABASE_URL",
+                "--owner",
+                "postgres://localhost/app",
+            ])?,
+            &context,
+            &mut Vec::new(),
+        );
+        assert_error_contains(result, "metadata field owner matches an existing secret value");
+
+        let store = locket_store::Store::open(directory.path().join("store.db"))?;
+        let owner: Option<String> = store.connection().query_row(
+            "SELECT owner FROM secrets WHERE name = 'DATABASE_URL'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(owner, None);
+
+        let audit_metadata: String = store.connection().query_row(
+            "SELECT metadata_json FROM audit_log
+             WHERE action = 'SECRET_META_UPDATE' AND status = 'FAILED'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert!(!audit_metadata.contains("postgres://localhost/app"));
+        Ok(())
+    }
+
+    #[test]
+    fn meta_rejects_control_character_metadata() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        let mut output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut output,
+        )?;
+        let args = test_secret_write_args("DATABASE_URL");
+        super::set_secret_value(&context, &args, "postgres://localhost/app", "manual", 1_000)?;
+
+        let result = run_with_context(
+            Cli::try_parse_from(["locket", "meta", "DATABASE_URL", "--tag", "prod\u{1b}[31m"])?,
+            &context,
+            &mut Vec::new(),
+        );
+        assert_error_contains(result, "metadata field tag contains control characters");
+        Ok(())
+    }
+
+    #[test]
+    fn meta_requires_source_for_multiple_active_sources_and_updates_explicit_source()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        let mut output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut output,
+        )?;
+        let user_args = test_secret_write_args("DATABASE_URL");
+        super::set_secret_value(
+            &context,
+            &user_args,
+            "postgres://localhost/user",
+            "manual",
+            1_000,
+        )?;
+        let machine_args = super::SecretWriteArgs {
+            key: "DATABASE_URL".to_owned(),
+            source: super::SourceArg { source: Some(super::SecretSourceArg::MachineLocal) },
+            metadata: super::SecretMetadataFlags {
+                description: None,
+                owner: None,
+                tags: Vec::new(),
+                required: false,
+                optional: false,
+            },
+        };
+        super::set_secret_value(
+            &context,
+            &machine_args,
+            "postgres://localhost/machine",
+            "manual",
+            2_000,
+        )?;
+
+        let ambiguous = run_with_context(
+            Cli::try_parse_from([
+                "locket",
+                "meta",
+                "DATABASE_URL",
+                "--description",
+                "ambiguous database",
+            ])?,
+            &context,
+            &mut Vec::new(),
+        );
+        assert_error_contains(ambiguous, "multiple sources exist for this secret");
+
+        let store = locket_store::Store::open(directory.path().join("store.db"))?;
+        let versions_before: i64 =
+            store
+                .connection()
+                .query_row("SELECT COUNT(*) FROM secret_versions", [], |row| row.get(0))?;
+
+        let mut meta_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from([
+                "locket",
+                "meta",
+                "DATABASE_URL",
+                "--source",
+                "machine-local",
+                "--description",
+                "machine database",
+            ])?,
+            &context,
+            &mut meta_output,
+        )?;
+        let meta_output = String::from_utf8(meta_output)?;
+        assert!(meta_output.contains("source=machine-local"));
+        assert!(!meta_output.contains("postgres://localhost"));
+
+        let descriptions = store.connection().query_row(
+            "SELECT
+                MAX(CASE WHEN source = 'user-local' THEN description END),
+                MAX(CASE WHEN source = 'machine-local' THEN description END)
+             FROM secrets
+             WHERE name = 'DATABASE_URL'",
+            [],
+            |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, Option<String>>(1)?)),
+        )?;
+        assert_eq!(descriptions.0, None);
+        assert_eq!(descriptions.1.as_deref(), Some("machine database"));
+        let versions_after: i64 =
+            store
+                .connection()
+                .query_row("SELECT COUNT(*) FROM secret_versions", [], |row| row.get(0))?;
+        assert_eq!(versions_after, versions_before);
+
+        let audit_metadata: String = store.connection().query_row(
+            "SELECT metadata_json FROM audit_log
+             WHERE action = 'SECRET_META_UPDATE' AND status = 'SUCCESS'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert!(audit_metadata.contains("\"source\":\"machine-local\""));
+        assert!(!audit_metadata.contains("machine database"));
+        assert!(!audit_metadata.contains("postgres://localhost"));
         Ok(())
     }
 
@@ -10790,7 +11126,7 @@ argv = []
         )?;
         let diff_output = String::from_utf8(diff_output)?;
         assert!(diff_output.contains("action=SECRET_META_UPDATE"));
-        assert!(diff_output.contains("changed DATABASE_URL source=user-local"));
+        assert!(!diff_output.contains("changed DATABASE_URL source=user-local"));
         assert!(!diff_output.contains("postgres://localhost"));
         assert!(!diff_output.contains("primary database"));
         Ok(())
