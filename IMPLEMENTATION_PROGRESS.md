@@ -867,8 +867,7 @@ editing — they drift. Severity: **blocker** (security/correctness),
     `updates.manifest_url must be an HTTPS URL` 3x, enum-message strings,
     `config value looks like a secret`) to typed `MetadataInvalid` or
     `MetadataLooksLikeSecret`. Regression per validator class.
-  - [~] [4efea70d] **subtask** — typed-tty-confirmation: migrate the two `format!`-ed
-    Claim: branch agent-4efea70d/typed-tty-confirmation, worktree .worktrees/agent-4efea70d-typed-tty-confirmation.
+  - [x] **subtask** — typed-tty-confirmation: migrate the two `format!`-ed
     `{prompt} requires interactive confirmation` and `{reason} requires an
     interactive TTY` callsites to a new `LocketError::TtyRequired` variant
     (or reuse `ConfirmationFailed` if the spec treats them equivalently).
@@ -1088,7 +1087,7 @@ disagrees with the spec, the spec wins — fix the table and open a PR.
 Input/config band (64-69): `InvalidReference` / `GitWorktreeRequired` /
 `MetadataInvalid` (64), `PolicyValidationIncomplete` (65),
 `EnvironmentConflict` / `MetadataLooksLikeSecret` (66), `SecretAlreadyExists`
-(67), `ConfirmationFailed` (68).
+(67), `ConfirmationFailed` / `TtyRequired` (68).
 
 Auth/trust/secret-access band (70-79): `AccessDenied` (70),
 `ProjectRootUntrusted` (71), `UnlockRequired` (72), `GrantRequired` (73),
@@ -1191,7 +1190,7 @@ echoed inside `metadata_json` so the HMAC chain covers them. Never write
 
 ## Latest Verified Checkpoint
 
-- Tip of `main`: `f9b3576` ("Claim typed template validation task").
+- Tip of `main`: `c789e8e` ("Add typed TTY required error").
 - `cargo fmt --all -- --check` clean on `main`.
 - `cargo test --workspace --all-targets --all-features` passes on `main`.
 - `cargo clippy --workspace --all-targets --all-features -- -D warnings` clean
