@@ -114,6 +114,64 @@ pub struct TrayNotification {
     pub body: String,
 }
 
+/// Distinct denial reasons surfaced by desktop error views.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DenialReason {
+    /// Vault must be unlocked before the requested action can proceed.
+    LockedVault,
+    /// No live grant covers the requested action.
+    MissingGrant,
+    /// A saved policy or role rule denied the action.
+    PolicyDenied,
+    /// Dangerous-profile safeguards require explicit confirmation.
+    DangerousProfile,
+    /// The selected device is no longer trusted.
+    RevokedDevice,
+    /// The invite can no longer be accepted.
+    ExpiredInvite,
+}
+
+/// Metadata-only copy and recovery affordance for a denial view.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DenialUxDescriptor {
+    /// Denial reason represented by this descriptor.
+    pub reason: DenialReason,
+    /// Stable UI copy heading.
+    pub title: &'static str,
+    /// Metadata-only next-action text.
+    pub next_action: &'static str,
+    /// Primary recovery affordance.
+    pub affordance: &'static str,
+}
+
+impl DenialReason {
+    /// Return the desktop denial view descriptor for this reason.
+    #[must_use]
+    pub const fn descriptor(self) -> DenialUxDescriptor {
+        let (title, next_action, affordance) = match self {
+            Self::LockedVault => ("Vault locked", "Unlock the vault to continue.", "unlock-vault"),
+            Self::MissingGrant => {
+                ("Grant required", "Approve a short-lived grant before retrying.", "request-grant")
+            }
+            Self::PolicyDenied => {
+                ("Policy denied", "Review the saved policy or ask for access.", "open-policy")
+            }
+            Self::DangerousProfile => (
+                "Dangerous profile",
+                "Confirm the profile scope before continuing.",
+                "confirm-profile",
+            ),
+            Self::RevokedDevice => {
+                ("Device revoked", "Use a trusted device or add a new one.", "manage-devices")
+            }
+            Self::ExpiredInvite => {
+                ("Invite expired", "Request a fresh invite from a maintainer.", "request-invite")
+            }
+        };
+        DenialUxDescriptor { reason: self, title, next_action, affordance }
+    }
+}
+
 impl TrayNotificationKind {
     /// Render the default passive notification without exact names or values.
     #[must_use]
@@ -247,6 +305,25 @@ pub fn tray_icon_descriptors() -> Vec<TrayIconDescriptor> {
     tray_icon_states().iter().map(|state| state.descriptor()).collect()
 }
 
+/// All denial reasons in desktop UX spec order.
+#[must_use]
+pub const fn denial_reasons() -> &'static [DenialReason] {
+    &[
+        DenialReason::LockedVault,
+        DenialReason::MissingGrant,
+        DenialReason::PolicyDenied,
+        DenialReason::DangerousProfile,
+        DenialReason::RevokedDevice,
+        DenialReason::ExpiredInvite,
+    ]
+}
+
+/// Return all denial UX descriptors in spec order.
+#[must_use]
+pub fn denial_ux_descriptors() -> Vec<DenialUxDescriptor> {
+    denial_reasons().iter().map(|reason| reason.descriptor()).collect()
+}
+
 fn scan_notification_body(finding_count: Option<u32>) -> String {
     match finding_count {
         Some(1) => "1 scan warning needs attention.".to_owned(),
@@ -258,9 +335,9 @@ fn scan_notification_body(finding_count: Option<u32>) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        CapabilityAccess, ReleaseWebviewPolicy, TrayIconAssetStyle, TrayIconState,
-        TrayNotificationContext, TrayNotificationKind, primary_views,
-        tray_icon_asset_styles_for_os, tray_icon_descriptors, tray_icon_states,
+        CapabilityAccess, DenialReason, ReleaseWebviewPolicy, TrayIconAssetStyle, TrayIconState,
+        TrayNotificationContext, TrayNotificationKind, denial_reasons, denial_ux_descriptors,
+        primary_views, tray_icon_asset_styles_for_os, tray_icon_descriptors, tray_icon_states,
     };
 
     #[test]
@@ -357,6 +434,40 @@ mod tests {
         assert_eq!(one.body, "1 scan warning needs attention.");
         assert_eq!(many.body, "12 scan warnings need attention.");
         assert!(!many.body.contains("API_TOKEN"));
+    }
+
+    #[test]
+    fn denial_reasons_match_desktop_error_view_inventory() {
+        assert_eq!(
+            denial_reasons(),
+            &[
+                DenialReason::LockedVault,
+                DenialReason::MissingGrant,
+                DenialReason::PolicyDenied,
+                DenialReason::DangerousProfile,
+                DenialReason::RevokedDevice,
+                DenialReason::ExpiredInvite,
+            ]
+        );
+    }
+
+    #[test]
+    fn denial_ux_descriptors_have_distinct_safe_recovery_affordances() {
+        let descriptors = denial_ux_descriptors();
+
+        assert_eq!(descriptors.len(), denial_reasons().len());
+        for descriptor in descriptors {
+            assert_eq!(descriptor, descriptor.reason.descriptor());
+            assert!(!descriptor.title.contains("DATABASE_URL"));
+            assert!(!descriptor.next_action.contains("postgres://"));
+            assert!(!descriptor.affordance.is_empty());
+        }
+
+        let affordances = denial_ux_descriptors()
+            .into_iter()
+            .map(|descriptor| descriptor.affordance)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(affordances.len(), denial_reasons().len());
     }
 
     #[test]
