@@ -3472,7 +3472,7 @@ fn hook_command(output: &mut impl Write, args: &HookArgs) -> Result<(), CliError
 
 fn allow_command(context: &RuntimeContext, output: &mut impl Write) -> Result<(), CliError> {
     let resolved = require_project(context)?;
-    let store = open_store(context)?;
+    let mut store = open_store(context)?;
     ensure_project_exists(&store, resolved.config.project_id.as_str())?;
     let profile = default_profile(&store, &resolved.config)?;
     let root_hash = root_hash(&resolved.root)?;
@@ -3501,16 +3501,46 @@ fn allow_command(context: &RuntimeContext, output: &mut impl Write) -> Result<()
         updated_at: timestamp,
     };
 
-    let existed = store
-        .get_directory_grant(
-            resolved.config.project_id.as_str(),
-            &profile.id,
-            &root_hash,
-            &directory_hash,
-            DIRECTORY_GRANT_SCOPE_PROJECT_ROOT,
-        )?
-        .is_some();
+    let prior_grant = store.get_directory_grant(
+        resolved.config.project_id.as_str(),
+        &profile.id,
+        &root_hash,
+        &directory_hash,
+        DIRECTORY_GRANT_SCOPE_PROJECT_ROOT,
+    )?;
+    let existed = prior_grant.is_some();
     store.allow_directory_grant(&grant)?;
+
+    let audit_key =
+        load_project_key(context, &store, resolved.config.project_id.as_str(), KeyPurpose::Audit)?;
+    let metadata = json!({
+        "schema_version": 1,
+        "action": "ALLOW_DIRECTORY",
+        "status": "SUCCESS",
+        "grant_id": &grant.grant_id,
+        "project_id": resolved.config.project_id.as_str(),
+        "profile_id": &profile.id,
+        "grant_scope": &grant.grant_scope,
+        "root_hash": format_hex(&root_hash),
+        "directory_hash": format_hex(&directory_hash),
+        "prior_grant": prior_grant.as_ref().map(|prior| json!({
+            "grant_id": &prior.grant_id,
+            "created_at": prior.created_at,
+            "updated_at": prior.updated_at,
+        })),
+        "result_state": if existed { "replaced" } else { "created" },
+    });
+    let audit = AuditWrite {
+        project_id: resolved.config.project_id.as_str(),
+        profile_id: Some(&profile.id),
+        action: "ALLOW_DIRECTORY",
+        status: "SUCCESS",
+        secret_name: None,
+        command: Some("allow"),
+        metadata_json: &metadata,
+        timestamp,
+    };
+    store.append_audit(audit_key.as_ref(), &audit)?;
 
     writeln!(
         output,
@@ -3533,11 +3563,34 @@ fn deny_command(
     args: &DenyArgs,
 ) -> Result<(), CliError> {
     let resolved = require_project(context)?;
-    let store = open_store(context)?;
+    let mut store = open_store(context)?;
     ensure_project_exists(&store, resolved.config.project_id.as_str())?;
+    let timestamp = now_unix_nanos()?;
+    let audit_key =
+        load_project_key(context, &store, resolved.config.project_id.as_str(), KeyPurpose::Audit)?;
 
     if args.all {
         let removed = store.deny_all_directory_grants(resolved.config.project_id.as_str())?;
+        let metadata = json!({
+            "schema_version": 1,
+            "action": "DENY_DIRECTORY",
+            "status": "SUCCESS",
+            "project_id": resolved.config.project_id.as_str(),
+            "grant_scope": "all",
+            "revoked_count": removed,
+            "result_state": "all",
+        });
+        let audit = AuditWrite {
+            project_id: resolved.config.project_id.as_str(),
+            profile_id: None,
+            action: "DENY_DIRECTORY",
+            status: "SUCCESS",
+            secret_name: None,
+            command: Some("deny"),
+            metadata_json: &metadata,
+            timestamp,
+        };
+        store.append_audit(audit_key.as_ref(), &audit)?;
         writeln!(output, "directory grants revoked: {removed}")?;
         writeln!(output, "project_id: {}", resolved.config.project_id)?;
         writeln!(output, "metadata_only: yes")?;
@@ -3548,6 +3601,13 @@ fn deny_command(
     let profile = default_profile(&store, &resolved.config)?;
     let root_hash = root_hash(&resolved.root)?;
     let directory_hash = root_hash;
+    let prior_grant = store.get_directory_grant(
+        resolved.config.project_id.as_str(),
+        &profile.id,
+        &root_hash,
+        &directory_hash,
+        DIRECTORY_GRANT_SCOPE_PROJECT_ROOT,
+    )?;
     let removed = store.deny_directory_grant(
         resolved.config.project_id.as_str(),
         &profile.id,
@@ -3555,6 +3615,34 @@ fn deny_command(
         &directory_hash,
         DIRECTORY_GRANT_SCOPE_PROJECT_ROOT,
     )?;
+
+    let metadata = json!({
+        "schema_version": 1,
+        "action": "DENY_DIRECTORY",
+        "status": "SUCCESS",
+        "project_id": resolved.config.project_id.as_str(),
+        "profile_id": &profile.id,
+        "grant_scope": DIRECTORY_GRANT_SCOPE_PROJECT_ROOT,
+        "root_hash": format_hex(&root_hash),
+        "directory_hash": format_hex(&directory_hash),
+        "prior_grant": prior_grant.as_ref().map(|prior| json!({
+            "grant_id": &prior.grant_id,
+            "created_at": prior.created_at,
+            "updated_at": prior.updated_at,
+        })),
+        "result_state": if removed { "removed" } else { "absent" },
+    });
+    let audit = AuditWrite {
+        project_id: resolved.config.project_id.as_str(),
+        profile_id: Some(&profile.id),
+        action: "DENY_DIRECTORY",
+        status: "SUCCESS",
+        secret_name: None,
+        command: Some("deny"),
+        metadata_json: &metadata,
+        timestamp,
+    };
+    store.append_audit(audit_key.as_ref(), &audit)?;
 
     writeln!(
         output,
@@ -11470,6 +11558,127 @@ argv = []
                 .connection()
                 .query_row("SELECT COUNT(*) FROM directory_grants", [], |row| row.get(0))?;
         assert_eq!(remaining, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn allow_writes_allow_directory_audit_row() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut Vec::new(),
+        )?;
+
+        run_with_context(Cli::try_parse_from(["locket", "allow"])?, &context, &mut Vec::new())?;
+
+        let store = locket_store::Store::open(directory.path().join("store.db"))?;
+        let metadata: String = store.connection().query_row(
+            "SELECT metadata_json FROM audit_log WHERE action = 'ALLOW_DIRECTORY' ORDER BY sequence DESC LIMIT 1",
+            [],
+            |row| row.get(0),
+        )?;
+        assert!(metadata.contains("\"action\":\"ALLOW_DIRECTORY\""));
+        assert!(metadata.contains("\"status\":\"SUCCESS\""));
+        assert!(metadata.contains("\"grant_id\":"));
+        assert!(metadata.contains("\"grant_scope\":\"project-root\""));
+        assert!(metadata.contains("\"root_hash\":"));
+        assert!(metadata.contains("\"directory_hash\":"));
+        assert!(metadata.contains("\"prior_grant\":null"));
+        assert!(metadata.contains("\"result_state\":\"created\""));
+
+        // Re-allow records prior_grant metadata and result_state = "replaced".
+        run_with_context(Cli::try_parse_from(["locket", "allow"])?, &context, &mut Vec::new())?;
+        let metadata2: String = store.connection().query_row(
+            "SELECT metadata_json FROM audit_log WHERE action = 'ALLOW_DIRECTORY' ORDER BY sequence DESC LIMIT 1",
+            [],
+            |row| row.get(0),
+        )?;
+        assert!(metadata2.contains("\"result_state\":\"replaced\""));
+        assert!(metadata2.contains("\"prior_grant\":{"));
+        assert!(metadata2.contains("\"grant_id\":"));
+        assert!(metadata2.contains("\"created_at\":"));
+        Ok(())
+    }
+
+    #[test]
+    fn deny_writes_deny_directory_audit_row_with_prior_grant()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut Vec::new(),
+        )?;
+        run_with_context(Cli::try_parse_from(["locket", "allow"])?, &context, &mut Vec::new())?;
+
+        run_with_context(Cli::try_parse_from(["locket", "deny"])?, &context, &mut Vec::new())?;
+
+        let store = locket_store::Store::open(directory.path().join("store.db"))?;
+        let metadata: String = store.connection().query_row(
+            "SELECT metadata_json FROM audit_log WHERE action = 'DENY_DIRECTORY' ORDER BY sequence DESC LIMIT 1",
+            [],
+            |row| row.get(0),
+        )?;
+        assert!(metadata.contains("\"action\":\"DENY_DIRECTORY\""));
+        assert!(metadata.contains("\"status\":\"SUCCESS\""));
+        assert!(metadata.contains("\"grant_scope\":\"project-root\""));
+        assert!(metadata.contains("\"prior_grant\":{"));
+        assert!(metadata.contains("\"result_state\":\"removed\""));
+
+        // Deny again with no grant present records absent state and null prior_grant.
+        run_with_context(Cli::try_parse_from(["locket", "deny"])?, &context, &mut Vec::new())?;
+        let metadata2: String = store.connection().query_row(
+            "SELECT metadata_json FROM audit_log WHERE action = 'DENY_DIRECTORY' ORDER BY sequence DESC LIMIT 1",
+            [],
+            |row| row.get(0),
+        )?;
+        assert!(metadata2.contains("\"result_state\":\"absent\""));
+        assert!(metadata2.contains("\"prior_grant\":null"));
+        Ok(())
+    }
+
+    #[test]
+    fn deny_all_writes_deny_directory_audit_row_with_revoked_count()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut Vec::new(),
+        )?;
+        run_with_context(Cli::try_parse_from(["locket", "allow"])?, &context, &mut Vec::new())?;
+        run_with_context(
+            Cli::try_parse_from(["locket", "profile", "create", "staging"])?,
+            &context,
+            &mut Vec::new(),
+        )?;
+        run_with_context(
+            Cli::try_parse_from(["locket", "use", "staging"])?,
+            &context,
+            &mut Vec::new(),
+        )?;
+        run_with_context(Cli::try_parse_from(["locket", "allow"])?, &context, &mut Vec::new())?;
+
+        run_with_context(
+            Cli::try_parse_from(["locket", "deny", "--all"])?,
+            &context,
+            &mut Vec::new(),
+        )?;
+
+        let store = locket_store::Store::open(directory.path().join("store.db"))?;
+        let metadata: String = store.connection().query_row(
+            "SELECT metadata_json FROM audit_log WHERE action = 'DENY_DIRECTORY' ORDER BY sequence DESC LIMIT 1",
+            [],
+            |row| row.get(0),
+        )?;
+        assert!(metadata.contains("\"action\":\"DENY_DIRECTORY\""));
+        assert!(metadata.contains("\"grant_scope\":\"all\""));
+        assert!(metadata.contains("\"revoked_count\":2"));
+        assert!(metadata.contains("\"result_state\":\"all\""));
         Ok(())
     }
 
