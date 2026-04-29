@@ -3,8 +3,15 @@
 use std::path::Path;
 use std::time::Duration;
 
+use hmac::{Hmac, Mac};
+use locket_core::{
+    AUDIT_HMAC_LEN, AuditCanonicalizationError, AuditHmacInput, Timestamp, audit_hmac_v1_bytes,
+    canonical_json_string,
+};
 use rusqlite::types::Type;
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
+use serde_json::Value;
+use sha2::Sha256;
 use thiserror::Error;
 
 /// Current storage schema version.
@@ -145,6 +152,45 @@ pub struct SecretFingerprintRecord {
     pub fingerprint: Vec<u8>,
     /// Creation timestamp in nanoseconds since the Unix epoch.
     pub created_at: i64,
+}
+
+/// Metadata applied to the version being superseded by rotation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct VersionDeprecation {
+    /// Deprecation timestamp in nanoseconds since the Unix epoch.
+    pub deprecated_at: i64,
+    /// Optional grace-window expiration timestamp.
+    pub grace_until: Option<i64>,
+}
+
+/// HMAC-covered audit row to append.
+#[derive(Debug)]
+pub struct AuditWrite<'a> {
+    /// Parent project identifier.
+    pub project_id: &'a str,
+    /// Optional profile identifier.
+    pub profile_id: Option<&'a str>,
+    /// Audit action string.
+    pub action: &'a str,
+    /// Audit status string.
+    pub status: &'a str,
+    /// Optional query convenience secret name.
+    pub secret_name: Option<&'a str>,
+    /// Optional query convenience command string.
+    pub command: Option<&'a str>,
+    /// HMAC-covered metadata object.
+    pub metadata_json: &'a Value,
+    /// Event timestamp in nanoseconds since the Unix epoch.
+    pub timestamp: i64,
+}
+
+/// Audit key plus row payload for transaction-scoped appends.
+#[derive(Clone, Copy, Debug)]
+pub struct AuditContext<'a> {
+    /// Unwrapped project audit key.
+    pub key: &'a [u8],
+    /// Audit row payload.
+    pub write: &'a AuditWrite<'a>,
 }
 
 impl Store {
@@ -411,6 +457,22 @@ impl Store {
         blob: &SecretBlobRecord,
         fingerprint: &SecretFingerprintRecord,
     ) -> Result<(), StoreError> {
+        self.create_active_secret_with_audit(secret, version, blob, fingerprint, None)
+    }
+
+    /// Creates a secret and optionally appends the matching audit row in the same transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] when `SQLite` rejects a row or audit canonicalization fails.
+    pub fn create_active_secret_with_audit(
+        &mut self,
+        secret: &SecretRecord,
+        version: &SecretVersionRecord,
+        blob: &SecretBlobRecord,
+        fingerprint: &SecretFingerprintRecord,
+        audit: Option<AuditContext<'_>>,
+    ) -> Result<(), StoreError> {
         let transaction = self.connection.transaction()?;
         transaction.execute(
             "INSERT INTO secrets(
@@ -477,6 +539,7 @@ impl Store {
                 fingerprint.created_at,
             ],
         )?;
+        append_optional_audit(&transaction, audit)?;
         transaction.commit()?;
 
         Ok(())
@@ -673,12 +736,41 @@ impl Store {
         deprecated_at: i64,
         grace_until: Option<i64>,
     ) -> Result<(), StoreError> {
+        self.rotate_secret_with_audit(
+            secret,
+            new_version,
+            blob,
+            fingerprint,
+            VersionDeprecation { deprecated_at, grace_until },
+            None,
+        )
+    }
+
+    /// Rotates a secret and optionally appends the matching audit row in the same transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] when `SQLite` rejects a row or audit canonicalization fails.
+    pub fn rotate_secret_with_audit(
+        &mut self,
+        secret: &SecretRecord,
+        new_version: &SecretVersionRecord,
+        blob: &SecretBlobRecord,
+        fingerprint: &SecretFingerprintRecord,
+        deprecation: VersionDeprecation,
+        audit: Option<AuditContext<'_>>,
+    ) -> Result<(), StoreError> {
         let transaction = self.connection.transaction()?;
         transaction.execute(
             "UPDATE secret_versions
              SET state = 'deprecated', deprecated_at = ?3, grace_until = ?4
              WHERE secret_id = ?1 AND version = ?2 AND state = 'current'",
-            params![secret.id.as_str(), secret.current_version, deprecated_at, grace_until],
+            params![
+                secret.id.as_str(),
+                secret.current_version,
+                deprecation.deprecated_at,
+                deprecation.grace_until,
+            ],
         )?;
         transaction.execute(
             "INSERT INTO secret_versions(
@@ -730,6 +822,7 @@ impl Store {
              WHERE id = ?1 AND state = 'active'",
             params![secret.id.as_str(), new_version.version, new_version.created_at],
         )?;
+        append_optional_audit(&transaction, audit)?;
         transaction.commit()?;
 
         Ok(())
@@ -766,6 +859,21 @@ impl Store {
         versions: &[u32],
         purged_at: i64,
     ) -> Result<bool, StoreError> {
+        self.purge_secret_versions_with_audit(secret_id, versions, purged_at, None)
+    }
+
+    /// Purges versions and optionally appends a `PURGE` audit row when material changed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] when `SQLite` rejects a row or audit canonicalization fails.
+    pub fn purge_secret_versions_with_audit(
+        &mut self,
+        secret_id: &str,
+        versions: &[u32],
+        purged_at: i64,
+        audit: Option<AuditContext<'_>>,
+    ) -> Result<bool, StoreError> {
         let transaction = self.connection.transaction()?;
         let mut changed_any = false;
         for version in versions {
@@ -792,6 +900,7 @@ impl Store {
             transaction.commit()?;
             return Ok(false);
         }
+        append_optional_audit(&transaction, audit)?;
         transaction.commit()?;
 
         Ok(true)
@@ -803,12 +912,29 @@ impl Store {
     ///
     /// Returns [`StoreError::Sqlite`] when `SQLite` rejects the update.
     pub fn tombstone_secret(&self, id: &str, deleted_at: i64) -> Result<(), StoreError> {
-        self.connection.execute(
+        self.tombstone_secret_with_audit(id, deleted_at, None)
+    }
+
+    /// Tombstones a secret and optionally appends the matching audit row in the same transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] when `SQLite` rejects a row or audit canonicalization fails.
+    pub fn tombstone_secret_with_audit(
+        &self,
+        id: &str,
+        deleted_at: i64,
+        audit: Option<AuditContext<'_>>,
+    ) -> Result<(), StoreError> {
+        let transaction = self.connection.unchecked_transaction()?;
+        transaction.execute(
             "UPDATE secrets
              SET state = 'deleted', deleted_at = ?2, updated_at = ?2
              WHERE id = ?1",
             (id, deleted_at),
         )?;
+        append_optional_audit(&transaction, audit)?;
+        transaction.commit()?;
 
         Ok(())
     }
@@ -923,6 +1049,84 @@ fn nonce_from_row(
     })
 }
 
+fn append_optional_audit(
+    transaction: &Transaction<'_>,
+    audit: Option<AuditContext<'_>>,
+) -> Result<(), StoreError> {
+    if let Some(audit) = audit {
+        append_audit(transaction, audit.key, audit.write)?;
+    }
+    Ok(())
+}
+
+fn append_audit(
+    transaction: &Transaction<'_>,
+    audit_key: &[u8],
+    audit: &AuditWrite<'_>,
+) -> Result<(), StoreError> {
+    let previous = transaction
+        .query_row(
+            "SELECT sequence, hmac
+             FROM audit_log
+             WHERE project_id = ?1
+             ORDER BY sequence DESC
+             LIMIT 1",
+            [audit.project_id],
+            |row| Ok((row.get::<_, u64>(0)?, row.get::<_, Vec<u8>>(1)?)),
+        )
+        .optional()?;
+    let (sequence, previous_hmac) = match previous {
+        Some((sequence, hmac)) => {
+            let previous_hmac = hmac.try_into().map_err(|bytes: Vec<u8>| {
+                StoreError::InvalidAuditHmacLength { actual: bytes.len() }
+            })?;
+            (sequence + 1, previous_hmac)
+        }
+        None => (1, [0; AUDIT_HMAC_LEN]),
+    };
+
+    let input = AuditHmacInput {
+        schema_version: 1,
+        sequence,
+        timestamp: Timestamp::from_unix_nanos(audit.timestamp),
+        project_id: Some(audit.project_id),
+        profile_id: audit.profile_id,
+        action: audit.action,
+        status: audit.status,
+        metadata_json: Some(audit.metadata_json),
+        previous_hmac: Some(&previous_hmac),
+    };
+    let canonical = audit_hmac_v1_bytes(&input)?;
+    let mut mac = Hmac::<Sha256>::new_from_slice(audit_key)
+        .map_err(|_| StoreError::InvalidAuditKeyLength { actual: audit_key.len() })?;
+    mac.update(&canonical);
+    let hmac = mac.finalize().into_bytes();
+    let metadata_json = canonical_json_string(Some(audit.metadata_json));
+
+    transaction.execute(
+        "INSERT INTO audit_log(
+           project_id, sequence, schema_version, timestamp, profile_id, action,
+           status, metadata_json, secret_name, command, previous_hmac, hmac
+         )
+         VALUES (?1, ?2, 1, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        params![
+            audit.project_id,
+            sequence,
+            audit.timestamp,
+            audit.profile_id,
+            audit.action,
+            audit.status,
+            metadata_json,
+            audit.secret_name,
+            audit.command,
+            previous_hmac.as_slice(),
+            hmac.as_slice(),
+        ],
+    )?;
+
+    Ok(())
+}
+
 #[derive(Debug, Error)]
 #[error("{field} must be 24 bytes, got {actual}")]
 struct InvalidNonceLength {
@@ -936,6 +1140,24 @@ pub enum StoreError {
     /// `SQLite` returned an error.
     #[error(transparent)]
     Sqlite(#[from] rusqlite::Error),
+
+    /// Audit HMAC canonicalization failed.
+    #[error(transparent)]
+    AuditCanonicalization(#[from] AuditCanonicalizationError),
+
+    /// Audit HMAC key length was invalid.
+    #[error("audit HMAC key must be non-empty, got {actual}")]
+    InvalidAuditKeyLength {
+        /// Actual key length in bytes.
+        actual: usize,
+    },
+
+    /// Stored audit HMAC length was invalid.
+    #[error("audit HMAC must be 32 bytes, got {actual}")]
+    InvalidAuditHmacLength {
+        /// Actual HMAC length in bytes.
+        actual: usize,
+    },
 
     /// The database schema is newer than this binary can read.
     #[error(
@@ -1179,11 +1401,12 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 mod tests {
     use std::error::Error;
 
+    use serde_json::json;
     use tempfile::{TempDir, tempdir};
 
     use super::{
-        KeyRecord, ProfileRecord, ProjectRecord, SCHEMA_VERSION, SecretBlobRecord,
-        SecretFingerprintRecord, SecretRecord, SecretVersionRecord, Store,
+        AuditContext, AuditWrite, KeyRecord, ProfileRecord, ProjectRecord, SCHEMA_VERSION,
+        SecretBlobRecord, SecretFingerprintRecord, SecretRecord, SecretVersionRecord, Store,
     };
 
     struct TestStore {
@@ -1570,6 +1793,66 @@ mod tests {
             |row| row.get::<_, Vec<u8>>(0),
         )?;
         assert_eq!(stored_fingerprint, fingerprint.fingerprint);
+
+        Ok(())
+    }
+
+    #[test]
+    fn audited_secret_create_appends_hmac_chained_row() -> Result<(), Box<dyn Error>> {
+        let mut test_store = open_initialized_store()?;
+        insert_project_profile(&test_store.store)?;
+        let metadata = json!({
+            "schema_version": 1,
+            "action": "SET",
+            "status": "SUCCESS",
+            "secret_name": "DATABASE_URL",
+            "profile_id": "lk_prof_test",
+            "source": "user-local",
+            "version": 1,
+        });
+        let audit = AuditWrite {
+            project_id: "lk_proj_test",
+            profile_id: Some("lk_prof_test"),
+            action: "SET",
+            status: "SUCCESS",
+            secret_name: Some("DATABASE_URL"),
+            command: None,
+            metadata_json: &metadata,
+            timestamp: 100,
+        };
+
+        test_store.store.create_active_secret_with_audit(
+            &test_secret(),
+            &test_secret_version(),
+            &test_secret_blob(),
+            &test_secret_fingerprint(),
+            Some(AuditContext { key: &[42; 32], write: &audit }),
+        )?;
+
+        let row = test_store.store.connection().query_row(
+            "SELECT sequence, action, secret_name, previous_hmac, hmac, metadata_json
+             FROM audit_log
+             WHERE project_id = 'lk_proj_test'",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, u64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Vec<u8>>(3)?,
+                    row.get::<_, Vec<u8>>(4)?,
+                    row.get::<_, String>(5)?,
+                ))
+            },
+        )?;
+
+        assert_eq!(row.0, 1);
+        assert_eq!(row.1, "SET");
+        assert_eq!(row.2, "DATABASE_URL");
+        assert_eq!(row.3, vec![0; 32]);
+        assert_eq!(row.4.len(), 32);
+        assert!(row.5.contains("\"secret_name\":\"DATABASE_URL\""));
+        assert!(!row.5.contains("postgres://"));
 
         Ok(())
     }

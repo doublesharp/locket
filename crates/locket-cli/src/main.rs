@@ -15,9 +15,10 @@ use locket_crypto::{
 use locket_platform::{KeyringMasterKeyStore, MasterKeyStore};
 use locket_scan::{FindingKind, ScanFinding, redact_text, scan_text};
 use locket_store::{
-    KeyRecord, ProfileRecord, SecretBlobRecord, SecretFingerprintRecord, SecretRecord,
-    SecretVersionRecord, Store, StoreError,
+    AuditContext, AuditWrite, KeyRecord, ProfileRecord, SecretBlobRecord, SecretFingerprintRecord,
+    SecretRecord, SecretVersionRecord, Store, StoreError, VersionDeprecation,
 };
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::error::Error;
@@ -728,7 +729,31 @@ fn rm_command(
     else {
         return Err(CliError::Config("secret not found".to_owned()));
     };
-    store.tombstone_secret(&secret.id, now_unix_nanos()?)?;
+    let timestamp = now_unix_nanos()?;
+    let audit_key =
+        load_project_key(context, &store, resolved.config.project_id.as_str(), KeyPurpose::Audit)?;
+    let metadata = secret_audit_metadata(
+        "DELETE",
+        &secret.name,
+        &profile.id,
+        source,
+        Some(secret.current_version),
+    );
+    let audit = AuditWrite {
+        project_id: resolved.config.project_id.as_str(),
+        profile_id: Some(&profile.id),
+        action: "DELETE",
+        status: "SUCCESS",
+        secret_name: Some(&secret.name),
+        command: None,
+        metadata_json: &metadata,
+        timestamp,
+    };
+    store.tombstone_secret_with_audit(
+        &secret.id,
+        timestamp,
+        Some(AuditContext { key: audit_key.as_ref(), write: &audit }),
+    )?;
     refresh_example_for_project(context)?;
     writeln!(output, "removed {} ({source})", args.key)?;
     Ok(())
@@ -790,8 +815,38 @@ fn purge_command(
         vec![version]
     };
 
-    let changed =
-        store.purge_secret_versions(&secret.secret.id, &target_versions, now_unix_nanos()?)?;
+    let timestamp = now_unix_nanos()?;
+    let audit_key = load_project_key(
+        context,
+        &store,
+        secret.project.config.project_id.as_str(),
+        KeyPurpose::Audit,
+    )?;
+    let metadata = json!({
+        "schema_version": 1,
+        "action": "PURGE",
+        "status": "SUCCESS",
+        "secret_name": &secret.secret.name,
+        "profile_id": &secret.profile.id,
+        "source": &secret.secret.source,
+        "versions": &target_versions,
+    });
+    let audit = AuditWrite {
+        project_id: secret.project.config.project_id.as_str(),
+        profile_id: Some(&secret.profile.id),
+        action: "PURGE",
+        status: "SUCCESS",
+        secret_name: Some(&secret.secret.name),
+        command: None,
+        metadata_json: &metadata,
+        timestamp,
+    };
+    let changed = store.purge_secret_versions_with_audit(
+        &secret.secret.id,
+        &target_versions,
+        timestamp,
+        Some(AuditContext { key: audit_key.as_ref(), write: &audit }),
+    )?;
     refresh_example_for_project(context)?;
     if changed {
         writeln!(
@@ -1223,9 +1278,10 @@ fn set_secret_value(
     let resolved = require_project(context)?;
     let mut store = open_store(context)?;
     let profile = default_profile(&store, &resolved.config)?;
+    let profile_id = profile.id;
     if let Some(existing) = store.get_secret_by_source(
         resolved.config.project_id.as_str(),
-        &profile.id,
+        &profile_id,
         name.as_str(),
         source,
     )? {
@@ -1239,43 +1295,38 @@ fn set_secret_value(
 
     let secret_id = SecretId::generate().map_err(|_| CliError::Time)?;
     let version = 1;
-    let profile_secret_key = load_profile_key(
+    let audit_key =
+        load_project_key(context, &store, resolved.config.project_id.as_str(), KeyPurpose::Audit)?;
+    let (encrypted, fingerprint) = encrypt_secret_version(
         context,
         &store,
-        resolved.config.project_id.as_str(),
-        &profile.id,
-        KeyPurpose::ProfileSecret,
+        SecretEncryptRequest {
+            project_id: resolved.config.project_id.as_str(),
+            profile_id: &profile_id,
+            secret_id: secret_id.as_str(),
+            secret_name: name.as_str(),
+            version,
+            value,
+        },
     )?;
-    let profile_fingerprint_key = load_profile_key(
-        context,
-        &store,
-        resolved.config.project_id.as_str(),
-        &profile.id,
-        KeyPurpose::ProfileFingerprint,
-    )?;
-    let value_aad = secret_blob_aad_v1(&locket_crypto::SecretBlobAad::new(
-        resolved.config.project_id.as_str(),
-        &profile.id,
-        secret_id.as_str(),
-        name.as_str(),
-        version,
-    ))?;
-    let wrap_aad = key_wrap_aad_v1(&KeyWrapAad::new(
-        resolved.config.project_id.as_str(),
-        secret_id.as_str(),
-        Some(&profile.id),
-        version,
-        KeyWrapPurpose::SecretDek,
-    ))?;
-    let encrypted = encrypt_secret_value_v1(&profile_secret_key, value, &value_aad, &wrap_aad)?;
-    let fingerprint = secret_fingerprint_v1(&profile_fingerprint_key, value)?;
     let secret_id_string = secret_id.into_string();
+    let metadata = secret_audit_metadata("SET", name.as_str(), &profile_id, source, Some(version));
+    let audit = AuditWrite {
+        project_id: resolved.config.project_id.as_str(),
+        profile_id: Some(&profile_id),
+        action: "SET",
+        status: "SUCCESS",
+        secret_name: Some(name.as_str()),
+        command: None,
+        metadata_json: &metadata,
+        timestamp,
+    };
 
-    store.create_active_secret(
+    store.create_active_secret_with_audit(
         &SecretRecord {
             id: secret_id_string.clone(),
             project_id: resolved.config.project_id.as_str().to_owned(),
-            profile_id: profile.id,
+            profile_id: profile_id.clone(),
             name: name.as_str().to_owned(),
             source: source.to_owned(),
             origin: origin.to_owned(),
@@ -1309,9 +1360,10 @@ fn set_secret_value(
         &SecretFingerprintRecord {
             secret_id: secret_id_string,
             version,
-            fingerprint: fingerprint.to_vec(),
+            fingerprint,
             created_at: timestamp,
         },
+        Some(AuditContext { key: audit_key.as_ref(), write: &audit }),
     )?;
     Ok(())
 }
@@ -1333,40 +1385,51 @@ fn rotate_secret_value(
         .checked_add(1)
         .ok_or_else(|| CliError::Config("secret version overflow".to_owned()))?;
     let mut store = open_store(context)?;
-    let profile_secret_key = load_profile_key(
+    let audit_key = load_project_key(
         context,
         &store,
         resolved_secret.project.config.project_id.as_str(),
-        &resolved_secret.profile.id,
-        KeyPurpose::ProfileSecret,
+        KeyPurpose::Audit,
     )?;
-    let profile_fingerprint_key = load_profile_key(
+    let (encrypted, fingerprint) = encrypt_secret_version(
         context,
         &store,
-        resolved_secret.project.config.project_id.as_str(),
-        &resolved_secret.profile.id,
-        KeyPurpose::ProfileFingerprint,
+        SecretEncryptRequest {
+            project_id: resolved_secret.project.config.project_id.as_str(),
+            profile_id: &resolved_secret.profile.id,
+            secret_id: &resolved_secret.secret.id,
+            secret_name: &resolved_secret.secret.name,
+            version: new_version,
+            value,
+        },
     )?;
-    let value_aad = secret_blob_aad_v1(&locket_crypto::SecretBlobAad::new(
-        resolved_secret.project.config.project_id.as_str(),
-        &resolved_secret.profile.id,
-        &resolved_secret.secret.id,
-        &resolved_secret.secret.name,
-        new_version,
-    ))?;
-    let wrap_aad = key_wrap_aad_v1(&KeyWrapAad::new(
-        resolved_secret.project.config.project_id.as_str(),
-        &resolved_secret.secret.id,
-        Some(&resolved_secret.profile.id),
-        new_version,
-        KeyWrapPurpose::SecretDek,
-    ))?;
-    let encrypted = encrypt_secret_value_v1(&profile_secret_key, value, &value_aad, &wrap_aad)?;
-    let fingerprint = secret_fingerprint_v1(&profile_fingerprint_key, value)?;
     let source = resolved_secret.secret.source.clone();
     let origin = resolved_secret.secret.origin.clone();
+    let metadata = json!({
+        "schema_version": 1,
+        "action": "ROTATE",
+        "status": "SUCCESS",
+        "secret_name": &resolved_secret.secret.name,
+        "profile_id": &resolved_secret.profile.id,
+        "source": &source,
+        "prior_version": resolved_secret.secret.current_version,
+        "deprecated_version": resolved_secret.secret.current_version,
+        "target_version": new_version,
+        "deprecated_at": timestamp,
+        "grace_until": grace_until,
+    });
+    let audit = AuditWrite {
+        project_id: resolved_secret.project.config.project_id.as_str(),
+        profile_id: Some(&resolved_secret.profile.id),
+        action: "ROTATE",
+        status: "SUCCESS",
+        secret_name: Some(&resolved_secret.secret.name),
+        command: None,
+        metadata_json: &metadata,
+        timestamp,
+    };
 
-    store.rotate_secret(
+    store.rotate_secret_with_audit(
         &resolved_secret.secret,
         &SecretVersionRecord {
             secret_id: resolved_secret.secret.id.clone(),
@@ -1391,14 +1454,63 @@ fn rotate_secret_value(
         &SecretFingerprintRecord {
             secret_id: resolved_secret.secret.id.clone(),
             version: new_version,
-            fingerprint: fingerprint.to_vec(),
+            fingerprint,
             created_at: timestamp,
         },
-        timestamp,
-        grace_until,
+        VersionDeprecation { deprecated_at: timestamp, grace_until },
+        Some(AuditContext { key: audit_key.as_ref(), write: &audit }),
     )?;
 
     Ok((source, new_version))
+}
+
+#[derive(Clone, Copy)]
+struct SecretEncryptRequest<'a> {
+    project_id: &'a str,
+    profile_id: &'a str,
+    secret_id: &'a str,
+    secret_name: &'a str,
+    version: u32,
+    value: &'a str,
+}
+
+fn encrypt_secret_version(
+    context: &RuntimeContext,
+    store: &Store,
+    request: SecretEncryptRequest<'_>,
+) -> Result<(EncryptedSecretValue, Vec<u8>), CliError> {
+    let profile_secret_key = load_profile_key(
+        context,
+        store,
+        request.project_id,
+        request.profile_id,
+        KeyPurpose::ProfileSecret,
+    )?;
+    let profile_fingerprint_key = load_profile_key(
+        context,
+        store,
+        request.project_id,
+        request.profile_id,
+        KeyPurpose::ProfileFingerprint,
+    )?;
+    let value_aad = secret_blob_aad_v1(&locket_crypto::SecretBlobAad::new(
+        request.project_id,
+        request.profile_id,
+        request.secret_id,
+        request.secret_name,
+        request.version,
+    ))?;
+    let wrap_aad = key_wrap_aad_v1(&KeyWrapAad::new(
+        request.project_id,
+        request.secret_id,
+        Some(request.profile_id),
+        request.version,
+        KeyWrapPurpose::SecretDek,
+    ))?;
+    let encrypted =
+        encrypt_secret_value_v1(&profile_secret_key, request.value, &value_aad, &wrap_aad)?;
+    let fingerprint = secret_fingerprint_v1(&profile_fingerprint_key, request.value)?;
+    Ok((encrypted, fingerprint.to_vec()))
 }
 
 fn load_profile_key(
@@ -1425,6 +1537,47 @@ fn load_profile_key(
     ))?;
     let wrapped = WrappedKeyMaterial { ciphertext: record.wrapped_material, nonce: record.nonce };
     Ok(unwrap_key_material_v1(&wrapping_key, &wrapped, &aad)?)
+}
+
+fn load_project_key(
+    context: &RuntimeContext,
+    store: &Store,
+    project_id: &str,
+    purpose: KeyPurpose,
+) -> Result<zeroize::Zeroizing<locket_crypto::KeyBytes>, CliError> {
+    let master_key = context.key_store.load_master_key(project_id)?;
+    let record = store
+        .get_key_by_scope(project_id, None, purpose.as_str())?
+        .ok_or_else(|| CliError::Config("project key is missing".to_owned()))?;
+    let wrapping_key =
+        derive_wrapping_key_v1(&master_key, &HkdfWrapInfo::new(project_id, None, purpose))?;
+    let aad = key_wrap_aad_v1(&KeyWrapAad::new(
+        project_id,
+        &record.id,
+        None,
+        0,
+        KeyWrapPurpose::from(purpose),
+    ))?;
+    let wrapped = WrappedKeyMaterial { ciphertext: record.wrapped_material, nonce: record.nonce };
+    Ok(unwrap_key_material_v1(&wrapping_key, &wrapped, &aad)?)
+}
+
+fn secret_audit_metadata(
+    action: &str,
+    secret_name: &str,
+    profile_id: &str,
+    source: &str,
+    version: Option<u32>,
+) -> Value {
+    json!({
+        "schema_version": 1,
+        "action": action,
+        "status": "SUCCESS",
+        "secret_name": secret_name,
+        "profile_id": profile_id,
+        "source": source,
+        "version": version,
+    })
 }
 
 struct ResolvedSecret {
@@ -2217,6 +2370,20 @@ mod tests {
             &mut purge_all_output,
         )?;
         assert!(String::from_utf8(purge_all_output)?.contains("versions=1,2"));
+
+        let store = locket_store::Store::open(directory.path().join("store.db"))?;
+        let mut statement = store
+            .connection()
+            .prepare("SELECT action, metadata_json FROM audit_log ORDER BY sequence")?;
+        let rows = statement
+            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?
+            .collect::<Result<Vec<_>, _>>()?;
+        let actions = rows.iter().map(|(action, _)| action.as_str()).collect::<Vec<_>>();
+        assert_eq!(actions, ["SET", "ROTATE", "PURGE", "DELETE", "PURGE"]);
+        for (_, metadata) in rows {
+            assert!(!metadata.contains("postgres://localhost/old"));
+            assert!(!metadata.contains("postgres://localhost/new"));
+        }
         Ok(())
     }
 

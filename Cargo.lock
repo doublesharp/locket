@@ -490,6 +490,7 @@ dependencies = [
  "locket-platform",
  "locket-scan",
  "locket-store",
+ "serde_json",
  "sha2",
  "tempfile",
  "toml",
@@ -549,7 +550,11 @@ version = "0.1.0"
 name = "locket-store"
 version = "0.1.0"
 dependencies = [
+ "hmac",
+ "locket-core",
  "rusqlite",
+ "serde_json",
+ "sha2",
  "tempfile",
  "thiserror",
 ]
