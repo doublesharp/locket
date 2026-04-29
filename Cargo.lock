@@ -602,6 +602,7 @@ dependencies = [
  "ignore",
  "locket-core",
  "locket-crypto",
+ "locket-docker",
  "locket-exec",
  "locket-platform",
  "locket-scan",
