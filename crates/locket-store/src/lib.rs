@@ -36,6 +36,21 @@ pub struct ProjectRecord {
     pub created_at: i64,
 }
 
+/// Metadata for a trusted project root.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProjectRootRecord {
+    /// Parent project identifier.
+    pub project_id: String,
+    /// SHA-256 hash of the canonical root path.
+    pub root_hash: [u8; 32],
+    /// Last known display path for the root.
+    pub display_path: Option<String>,
+    /// Creation timestamp in nanoseconds since the Unix epoch.
+    pub created_at: i64,
+    /// Last-seen timestamp in nanoseconds since the Unix epoch.
+    pub last_seen_at: Option<i64>,
+}
+
 /// Metadata for a stored profile.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProfileRecord {
@@ -415,6 +430,48 @@ impl Store {
         )?;
 
         Ok(row_count > 0)
+    }
+
+    /// Lists trusted roots for a project ordered by creation time.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Sqlite`] when `SQLite` cannot query trusted root rows.
+    pub fn list_project_roots(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<ProjectRootRecord>, StoreError> {
+        let mut statement = self.connection.prepare(
+            "SELECT project_id, root_hash, display_path, created_at, last_seen_at
+             FROM project_roots
+             WHERE project_id = ?1
+             ORDER BY created_at, root_hash",
+        )?;
+        let roots = statement
+            .query_map([project_id], project_root_record_from_row)?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(roots)
+    }
+
+    /// Removes a trusted root from a project.
+    ///
+    /// Returns `true` when a root was removed and `false` when no matching root existed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Sqlite`] when `SQLite` rejects the delete.
+    pub fn untrust_project_root(
+        &self,
+        project_id: &str,
+        root_hash: &[u8; 32],
+    ) -> Result<bool, StoreError> {
+        self.connection.execute(
+            "DELETE FROM project_roots WHERE project_id = ?1 AND root_hash = ?2",
+            params![project_id, root_hash.as_slice()],
+        )?;
+
+        Ok(self.connection.changes() == 1)
     }
 
     /// Inserts wrapped key material.
@@ -1127,6 +1184,16 @@ fn project_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProjectR
     Ok(ProjectRecord { id: row.get(0)?, name: row.get(1)?, created_at: row.get(2)? })
 }
 
+fn project_root_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProjectRootRecord> {
+    Ok(ProjectRootRecord {
+        project_id: row.get(0)?,
+        root_hash: root_hash_from_row(row, 1, "project_roots.root_hash")?,
+        display_path: row.get(2)?,
+        created_at: row.get(3)?,
+        last_seen_at: row.get(4)?,
+    })
+}
+
 fn profile_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProfileRecord> {
     Ok(ProfileRecord {
         id: row.get(0)?,
@@ -1191,6 +1258,21 @@ fn secret_blob_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Secr
         value_nonce: nonce_from_row(row, 4, "blobs.value_nonce")?,
         aad_schema_version: row.get(5)?,
         created_at: row.get(6)?,
+    })
+}
+
+fn root_hash_from_row(
+    row: &rusqlite::Row<'_>,
+    column: usize,
+    field: &'static str,
+) -> rusqlite::Result<[u8; 32]> {
+    let bytes: Vec<u8> = row.get(column)?;
+    bytes.try_into().map_err(|bytes: Vec<u8>| {
+        rusqlite::Error::FromSqlConversionFailure(
+            column,
+            Type::Blob,
+            Box::new(InvalidFixedBytesLength { field, expected: 32, actual: bytes.len() }),
+        )
     })
 }
 
@@ -1351,6 +1433,14 @@ fn append_audit(
     )?;
 
     Ok(())
+}
+
+#[derive(Debug, Error)]
+#[error("{field} must be {expected} bytes, got {actual}")]
+struct InvalidFixedBytesLength {
+    field: &'static str,
+    expected: usize,
+    actual: usize,
 }
 
 #[derive(Debug, Error)]
@@ -1640,8 +1730,9 @@ mod tests {
     use tempfile::{TempDir, tempdir};
 
     use super::{
-        AuditContext, AuditWrite, KeyRecord, ProfileRecord, ProjectRecord, SCHEMA_VERSION,
-        SecretBlobRecord, SecretFingerprintRecord, SecretRecord, SecretVersionRecord, Store,
+        AuditContext, AuditWrite, KeyRecord, ProfileRecord, ProjectRecord, ProjectRootRecord,
+        SCHEMA_VERSION, SecretBlobRecord, SecretFingerprintRecord, SecretRecord,
+        SecretVersionRecord, Store,
     };
 
     struct TestStore {
@@ -1981,6 +2072,19 @@ mod tests {
             |row| row.get::<_, i64>(0),
         )?;
         assert_eq!(row_count, 1);
+        assert_eq!(
+            test_store.store.list_project_roots("lk_proj_test")?,
+            vec![ProjectRootRecord {
+                project_id: "lk_proj_test".to_owned(),
+                root_hash,
+                display_path: Some("/tmp/app2".to_owned()),
+                created_at: 200,
+                last_seen_at: Some(300),
+            }]
+        );
+        assert!(test_store.store.untrust_project_root("lk_proj_test", &root_hash)?);
+        assert!(!test_store.store.untrust_project_root("lk_proj_test", &root_hash)?);
+        assert!(!test_store.store.project_root_is_trusted("lk_proj_test", &root_hash)?);
 
         Ok(())
     }

@@ -340,7 +340,7 @@ struct DiffArgs {
     since: Option<String>,
 }
 
-#[derive(Debug, Subcommand)]
+#[derive(Clone, Copy, Debug, Subcommand)]
 enum AgentCommand {
     /// Start the local agent.
     Start,
@@ -440,6 +440,8 @@ fn run_with_context(
         Command::Audit { command } => audit_command(context, output, command)?,
         Command::EmitExample => emit_example_command(context, output)?,
         Command::Profile { command } => profile_command(context, output, command)?,
+        Command::Project { command } => project_command(context, output, command)?,
+        Command::Agent { command } => agent_command(context, output, command)?,
         Command::Use(args) => use_profile_command(context, output, args)?,
         Command::Scan(args) => scan_command(context, output, args)?,
         Command::Redact(args) => redact_command(context, output, args)?,
@@ -1065,6 +1067,89 @@ fn profile_command(
     }
 }
 
+fn project_command(
+    context: &RuntimeContext,
+    output: &mut impl Write,
+    command: ProjectCommand,
+) -> Result<(), CliError> {
+    match command {
+        ProjectCommand::TrustRoot => trust_root_command(context, output),
+        ProjectCommand::ListRoots => list_roots_command(context, output),
+        ProjectCommand::UntrustRoot { root_hash } => {
+            untrust_root_command(context, output, &root_hash)
+        }
+    }
+}
+
+fn trust_root_command(context: &RuntimeContext, output: &mut impl Write) -> Result<(), CliError> {
+    let resolved = require_project(context)?;
+    let store = open_store(context)?;
+    ensure_project_exists(&store, resolved.config.project_id.as_str())?;
+
+    let hash = root_hash(&resolved.root)?;
+    let was_trusted = store.project_root_is_trusted(resolved.config.project_id.as_str(), &hash)?;
+    let timestamp = now_unix_nanos()?;
+    let display_path = resolved.root.to_string_lossy();
+    store.trust_project_root(
+        resolved.config.project_id.as_str(),
+        &hash,
+        Some(display_path.as_ref()),
+        timestamp,
+    )?;
+
+    writeln!(
+        output,
+        "{}",
+        if was_trusted { "trusted root already present" } else { "trusted root added" }
+    )?;
+    writeln!(output, "project_id: {}", resolved.config.project_id)?;
+    writeln!(output, "root_hash: {}", format_hex(&hash))?;
+    writeln!(output, "display_path: {}", resolved.root.display())?;
+    writeln!(output, "last_seen_at: {timestamp}")?;
+    Ok(())
+}
+
+fn list_roots_command(context: &RuntimeContext, output: &mut impl Write) -> Result<(), CliError> {
+    let resolved = require_project(context)?;
+    let store = open_store(context)?;
+    ensure_project_exists(&store, resolved.config.project_id.as_str())?;
+
+    let roots = store.list_project_roots(resolved.config.project_id.as_str())?;
+    if roots.is_empty() {
+        writeln!(output, "no trusted roots")?;
+        return Ok(());
+    }
+
+    for root in roots {
+        writeln!(output, "root_hash: {}", format_hex(&root.root_hash))?;
+        writeln!(output, "display_path: {}", root.display_path.as_deref().unwrap_or("-"))?;
+        writeln!(output, "created_at: {}", root.created_at)?;
+        writeln!(output, "last_seen_at: {}", optional_i64(root.last_seen_at))?;
+    }
+    Ok(())
+}
+
+fn untrust_root_command(
+    context: &RuntimeContext,
+    output: &mut impl Write,
+    root_hash: &str,
+) -> Result<(), CliError> {
+    let resolved = require_project(context)?;
+    let store = open_store(context)?;
+    ensure_project_exists(&store, resolved.config.project_id.as_str())?;
+
+    let hash = parse_root_hash(root_hash)?;
+    let removed = store.untrust_project_root(resolved.config.project_id.as_str(), &hash)?;
+    writeln!(
+        output,
+        "{}",
+        if removed { "trusted root removed" } else { "trusted root not found" }
+    )?;
+    writeln!(output, "project_id: {}", resolved.config.project_id)?;
+    writeln!(output, "root_hash: {}", format_hex(&hash))?;
+    Ok(())
+}
+
 fn list_profiles(context: &RuntimeContext, output: &mut impl Write) -> Result<(), CliError> {
     let resolved = require_project(context)?;
     let store = open_store(context)?;
@@ -1289,6 +1374,80 @@ fn emit_example_command(context: &RuntimeContext, output: &mut impl Write) -> Re
     let resolved = require_project(context)?;
     refresh_example_for_project(context)?;
     writeln!(output, "updated {}", resolved.root.join(EXAMPLE_FILE).display())?;
+    Ok(())
+}
+
+fn agent_command(
+    context: &RuntimeContext,
+    output: &mut impl Write,
+    command: AgentCommand,
+) -> Result<(), CliError> {
+    match command {
+        AgentCommand::Start => agent_start_command(context, output),
+        AgentCommand::Status => agent_status_command(context, output),
+        AgentCommand::Stop => agent_stop_command(context, output),
+        AgentCommand::Logs => agent_logs_command(context, output),
+    }
+}
+
+fn agent_start_command(context: &RuntimeContext, output: &mut impl Write) -> Result<(), CliError> {
+    fs::create_dir_all(agent_data_dir(context))?;
+    append_agent_log(context, "start", "unavailable", "daemon not available in this build")?;
+    writeln!(output, "agent: unavailable")?;
+    writeln!(output, "running: no")?;
+    writeln!(output, "start: daemon not available in this build")?;
+    write_agent_paths(context, output)?;
+    Ok(())
+}
+
+fn agent_status_command(context: &RuntimeContext, output: &mut impl Write) -> Result<(), CliError> {
+    writeln!(output, "agent: unavailable")?;
+    writeln!(output, "running: no")?;
+    match read_agent_pid(context)? {
+        Some(pid) => writeln!(output, "last_known_pid: {pid}")?,
+        None => writeln!(output, "last_known_pid: -")?,
+    }
+    write_agent_paths(context, output)?;
+    writeln!(output, "lock_state: unavailable")?;
+    writeln!(output, "live_grants: unavailable")?;
+    writeln!(output, "last_error: daemon not available in this build")?;
+    if let Some(project) = resolve_project(&context.cwd)? {
+        writeln!(output, "active_project_id: {}", project.config.project_id)?;
+        writeln!(output, "active_profile: {}", project.config.default_profile)?;
+    }
+    Ok(())
+}
+
+fn agent_stop_command(context: &RuntimeContext, output: &mut impl Write) -> Result<(), CliError> {
+    let pid_path = agent_pid_path(context);
+    let removed_stale_pid = match fs::remove_file(&pid_path) {
+        Ok(()) => true,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+        Err(error) => return Err(error.into()),
+    };
+    append_agent_log(context, "stop", "stopped", "no daemon was running")?;
+    writeln!(output, "agent: stopped")?;
+    writeln!(output, "running: no")?;
+    writeln!(output, "removed_stale_pid: {}", if removed_stale_pid { "yes" } else { "no" })?;
+    write_agent_paths(context, output)?;
+    Ok(())
+}
+
+fn agent_logs_command(context: &RuntimeContext, output: &mut impl Write) -> Result<(), CliError> {
+    let log_path = agent_log_path(context);
+    let log_text = match fs::read_to_string(&log_path) {
+        Ok(log_text) => log_text,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            writeln!(output, "no agent logs")?;
+            return Ok(());
+        }
+        Err(error) => return Err(error.into()),
+    };
+
+    let lines = log_text.lines().rev().take(200).collect::<Vec<_>>();
+    for line in lines.iter().rev() {
+        writeln!(output, "{line}")?;
+    }
     Ok(())
 }
 
@@ -2002,6 +2161,70 @@ fn open_store(context: &RuntimeContext) -> Result<Store, CliError> {
     Ok(store)
 }
 
+fn ensure_project_exists(store: &Store, project_id: &str) -> Result<(), CliError> {
+    if store.get_project(project_id)?.is_some() {
+        return Ok(());
+    }
+    Err(CliError::Config(
+        "project is not present in the local store; run locket init to resume setup".to_owned(),
+    ))
+}
+
+fn agent_data_dir(context: &RuntimeContext) -> PathBuf {
+    context.store_path.parent().map_or_else(|| context.cwd.clone(), Path::to_path_buf)
+}
+
+fn agent_socket_path(context: &RuntimeContext) -> PathBuf {
+    agent_data_dir(context).join("agent.sock")
+}
+
+fn agent_pid_path(context: &RuntimeContext) -> PathBuf {
+    agent_data_dir(context).join("agent.pid")
+}
+
+fn agent_log_path(context: &RuntimeContext) -> PathBuf {
+    agent_data_dir(context).join("agent.log")
+}
+
+fn write_agent_paths(context: &RuntimeContext, output: &mut impl Write) -> Result<(), CliError> {
+    writeln!(output, "socket: {}", agent_socket_path(context).display())?;
+    writeln!(output, "pid_file: {}", agent_pid_path(context).display())?;
+    writeln!(output, "log_file: {}", agent_log_path(context).display())?;
+    Ok(())
+}
+
+fn read_agent_pid(context: &RuntimeContext) -> Result<Option<String>, CliError> {
+    match fs::read_to_string(agent_pid_path(context)) {
+        Ok(pid) => {
+            let pid = pid.trim();
+            Ok(if pid.is_empty() { None } else { Some(pid.to_owned()) })
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn append_agent_log(
+    context: &RuntimeContext,
+    action: &str,
+    status: &str,
+    message: &str,
+) -> Result<(), CliError> {
+    fs::create_dir_all(agent_data_dir(context))?;
+    let entry = json!({
+        "timestamp": now_unix_nanos()?,
+        "severity": "info",
+        "component": "agent",
+        "action": action,
+        "status": status,
+        "message": message,
+    });
+    let mut file =
+        fs::OpenOptions::new().create(true).append(true).open(agent_log_path(context))?;
+    writeln!(file, "{entry}")?;
+    Ok(())
+}
+
 #[derive(Debug)]
 struct ResolvedProject {
     root: PathBuf,
@@ -2444,6 +2667,39 @@ fn root_hash(root: &Path) -> Result<[u8; 32], CliError> {
     Ok(output)
 }
 
+fn format_hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        output.push(char::from(HEX[usize::from(byte >> 4)]));
+        output.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    output
+}
+
+fn parse_root_hash(value: &str) -> Result<[u8; 32], CliError> {
+    let value = value.strip_prefix("0x").unwrap_or(value);
+    if value.len() != 64 {
+        return Err(CliError::Config("root hash must be 64 hex characters".to_owned()));
+    }
+    let mut output = [0_u8; 32];
+    for (index, chunk) in value.as_bytes().chunks_exact(2).enumerate() {
+        let high = hex_nibble(chunk[0])?;
+        let low = hex_nibble(chunk[1])?;
+        output[index] = (high << 4) | low;
+    }
+    Ok(output)
+}
+
+fn hex_nibble(byte: u8) -> Result<u8, CliError> {
+    match byte {
+        b'0'..=b'9' => Ok(byte - b'0'),
+        b'a'..=b'f' => Ok(byte - b'a' + 10),
+        b'A'..=b'F' => Ok(byte - b'A' + 10),
+        _ => Err(CliError::Config("root hash must be hex encoded".to_owned())),
+    }
+}
+
 fn now_unix_nanos() -> Result<i64, CliError> {
     let elapsed = SystemTime::now().duration_since(UNIX_EPOCH).map_err(|_| CliError::Time)?;
     i64::try_from(elapsed.as_nanos()).map_err(|_| CliError::Time)
@@ -2545,8 +2801,12 @@ mod tests {
             ["locket", "profile", "create", "dev"].as_slice(),
             &["locket", "profile", "mark-dangerous", "prod"],
             &["locket", "project", "trust-root"],
+            &["locket", "project", "list-roots"],
             &["locket", "project", "untrust-root", "abc123"],
             &["locket", "agent", "start"],
+            &["locket", "agent", "status"],
+            &["locket", "agent", "stop"],
+            &["locket", "agent", "logs"],
         ] {
             assert!(Cli::try_parse_from(args).is_ok(), "{args:?}");
         }
@@ -2671,6 +2931,117 @@ mod tests {
             &mut list_after_clear,
         )?;
         assert!(!String::from_utf8(list_after_clear)?.contains("dangerous"));
+        Ok(())
+    }
+
+    #[test]
+    fn project_root_commands_manage_trusted_roots() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        let mut output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut output,
+        )?;
+
+        let mut list_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "project", "list-roots"])?,
+            &context,
+            &mut list_output,
+        )?;
+        let list_output = String::from_utf8(list_output)?;
+        assert!(list_output.contains("display_path:"));
+        let root_hash = list_output
+            .lines()
+            .find_map(|line| line.strip_prefix("root_hash: "))
+            .ok_or("root hash should be listed")?
+            .to_owned();
+        assert_eq!(root_hash.len(), 64);
+
+        let mut trust_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "project", "trust-root"])?,
+            &context,
+            &mut trust_output,
+        )?;
+        assert!(String::from_utf8(trust_output)?.contains("trusted root already present"));
+
+        let mut untrust_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "project", "untrust-root", root_hash.as_str()])?,
+            &context,
+            &mut untrust_output,
+        )?;
+        assert!(String::from_utf8(untrust_output)?.contains("trusted root removed"));
+
+        let mut status_output = Vec::new();
+        run_with_context(Cli::try_parse_from(["locket", "status"])?, &context, &mut status_output)?;
+        assert!(String::from_utf8(status_output)?.contains("trusted_root: no"));
+
+        let mut relist_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "project", "list-roots"])?,
+            &context,
+            &mut relist_output,
+        )?;
+        assert!(String::from_utf8(relist_output)?.contains("no trusted roots"));
+
+        let mut retrust_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "project", "trust-root"])?,
+            &context,
+            &mut retrust_output,
+        )?;
+        assert!(String::from_utf8(retrust_output)?.contains("trusted root added"));
+        Ok(())
+    }
+
+    #[test]
+    fn agent_commands_report_metadata_only_unavailable_state()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+
+        let mut status_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "agent", "status"])?,
+            &context,
+            &mut status_output,
+        )?;
+        let status_output = String::from_utf8(status_output)?;
+        assert!(status_output.contains("agent: unavailable"));
+        assert!(status_output.contains("running: no"));
+
+        let mut start_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "agent", "start"])?,
+            &context,
+            &mut start_output,
+        )?;
+        let start_output = String::from_utf8(start_output)?;
+        assert!(start_output.contains("daemon not available in this build"));
+        assert!(start_output.contains("socket:"));
+
+        let mut stop_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "agent", "stop"])?,
+            &context,
+            &mut stop_output,
+        )?;
+        assert!(String::from_utf8(stop_output)?.contains("agent: stopped"));
+
+        let mut logs_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "agent", "logs"])?,
+            &context,
+            &mut logs_output,
+        )?;
+        let logs_output = String::from_utf8(logs_output)?;
+        assert!(logs_output.contains("\"action\":\"start\""));
+        assert!(logs_output.contains("\"action\":\"stop\""));
+        assert!(!logs_output.contains("secret"));
         Ok(())
     }
 
