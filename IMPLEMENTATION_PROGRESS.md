@@ -294,8 +294,7 @@ to touch. Items marked `[x]` are merged to `main` and verified.
   - Errors: `ProtocolError` (82).
   - Files: agent daemon stream loop; client decode in
     `crates/locket-agent/src/protocol.rs`.
-- [~] [4efea70d] Process-bound grant binding: validate `(pid, process_start_time)` per
-  Claim: branch agent-4efea70d/process-grant-binding, worktree .worktrees/agent-4efea70d-process-grant-binding.
+- [x] Process-bound grant binding: validate `(pid, process_start_time)` per
   platform (`/proc/<pid>/stat` on Linux, platform process creation time on
   Windows, closest available metadata on macOS) so PIDs are never trusted alone.
   - Spec: `docs/specs/agent.md:77-78`.
@@ -529,7 +528,8 @@ to touch. Items marked `[x]` are merged to `main` and verified.
 
 ### App/UI
 
-- [ ] Add the `locket-app` workspace crate/application.
+- [~] [4efea70d] Add the `locket-app` workspace crate/application.
+  Claim: branch agent-4efea70d/locket-app-crate, worktree .worktrees/agent-4efea70d-locket-app-crate.
   - Spec: `docs/specs/architecture.md`, `docs/specs/desktop.md`.
   - Files: `crates/locket-app/` (new), workspace `Cargo.toml`.
 - [ ] Build the Tauri desktop app.
@@ -792,7 +792,8 @@ against the named spec file.
 
 - [~] [6e4d05db] `index.md`
   Claim: branch agent-6e4d05db/spec-index-gate, worktree .worktrees/agent-6e4d05db-spec-index-gate.
-- [ ] `product.md`
+- [~] [70c448c4] `product.md`
+  Claim: branch agent-70c448c4/product-gate, worktree .worktrees/agent-70c448c4-product-gate.
 - [ ] `invariants.md`
 - [ ] `architecture.md`
 - [ ] `data-model.md`
@@ -939,7 +940,7 @@ echoed inside `metadata_json` so the HMAC chain covers them. Never write
 
 ## Latest Verified Checkpoint
 
-- Tip of `main`: `6e05349` ("Add status heartbeat protocol events").
+- Tip of `main`: `44d0140` ("Mark source precedence slice ready").
 - `cargo fmt --all -- --check` clean on `main`.
 - `cargo test --workspace --all-targets --all-features` passes on `main`.
 - `cargo clippy --workspace --all-targets --all-features -- -D warnings` clean
