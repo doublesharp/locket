@@ -11,6 +11,7 @@ mod device;
 pub(crate) mod diagnostics;
 mod diff;
 mod lock;
+mod meta;
 mod onboarding;
 mod passkey;
 mod policy_authoring;
@@ -60,7 +61,7 @@ use locket_store::DeviceRecord;
 use locket_store::{
     AuditContext, AuditWrite, KeyRecord, ProfileRecord, RuntimeSessionRecord,
     RuntimeSessionSecretNameRetention, SecretBlobRecord, SecretCopyTarget, SecretFingerprintRecord,
-    SecretMetadataUpdate, SecretRecord, SecretVersionRecord, Store, StoreError, VersionDeprecation,
+    SecretRecord, SecretVersionRecord, Store, StoreError, VersionDeprecation,
 };
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -1011,7 +1012,7 @@ fn run_with_context(
         Command::Env { command } => env_command(context, output, command)?,
         Command::Compose { command } => compose_command(context, output, command)?,
         Command::Rotate(args) => rotate_command(context, output, &args)?,
-        Command::Meta(args) => meta_command(context, output, &args)?,
+        Command::Meta(args) => meta::meta_command(context, output, &args)?,
         Command::History(args) => history_command(context, output, &args)?,
         Command::Diff(args) => diff::diff_command(context, output, &args)?,
         Command::Copy(args) => copy_command(context, output, &args)?,
@@ -3196,78 +3197,6 @@ fn docker_error(error: locket_docker::DockerError) -> CliError {
         ),
         other => CliError::Config(other.to_string()),
     }
-}
-
-fn meta_command(
-    context: &RuntimeContext,
-    output: &mut impl Write,
-    args: &SecretMetaArgs,
-) -> Result<(), CliError> {
-    if !metadata_flags_have_updates(&args.metadata) {
-        return Err(CliError::Config("meta requires at least one metadata flag".to_owned()));
-    }
-
-    let resolved_secret = resolve_active_secret_for_source(context, &args.key, args.source.source)?;
-    let mut store = open_store(context)?;
-    let required = metadata_required_update(&args.metadata);
-    let tags =
-        if args.metadata.tags.is_empty() { None } else { Some(args.metadata.tags.as_slice()) };
-    let timestamp = now_unix_nanos()?;
-    if let Err(error) =
-        validate_secret_metadata_update(context, &resolved_secret, &args.metadata, timestamp)
-    {
-        write_secret_meta_update_failure_audit_if_available(
-            context,
-            &mut store,
-            &resolved_secret,
-            &args.metadata,
-            timestamp,
-        );
-        return Err(error);
-    }
-    let audit_key = load_project_key(
-        context,
-        &store,
-        resolved_secret.project.config.project_id.as_str(),
-        KeyPurpose::Audit,
-    )?;
-    let metadata =
-        secret_meta_update_audit_metadata(&resolved_secret, &args.metadata, "SUCCESS", None);
-    let audit = AuditWrite {
-        project_id: resolved_secret.project.config.project_id.as_str(),
-        profile_id: Some(&resolved_secret.profile.id),
-        action: "SECRET_META_UPDATE",
-        status: "SUCCESS",
-        secret_name: Some(&resolved_secret.secret.name),
-        command: None,
-        metadata_json: &metadata,
-        timestamp,
-    };
-    let changed = store.update_secret_metadata_with_options(
-        &resolved_secret.secret.id,
-        SecretMetadataUpdate {
-            description: args.metadata.description.as_deref(),
-            owner: args.metadata.owner.as_deref(),
-            tags,
-            required,
-            updated_at: None,
-            audit: Some(AuditContext { key: audit_key.as_ref(), write: &audit }),
-        },
-    )?;
-    if !changed {
-        return Err(CliError::Config("secret not found".to_owned()));
-    }
-
-    writeln!(
-        output,
-        "metadata updated {} source={} version={}",
-        resolved_secret.secret.name,
-        resolved_secret.secret.source,
-        resolved_secret.secret.current_version
-    )?;
-    writeln!(output, "updated_fields: {}", metadata_update_field_names(&args.metadata).join(","))?;
-    writeln!(output, "metadata_only: yes")?;
-    Ok(())
 }
 
 fn format_optional_i64(value: Option<i64>) -> String {
