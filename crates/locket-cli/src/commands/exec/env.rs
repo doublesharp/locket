@@ -36,7 +36,9 @@ pub fn env_inspect_command(
     ensure_trusted_project_root(&store, &resolved)?;
     let profile = default_profile(&store, &resolved.config)?;
     let selections = policy_secret_selections(&store, &resolved, &profile, &policy)?;
-    let parent_env = std::env::vars().collect::<locket_exec::EnvMap>();
+    let parent_env = std::env::vars()
+        .map(|(name, value)| (name, locket_exec::env_value(value)))
+        .collect::<locket_exec::EnvMap>();
 
     writeln!(output, "policy {}", policy.name)?;
     writeln!(output, "command_type={}", command_type(&policy.command))?;
@@ -78,7 +80,9 @@ pub fn env_docker_command(
     output: &mut impl Write,
     args: &EnvDockerArgs,
 ) -> Result<(), CliError> {
-    let parent_env = std::env::vars().collect::<locket_exec::EnvMap>();
+    let parent_env = std::env::vars()
+        .map(|(name, value)| (name, locket_exec::env_value(value)))
+        .collect::<locket_exec::EnvMap>();
     let prepared =
         prepare_docker_policy_execution(context, &args.policy, &args.command, parent_env)?;
     let status = prepared.execution.command().current_dir(&context.cwd).status()?;

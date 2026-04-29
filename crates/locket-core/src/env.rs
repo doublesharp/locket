@@ -5,9 +5,19 @@ use std::fmt::{self, Display};
 use std::str::FromStr;
 
 use thiserror::Error;
+use zeroize::Zeroizing;
 
-/// Deterministic environment map.
-pub type EnvMap = BTreeMap<String, String>;
+/// Environment variable value that zeroizes its heap storage when dropped.
+pub type EnvValue = Zeroizing<String>;
+
+/// Deterministic environment map with zeroizing values.
+pub type EnvMap = BTreeMap<String, EnvValue>;
+
+/// Wraps an environment value in zeroizing storage.
+#[must_use]
+pub fn env_value(value: impl Into<String>) -> EnvValue {
+    Zeroizing::new(value.into())
+}
 
 /// Policy for constructing the base child environment before Locket secrets are applied.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -174,10 +184,17 @@ fn select_names(source: &EnvMap, names: &[&str]) -> EnvMap {
 
 #[cfg(test)]
 mod tests {
-    use super::{EnvMap, EnvMergeError, EnvMode, EnvOverrideMode, merge_environment};
+    use std::any::type_name;
+
+    use super::{EnvMap, EnvMergeError, EnvMode, EnvOverrideMode, env_value, merge_environment};
 
     fn env(values: &[(&str, &str)]) -> EnvMap {
-        values.iter().map(|(name, value)| ((*name).to_owned(), (*value).to_owned())).collect()
+        values.iter().map(|(name, value)| ((*name).to_owned(), env_value(*value))).collect()
+    }
+
+    #[test]
+    fn env_map_values_are_zeroizing() {
+        assert!(type_name::<EnvMap>().contains("Zeroizing"));
     }
 
     #[test]
@@ -193,8 +210,11 @@ mod tests {
         )?;
 
         assert_eq!(merged.len(), 2);
-        assert_eq!(merged.get("NODE_ENV").map(String::as_str), Some("dev"));
-        assert_eq!(merged.get("DATABASE_URL").map(String::as_str), Some("postgres://local"));
+        assert_eq!(merged.get("NODE_ENV").map(|value| value.as_str()), Some("dev"));
+        assert_eq!(
+            merged.get("DATABASE_URL").map(|value| value.as_str()),
+            Some("postgres://local")
+        );
         Ok(())
     }
 
@@ -211,7 +231,7 @@ mod tests {
         )?;
 
         assert_eq!(merged.len(), 2);
-        assert_eq!(merged.get("PATH").map(String::as_str), Some("/bin"));
+        assert_eq!(merged.get("PATH").map(|value| value.as_str()), Some("/bin"));
         assert!(!merged.contains_key("SECRET"));
         Ok(())
     }
@@ -245,7 +265,7 @@ mod tests {
         )?;
 
         assert_eq!(merged.len(), 2);
-        assert_eq!(merged.get("EXISTING").map(String::as_str), Some("value"));
+        assert_eq!(merged.get("EXISTING").map(|value| value.as_str()), Some("value"));
         Ok(())
     }
 
@@ -262,7 +282,7 @@ mod tests {
             EnvOverrideMode::Locket,
         )?;
 
-        assert_eq!(merged.get("PATH").map(String::as_str), Some("/external"));
+        assert_eq!(merged.get("PATH").map(|value| value.as_str()), Some("/external"));
         Ok(())
     }
 
@@ -278,7 +298,7 @@ mod tests {
             EnvOverrideMode::Locket,
         )?;
 
-        assert_eq!(merged.get("DATABASE_URL").map(String::as_str), Some("locket"));
+        assert_eq!(merged.get("DATABASE_URL").map(|value| value.as_str()), Some("locket"));
         Ok(())
     }
 
@@ -294,7 +314,7 @@ mod tests {
             EnvOverrideMode::Preserve,
         )?;
 
-        assert_eq!(merged.get("DATABASE_URL").map(String::as_str), Some("parent"));
+        assert_eq!(merged.get("DATABASE_URL").map(|value| value.as_str()), Some("parent"));
         Ok(())
     }
 
@@ -310,7 +330,7 @@ mod tests {
             EnvOverrideMode::Error,
         )?;
 
-        assert_eq!(merged.get("DATABASE_URL").map(String::as_str), Some("locket"));
+        assert_eq!(merged.get("DATABASE_URL").map(|value| value.as_str()), Some("locket"));
         Ok(())
     }
 

@@ -90,7 +90,7 @@ fn prepare_docker_helper_policy_execution(
     let policy = load_command_policy(&resolved, policy_name)?;
     ensure_runtime_policy_supported(&policy)?;
     let (profile, selections, locket_env) = resolve_policy_locket_env(context, &resolved, &policy)?;
-    let endpoint = parent_env.get("DOCKER_HOST").map(String::as_str);
+    let endpoint = parent_env.get("DOCKER_HOST").map(|value| value.as_str());
     let plan = match helper_kind {
         DockerHelperKind::DockerRun => locket_docker::prepare_docker_run(
             argv,
@@ -180,7 +180,7 @@ pub fn resolve_policy_locket_env(
                 secret,
                 secret.current_version,
             )?;
-            locket_env.insert(secret.name.clone(), value.as_str().to_owned());
+            locket_env.insert(secret.name.clone(), value);
         }
     }
     Ok((profile, selections, locket_env))

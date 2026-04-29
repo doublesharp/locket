@@ -48,9 +48,9 @@ fn cli_error_exit_codes_follow_reserved_spec_ranges() {
 fn exec_prepare_environment_conflict_exits_66() -> Result<(), Box<dyn std::error::Error>> {
     let mut request = locket_exec::ExecutionRequest::strict(vec!["tool".to_owned()]);
     request.external_env =
-        std::iter::once(("DATABASE_URL".to_owned(), "external".to_owned())).collect();
+        std::iter::once(("DATABASE_URL".to_owned(), locket_exec::env_value("external"))).collect();
     request.locket_env =
-        std::iter::once(("DATABASE_URL".to_owned(), "locket".to_owned())).collect();
+        std::iter::once(("DATABASE_URL".to_owned(), locket_exec::env_value("locket"))).collect();
     request.override_mode = locket_exec::EnvOverrideMode::Error;
 
     let Err(error) =

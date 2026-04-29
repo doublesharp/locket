@@ -2,7 +2,9 @@
 
 use std::process::Command;
 
-pub use locket_core::{EnvMap, EnvMergeError, EnvMode, EnvOverrideMode, merge_environment};
+pub use locket_core::{
+    EnvMap, EnvMergeError, EnvMode, EnvOverrideMode, EnvValue, env_value, merge_environment,
+};
 use thiserror::Error;
 
 /// Parent environment names considered safe in [`EnvMode::Minimal`].
@@ -61,7 +63,10 @@ impl PreparedExecution {
     #[must_use]
     pub fn command(&self) -> Command {
         let mut command = Command::new(&self.program);
-        command.args(&self.args).env_clear().envs(&self.env);
+        command.args(&self.args).env_clear();
+        for (name, value) in &self.env {
+            command.env(name, value.as_str());
+        }
         command
     }
 }
@@ -110,7 +115,7 @@ mod tests {
     use crate::{EnvMap, EnvMode, EnvOverrideMode};
 
     fn env(values: &[(&str, &str)]) -> EnvMap {
-        values.iter().map(|(name, value)| ((*name).to_owned(), (*value).to_owned())).collect()
+        values.iter().map(|(name, value)| ((*name).to_owned(), crate::env_value(*value))).collect()
     }
 
     #[test]
@@ -124,7 +129,10 @@ mod tests {
         assert_eq!(prepared.program, "node");
         assert_eq!(prepared.args, ["server.js"]);
         assert_eq!(prepared.env.len(), 1);
-        assert_eq!(prepared.env.get("DATABASE_URL").map(String::as_str), Some("postgres://local"));
+        assert_eq!(
+            prepared.env.get("DATABASE_URL").map(|value| value.as_str()),
+            Some("postgres://local")
+        );
         assert!(!prepared.env.contains_key("SECRET"));
         assert!(!prepared.env.contains_key("PATH"));
         Ok(())
@@ -138,7 +146,7 @@ mod tests {
 
         let prepared = prepare_execution(&request)?;
 
-        assert_eq!(prepared.env.get("PATH").map(String::as_str), Some("/bin"));
+        assert_eq!(prepared.env.get("PATH").map(|value| value.as_str()), Some("/bin"));
         assert!(!prepared.env.contains_key("SECRET"));
         Ok(())
     }
@@ -151,7 +159,7 @@ mod tests {
 
         let prepared = prepare_execution(&request)?;
 
-        assert_eq!(prepared.env.get("NODE_ENV").map(String::as_str), Some("development"));
+        assert_eq!(prepared.env.get("NODE_ENV").map(|value| value.as_str()), Some("development"));
         assert!(!prepared.env.contains_key("SECRET"));
         Ok(())
     }
@@ -176,8 +184,8 @@ mod tests {
 
         let prepared = prepare_execution(&request)?;
 
-        assert_eq!(prepared.env.get("DATABASE_URL").map(String::as_str), Some("locket"));
-        assert_eq!(prepared.env.get("PATH").map(String::as_str), Some("/external/bin"));
+        assert_eq!(prepared.env.get("DATABASE_URL").map(|value| value.as_str()), Some("locket"));
+        assert_eq!(prepared.env.get("PATH").map(|value| value.as_str()), Some("/external/bin"));
         Ok(())
     }
 

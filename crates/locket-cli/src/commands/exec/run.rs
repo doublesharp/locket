@@ -95,7 +95,7 @@ pub fn run_command(
                 secret,
                 secret.current_version,
             )?;
-            locket_env.insert(secret.name.clone(), value.as_str().to_owned());
+            locket_env.insert(secret.name.clone(), value);
         }
     }
 
@@ -105,7 +105,9 @@ pub fn run_command(
     };
     let request = locket_exec::ExecutionRequest {
         argv: command_argv,
-        parent_env: std::env::vars().collect(),
+        parent_env: std::env::vars()
+            .map(|(name, value)| (name, locket_exec::env_value(value)))
+            .collect(),
         inherit_env: policy.inherit_env.clone(),
         external_env: locket_exec::EnvMap::new(),
         locket_env,

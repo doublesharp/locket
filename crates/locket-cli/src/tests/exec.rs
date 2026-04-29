@@ -314,7 +314,7 @@ inherit_env = ["PATH"]
         Some(crate::Command::Env { command: crate::EnvCommand::Docker(_) })
     ));
 
-    let parent_env = std::iter::once(("PATH".to_owned(), "/bin".to_owned())).collect();
+    let parent_env = std::iter::once(("PATH".to_owned(), locket_exec::env_value("/bin"))).collect();
     let docker_argv = vec!["docker".to_owned(), "run".to_owned(), "alpine".to_owned()];
     let prepared =
         crate::prepare_docker_policy_execution(&context, "docker_app", &docker_argv, parent_env)?;
@@ -401,7 +401,7 @@ inherit_env = ["PATH"]
         &["web".to_owned()],
     )?;
     assert_eq!(argv, ["docker", "compose", "--project-directory", ".", "--profile", "web", "up"]);
-    let parent_env = std::iter::once(("PATH".to_owned(), "/bin".to_owned())).collect();
+    let parent_env = std::iter::once(("PATH".to_owned(), locket_exec::env_value("/bin"))).collect();
     let prepared =
         crate::prepare_compose_policy_execution(&context, "compose_app", &argv, parent_env)?;
     assert_eq!(
@@ -417,12 +417,13 @@ inherit_env = ["PATH"]
     assert_eq!(prepared.plan.injected_names, ["API_KEY"]);
     assert!(!prepared.plan.argv.join(" ").contains("sk_test_compose_value"));
     assert_eq!(
-        prepared.execution.env.get("API_KEY").map(String::as_str),
+        prepared.execution.env.get("API_KEY").map(|value| value.as_str()),
         Some("sk_test_compose_value")
     );
 
     let remote_env =
-        std::iter::once(("DOCKER_HOST".to_owned(), "ssh://builder".to_owned())).collect();
+        std::iter::once(("DOCKER_HOST".to_owned(), locket_exec::env_value("ssh://builder")))
+            .collect();
     let remote_argv = vec!["docker".to_owned(), "compose".to_owned(), "up".to_owned()];
     let Err(error) =
         crate::prepare_compose_policy_execution(&context, "compose_app", &remote_argv, remote_env)

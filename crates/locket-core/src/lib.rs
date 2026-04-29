@@ -17,8 +17,8 @@ pub use audit::{
     insert_convenience_metadata,
 };
 pub use env::{
-    EnvMap, EnvMergeError, EnvMode, EnvOverrideMode, InvalidEnvMode, InvalidEnvOverrideMode,
-    merge_environment,
+    EnvMap, EnvMergeError, EnvMode, EnvOverrideMode, EnvValue, InvalidEnvMode,
+    InvalidEnvOverrideMode, env_value, merge_environment,
 };
 pub use error::{ExitCode, LocketError};
 pub use id::{

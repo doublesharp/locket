@@ -25,7 +25,9 @@ pub fn compose_run_command(
     output: &mut impl Write,
     args: &ComposeRunArgs,
 ) -> Result<(), CliError> {
-    let parent_env = std::env::vars().collect::<locket_exec::EnvMap>();
+    let parent_env = std::env::vars()
+        .map(|(name, value)| (name, locket_exec::env_value(value)))
+        .collect::<locket_exec::EnvMap>();
     let compose_args = compose_argv_with_options(
         args.command.clone(),
         args.project_directory.as_deref(),

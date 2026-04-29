@@ -204,7 +204,10 @@ mod tests {
     use locket_core::EnvMap;
 
     fn env(values: &[(&str, &str)]) -> EnvMap {
-        values.iter().map(|(name, value)| ((*name).to_owned(), (*value).to_owned())).collect()
+        values
+            .iter()
+            .map(|(name, value)| ((*name).to_owned(), locket_core::env_value(*value)))
+            .collect()
     }
 
     #[test]
@@ -240,7 +243,10 @@ mod tests {
 
         assert_eq!(plan.delivery_mode, DockerDeliveryMode::EnvironmentNames);
         assert_eq!(plan.injected_names, ["API_KEY", "DATABASE_URL"]);
-        assert_eq!(plan.env.get("DATABASE_URL").map(String::as_str), Some("postgres://secret"));
+        assert_eq!(
+            plan.env.get("DATABASE_URL").map(|value| value.as_str()),
+            Some("postgres://secret")
+        );
         assert!(plan.argv.windows(2).any(|pair| pair == ["--env", "API_KEY"]));
         assert!(plan.argv.windows(2).any(|pair| pair == ["--env", "DATABASE_URL"]));
         assert!(!plan.argv.iter().any(|item| item.contains("postgres://secret")));
@@ -257,8 +263,11 @@ mod tests {
         let plan = prepare_compose(&argv, &base_env, &locket_env, None, false)?;
 
         assert_eq!(plan.argv, argv);
-        assert_eq!(plan.env.get("PATH").map(String::as_str), Some("/bin"));
-        assert_eq!(plan.env.get("DATABASE_URL").map(String::as_str), Some("postgres://secret"));
+        assert_eq!(plan.env.get("PATH").map(|value| value.as_str()), Some("/bin"));
+        assert_eq!(
+            plan.env.get("DATABASE_URL").map(|value| value.as_str()),
+            Some("postgres://secret")
+        );
         assert_eq!(plan.injected_names, ["DATABASE_URL"]);
         Ok(())
     }
@@ -297,8 +306,8 @@ mod tests {
 
         let plan = prepare_compose(&argv, &base_env, &locket_env, None, false)?;
 
-        assert_eq!(plan.env.get("TOKEN").map(String::as_str), Some("locket"));
-        assert_eq!(plan.env.get("PATH").map(String::as_str), Some("/bin"));
+        assert_eq!(plan.env.get("TOKEN").map(|value| value.as_str()), Some("locket"));
+        assert_eq!(plan.env.get("PATH").map(|value| value.as_str()), Some("/bin"));
         assert_eq!(plan.injected_names, ["TOKEN"]);
         Ok(())
     }

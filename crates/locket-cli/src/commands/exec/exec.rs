@@ -56,7 +56,7 @@ pub fn exec_command(
         let resolved = resolve_active_secret(context, key)?;
         let value = decrypt_current_secret(context, &resolved)?;
         injected_names.push(resolved.secret.name.clone());
-        locket_env.insert(resolved.secret.name.clone(), value.as_str().to_owned());
+        locket_env.insert(resolved.secret.name.clone(), value);
         resolved_secrets.push(resolved);
     }
     injected_names.sort();
@@ -68,7 +68,9 @@ pub fn exec_command(
     let arg_count = args.command.len();
     let request = locket_exec::ExecutionRequest {
         argv: args.command.clone(),
-        parent_env: std::env::vars().collect(),
+        parent_env: std::env::vars()
+            .map(|(name, value)| (name, locket_exec::env_value(value)))
+            .collect(),
         inherit_env: vec!["PATH".to_owned()],
         external_env: locket_exec::EnvMap::new(),
         locket_env,
