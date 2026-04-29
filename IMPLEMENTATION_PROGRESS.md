@@ -788,113 +788,15 @@ against the named spec file.
 - [ ] `testing.md`
 - [ ] `fuzzing.md`
 
-## Reference Quick-Index
+## Reference
 
-Use this section instead of grepping the specs every time. If the table here
-disagrees with the spec, the spec wins — fix the table and open a PR.
-
-### Exit-code bands (`docs/specs/errors.md:9-15`)
-
-| Band | Class |
-|---|---|
-| `0` | success |
-| `1` | doctor non-critical fail (doctor only; never produced by other commands) |
-| `2` | doctor critical fail (doctor only) |
-| `64-69` | input, config, reference validation |
-| `70-79` | authorization, trust, secret access |
-| `80-89` | agent + automation client |
-| `90-99` | storage, schema, concurrency, integrity |
-| `100-109` | keychain, recovery |
-| `110-119` | team, device, sealed-bundle |
-
-### Canonical typed errors (`crates/locket-core/src/error.rs`)
-
-Input/config band (64-69): `InvalidReference` / `GitWorktreeRequired` /
-`MetadataInvalid` / `PolicyNotFound` / `ProjectNotFound` (64),
-`PolicyValidationIncomplete` (65), `EnvironmentConflict` /
-`MetadataLooksLikeSecret` (66), `SecretAlreadyExists` (67),
-`ConfirmationFailed` / `TtyRequired` (68).
-
-Auth/trust/secret-access band (70-79): `AccessDenied` (70),
-`ProjectRootUntrusted` (71), `UnlockRequired` (72), `GrantRequired` (73),
-`UserVerificationFailed` (74), `SecretVersionExpired` (75),
-`SecretDeleted` (76), `SecretNotFound` (77), `ProfileNotFound` (78).
-
-Agent/automation band (80-89): `AgentUnavailable` (80), `AgentSocketInUse` (81),
-`ProtocolError` (82), `ClientUnknown` / `ClientRevoked` / `ReplayDetected` (83),
-`UpdateManifestInvalid` (89).
-
-Storage/schema/integrity band (90-99): `StorageError` /
-`SecretVersionOverflow` (90), `SchemaMismatch` (91), `Concurrency` (92),
-`IntegrityFailure` (93).
-
-Keychain/recovery band (100-109): `KeychainEntryMissing` (100),
-`RecoveryUnavailable` (101), `PasskeyUnsupported` (102).
-
-Team/device/sealed-bundle band (110-119): `BundleInvalid` (110),
-`BundleConflict` (111), `BundleAuthFailed` (112),
-`TeamRoleDenied` / `Invite*` (113).
-
-When you need a new variant, add it to `LocketError`, give it the right exit
-code, and update the table above.
-
-### Canonical audit actions (`docs/specs/data-model.md`, `docs/specs/audit.md`)
-
-Lifecycle: `INIT`, `BOOTSTRAP`, `IMPORT`, `EMIT_EXAMPLE`, `META`,
-`PROFILE_CHANGE`.
-
-Secret lifecycle: `SECRET_SET`, `SECRET_ROTATE`, `SECRET_RM`, `SECRET_PURGE`,
-`SECRET_COPY`, `REVEAL`, `COPY`.
-
-Scan/redaction: `SCAN`, `SCAN_SUPPRESSED`, `REDACT`.
-
-Run/exec/reference: `RUN`, `EXEC`, `RESOLVE_REFERENCE`, `ENV_INSPECT`.
-
-Trust/grants: `TRUST_ROOT`, `UNTRUST_ROOT`, `ALLOW_DIRECTORY`,
-`DENY_DIRECTORY`, `AGENT_REVOKE`, `GRANT_EXPIRED`.
-
-Auth/devices/clients/passkeys: `UNLOCK`, `LOCK`, `DEVICE_INIT`,
-`DEVICE_REGISTER`, `DEVICE_REVOKE`, `CLIENT_ADD`, `CLIENT_REVOKE`,
-`CLIENT_AUTH`, `PASSKEY_ADD`, `PASSKEY_REMOVE`.
-
-Recovery/team/bundle: `RECOVERY_GENERATE`, `RECOVER`, `RECOVERY_ROTATE`,
-`TEAM_INIT`, `TEAM_INVITE`, `TEAM_ACCEPT`, `TEAM_REMOVE`, `BACKUP_EXPORT`,
-`BACKUP_IMPORT`.
-
-Diagnostics: `AUDIT_VERIFY`, `DOCTOR`, `POLICY_UPDATE`, `POLICY_DOCTOR`,
-`SCHEMA_MIGRATE`, `INSTALL_HOOKS`.
-
-Every row carries: `sequence`, `prev_hmac`, `hmac`, `schema_version`,
-`timestamp`, `project_id`, `profile_id?`, `action`, `status`,
-`metadata_json` (action-specific shape; metadata-only).
-
-Convenience columns (`secret_name`, `command`) when populated MUST also be
-echoed inside `metadata_json` so the HMAC chain covers them. Never write
-`null` literals for those keys.
-
-### Required SQLite tables (`docs/specs/storage.md:26-50`)
-
-`projects`, `project_roots`, `profiles`, `secrets`, `secret_versions`, `blobs`,
-`keys`, `devices`, `passkey_credentials`, `automation_clients`,
-`automation_client_private_key_refs`, `automation_client_nonces`, `teams`,
-`team_members`, `team_invites`, `command_policies`, `directory_grants`,
-`audit_log`, `imported_audit_chains`, `fingerprints`, `runtime_sessions`,
-`schema_migrations`.
-
-### Crate ownership
-
-| Concern | Crate |
-|---|---|
-| CLI command surfaces, parsers, output | `crates/locket-cli/` |
-| Domain types, IDs, policy, references, errors | `crates/locket-core/` |
-| Crypto, AAD, key wrap, recovery envelope | `crates/locket-crypto/` |
-| SQLite schema, queries, audit append, runtime sessions | `crates/locket-store/` |
-| Daemon, IPC, protocol framing, RPC handlers | `crates/locket-agent/` |
-| Process spawn, env layering, child supervision | `crates/locket-exec/` |
-| Docker / Docker Compose policy helpers | `crates/locket-docker/` |
-| OS keychain, passphrase fallback, user verification, hardening | `crates/locket-platform/` |
-| Pattern/entropy/known-value scanner, redactor | `crates/locket-scan/` |
-| Tauri desktop, tray (planned) | `crates/locket-app/` |
+- Exit-code bands: `docs/specs/errors.md`.
+- Typed errors: `crates/locket-core/src/error.rs` (canonical enum with
+  `exit_code()`).
+- Audit actions and metadata shapes: `docs/specs/audit.md`,
+  `docs/specs/data-model.md`.
+- Required SQLite tables: `docs/specs/storage.md`.
+- Crate ownership: `docs/specs/architecture.md`.
 
 ## Latest Verified Checkpoint
 
