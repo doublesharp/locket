@@ -16,7 +16,8 @@ use serde_json::{Value, json};
 
 use crate::{
     CliError, ResolvedProject, RuntimeContext, ScanArgs, absolutize, collect_known_secret_values,
-    load_project_key, now_unix_nanos, open_store, resolve_project, scan_finding_blocked_error,
+    load_project_key, now_unix_nanos, open_store, project_not_found_error, resolve_project,
+    scan_finding_blocked_error,
 };
 
 const LOCKETIGNORE_FILE: &str = ".locketignore";
@@ -33,9 +34,7 @@ pub fn scan_command(
         None
     };
     if args.require_known && project.is_none() {
-        return Err(CliError::Config(
-            "known-value scanning requires a Locket project and unlocked vault".to_owned(),
-        ));
+        return Err(project_not_found_error());
     }
     if args.no_gitignore {
         writeln!(output, "scan: gitignore rules disabled")?;
@@ -46,9 +45,7 @@ pub fn scan_command(
         |path| absolutize(&context.cwd, Path::new(path)),
     );
     let known_values = if args.require_known {
-        let project = project.as_ref().ok_or_else(|| {
-            CliError::Config("known-value scanning requires a project".to_owned())
-        })?;
+        let project = project.as_ref().ok_or_else(project_not_found_error)?;
         collect_known_secret_values(context, project, now_unix_nanos()?)?
     } else {
         Vec::new()
