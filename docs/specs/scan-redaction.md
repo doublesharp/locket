@@ -1,0 +1,76 @@
+# Scan, Redaction & AI Safety
+
+This file is part of the normative planned Locket implementation spec. Start at [index.md](index.md).
+
+## Scan & AI-Leak Protection
+
+Secret fingerprinting:
+
+```text
+HMAC-SHA256(profile_fingerprint_key, secret_value)
+```
+
+Store keyed fingerprints for equality checks without storing plaintext or reusable raw hashes.
+
+`locket scan` must detect:
+
+- Known secret values by decrypting active versions, deleted-source current versions that still have blobs, and deprecated versions still within grace TTL in memory for the duration of the scan. Purged versions are excluded because their blobs and fingerprints have been destroyed.
+- High-entropy strings.
+- `.env` and `.env.*` files.
+- Common provider token formats.
+- Logs or generated artifacts containing known secret values.
+- Staged Git content through `locket scan --staged`.
+
+Default high-entropy rule: flag printable non-whitespace tokens of at least 20 characters with Shannon entropy `>= 4.5` bits per character, excluding obvious UUIDs, hashes already recognized as checksums, and documented public identifiers. Projects may override the minimum token length and entropy threshold in `locket.toml`; `locket policy doctor` must report non-default scanner thresholds.
+
+Scanning cannot detect arbitrary transformed secrets from stored HMAC fingerprints alone. Exact known-value scanning requires temporary in-memory decryption, followed by zeroization.
+
+Locked-vault behavior: pattern, entropy, and `.env` detection run without unlock because they need no key material. Known-value detection requires unwrapped keys and is skipped with an explicit metadata-only notice when the vault is locked. `locket scan --require-known` fails closed with `UnlockRequired` when the vault is locked, so CI/pre-commit flows that depend on known-value coverage cannot accidentally pass with reduced coverage.
+
+`locket scan --staged` requires a Git worktree. If no `.git` directory or Git worktree marker is found in any ancestor of the project root/current directory, the command fails with `ConfigError` and exit code `64`; it must not silently fall back to scanning the working tree or current directory.
+
+`locket redact` requires unlock for known-value redaction. When the vault is locked, it falls back to pattern and entropy redaction only and prints a metadata-only warning that known-value redaction was skipped. `locket redact --require-known` fails with `UnlockRequired` when the vault is locked.
+
+`locket redact file.log` must replace known values with semantic labels:
+
+```text
+lk_redacted_OPENAI_API_KEY
+lk_redacted_DATABASE_URL
+```
+
+When `privacy.redact_names = true` or `--redact-names` is provided, redaction labels must use privacy aliases instead of secret names, for example `lk_redacted_secret-a1b2c3d4`. Known-secret matches use the deterministic alias rules from [invariants.md](invariants.md). Pattern-only matches that cannot be tied to a known secret id use operation-local labels such as `lk_redacted_PATTERN_1`; v1 does not persist redaction alias maps.
+
+`locket redact --stdin` must support streaming log redaction:
+
+```bash
+some-command | locket redact --stdin
+```
+
+Redaction is UTF-8 segment based. For file or stream input containing invalid UTF-8, Locket passes the non-UTF-8 byte segment through unchanged, emits a metadata-only warning, and continues scanning/redacting valid UTF-8 segments around it. `--require-known` applies only to UTF-8 segments where known-value matching can run; binary segments are never redacted and never cause the command to fail by themselves. This behavior must be explicit in CLI output so users do not mistake binary pass-through for complete redaction coverage.
+
+Scanner severity:
+
+- Known-secret match: blocking by default.
+- Provider-token pattern: warning by default unless configured as blocking.
+- High entropy: warning by default.
+- `.env` file: warning or blocking according to project policy.
+- Suppressed finding: metadata-only audit event with path, rule id, and reason, never the matched value.
+
+`locket context` must output AI-safe context only:
+
+```text
+Project: my-app
+Profile: dev
+Secrets referenced:
+- DATABASE_URL
+- OPENAI_API_KEY
+No secret values included.
+```
+
+`locket context` is metadata-only and may run while the vault is locked. It reads project/profile/policy/secret-name metadata but must not decrypt values or require an agent. If metadata is unavailable because the store cannot be opened, it fails with the normal storage/project error. `locket context --redact-names` and `privacy.redact_names = true` replace project, profile, and secret names with stable local aliases for AI prompts where names themselves are sensitive.
+
+`locket ai-safe -- <cmd>` captures command output, redacts known secrets, and emits AI-safe logs. By default it requires known-value redaction coverage before running the child command; if the vault is locked or unavailable, it fails closed with `UnlockRequired` before spawning. `locket ai-safe --pattern-only -- <cmd>` may run in a degraded locked-vault mode that uses provider-token and high-entropy rules only, and must print a clear warning before executing.
+
+`locket ai-safe -- <cmd>` captures both stdout and stderr, redacts line-by-line, writes redacted stdout to stdout, writes redacted stderr to stderr, forwards the child exit code unchanged, preserves stream ordering where practical, and warns when output contains unterminated partial lines that may delay redaction until a newline or buffer flush. Implementations must cap the in-memory partial-line buffer; when the cap is reached, the buffered content is redacted with known-value and pattern rules before any output is emitted, then processing continues with a warning so an attacker cannot force unbounded memory growth by omitting newlines. `--output <file>` additionally writes a combined redacted transcript with stream labels and timestamps; the transcript must never contain unredacted values. The output file is created with user-only permissions (0600) before writing begins; if the file already exists, Locket fails with an error rather than overwriting without explicit `--force` confirmation.
+
+`locket ai-safe` writes a `REDACT` audit row when project context is available. Metadata includes child `argv0`, argument count, output destinations, whether `--pattern-only` was used, whether known-value coverage was active, redaction counts by rule, and exact known secret names redacted from output. Audit metadata never stores privacy aliases; aliases are applied only when rendering audit output or redacted transcripts. It never records child output or secret values.
