@@ -651,33 +651,18 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
   - Files: extend the `*_label` helpers in `crates/locket-cli/src/main.rs` to
     cover redact label output, debug-bundle renderer in
     `crates/locket-cli/src/diagnostics.rs`, future tray/desktop renderers.
-- [ ] Agent/process hardening: peer credential validation, narrow socket/pipe
-  permissions, core-dump suppression, memory locking where available,
-  zeroization, sleep/session-switch locking, degraded-hardening reporting.
-  - Spec: `docs/specs/agent.md` hardening bullets; `docs/specs/operations.md`.
-  - Errors: `HardeningDegraded` (89) reported via doctor, not as an unlock
-    failure.
-  - Audit actions: `LOCK` on session-switch-triggered lock; doctor output
-    includes degraded flags.
-  - Files: `crates/locket-platform/src/` (per-OS hardening modules),
-    `crates/locket-agent/src/`.
+- [ ] Agent/process hardening: peer credential validation, narrow
+  socket/pipe permissions, core-dump suppression, memory locking,
+  zeroization, sleep/session-switch locking, degraded-hardening
+  reporting via doctor.
 - [x] Metadata privacy validation across secret/config/policy/template/
   team/member/device editors via the shared
   `crates/locket-core/src/metadata.rs` validator
   (`MetadataInvalid` 64, `MetadataLooksLikeSecret` 66).
 - [ ] Member/device revocation produces a rotation checklist for every
-  profile/secret the member or device could access.
-  - Spec: `docs/specs/invariants.md` Fixed Implementation Decisions.
-  - Audit: extend `TEAM_REMOVE`/`DEVICE_REVOKE` rows with checklist
-    summary metadata.
-  - Files: shared helper in `crates/locket-core/src/team/role.rs`,
-    consumers in `team`/`device` revoke paths.
+  profile/secret the revoked principal could access.
 - [ ] Recovery-code Crockford Base32 encoding with two checksum chars
   (detect-only; never auto-correct).
-  - Spec: `docs/specs/invariants.md` Fixed Implementation Decisions;
-    `docs/specs/crypto.md`.
-  - Errors: `RecoveryUnavailable` (101).
-  - Files: `crates/locket-crypto/src/recovery.rs`.
 - [ ] Sealed-bundle plaintext manifest minimization: no profile, secret,
   policy names; no member/device labels (only digest, recipients,
   project id, schema, `created_at`, profile count).
@@ -692,7 +677,8 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
 - [ ] `locket recover` restores Locket-managed automation-client private
   keys from the envelope; `--force` rotates intact keychain entries and
   records the override in the `RECOVER` audit row.
-- [ ] Audit-chain HMAC verification uses each row's stored
+- [~] [b67f47d6] Audit-chain HMAC verification uses each row's stored
+  Claim: branch agent-b67f47d6/audit-schema-version, worktree .worktrees/agent-b67f47d6-audit-schema-version. Scope: recompute verification HMACs from row schema versions and add regression coverage.
   `schema_version` instead of the binary's current version.
 - [ ] Typed `metadata_json` shape validator per audit action family
   (required fields, no unknown fields without a schema bump).
@@ -804,8 +790,7 @@ editing — they drift. Severity: **blocker** (security/correctness),
     (2 sites: `main.rs`, `commands/scan/redact.rs`) to a new
     `LocketError::ProjectNotFound` typed variant (input band) — semantically
     distinct from `ProjectRootUntrusted`. Regression covers both callers.
-  - [~] [6e4d05db] **subtask** — typed-secret-overflow: migrate `secret version overflow`
-    Claim: branch agent-6e4d05db/typed-secret-overflow, worktree .worktrees/agent-6e4d05db-typed-secret-overflow.
+  - [x] **subtask** — typed-secret-overflow: migrate `secret version overflow`
     (3 sites) to a new `LocketError::SecretVersionOverflow` variant (input or
     integrity band, per spec). Regression covers a stubbed overflow path.
   - [~] [b67f47d6] ready: agent-b67f47d6/typed-config-values @ 5c4c3d4 — config value validators now return typed `MetadataInvalid`/`MetadataLooksLikeSecret`; per-class regressions landed.
@@ -1046,8 +1031,9 @@ Agent/automation band (80-89): `AgentUnavailable` (80), `AgentSocketInUse` (81),
 `ProtocolError` (82), `ClientUnknown` / `ClientRevoked` / `ReplayDetected` (83),
 `UpdateManifestInvalid` (89).
 
-Storage/schema/integrity band (90-99): `StorageError` (90),
-`SchemaMismatch` (91), `Concurrency` (92), `IntegrityFailure` (93).
+Storage/schema/integrity band (90-99): `StorageError` /
+`SecretVersionOverflow` (90), `SchemaMismatch` (91), `Concurrency` (92),
+`IntegrityFailure` (93).
 
 Keychain/recovery band (100-109): `KeychainEntryMissing` (100),
 `RecoveryUnavailable` (101), `PasskeyUnsupported` (102).
