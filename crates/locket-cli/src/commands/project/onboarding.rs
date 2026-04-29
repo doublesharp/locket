@@ -8,7 +8,7 @@ use locket_core::{PolicyDocument, ProfileName, ProjectConfig, ProjectId, SecretN
 use serde::Deserialize;
 use toml::{Table, Value};
 
-use crate::CliError;
+use crate::{CliError, metadata_invalid_error};
 
 const BUILT_IN_BASIC_TEMPLATE: &str = r#"
 name = "locket-project"
@@ -72,15 +72,13 @@ impl ProjectTemplate {
             .map_err(CliError::TomlSer)?
             .as_table()
             .cloned()
-            .ok_or_else(|| {
-                CliError::Config("project config did not serialize to a table".to_owned())
-            })?;
+            .ok_or_else(|| metadata_invalid_error("project config did not serialize to a table"))?;
         if let Some(commands) = &self.commands {
             root.insert("commands".to_owned(), commands.clone());
         }
         let rendered = toml::to_string_pretty(&root)?;
         PolicyDocument::from_toml_str(&rendered).map_err(|error| {
-            CliError::Config(format!("invalid template command policy: {error}"))
+            metadata_invalid_error(format!("invalid template command policy: {error}"))
         })?;
         Ok(rendered)
     }
@@ -107,19 +105,19 @@ fn parse_project_template(text: &str, source: TemplateSource) -> Result<ProjectT
     reject_secret_value_keys(&value)?;
     let raw = toml::from_str::<RawTemplate>(text)?;
     let default_profile = ProfileName::new(raw.default_profile.unwrap_or_else(|| "dev".to_owned()))
-        .map_err(|_| CliError::Config("template default_profile is invalid".to_owned()))?;
+        .map_err(|_| metadata_invalid_error("template default_profile is invalid"))?;
     let mut profiles = BTreeSet::new();
     profiles.insert(default_profile.clone());
     for profile in raw.profiles.unwrap_or_default() {
         profiles.insert(
             ProfileName::new(profile)
-                .map_err(|_| CliError::Config("template profile name is invalid".to_owned()))?,
+                .map_err(|_| metadata_invalid_error("template profile name is invalid"))?,
         );
     }
     let mut expected_secrets = BTreeSet::new();
     for secret in raw.expected_secrets.unwrap_or_default() {
         let secret_name = SecretName::new(secret)
-            .map_err(|_| CliError::Config("template expected secret name is invalid".to_owned()))?;
+            .map_err(|_| metadata_invalid_error("template expected secret name is invalid"))?;
         expected_secrets.insert(secret_name.into_string());
     }
     let commands = value.as_table().and_then(|table| table.get("commands")).cloned();
@@ -137,8 +135,8 @@ fn validate_template_name(name: &str) -> Result<(), CliError> {
     if name.is_empty()
         || !name.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
     {
-        return Err(CliError::Config(
-            "template name must contain only ASCII letters, numbers, '-' or '_'".to_owned(),
+        return Err(metadata_invalid_error(
+            "template name must contain only ASCII letters, numbers, '-' or '_'",
         ));
     }
     Ok(())
@@ -149,8 +147,8 @@ fn reject_secret_value_keys(value: &Value) -> Result<(), CliError> {
         Value::Table(table) => {
             for (key, child) in table {
                 if SECRET_VALUE_KEYS.iter().any(|blocked| key == blocked) {
-                    return Err(CliError::Config(
-                        "templates must not contain secret value fields".to_owned(),
+                    return Err(metadata_invalid_error(
+                        "templates must not contain secret value fields",
                     ));
                 }
                 reject_secret_value_keys(child)?;
