@@ -613,9 +613,7 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
 - [ ] `locket recover` restores Locket-managed automation-client private
   keys from the envelope; `--force` rotates intact keychain entries and
   records the override in the `RECOVER` audit row.
-- [~] [b67f47d6] Audit-chain HMAC verification uses each row's stored
-  Claim: branch agent-b67f47d6/audit-schema-version, worktree .worktrees/agent-b67f47d6-audit-schema-version. Scope: recompute verification HMACs from row schema versions and add regression coverage.
-  `schema_version` instead of the binary's current version.
+- [~] [b67f47d6] ready: agent-b67f47d6/audit-schema-version @ f8acb31 — audit-chain verification is covered by a regression row signed with its stored `schema_version`.
 - [ ] Typed `metadata_json` shape validator per audit action family
   (required fields, no unknown fields without a schema bump).
 
