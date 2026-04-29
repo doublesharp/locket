@@ -278,13 +278,11 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
   semantics; tombstoned secrets excluded from the cross-profile union.
   - Spec: `docs/specs/integrations.md` Git Integration & Pre-Commit.
   - Files: `crates/locket-cli/src/` example-emitter.
-- [ ] `example.auto_refresh` config key (default `true`,
-  project-override-wins) governing automatic `.env.example` refresh on
-  set/rotate/rm/purge/import/copy/team accept.
-  - Spec: `docs/specs/integrations.md` Git Integration & Pre-Commit;
-    `docs/specs/storage.md` Config schema.
-  - Files: `crates/locket-cli/src/commands/config/spec.rs`,
-    example-emitter callers.
+- [~] `example.auto_refresh` config key (default `true`, project-override-wins)
+  is wired through the shared `refresh_example_for_project_if_enabled` gate at
+  the `set`/`rotate`/`rm`/`purge`/`copy`/`import` command call sites with
+  user-config and project-override regression coverage. `team accept` remains
+  pending under the team-commands item.
 - [ ] Pre-commit hook block markers
   (`# --- BEGIN/END LOCKET PRE-COMMIT ---`), idempotent rewrite, typed
   confirmation when prepending to a non-Locket hook, and `HOOK_INSTALL`
