@@ -5867,9 +5867,10 @@ mod tests {
         MasterKeyStore, MemoryMasterKeyStore, PassphraseFallbackMasterKeyStore, PlatformError,
     };
     use std::collections::BTreeSet;
+    use std::ffi::OsStr;
     use std::fs;
-    use std::io::Write;
-    use std::path::Path;
+    use std::io::{Read, Write};
+    use std::path::{Path, PathBuf};
     use std::process::Command as TestCommand;
     use std::sync::Arc;
     use tempfile::tempdir;
@@ -6004,6 +6005,21 @@ mod tests {
         if let Err(error) = result {
             assert!(error.to_string().contains(expected), "{error}");
         }
+    }
+
+    fn read_debug_bundle_json(path: &Path) -> Result<String, Box<dyn std::error::Error>> {
+        let file = fs::File::open(path)?;
+        let decoder = flate2::read::GzDecoder::new(file);
+        let mut archive = tar::Archive::new(decoder);
+        for entry in archive.entries()? {
+            let mut entry = entry?;
+            if entry.path()?.as_ref() == Path::new("bundle.json") {
+                let mut contents = String::new();
+                entry.read_to_string(&mut contents)?;
+                return Ok(contents);
+            }
+        }
+        Err("bundle.json missing from debug bundle".into())
     }
 
     #[test]
@@ -7130,7 +7146,7 @@ argv = []
             &context,
             &mut init_output,
         )?;
-        let output_path = directory.path().join("bundle.json");
+        let output_path = directory.path().join("bundle.tar.gz");
 
         let mut bundle_output = Vec::new();
         run_with_context(
@@ -7147,12 +7163,80 @@ argv = []
         )?;
         assert!(String::from_utf8(bundle_output)?.contains("redacted: yes"));
 
-        let bundle = fs::read_to_string(output_path)?;
+        let bundle = read_debug_bundle_json(&output_path)?;
         assert!(bundle.contains("\"redacted\": true"));
         assert!(bundle.contains("\"project\""));
         assert!(bundle.contains("\"diagnostics\""));
         assert!(bundle.contains("\"store_path_hash\""));
         assert!(!bundle.contains(directory.path().to_string_lossy().as_ref()));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let mode = fs::metadata(&output_path)?.permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn debug_bundle_default_output_uses_user_diagnostics_dir()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        let mut init_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut init_output,
+        )?;
+
+        let mut bundle_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "debug", "bundle", "--redacted"])?,
+            &context,
+            &mut bundle_output,
+        )?;
+        let bundle_output = String::from_utf8(bundle_output)?;
+        let path_line = bundle_output
+            .lines()
+            .find_map(|line| line.strip_prefix("debug_bundle: "))
+            .ok_or("missing debug bundle path")?;
+        let output_path = PathBuf::from(path_line);
+        assert!(output_path.starts_with(directory.path().join("diagnostics")));
+        assert_eq!(output_path.extension().and_then(OsStr::to_str), Some("gz"));
+        assert!(!output_path.starts_with(directory.path().join(".git")));
+        assert!(bundle_output.contains("redacted: yes"));
+
+        let bundle = read_debug_bundle_json(&output_path)?;
+        assert!(bundle.contains("\"redacted\": true"));
+        assert!(!bundle.contains(directory.path().to_string_lossy().as_ref()));
+        Ok(())
+    }
+
+    #[test]
+    fn debug_bundle_refuses_to_overwrite_existing_output() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        let output_path = directory.path().join("existing.tar.gz");
+        fs::write(&output_path, "existing")?;
+
+        let mut bundle_output = Vec::new();
+        let result = run_with_context(
+            Cli::try_parse_from([
+                "locket",
+                "debug",
+                "bundle",
+                "--redacted",
+                "--output",
+                output_path.to_str().ok_or("utf8 path")?,
+            ])?,
+            &context,
+            &mut bundle_output,
+        );
+        assert_error_contains(result.map(|_| ()), "debug bundle output already exists");
+        assert_eq!(fs::read_to_string(output_path)?, "existing");
         Ok(())
     }
 
