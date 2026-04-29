@@ -1045,7 +1045,7 @@ fn run_with_context(
         Command::Deny(args) => shell::deny_command(context, output, &args)?,
         Command::Agent { command } => agent::agent_command(context, output, command)?,
         Command::Use(args) => profile::use_profile_command(context, output, args)?,
-        Command::Scan(args) => scan::scan_command(context, output, args)?,
+        Command::Scan(args) => scan::scan_command(context, output, &args)?,
         Command::Redact(args) => redact::redact_command(context, output, &args)?,
         Command::Context(args) => context_command(context, output, &args)?,
         Command::AiSafe(args) => redact::ai_safe_command(context, output, &args)?,

@@ -24,7 +24,7 @@ const LOCKETIGNORE_FILE: &str = ".locketignore";
 pub fn scan_command(
     context: &RuntimeContext,
     output: &mut impl io::Write,
-    args: ScanArgs,
+    args: &ScanArgs,
 ) -> Result<(), CliError> {
     let project = resolve_project(&context.cwd)?;
     let git_root = if args.staged {
@@ -41,9 +41,9 @@ pub fn scan_command(
         writeln!(output, "scan: gitignore rules disabled")?;
     }
 
-    let scan_root = args.path.map_or_else(
+    let scan_root = args.path.as_deref().map_or_else(
         || project.as_ref().map_or_else(|| context.cwd.clone(), |project| project.root.clone()),
-        |path| absolutize(&context.cwd, Path::new(&path)),
+        |path| absolutize(&context.cwd, Path::new(path)),
     );
     let known_values = if args.require_known {
         let project = project.as_ref().ok_or_else(|| {
