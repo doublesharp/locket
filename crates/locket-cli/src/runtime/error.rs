@@ -85,6 +85,10 @@ pub fn project_root_untrusted_error() -> CliError {
     )
 }
 
+pub fn project_not_found_error() -> CliError {
+    typed_cli_error(LocketError::ProjectNotFound, "project not found")
+}
+
 pub fn secret_deleted_error(message: impl Into<String>) -> CliError {
     typed_cli_error(LocketError::SecretDeleted, message)
 }
