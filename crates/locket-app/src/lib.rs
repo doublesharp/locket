@@ -144,6 +144,38 @@ pub struct DenialUxDescriptor {
     pub affordance: &'static str,
 }
 
+/// Empty setup states called out by the desktop UX spec.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EmptyState {
+    /// No local project is available yet.
+    NoProject,
+    /// No profile exists in the current project.
+    NoProfile,
+    /// No secret has been created or imported yet.
+    NoSecret,
+    /// No saved command policy exists yet.
+    NoPolicy,
+    /// No trusted local agent is running.
+    NoAgent,
+    /// No local team device key exists yet.
+    NoTeamDevice,
+}
+
+/// Metadata-only desktop guidance for an empty setup state.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct EmptyStateDescriptor {
+    /// Empty state represented by this descriptor.
+    pub state: EmptyState,
+    /// Stable UI copy heading.
+    pub title: &'static str,
+    /// Short safe explanation.
+    pub guidance: &'static str,
+    /// Primary setup command to offer.
+    pub primary_command: &'static str,
+    /// Optional alternate setup command.
+    pub secondary_command: Option<&'static str>,
+}
+
 impl DenialReason {
     /// Return the desktop denial view descriptor for this reason.
     #[must_use]
@@ -169,6 +201,52 @@ impl DenialReason {
             }
         };
         DenialUxDescriptor { reason: self, title, next_action, affordance }
+    }
+}
+
+impl EmptyState {
+    /// Return the desktop empty-state guidance descriptor for this state.
+    #[must_use]
+    pub const fn descriptor(self) -> EmptyStateDescriptor {
+        let (title, guidance, primary_command, secondary_command) = match self {
+            Self::NoProject => (
+                "No project",
+                "Initialize a project or accept a team invite.",
+                "locket init",
+                Some("locket team accept <invite.locket>"),
+            ),
+            Self::NoProfile => (
+                "No profile",
+                "Create a development profile before adding secrets.",
+                "locket profile create dev",
+                None,
+            ),
+            Self::NoSecret => (
+                "No secrets",
+                "Add or import a secret to populate this view.",
+                "locket set <KEY>",
+                Some("locket import <file.env>"),
+            ),
+            Self::NoPolicy => (
+                "No policy",
+                "Create a saved command policy before running through Locket.",
+                "locket policy add dev -- <cmd>",
+                None,
+            ),
+            Self::NoAgent => (
+                "No agent",
+                "Start the local agent to enable live status and grants.",
+                "locket agent start",
+                None,
+            ),
+            Self::NoTeamDevice => (
+                "No team device",
+                "Initialize this device before team invite or bundle flows.",
+                "locket device init",
+                None,
+            ),
+        };
+        EmptyStateDescriptor { state: self, title, guidance, primary_command, secondary_command }
     }
 }
 
@@ -324,6 +402,25 @@ pub fn denial_ux_descriptors() -> Vec<DenialUxDescriptor> {
     denial_reasons().iter().map(|reason| reason.descriptor()).collect()
 }
 
+/// All empty setup states in desktop UX spec order.
+#[must_use]
+pub const fn empty_states() -> &'static [EmptyState] {
+    &[
+        EmptyState::NoProject,
+        EmptyState::NoProfile,
+        EmptyState::NoSecret,
+        EmptyState::NoPolicy,
+        EmptyState::NoAgent,
+        EmptyState::NoTeamDevice,
+    ]
+}
+
+/// Return all desktop empty-state descriptors in spec order.
+#[must_use]
+pub fn empty_state_descriptors() -> Vec<EmptyStateDescriptor> {
+    empty_states().iter().map(|state| state.descriptor()).collect()
+}
+
 fn scan_notification_body(finding_count: Option<u32>) -> String {
     match finding_count {
         Some(1) => "1 scan warning needs attention.".to_owned(),
@@ -335,9 +432,10 @@ fn scan_notification_body(finding_count: Option<u32>) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        CapabilityAccess, DenialReason, ReleaseWebviewPolicy, TrayIconAssetStyle, TrayIconState,
-        TrayNotificationContext, TrayNotificationKind, denial_reasons, denial_ux_descriptors,
-        primary_views, tray_icon_asset_styles_for_os, tray_icon_descriptors, tray_icon_states,
+        CapabilityAccess, DenialReason, EmptyState, ReleaseWebviewPolicy, TrayIconAssetStyle,
+        TrayIconState, TrayNotificationContext, TrayNotificationKind, denial_reasons,
+        denial_ux_descriptors, empty_state_descriptors, empty_states, primary_views,
+        tray_icon_asset_styles_for_os, tray_icon_descriptors, tray_icon_states,
     };
 
     #[test]
@@ -468,6 +566,51 @@ mod tests {
             .map(|descriptor| descriptor.affordance)
             .collect::<std::collections::BTreeSet<_>>();
         assert_eq!(affordances.len(), denial_reasons().len());
+    }
+
+    #[test]
+    fn empty_states_match_desktop_setup_inventory() {
+        assert_eq!(
+            empty_states(),
+            &[
+                EmptyState::NoProject,
+                EmptyState::NoProfile,
+                EmptyState::NoSecret,
+                EmptyState::NoPolicy,
+                EmptyState::NoAgent,
+                EmptyState::NoTeamDevice,
+            ]
+        );
+    }
+
+    #[test]
+    fn empty_state_descriptors_offer_safe_setup_commands() {
+        let descriptors = empty_state_descriptors();
+
+        assert_eq!(descriptors.len(), empty_states().len());
+        assert_eq!(descriptors[0].primary_command, "locket init");
+        assert_eq!(descriptors[0].secondary_command, Some("locket team accept <invite.locket>"));
+        assert_eq!(descriptors[1].primary_command, "locket profile create dev");
+        assert_eq!(descriptors[2].primary_command, "locket set <KEY>");
+        assert_eq!(descriptors[2].secondary_command, Some("locket import <file.env>"));
+        assert_eq!(descriptors[3].primary_command, "locket policy add dev -- <cmd>");
+        assert_eq!(descriptors[4].primary_command, "locket agent start");
+        assert_eq!(descriptors[5].primary_command, "locket device init");
+
+        for descriptor in descriptors {
+            assert_eq!(descriptor, descriptor.state.descriptor());
+            let rendered = format!(
+                "{} {} {} {:?}",
+                descriptor.title,
+                descriptor.guidance,
+                descriptor.primary_command,
+                descriptor.secondary_command
+            );
+            assert!(!rendered.contains("DATABASE_URL"));
+            assert!(!rendered.contains("deploy-prod"));
+            assert!(!rendered.contains("payments-api"));
+            assert!(!rendered.contains("postgres://"));
+        }
     }
 
     #[test]
