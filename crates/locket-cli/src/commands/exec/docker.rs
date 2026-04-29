@@ -245,14 +245,12 @@ pub fn write_docker_policy_audit_if_available(
     if prepared.store.get_project(prepared.resolved.config.project_id.as_str())?.is_none() {
         return Ok(());
     }
-    let Ok(audit_key) = load_project_key(
+    let audit_key = load_project_key(
         context,
         &prepared.store,
         prepared.resolved.config.project_id.as_str(),
         KeyPurpose::Audit,
-    ) else {
-        return Ok(());
-    };
+    )?;
     let metadata = docker_policy_audit_metadata(prepared, status);
     let audit = AuditWrite {
         project_id: prepared.resolved.config.project_id.as_str(),

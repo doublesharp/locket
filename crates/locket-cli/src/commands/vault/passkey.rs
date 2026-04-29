@@ -133,11 +133,8 @@ fn write_passkey_remove_audit_if_available(
     credential: &PasskeyCredentialRecord,
     timestamp: i64,
 ) -> Result<(), CliError> {
-    let Ok(audit_key) =
-        load_project_key(context, store, resolved.config.project_id.as_str(), KeyPurpose::Audit)
-    else {
-        return Ok(());
-    };
+    let audit_key =
+        load_project_key(context, store, resolved.config.project_id.as_str(), KeyPurpose::Audit)?;
     let metadata = json!({
         "schema_version": 1,
         "action": "PASSKEY_REMOVE",

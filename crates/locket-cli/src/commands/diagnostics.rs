@@ -152,7 +152,7 @@ impl DiagnosticReport {
 
 pub fn doctor_command(context: &RuntimeContext, output: &mut impl Write) -> Result<u8, CliError> {
     let report = collect_diagnostics(context);
-    write_doctor_audit_if_available(context, &report);
+    write_doctor_audit_if_available(context, &report)?;
     write_doctor_report(output, &report)?;
     Ok(report.exit_code())
 }
@@ -435,27 +435,21 @@ fn check_agent_placeholder(context: &RuntimeContext) -> DiagnosticCheck {
     DiagnosticCheck::pass("agent_placeholder", status)
 }
 
-fn write_doctor_audit_if_available(context: &RuntimeContext, report: &DiagnosticReport) {
-    let Ok(Some(project)) = resolve_project(&context.cwd) else {
-        return;
+fn write_doctor_audit_if_available(
+    context: &RuntimeContext,
+    report: &DiagnosticReport,
+) -> Result<(), CliError> {
+    let Some(project) = resolve_project(&context.cwd)? else {
+        return Ok(());
     };
-    let Ok(mut store) = open_store(context) else {
-        return;
-    };
-    match store.get_project(project.config.project_id.as_str()) {
-        Ok(Some(_)) => {}
-        Ok(None) | Err(_) => return,
+    let mut store = open_store(context)?;
+    if store.get_project(project.config.project_id.as_str())?.is_none() {
+        return Ok(());
     }
-    let Ok(audit_key) =
-        load_project_key(context, &store, project.config.project_id.as_str(), KeyPurpose::Audit)
-    else {
-        return;
-    };
+    let audit_key =
+        load_project_key(context, &store, project.config.project_id.as_str(), KeyPurpose::Audit)?;
     let metadata = report.audit_metadata();
     let status = if report.counts.fail == 0 { "SUCCESS" } else { "FAILED" };
-    let Ok(timestamp) = now_unix_nanos() else {
-        return;
-    };
     let audit = AuditWrite {
         project_id: project.config.project_id.as_str(),
         profile_id: None,
@@ -464,9 +458,10 @@ fn write_doctor_audit_if_available(context: &RuntimeContext, report: &Diagnostic
         secret_name: None,
         command: Some("doctor"),
         metadata_json: &metadata,
-        timestamp,
+        timestamp: now_unix_nanos()?,
     };
-    let _ignored = store.append_audit(audit_key.as_ref(), &audit);
+    store.append_audit(audit_key.as_ref(), &audit)?;
+    Ok(())
 }
 
 fn write_doctor_report(output: &mut impl Write, report: &DiagnosticReport) -> Result<(), CliError> {

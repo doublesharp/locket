@@ -203,11 +203,8 @@ fn write_bootstrap_audit_if_available(
     if store.get_project(resolved.config.project_id.as_str())?.is_none() {
         return Ok(());
     }
-    let Ok(audit_key) =
-        load_project_key(context, store, resolved.config.project_id.as_str(), KeyPurpose::Audit)
-    else {
-        return Ok(());
-    };
+    let audit_key =
+        load_project_key(context, store, resolved.config.project_id.as_str(), KeyPurpose::Audit)?;
     let profile_id = store
         .get_profile_by_name(
             resolved.config.project_id.as_str(),

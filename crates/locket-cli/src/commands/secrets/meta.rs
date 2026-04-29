@@ -36,7 +36,7 @@ pub fn meta_command(
             &resolved_secret,
             &args.metadata,
             timestamp,
-        );
+        )?;
         return Err(error);
     }
     let audit_key = load_project_key(

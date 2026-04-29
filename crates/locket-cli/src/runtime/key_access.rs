@@ -1,6 +1,6 @@
 //! Master- and project-key loading helpers used by CLI commands.
 
-use locket_core::ProjectConfig;
+use locket_core::{LocketError, ProjectConfig};
 use locket_crypto::{
     HkdfWrapInfo, KeyPurpose, KeyWrapAad, KeyWrapPurpose, WrappedKeyMaterial,
     derive_wrapping_key_v1, key_wrap_aad_v1, unwrap_key_material_v1,
@@ -8,7 +8,7 @@ use locket_crypto::{
 use locket_store::{ProfileRecord, Store};
 
 use crate::runtime::RuntimeContext;
-use crate::runtime::error::CliError;
+use crate::runtime::error::{CliError, typed_cli_error};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MasterKeySource {
@@ -141,9 +141,12 @@ pub fn load_project_key_with_master(
     purpose: KeyPurpose,
     master_key: &locket_crypto::KeyBytes,
 ) -> Result<zeroize::Zeroizing<locket_crypto::KeyBytes>, CliError> {
-    let record = store
-        .get_key_by_scope(project_id, None, purpose.as_str())?
-        .ok_or_else(|| CliError::Config("project key is missing".to_owned()))?;
+    let record = store.get_key_by_scope(project_id, None, purpose.as_str())?.ok_or_else(|| {
+        typed_cli_error(
+            LocketError::AuditIntegrityFailed,
+            format!("project {} key is missing", purpose.as_str()),
+        )
+    })?;
     let wrapping_key =
         derive_wrapping_key_v1(master_key, &HkdfWrapInfo::new(project_id, None, purpose))?;
     let aad = key_wrap_aad_v1(&KeyWrapAad::new(
@@ -193,7 +196,12 @@ pub fn load_profile_key_with_master(
 ) -> Result<zeroize::Zeroizing<locket_crypto::KeyBytes>, CliError> {
     let record = store
         .get_key_by_scope(project_id, Some(profile_id), purpose.as_str())?
-        .ok_or_else(|| CliError::Config("profile key is missing".to_owned()))?;
+        .ok_or_else(|| {
+            typed_cli_error(
+                LocketError::AuditIntegrityFailed,
+                format!("profile {} key is missing", purpose.as_str()),
+            )
+        })?;
     let wrapping_key = derive_wrapping_key_v1(
         master_key,
         &HkdfWrapInfo::new(project_id, Some(profile_id), purpose),

@@ -329,9 +329,7 @@ fn write_device_audit_if_available(
     command: &'static str,
     device: &DeviceRecord,
 ) -> Result<(), CliError> {
-    let Ok(audit_key) = load_project_key(context, store, project_id, KeyPurpose::Audit) else {
-        return Ok(());
-    };
+    let audit_key = load_project_key(context, store, project_id, KeyPurpose::Audit)?;
     let metadata = json!({
         "schema_version": 1,
         "action": action,

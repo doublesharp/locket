@@ -325,14 +325,12 @@ fn write_bundle_audit_if_available(
     store: &mut Store,
     request: &BundleAuditRequest<'_>,
 ) -> Result<(), CliError> {
-    let Ok(audit_key) = load_project_key(
+    let audit_key = load_project_key(
         context,
         store,
         request.resolved.config.project_id.as_str(),
         KeyPurpose::Audit,
-    ) else {
-        return Ok(());
-    };
+    )?;
     let metadata = json!({
         "schema_version": 1,
         "action": request.action,

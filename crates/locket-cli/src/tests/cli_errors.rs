@@ -177,6 +177,44 @@ fn confirmation_failed_via_init_recovery_exits_68() -> Result<(), Box<dyn std::e
 }
 
 #[test]
+fn audit_key_load_failure_is_fatal_for_audit_helpers() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    let mut init_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut init_output,
+    )?;
+    let resolved = crate::require_project(&context)?;
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    store.connection().execute(
+        "DELETE FROM keys WHERE project_id = ?1 AND purpose = ?2",
+        (resolved.config.project_id.as_str(), locket_crypto::KeyPurpose::Audit.as_str()),
+    )?;
+
+    let mut output = Vec::new();
+    let result = run_with_context(
+        Cli::try_parse_from(["locket", "config", "set", "agent.autostart", "true"])?,
+        &context,
+        &mut output,
+    );
+    let Err(error) = result else {
+        return Err("config audit should fail when the audit key is missing".into());
+    };
+
+    assert_eq!(error.exit_code(), 93);
+    assert!(error.to_string().contains("project project-audit key is missing"));
+    let audit_rows: i64 = store.connection().query_row(
+        "SELECT COUNT(*) FROM audit_log WHERE action = 'CONFIG_UPDATE'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(audit_rows, 0);
+    Ok(())
+}
+
+#[test]
 fn exec_passthrough_preserves_child_exit_code() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempdir()?;
     let context = test_context(&directory);

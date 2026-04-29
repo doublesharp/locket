@@ -339,10 +339,7 @@ pub fn write_value_access_audit_if_available(
     if store.get_project(project_id)?.is_none() {
         return Ok(());
     }
-    let Ok(audit_key) = load_project_key(request.context, &store, project_id, KeyPurpose::Audit)
-    else {
-        return Ok(());
-    };
+    let audit_key = load_project_key(request.context, &store, project_id, KeyPurpose::Audit)?;
     let metadata = json!({
         "schema_version": 1,
         "action": request.action,

@@ -323,11 +323,8 @@ fn write_client_audit_if_available(
     metadata: &Value,
     timestamp: i64,
 ) -> Result<(), CliError> {
-    let Ok(audit_key) =
-        load_project_key(context, store, resolved.config.project_id.as_str(), KeyPurpose::Audit)
-    else {
-        return Ok(());
-    };
+    let audit_key =
+        load_project_key(context, store, resolved.config.project_id.as_str(), KeyPurpose::Audit)?;
     let audit = AuditWrite {
         project_id: resolved.config.project_id.as_str(),
         profile_id: None,

@@ -2134,11 +2134,8 @@ pub(crate) fn write_runtime_policy_audit_if_available(
     if store.get_project(resolved.config.project_id.as_str())?.is_none() {
         return Ok(());
     }
-    let Ok(audit_key) =
-        load_project_key(context, store, resolved.config.project_id.as_str(), KeyPurpose::Audit)
-    else {
-        return Ok(());
-    };
+    let audit_key =
+        load_project_key(context, store, resolved.config.project_id.as_str(), KeyPurpose::Audit)?;
     let secret_names = selections
         .iter()
         .filter(|selection| selection.selected.is_some())
@@ -2289,11 +2286,9 @@ fn write_secret_meta_update_failure_audit_if_available(
     resolved_secret: &ResolvedSecret,
     metadata: &SecretMetadataFlags,
     timestamp: i64,
-) {
+) -> Result<(), CliError> {
     let project_id = resolved_secret.project.config.project_id.as_str();
-    let Ok(audit_key) = load_project_key(context, store, project_id, KeyPurpose::Audit) else {
-        return;
-    };
+    let audit_key = load_project_key(context, store, project_id, KeyPurpose::Audit)?;
     let audit_metadata = secret_meta_update_audit_metadata(
         resolved_secret,
         metadata,
@@ -2310,7 +2305,8 @@ fn write_secret_meta_update_failure_audit_if_available(
         metadata_json: &audit_metadata,
         timestamp,
     };
-    let _ignored = store.append_audit(audit_key.as_ref(), &audit);
+    store.append_audit(audit_key.as_ref(), &audit)?;
+    Ok(())
 }
 
 fn secret_meta_update_audit_metadata(

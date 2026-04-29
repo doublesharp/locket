@@ -130,11 +130,8 @@ fn write_redact_audit_if_available(
     if store.get_project(project.config.project_id.as_str())?.is_none() {
         return Ok(());
     }
-    let Ok(audit_key) =
-        load_project_key(context, &store, project.config.project_id.as_str(), KeyPurpose::Audit)
-    else {
-        return Ok(());
-    };
+    let audit_key =
+        load_project_key(context, &store, project.config.project_id.as_str(), KeyPurpose::Audit)?;
 
     let counts_by_rule: serde_json::Value = result
         .counts
@@ -228,17 +225,14 @@ pub fn ai_safe_command(
     };
 
     let result = run_ai_safe_child(context, output, transcript.as_mut(), args, &known_redactions)?;
-    if let Err(error) = write_ai_safe_audit_if_available(
+    write_ai_safe_audit_if_available(
         context,
         audit_project.as_ref(),
         args,
         &result,
         !args.pattern_only,
         redact_names,
-    ) {
-        let mut stderr = io::stderr();
-        let _ignored = writeln!(stderr, "locket: ai-safe audit skipped: {error}");
-    }
+    )?;
 
     if result.exit_code == 0 { Ok(()) } else { Err(CliError::ChildExit(result.exit_code)) }
 }
