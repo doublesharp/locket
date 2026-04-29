@@ -207,18 +207,42 @@ Diagnostics are designed to report project, vault, hook, agent, policy, and bund
 The workspace uses the repository-pinned Rust toolchain.
 
 ```bash
+make ci-local
 make fmt-check
 make clippy
 make test
 make coverage
 ```
 
+`make ci-local` is the default local quality gate. It uses `OFFLINE=1` by
+default, runs with `CARGO_JOBS=12`, and skips optional tools with explicit
+warnings instead of fetching network state.
+
 Additional quality gates are available through the `Makefile`:
 
 ```bash
+make nextest
+make coverage-branch
+make mutation
+make leak-canary
+make bench-ci
+make bench-report
+make supply-chain-local
 make deny
 make audit
 make fuzz-smoke
 ```
+
+Release-style checks should be run explicitly when the required tools and
+network-backed advisory data are available:
+
+```bash
+make ci-strict OFFLINE=0 STRICT=1
+make fuzz-nightly STRICT=1
+```
+
+Quality gate scripts live in `scripts/` and are intentionally metadata-only:
+they must not print, snapshot, or persist secret values. Generated reports are
+written under `target/quality/` or `coverage/` and are ignored by Git.
 
 Full design specs live in [`docs/specs/index.md`](docs/specs/index.md).

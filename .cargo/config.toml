@@ -1,0 +1,7 @@
+[build]
+jobs = 12
+
+[alias]
+ci-local = "test --workspace --all-targets --all-features --offline"
+test-all = "test --workspace --all-targets --all-features --offline"
+clippy-all = "clippy --workspace --all-targets --all-features --offline -- -D warnings"
