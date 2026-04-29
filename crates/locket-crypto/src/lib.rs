@@ -922,6 +922,43 @@ pub fn recovery_entry_aad_v1(
     Ok(aad)
 }
 
+/// Encrypts a recovery envelope entry payload using the v1 per-entry key schedule.
+///
+/// # Errors
+///
+/// Returns an error if key derivation, nonce generation, or encryption fails.
+pub fn seal_recovery_entry_v1(
+    unwrap_root: &KeyBytes,
+    kdf_profile_id: &str,
+    entry_kind: &str,
+    entry_id: &str,
+    plaintext: &[u8],
+) -> CryptoResult<(NonceBytes, Vec<u8>)> {
+    let entry_key = recovery_entry_key_v1(unwrap_root, entry_kind, entry_id, kdf_profile_id)?;
+    let aad = recovery_entry_aad_v1(kdf_profile_id, entry_kind, entry_id)?;
+    let nonce = random_bytes::<NONCE_LEN>()?;
+    let ciphertext = aead_encrypt(&entry_key, &nonce, plaintext, &aad)?;
+    Ok((nonce, ciphertext))
+}
+
+/// Decrypts a recovery envelope entry payload using the v1 per-entry key schedule.
+///
+/// # Errors
+///
+/// Returns an error if key derivation fails or ciphertext authentication fails.
+pub fn open_recovery_entry_v1(
+    unwrap_root: &KeyBytes,
+    kdf_profile_id: &str,
+    entry_kind: &str,
+    entry_id: &str,
+    nonce: &NonceBytes,
+    ciphertext: &[u8],
+) -> CryptoResult<Vec<u8>> {
+    let entry_key = recovery_entry_key_v1(unwrap_root, entry_kind, entry_id, kdf_profile_id)?;
+    let aad = recovery_entry_aad_v1(kdf_profile_id, entry_kind, entry_id)?;
+    aead_decrypt(&entry_key, nonce, ciphertext, &aad)
+}
+
 fn validate_secret_value(value: &str) -> CryptoResult<()> {
     if value.as_bytes().contains(&0) { Err(CryptoError::InvalidSecretValue) } else { Ok(()) }
 }

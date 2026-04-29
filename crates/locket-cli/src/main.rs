@@ -14,11 +14,17 @@ use locket_core::{
 };
 use locket_crypto::{
     EncryptedSecretValue, HkdfWrapInfo, KeyPurpose, KeyWrapAad, KeyWrapPurpose, WrappedKeyMaterial,
-    decrypt_secret_value_v1, derive_wrapping_key_v1, encrypt_secret_value_v1, generate_key,
-    key_wrap_aad_v1, secret_blob_aad_v1, secret_fingerprint_v1, unwrap_key_material_v1,
+    decrypt_secret_value_v1, derive_recovery_key_v1, derive_wrapping_key_v1,
+    encrypt_secret_value_v1, generate_key, generate_recovery_code_bytes, generate_recovery_salt,
+    key_wrap_aad_v1, open_recovery_entry_v1, recovery_code_decode, recovery_code_encode,
+    seal_recovery_entry_v1, secret_blob_aad_v1, secret_fingerprint_v1, unwrap_key_material_v1,
     wrap_key_material_v1,
 };
-use locket_platform::{KeyringMasterKeyStore, MasterKeyStore, PassphraseFallbackMasterKeyStore};
+use locket_platform::{
+    KeyringMasterKeyStore, MasterKeyStore, PassphraseFallbackMasterKeyStore, RecoveryEnvelope,
+    RecoveryEnvelopeEntry, RecoveryKdfToml, load_recovery_envelope, load_recovery_kdf_toml,
+    save_recovery_envelope, save_recovery_kdf_toml,
+};
 use locket_scan::{
     FindingKind, KnownRedaction, ScanFinding, redact_text, redact_text_with_known_values, scan_text,
 };
@@ -193,6 +199,14 @@ enum Command {
         /// Passkey command.
         #[command(subcommand)]
         command: PasskeyCommand,
+    },
+    /// Restore vault access from a recovery code.
+    Recover(RecoverArgs),
+    /// Manage recovery codes.
+    Recovery {
+        /// Recovery command.
+        #[command(subcommand)]
+        command: RecoveryCommand,
     },
 }
 
@@ -630,6 +644,19 @@ struct PasskeyListArgs {
 }
 
 #[derive(Debug, Args)]
+struct RecoverArgs {
+    /// Overwrite an existing master key entry.
+    #[arg(long)]
+    force: bool,
+}
+
+#[derive(Clone, Copy, Debug, Subcommand)]
+enum RecoveryCommand {
+    /// Rotate the recovery code.
+    Rotate,
+}
+
+#[derive(Debug, Args)]
 struct SourceArg {
     /// Runtime source to target.
     #[arg(long, value_enum)]
@@ -745,6 +772,8 @@ fn run_with_context(
         Command::AiSafe(args) => ai_safe_command(context, output, &args)?,
         Command::Config { command } => config_command(context, output, command)?,
         Command::Passkey { command } => passkey_command(output, command)?,
+        Command::Recover(args) => recover_command(context, output, &args)?,
+        Command::Recovery { command } => recovery_command(context, output, command)?,
     }
 
     Ok(0)
@@ -6985,6 +7014,282 @@ fn hex_nibble(byte: u8) -> Result<u8, CliError> {
     }
 }
 
+fn recover_command(
+    context: &RuntimeContext,
+    output: &mut impl Write,
+    args: &RecoverArgs,
+) -> Result<(), CliError> {
+    let resolved = require_project(context)?;
+    let recovery_dir = recovery_dir(&resolved);
+    let kdf = load_recovery_kdf_toml(&recovery_dir)
+        .map_err(|error| CliError::Config(format!("recovery/kdf.toml: {error}")))?;
+    let envelope = load_recovery_envelope(&recovery_dir)
+        .map_err(|error| CliError::Config(format!("recovery/envelope.bin: {error}")))?;
+    let code = read_recovery_code("recovery code")?;
+    let code_bytes = recovery_code_decode(code.trim())?;
+    restore_from_recovery_code(context, output, &resolved, &kdf, &envelope, &code_bytes, args.force)
+}
+
+fn recovery_command(
+    context: &RuntimeContext,
+    output: &mut impl Write,
+    command: RecoveryCommand,
+) -> Result<(), CliError> {
+    match command {
+        RecoveryCommand::Rotate => recovery_rotate_command(context, output),
+    }
+}
+
+fn recovery_rotate_command(
+    context: &RuntimeContext,
+    output: &mut impl Write,
+) -> Result<(), CliError> {
+    let resolved = require_project(context)?;
+    let project_id = resolved.config.project_id.as_str();
+    let recovery_dir = recovery_dir(&resolved);
+    let timestamp = now_unix_nanos()?;
+    let code_bytes = generate_recovery_code_bytes()?;
+    let salt = generate_recovery_salt()?;
+    let kdf_profile_id = format!("lk_kdf_{}", format_hex(&salt[..16]));
+    let new_kdf = RecoveryKdfToml::new_v1(kdf_profile_id, &salt, timestamp);
+    let new_root = derive_recovery_key_v1(&code_bytes, &salt, new_kdf.to_crypto_params())?;
+
+    let entries = if recovery_dir.join("envelope.bin").exists() {
+        let old_kdf = load_recovery_kdf_toml(&recovery_dir)
+            .map_err(|error| CliError::Config(format!("recovery/kdf.toml: {error}")))?;
+        let old_envelope = load_recovery_envelope(&recovery_dir)
+            .map_err(|error| CliError::Config(format!("recovery/envelope.bin: {error}")))?;
+        validate_recovery_metadata(project_id, &old_kdf, &old_envelope)?;
+        let old_code = read_recovery_code("current recovery code")?;
+        let old_code_bytes = recovery_code_decode(old_code.trim())?;
+        let old_salt = old_kdf
+            .decode_salt()
+            .map_err(|error| CliError::Config(format!("recovery kdf salt: {error}")))?;
+        let old_root =
+            derive_recovery_key_v1(&old_code_bytes, &old_salt, old_kdf.to_crypto_params())?;
+        rewrap_recovery_entries(
+            &old_envelope,
+            &old_kdf.kdf_profile_id,
+            &old_root,
+            &new_kdf,
+            &new_root,
+        )?
+    } else {
+        let (master_key, _source) = load_master_key(context, project_id)?;
+        vec![seal_recovery_envelope_entry(
+            &new_root,
+            &new_kdf.kdf_profile_id,
+            "master_key",
+            project_id,
+            master_key.as_ref(),
+        )?]
+    };
+
+    let new_envelope = RecoveryEnvelope {
+        kdf_profile_id: new_kdf.kdf_profile_id.clone(),
+        created_at_unix_nanos: i128::from(timestamp),
+        entries,
+    };
+    save_recovery_kdf_toml(&recovery_dir, &new_kdf)
+        .map_err(|error| CliError::Config(format!("save recovery kdf: {error}")))?;
+    save_recovery_envelope(&recovery_dir, &new_envelope)
+        .map_err(|error| CliError::Config(format!("save recovery envelope: {error}")))?;
+    write_recovery_rotate_audit(context, &resolved, &new_kdf.kdf_profile_id, timestamp)?;
+    display_recovery_code(output, &code_bytes)
+}
+
+fn restore_from_recovery_code(
+    context: &RuntimeContext,
+    output: &mut impl Write,
+    resolved: &ResolvedProject,
+    kdf: &RecoveryKdfToml,
+    envelope: &RecoveryEnvelope,
+    code_bytes: &[u8; locket_crypto::RECOVERY_CODE_BYTES],
+    force: bool,
+) -> Result<(), CliError> {
+    let project_id = resolved.config.project_id.as_str();
+    validate_recovery_metadata(project_id, kdf, envelope)?;
+    if !force {
+        match context.key_store.load_master_key(project_id) {
+            Ok(_) => {
+                return Err(CliError::Config(
+                    "master key already exists; use --force to overwrite".to_owned(),
+                ));
+            }
+            Err(locket_platform::PlatformError::MasterKeyNotFound) => {}
+            Err(error) => return Err(CliError::Platform(error)),
+        }
+    }
+
+    let salt = kdf
+        .decode_salt()
+        .map_err(|error| CliError::Config(format!("recovery kdf salt: {error}")))?;
+    let unwrap_root = derive_recovery_key_v1(code_bytes, &salt, kdf.to_crypto_params())?;
+    let mut restored = 0usize;
+    for entry in &envelope.entries {
+        if entry.entry_kind != "master_key" {
+            continue;
+        }
+        if entry.entry_id != project_id {
+            return Err(CliError::Config("recovery envelope project id mismatch".to_owned()));
+        }
+        let plaintext = open_recovery_entry_v1(
+            &unwrap_root,
+            &kdf.kdf_profile_id,
+            &entry.entry_kind,
+            &entry.entry_id,
+            &entry.nonce,
+            &entry.ciphertext,
+        )?;
+        if plaintext.len() != locket_crypto::KEY_LEN {
+            return Err(CliError::Crypto(locket_crypto::CryptoError::InvalidWrappedKey));
+        }
+        let mut master_key = zeroize::Zeroizing::new([0_u8; locket_crypto::KEY_LEN]);
+        master_key.copy_from_slice(&plaintext);
+        context.key_store.store_master_key(project_id, &master_key)?;
+        restored += 1;
+    }
+    if restored == 0 {
+        return Err(CliError::Config(
+            "no master_key entries found in recovery envelope".to_owned(),
+        ));
+    }
+    writeln!(output, "recovered: master_key")?;
+    writeln!(output, "metadata_only: yes")?;
+    Ok(())
+}
+
+fn validate_recovery_metadata(
+    project_id: &str,
+    kdf: &RecoveryKdfToml,
+    envelope: &RecoveryEnvelope,
+) -> Result<(), CliError> {
+    kdf.validate()?;
+    if envelope.kdf_profile_id != kdf.kdf_profile_id {
+        return Err(CliError::Config("recovery envelope kdf profile mismatch".to_owned()));
+    }
+    if !envelope
+        .entries
+        .iter()
+        .any(|entry| entry.entry_kind == "master_key" && entry.entry_id == project_id)
+    {
+        return Err(CliError::Config(
+            "recovery envelope does not contain this project master key".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn rewrap_recovery_entries(
+    old_envelope: &RecoveryEnvelope,
+    old_kdf_profile_id: &str,
+    old_root: &locket_crypto::KeyBytes,
+    new_kdf: &RecoveryKdfToml,
+    new_root: &locket_crypto::KeyBytes,
+) -> Result<Vec<RecoveryEnvelopeEntry>, CliError> {
+    let mut entries = Vec::with_capacity(old_envelope.entries.len());
+    for entry in &old_envelope.entries {
+        let plaintext = open_recovery_entry_v1(
+            old_root,
+            old_kdf_profile_id,
+            &entry.entry_kind,
+            &entry.entry_id,
+            &entry.nonce,
+            &entry.ciphertext,
+        )?;
+        entries.push(seal_recovery_envelope_entry(
+            new_root,
+            &new_kdf.kdf_profile_id,
+            &entry.entry_kind,
+            &entry.entry_id,
+            &plaintext,
+        )?);
+    }
+    Ok(entries)
+}
+
+fn seal_recovery_envelope_entry(
+    unwrap_root: &locket_crypto::KeyBytes,
+    kdf_profile_id: &str,
+    entry_kind: &str,
+    entry_id: &str,
+    plaintext: &[u8],
+) -> Result<RecoveryEnvelopeEntry, CliError> {
+    let (nonce, ciphertext) =
+        seal_recovery_entry_v1(unwrap_root, kdf_profile_id, entry_kind, entry_id, plaintext)?;
+    Ok(RecoveryEnvelopeEntry {
+        entry_kind: entry_kind.to_owned(),
+        entry_id: entry_id.to_owned(),
+        nonce,
+        ciphertext,
+    })
+}
+
+fn recovery_dir(resolved: &ResolvedProject) -> PathBuf {
+    resolved.root.join(".locket").join("recovery")
+}
+
+fn display_recovery_code(
+    output: &mut impl Write,
+    code_bytes: &[u8; locket_crypto::RECOVERY_CODE_BYTES],
+) -> Result<(), CliError> {
+    let encoded = recovery_code_encode(code_bytes);
+    let code = std::str::from_utf8(&encoded)
+        .map_err(|_| CliError::Crypto(locket_crypto::CryptoError::InvalidSecretValue))?;
+    writeln!(output, "recovery_code_rotate: success")?;
+    writeln!(output, "recovery_code (shown once, store securely):")?;
+    writeln!(
+        output,
+        "{}-{}-{}-{}-{}",
+        &code[0..8],
+        &code[8..16],
+        &code[16..24],
+        &code[24..32],
+        &code[32..34]
+    )?;
+    writeln!(output, "metadata_only: yes")?;
+    Ok(())
+}
+
+fn read_recovery_code(prompt: &str) -> Result<zeroize::Zeroizing<String>, CliError> {
+    if io::stdin().is_terminal() {
+        let value = rpassword::prompt_password(format!("Enter {prompt}: "))?;
+        return Ok(zeroize::Zeroizing::new(value));
+    }
+    let mut value = String::new();
+    io::stdin().read_to_string(&mut value)?;
+    Ok(zeroize::Zeroizing::new(value))
+}
+
+fn write_recovery_rotate_audit(
+    context: &RuntimeContext,
+    resolved: &ResolvedProject,
+    kdf_profile_id: &str,
+    timestamp: i64,
+) -> Result<(), CliError> {
+    let mut store = open_store(context)?;
+    let audit_key =
+        load_project_key(context, &store, resolved.config.project_id.as_str(), KeyPurpose::Audit)?;
+    let metadata = json!({
+        "schema_version": 1,
+        "action": "RECOVERY_ROTATE",
+        "status": "SUCCESS",
+        "kdf_profile_id": kdf_profile_id,
+    });
+    let audit = AuditWrite {
+        project_id: resolved.config.project_id.as_str(),
+        profile_id: None,
+        action: "RECOVERY_ROTATE",
+        status: "SUCCESS",
+        secret_name: None,
+        command: Some("recovery rotate"),
+        metadata_json: &metadata,
+        timestamp,
+    };
+    store.append_audit(audit_key.as_ref(), &audit)?;
+    Ok(())
+}
+
 fn now_unix_nanos() -> Result<i64, CliError> {
     let elapsed = SystemTime::now().duration_since(UNIX_EPOCH).map_err(|_| CliError::Time)?;
     i64::try_from(elapsed.as_nanos()).map_err(|_| CliError::Time)
@@ -7310,6 +7615,8 @@ mod tests {
                 "machine-local",
             ],
             &["locket", "audit", "verify"],
+            &["locket", "recover", "--force"],
+            &["locket", "recovery", "rotate"],
             &["locket", "doctor"],
             &["locket", "debug", "bundle", "--redacted"],
             &["locket", "debug", "bundle", "--redacted", "--output", "bundle.json"],
@@ -8991,6 +9298,80 @@ argv = []
             &mut prod_reveal_output,
         )?;
         assert_eq!(String::from_utf8(prod_reveal_output)?, "prod-token\n");
+        Ok(())
+    }
+
+    #[test]
+    fn recovery_rotate_creates_envelope_and_recover_restores_master_key()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let original_key_store = Arc::new(MemoryMasterKeyStore::default());
+        let context = test_context_with_key_store(&directory, original_key_store);
+        let mut init_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut init_output,
+        )?;
+        let args = test_secret_write_args("DATABASE_URL");
+        super::set_secret_value(&context, &args, "postgres://localhost/app", "manual", 1_000)?;
+
+        let mut rotate_output = Vec::new();
+        super::recovery_rotate_command(&context, &mut rotate_output)?;
+        let rotate_output = String::from_utf8(rotate_output)?;
+        assert!(rotate_output.contains("recovery_code_rotate: success"));
+        assert!(rotate_output.contains("shown once"));
+        assert!(rotate_output.contains("metadata_only: yes"));
+        assert!(!rotate_output.contains("postgres://localhost/app"));
+        let recovery_code = rotate_output
+            .lines()
+            .find(|line| {
+                line.len() == 38
+                    && line.chars().all(|character| {
+                        character == '-'
+                            || character.is_ascii_digit()
+                            || character.is_ascii_uppercase()
+                    })
+            })
+            .ok_or("recovery code line should be printed once")?;
+        let recovery_code_bytes = locket_crypto::recovery_code_decode(recovery_code)?;
+
+        let recovery_dir = directory.path().join(".locket/recovery");
+        assert!(recovery_dir.join("kdf.toml").exists());
+        assert!(recovery_dir.join("envelope.bin").exists());
+
+        let recovered_key_store = Arc::new(MemoryMasterKeyStore::default());
+        let recovered_context = test_context_with_key_store(&directory, recovered_key_store.clone());
+        let resolved = super::require_project(&recovered_context)?;
+        let kdf = locket_platform::load_recovery_kdf_toml(&super::recovery_dir(&resolved))?;
+        let envelope = locket_platform::load_recovery_envelope(&super::recovery_dir(&resolved))?;
+        let mut recover_output = Vec::new();
+        super::restore_from_recovery_code(
+            &recovered_context,
+            &mut recover_output,
+            &resolved,
+            &kdf,
+            &envelope,
+            &recovery_code_bytes,
+            false,
+        )?;
+        let recover_output = String::from_utf8(recover_output)?;
+        assert!(recover_output.contains("recovered: master_key"));
+        assert!(recover_output.contains("metadata_only: yes"));
+        assert!(!recover_output.contains("postgres://localhost/app"));
+        assert!(
+            recovered_key_store
+                .load_master_key(resolved.config.project_id.as_str())
+                .is_ok()
+        );
+
+        let mut get_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "get", "DATABASE_URL", "--reveal", "--force"])?,
+            &recovered_context,
+            &mut get_output,
+        )?;
+        assert_eq!(String::from_utf8(get_output)?, "postgres://localhost/app\n");
         Ok(())
     }
 
@@ -10857,6 +11238,168 @@ required_secrets = ["DATABASE_URL"]
         assert!(redact_output.contains("lk_redacted_secret-"));
         assert!(!redact_output.contains("lk_redacted_DATABASE_URL"));
         assert!(!redact_output.contains("postgres://localhost/app"));
+        Ok(())
+    }
+
+    fn test_project_id_and_master_key(
+        context: &RuntimeContext,
+    ) -> Result<(String, locket_crypto::KeyBytes), Box<dyn std::error::Error>> {
+        let resolved = super::require_project(context)?;
+        let project_id = resolved.config.project_id.as_str().to_owned();
+        let master_key = *context.key_store.load_master_key(&project_id)?;
+        Ok((project_id, master_key))
+    }
+
+    fn setup_recovery_envelope(
+        context: &RuntimeContext,
+        project_id: &str,
+        master_key: &locket_crypto::KeyBytes,
+    ) -> Result<
+        (super::RecoveryKdfToml, super::RecoveryEnvelope, [u8; locket_crypto::RECOVERY_CODE_BYTES]),
+        Box<dyn std::error::Error>,
+    > {
+        let code_bytes = locket_crypto::generate_recovery_code_bytes()?;
+        let salt = locket_crypto::generate_recovery_salt()?;
+        let kdf = super::RecoveryKdfToml::new_v1("lk_kdf_test".to_owned(), &salt, 1_000);
+        let unwrap_root =
+            locket_crypto::derive_recovery_key_v1(&code_bytes, &salt, kdf.to_crypto_params())?;
+        let entry = super::seal_recovery_envelope_entry(
+            &unwrap_root,
+            &kdf.kdf_profile_id,
+            "master_key",
+            project_id,
+            master_key,
+        )?;
+        let envelope = super::RecoveryEnvelope {
+            kdf_profile_id: kdf.kdf_profile_id.clone(),
+            created_at_unix_nanos: 1_000,
+            entries: vec![entry],
+        };
+        let recovery_dir = context.cwd.join(".locket").join("recovery");
+        super::save_recovery_kdf_toml(&recovery_dir, &kdf)?;
+        super::save_recovery_envelope(&recovery_dir, &envelope)?;
+        Ok((kdf, envelope, code_bytes))
+    }
+
+    #[test]
+    fn recovery_restore_rejects_mismatched_kdf_profile() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        let mut init_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut init_output,
+        )?;
+        let resolved = super::require_project(&context)?;
+        let (project_id, master_key) = test_project_id_and_master_key(&context)?;
+        let (kdf, mut envelope, code_bytes) =
+            setup_recovery_envelope(&context, &project_id, &master_key)?;
+        envelope.kdf_profile_id = "lk_kdf_other".to_owned();
+
+        let result = super::restore_from_recovery_code(
+            &context,
+            &mut Vec::new(),
+            &resolved,
+            &kdf,
+            &envelope,
+            &code_bytes,
+            true,
+        );
+
+        assert_error_contains(result, "kdf profile mismatch");
+        Ok(())
+    }
+
+    #[test]
+    fn recovery_restore_recovers_master_key_from_envelope() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        let mut init_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut init_output,
+        )?;
+        let resolved = super::require_project(&context)?;
+        let (project_id, master_key) = test_project_id_and_master_key(&context)?;
+        let (kdf, envelope, code_bytes) =
+            setup_recovery_envelope(&context, &project_id, &master_key)?;
+        context.key_store.delete_master_key(&project_id)?;
+
+        let mut recover_output = Vec::new();
+        super::restore_from_recovery_code(
+            &context,
+            &mut recover_output,
+            &resolved,
+            &kdf,
+            &envelope,
+            &code_bytes,
+            false,
+        )?;
+
+        assert_eq!(*context.key_store.load_master_key(&project_id)?, master_key);
+        let recover_output = String::from_utf8(recover_output)?;
+        assert!(recover_output.contains("recovered: master_key"));
+        assert!(recover_output.contains("metadata_only: yes"));
+        Ok(())
+    }
+
+    #[test]
+    fn recovery_rotate_creates_envelope_and_prints_full_code()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        let mut init_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut init_output,
+        )?;
+        let (project_id, master_key) = test_project_id_and_master_key(&context)?;
+
+        let mut rotate_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "recovery", "rotate"])?,
+            &context,
+            &mut rotate_output,
+        )?;
+
+        let rotate_output = String::from_utf8(rotate_output)?;
+        assert!(rotate_output.contains("recovery_code_rotate: success"));
+        assert!(rotate_output.contains("metadata_only: yes"));
+        let code_line = rotate_output
+            .lines()
+            .find(|line| line.matches('-').count() == 4)
+            .ok_or("missing recovery code line")?;
+        let code_bytes = locket_crypto::recovery_code_decode(code_line)?;
+        let recovery_dir = directory.path().join(".locket").join("recovery");
+        let kdf = super::load_recovery_kdf_toml(&recovery_dir)?;
+        let envelope = super::load_recovery_envelope(&recovery_dir)?;
+        assert_eq!(envelope.kdf_profile_id, kdf.kdf_profile_id);
+
+        context.key_store.delete_master_key(&project_id)?;
+        let resolved = super::require_project(&context)?;
+        super::restore_from_recovery_code(
+            &context,
+            &mut Vec::new(),
+            &resolved,
+            &kdf,
+            &envelope,
+            &code_bytes,
+            false,
+        )?;
+        assert_eq!(*context.key_store.load_master_key(&project_id)?, master_key);
+
+        let store = locket_store::Store::open(directory.path().join("store.db"))?;
+        let metadata: String = store.connection().query_row(
+            "SELECT metadata_json FROM audit_log WHERE action = 'RECOVERY_ROTATE'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert!(metadata.contains("\"kdf_profile_id\""));
+        assert!(!metadata.contains(code_line));
         Ok(())
     }
 
