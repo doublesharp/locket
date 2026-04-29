@@ -4202,17 +4202,13 @@ fn collect_redaction_values_for_redact(
             known_coverage_active: false,
             redact_names_enabled,
             known_secret_names: Vec::new(),
-            skipped_message: Some(
-                "known-value redaction skipped: no project resolved".to_owned(),
-            ),
+            skipped_message: Some("known-value redaction skipped: no project resolved".to_owned()),
         });
     };
     match collect_known_secret_redactions(context, project, redact_names_enabled, timestamp) {
         Ok(redactions) => {
-            let known_secret_names = redactions
-                .iter()
-                .filter_map(|entry| entry.secret_name.clone())
-                .collect();
+            let known_secret_names =
+                redactions.iter().filter_map(|entry| entry.secret_name.clone()).collect();
             Ok(RedactCoverage {
                 redactions,
                 known_coverage_active: true,
@@ -14214,8 +14210,7 @@ required_secrets = ["DATABASE_URL"]
     }
 
     #[test]
-    fn redact_writes_audit_row_with_counts_and_names()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn redact_writes_audit_row_with_counts_and_names() -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempdir()?;
         let context = test_context(&directory);
         let mut output = Vec::new();
@@ -14251,8 +14246,8 @@ required_secrets = ["DATABASE_URL"]
     }
 
     #[test]
-    fn redact_require_known_without_project_fails_closed()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn redact_require_known_without_project_fails_closed() -> Result<(), Box<dyn std::error::Error>>
+    {
         let directory = tempdir()?;
         let context = test_context(&directory);
         std::fs::write(directory.path().join("sample.log"), "anything\n")?;
