@@ -29,6 +29,7 @@ mod recovery;
 mod redact;
 mod runtime;
 pub(crate) mod scan;
+mod secret_helpers;
 mod secrets_cmd;
 mod shell;
 mod status;
@@ -50,8 +51,8 @@ pub(crate) use device::{device_fingerprint_hex, encode_device_descriptor};
 pub(crate) use install_hooks::git_dir_for_worktree;
 pub(crate) use key_access::{
     MasterKeySource, default_profile, ensure_project_exists, load_master_key,
-    load_master_key_verified_by_project_key, load_profile_key, load_project_key,
-    load_project_key_with_source, store_master_key_with_fallback,
+    load_master_key_verified_by_project_key, load_project_key, load_project_key_with_source,
+    store_master_key_with_fallback,
 };
 pub(crate) use project_files::{
     EXAMPLE_FILE, GITIGNORE_ENTRIES, GITIGNORE_FILE, collect_example_secret_names,
@@ -72,6 +73,13 @@ pub(crate) use redact::{
     collect_redaction_values_for_redact,
 };
 pub(crate) use runtime::RuntimeContext;
+use secret_helpers::{
+    PolicySecretSelection, ResolvedSecret, SecretEncryptRequest, ValueAccessAudit,
+    decrypt_current_secret, decrypt_secret_version, encrypt_secret_version,
+    policy_secret_selections, resolve_active_secret, resolve_active_secret_for_source,
+    resolve_secret_for_source, reveal_ttl_seconds, secret_audit_metadata,
+    select_copy_profiles_and_sources, write_value_access_audit_if_available,
+};
 #[cfg(test)]
 pub(crate) use shell::SHELL_HOOK_BEGIN;
 pub(crate) use time_helpers::{
@@ -88,10 +96,9 @@ use locket_core::{
 };
 use locket_crypto::{
     EncryptedSecretValue, HkdfWrapInfo, KeyPurpose, KeyWrapAad, KeyWrapPurpose,
-    decrypt_secret_value_v1, derive_recovery_key_v1, derive_wrapping_key_v1,
-    encrypt_secret_value_v1, generate_key, generate_recovery_code_bytes, generate_recovery_salt,
-    key_wrap_aad_v1, recovery_code_decode, recovery_code_encode, seal_recovery_entry_v1,
-    secret_blob_aad_v1, secret_fingerprint_v1, wrap_key_material_v1,
+    derive_recovery_key_v1, derive_wrapping_key_v1, generate_key, generate_recovery_code_bytes,
+    generate_recovery_salt, key_wrap_aad_v1, recovery_code_decode, recovery_code_encode,
+    seal_recovery_entry_v1, wrap_key_material_v1,
 };
 use locket_platform::{
     RecoveryEnvelope, RecoveryEnvelopeEntry, RecoveryKdfToml, save_recovery_envelope,
@@ -669,21 +676,21 @@ struct DiffArgs {
 }
 
 #[derive(Debug, Args)]
-struct CopyArgs {
+pub(crate) struct CopyArgs {
     /// Secret key name.
-    key: String,
+    pub(crate) key: String,
     /// Source profile name.
     #[arg(long)]
-    from: String,
+    pub(crate) from: String,
     /// Target profile name.
     #[arg(long)]
-    to: String,
+    pub(crate) to: String,
     /// Runtime source to copy from.
     #[arg(long, value_enum)]
-    from_source: Option<SecretSourceArg>,
+    pub(crate) from_source: Option<SecretSourceArg>,
     /// Runtime source to copy to.
     #[arg(long, value_enum)]
-    to_source: Option<SecretSourceArg>,
+    pub(crate) to_source: Option<SecretSourceArg>,
 }
 
 #[derive(Clone, Debug, Subcommand)]
@@ -964,7 +971,7 @@ struct SourceArg {
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
-enum SecretSourceArg {
+pub(crate) enum SecretSourceArg {
     /// Team-managed source.
     TeamManaged,
     /// User-local source.
@@ -3074,12 +3081,12 @@ struct CopyTargetPlan {
     existing: Option<SecretRecord>,
 }
 
-struct CopySelection {
-    from_profile: ProfileRecord,
-    to_profile: ProfileRecord,
-    source_secret: SecretRecord,
-    from_source: String,
-    to_source: String,
+pub(crate) struct CopySelection {
+    pub(crate) from_profile: ProfileRecord,
+    pub(crate) to_profile: ProfileRecord,
+    pub(crate) source_secret: SecretRecord,
+    pub(crate) from_source: String,
+    pub(crate) to_source: String,
 }
 
 #[derive(Clone, Copy)]
@@ -3205,41 +3212,6 @@ fn copy_secret_value(
     })
 }
 
-fn select_copy_profiles_and_sources(
-    store: &Store,
-    project_id: &str,
-    name: &str,
-    args: &CopyArgs,
-) -> Result<CopySelection, CliError> {
-    let from_profile_name = ProfileName::new(args.from.clone())
-        .map_err(|_| CliError::Config("invalid source profile name".to_owned()))?;
-    let to_profile_name = ProfileName::new(args.to.clone())
-        .map_err(|_| CliError::Config("invalid target profile name".to_owned()))?;
-    let from_profile = store
-        .get_profile_by_name(project_id, from_profile_name.as_str())?
-        .ok_or_else(|| CliError::Config("source profile not found".to_owned()))?;
-    let to_profile = store
-        .get_profile_by_name(project_id, to_profile_name.as_str())?
-        .ok_or_else(|| CliError::Config("target profile not found".to_owned()))?;
-    let source_secret =
-        select_copy_source_secret(store, project_id, &from_profile.id, name, args.from_source)?;
-    let from_source = source_secret.source.clone();
-    let to_source = select_copy_target_source(
-        store,
-        project_id,
-        &to_profile.id,
-        name,
-        &from_source,
-        args.to_source,
-    )?;
-    if from_profile.id == to_profile.id && from_source == to_source {
-        return Err(CliError::Config(
-            "copy source and target are the same profile and source; use rotate".to_owned(),
-        ));
-    }
-    Ok(CopySelection { from_profile, to_profile, source_secret, from_source, to_source })
-}
-
 fn copy_audit_metadata(request: CopyAuditMetadata<'_>) -> Value {
     json!({
         "schema_version": 1,
@@ -3363,139 +3335,6 @@ fn copied_secret_records(
     )
 }
 
-#[derive(Clone, Copy)]
-struct SecretEncryptRequest<'a> {
-    project_id: &'a str,
-    profile_id: &'a str,
-    secret_id: &'a str,
-    secret_name: &'a str,
-    version: u32,
-    value: &'a str,
-}
-
-fn encrypt_secret_version(
-    context: &RuntimeContext,
-    store: &Store,
-    request: SecretEncryptRequest<'_>,
-) -> Result<(EncryptedSecretValue, Vec<u8>), CliError> {
-    let profile_secret_key = load_profile_key(
-        context,
-        store,
-        request.project_id,
-        request.profile_id,
-        KeyPurpose::ProfileSecret,
-    )?;
-    let profile_fingerprint_key = load_profile_key(
-        context,
-        store,
-        request.project_id,
-        request.profile_id,
-        KeyPurpose::ProfileFingerprint,
-    )?;
-    let value_aad = secret_blob_aad_v1(&locket_crypto::SecretBlobAad::new(
-        request.project_id,
-        request.profile_id,
-        request.secret_id,
-        request.secret_name,
-        request.version,
-    ))?;
-    let wrap_aad = key_wrap_aad_v1(&KeyWrapAad::new(
-        request.project_id,
-        request.secret_id,
-        Some(request.profile_id),
-        request.version,
-        KeyWrapPurpose::SecretDek,
-    ))?;
-    let encrypted =
-        encrypt_secret_value_v1(&profile_secret_key, request.value, &value_aad, &wrap_aad)?;
-    let fingerprint = secret_fingerprint_v1(&profile_fingerprint_key, request.value)?;
-    Ok((encrypted, fingerprint.to_vec()))
-}
-
-fn secret_audit_metadata(
-    action: &str,
-    secret_name: &str,
-    profile_id: &str,
-    source: &str,
-    version: Option<u32>,
-) -> Value {
-    json!({
-        "schema_version": 1,
-        "action": action,
-        "status": "SUCCESS",
-        "secret_name": secret_name,
-        "profile_id": profile_id,
-        "source": source,
-        "version": version,
-    })
-}
-
-struct ValueAccessAudit<'a> {
-    context: &'a RuntimeContext,
-    resolved: &'a ResolvedSecret,
-    action: &'static str,
-    status: &'static str,
-    access_mode: &'static str,
-    ttl_seconds: Option<u64>,
-    force: bool,
-    clipboard_supported: Option<bool>,
-    clipboard_clear_supported: Option<bool>,
-    unsupported_reason: Option<&'a str>,
-}
-
-fn write_value_access_audit_if_available(request: &ValueAccessAudit<'_>) -> Result<(), CliError> {
-    let mut store = open_store(request.context)?;
-    let project_id = request.resolved.project.config.project_id.as_str();
-    if store.get_project(project_id)?.is_none() {
-        return Ok(());
-    }
-    let Ok(audit_key) = load_project_key(request.context, &store, project_id, KeyPurpose::Audit)
-    else {
-        return Ok(());
-    };
-    let metadata = json!({
-        "schema_version": 1,
-        "action": request.action,
-        "status": request.status,
-        "secret_name": &request.resolved.secret.name,
-        "profile": &request.resolved.profile.name,
-        "profile_id": &request.resolved.profile.id,
-        "source": &request.resolved.secret.source,
-        "version": request.resolved.secret.current_version,
-        "access_mode": request.access_mode,
-        "ttl_seconds": request.ttl_seconds,
-        "force": request.force,
-        "clipboard_supported": request.clipboard_supported,
-        "clipboard_clear_supported": request.clipboard_clear_supported,
-        "unsupported_reason": request.unsupported_reason,
-    });
-    let audit = AuditWrite {
-        project_id,
-        profile_id: Some(&request.resolved.profile.id),
-        action: request.action,
-        status: request.status,
-        secret_name: Some(&request.resolved.secret.name),
-        command: Some("get"),
-        metadata_json: &metadata,
-        timestamp: now_unix_nanos()?,
-    };
-    store.append_audit(audit_key.as_ref(), &audit)?;
-    Ok(())
-}
-
-fn reveal_ttl_seconds(context: &RuntimeContext) -> Result<u64, CliError> {
-    let config = read_user_config(context)?;
-    let Some(value) = config_get_value(&config, "reveal.ttl") else {
-        return Ok(60);
-    };
-    let Some(value) = value.as_str() else {
-        return Err(CliError::Config("reveal.ttl must be a duration".to_owned()));
-    };
-    let duration = LocketDuration::from_str(value)
-        .map_err(|_| CliError::Config("invalid reveal.ttl duration".to_owned()))?;
-    Ok(duration.as_secs().min(300))
-}
-
 #[derive(Debug, Eq, PartialEq)]
 struct ClipboardCommand {
     program: &'static str,
@@ -3579,194 +3418,6 @@ fn command_exists_in_directory(directory: &Path, program: &str) -> bool {
     false
 }
 
-struct PolicySecretSelection {
-    name: String,
-    required: bool,
-    sources: Vec<String>,
-    selected: Option<SecretRecord>,
-}
-
-struct ResolvedSecret {
-    project: ResolvedProject,
-    profile: ProfileRecord,
-    secret: SecretRecord,
-}
-
-fn resolve_active_secret(context: &RuntimeContext, key: &str) -> Result<ResolvedSecret, CliError> {
-    let name = SecretName::new(key.to_owned())
-        .map_err(|_| CliError::Config("invalid secret name".to_owned()))?;
-    let project = require_project(context)?;
-    let store = open_store(context)?;
-    ensure_trusted_project_root(&store, &project)?;
-    let profile = default_profile(&store, &project.config)?;
-    let secrets =
-        store.list_active_secrets_by_profile(project.config.project_id.as_str(), &profile.id)?;
-    let secret = secrets
-        .into_iter()
-        .filter(|secret| secret.name == name.as_str())
-        .max_by_key(|secret| source_precedence(&secret.source))
-        .ok_or_else(|| CliError::Config("secret not found".to_owned()))?;
-    Ok(ResolvedSecret { project, profile, secret })
-}
-
-fn resolve_active_secret_for_source(
-    context: &RuntimeContext,
-    key: &str,
-    source: Option<SecretSourceArg>,
-) -> Result<ResolvedSecret, CliError> {
-    let resolved = resolve_secret_for_source(context, key, source)?;
-    if resolved.secret.state == "deleted" {
-        return Err(secret_deleted_error("secret source is deleted"));
-    }
-    Ok(resolved)
-}
-
-fn resolve_secret_for_source(
-    context: &RuntimeContext,
-    key: &str,
-    source: Option<SecretSourceArg>,
-) -> Result<ResolvedSecret, CliError> {
-    let name = SecretName::new(key.to_owned())
-        .map_err(|_| CliError::Config("invalid secret name".to_owned()))?;
-    let project = require_project(context)?;
-    let store = open_store(context)?;
-    ensure_trusted_project_root(&store, &project)?;
-    let profile = default_profile(&store, &project.config)?;
-    let secret = if let Some(source) = source {
-        let source = source_arg_to_str(source);
-        store
-            .get_secret_by_source(
-                project.config.project_id.as_str(),
-                &profile.id,
-                name.as_str(),
-                source,
-            )?
-            .ok_or_else(|| CliError::Config("secret not found".to_owned()))?
-    } else {
-        let secrets = store.list_secrets_by_name(
-            project.config.project_id.as_str(),
-            &profile.id,
-            name.as_str(),
-        )?;
-        match secrets.as_slice() {
-            [] => return Err(CliError::Config("secret not found".to_owned())),
-            [secret] => secret.clone(),
-            _ => {
-                return Err(CliError::Config(
-                    "multiple sources exist for this secret; pass --source".to_owned(),
-                ));
-            }
-        }
-    };
-    Ok(ResolvedSecret { project, profile, secret })
-}
-
-fn select_copy_source_secret(
-    store: &Store,
-    project_id: &str,
-    profile_id: &str,
-    name: &str,
-    source: Option<SecretSourceArg>,
-) -> Result<SecretRecord, CliError> {
-    if let Some(source) = source {
-        let source = source_arg_to_str(source);
-        let secret = store
-            .get_secret_by_source(project_id, profile_id, name, source)?
-            .ok_or_else(|| CliError::Config("secret not found".to_owned()))?;
-        if secret.state == "deleted" {
-            return Err(secret_deleted_error("secret source is deleted"));
-        }
-        return Ok(secret);
-    }
-
-    let active = store
-        .list_secrets_by_name(project_id, profile_id, name)?
-        .into_iter()
-        .filter(|secret| secret.state == "active")
-        .collect::<Vec<_>>();
-    let highest = active
-        .iter()
-        .map(|secret| source_precedence(&secret.source))
-        .max()
-        .ok_or_else(|| CliError::Config("secret not found".to_owned()))?;
-    let selected = active
-        .iter()
-        .filter(|secret| source_precedence(&secret.source) == highest)
-        .collect::<Vec<_>>();
-    match selected.as_slice() {
-        [secret] => Ok((*secret).clone()),
-        _ => Err(CliError::Config(
-            "multiple source candidates have ambiguous precedence; pass --from-source".to_owned(),
-        )),
-    }
-}
-
-fn select_copy_target_source(
-    store: &Store,
-    project_id: &str,
-    profile_id: &str,
-    name: &str,
-    from_source: &str,
-    to_source: Option<SecretSourceArg>,
-) -> Result<String, CliError> {
-    if let Some(to_source) = to_source {
-        return Ok(source_arg_to_str(to_source).to_owned());
-    }
-    if store.get_secret_by_source(project_id, profile_id, name, from_source)?.is_some() {
-        return Ok(from_source.to_owned());
-    }
-    Ok(source_arg_to_str(SecretSourceArg::UserLocal).to_owned())
-}
-
-fn decrypt_current_secret(
-    context: &RuntimeContext,
-    resolved: &ResolvedSecret,
-) -> Result<zeroize::Zeroizing<String>, CliError> {
-    let store = open_store(context)?;
-    decrypt_secret_version(
-        context,
-        &store,
-        resolved.project.config.project_id.as_str(),
-        &resolved.profile.id,
-        &resolved.secret,
-        resolved.secret.current_version,
-    )
-}
-
-fn policy_secret_selections(
-    store: &Store,
-    resolved: &ResolvedProject,
-    profile: &ProfileRecord,
-    policy: &CommandPolicy,
-) -> Result<Vec<PolicySecretSelection>, CliError> {
-    let active_by_name =
-        active_secrets_by_name(store, resolved.config.project_id.as_str(), &profile.id)?;
-    let mut selections = Vec::new();
-    for name in &policy.required_secrets {
-        selections.push(policy_secret_selection(name.as_str(), true, &active_by_name));
-    }
-    for name in &policy.optional_secrets {
-        selections.push(policy_secret_selection(name.as_str(), false, &active_by_name));
-    }
-    Ok(selections)
-}
-
-fn policy_secret_selection(
-    name: &str,
-    required: bool,
-    active_by_name: &BTreeMap<String, Vec<SecretRecord>>,
-) -> PolicySecretSelection {
-    let secrets = active_by_name.get(name).cloned().unwrap_or_default();
-    let sources = secrets
-        .iter()
-        .map(|secret| secret.source.clone())
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect::<Vec<_>>();
-    let selected = secrets.into_iter().max_by_key(|secret| source_precedence(&secret.source));
-    PolicySecretSelection { name: name.to_owned(), required, sources, selected }
-}
-
 fn inspect_conflicts(
     selection: &PolicySecretSelection,
     parent_env: &locket_exec::EnvMap,
@@ -3818,42 +3469,6 @@ fn parent_env_conflicts_with_secret(
         }
         locket_exec::EnvMode::Merge | locket_exec::EnvMode::Passthrough => true,
     }
-}
-
-fn decrypt_secret_version(
-    context: &RuntimeContext,
-    store: &Store,
-    project_id: &str,
-    profile_id: &str,
-    secret: &SecretRecord,
-    version: u32,
-) -> Result<zeroize::Zeroizing<String>, CliError> {
-    let profile_secret_key =
-        load_profile_key(context, store, project_id, profile_id, KeyPurpose::ProfileSecret)?;
-    let blob = store
-        .get_blob(&secret.id, version)?
-        .ok_or_else(|| CliError::Config("secret blob is missing".to_owned()))?;
-    let value_aad = secret_blob_aad_v1(&locket_crypto::SecretBlobAad::new(
-        project_id,
-        profile_id,
-        &secret.id,
-        &secret.name,
-        version,
-    ))?;
-    let wrap_aad = key_wrap_aad_v1(&KeyWrapAad::new(
-        project_id,
-        &secret.id,
-        Some(profile_id),
-        version,
-        KeyWrapPurpose::SecretDek,
-    ))?;
-    let encrypted = EncryptedSecretValue {
-        encrypted_dek: blob.encrypted_dek,
-        ciphertext: blob.ciphertext,
-        value_nonce: blob.value_nonce,
-        aad_schema_version: blob.aad_schema_version,
-    };
-    Ok(decrypt_secret_value_v1(&profile_secret_key, &encrypted, &value_aad, &wrap_aad)?)
 }
 
 pub(crate) fn collect_known_secret_values(
@@ -3933,7 +3548,10 @@ pub(crate) fn open_store(context: &RuntimeContext) -> Result<Store, CliError> {
     Ok(store)
 }
 
-fn ensure_trusted_project_root(store: &Store, resolved: &ResolvedProject) -> Result<(), CliError> {
+pub(crate) fn ensure_trusted_project_root(
+    store: &Store,
+    resolved: &ResolvedProject,
+) -> Result<(), CliError> {
     let root_hash = root_hash(&resolved.root)?;
     if store.project_root_is_trusted(resolved.config.project_id.as_str(), &root_hash)? {
         return Ok(());
@@ -4591,7 +4209,7 @@ fn active_secret_map(
         .collect())
 }
 
-fn active_secrets_by_name(
+pub(crate) fn active_secrets_by_name(
     store: &Store,
     project_id: &str,
     profile_id: &str,
@@ -4603,7 +4221,7 @@ fn active_secrets_by_name(
     Ok(by_name)
 }
 
-const fn source_arg_to_str(source: SecretSourceArg) -> &'static str {
+pub(crate) const fn source_arg_to_str(source: SecretSourceArg) -> &'static str {
     match source {
         SecretSourceArg::TeamManaged => "team-managed",
         SecretSourceArg::UserLocal => "user-local",
@@ -4611,7 +4229,7 @@ const fn source_arg_to_str(source: SecretSourceArg) -> &'static str {
     }
 }
 
-const fn source_precedence(source: &str) -> u8 {
+pub(crate) const fn source_precedence(source: &str) -> u8 {
     match source.as_bytes() {
         b"team-managed" => 1,
         b"user-local" => 2,
