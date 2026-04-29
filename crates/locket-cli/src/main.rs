@@ -3,9 +3,11 @@
 mod agent;
 mod bootstrap;
 mod bundle;
+mod client;
 mod device;
 pub(crate) mod diagnostics;
 mod onboarding;
+mod passkey;
 mod policy_authoring;
 mod recovery;
 mod redact;
@@ -24,11 +26,10 @@ pub(crate) use redact::{
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::Shell as CompletionShell;
 use directories::{BaseDirs, ProjectDirs};
-use ed25519_dalek::SigningKey;
 use locket_core::{
-    ClientId, CommandPolicy, CommandSpec, Duration as LocketDuration, ExternalEnvSource, KeyId,
-    LocketError, PROJECT_CONFIG_SCHEMA_VERSION, PolicyDocument, ProfileId, ProfileName,
-    ProjectConfig, ProjectId, SecretId, SecretName, SessionId,
+    CommandPolicy, CommandSpec, Duration as LocketDuration, ExternalEnvSource, KeyId, LocketError,
+    PROJECT_CONFIG_SCHEMA_VERSION, PolicyDocument, ProfileId, ProfileName, ProjectConfig,
+    ProjectId, SecretId, SecretName, SessionId,
 };
 use locket_crypto::{
     EncryptedSecretValue, HkdfWrapInfo, KeyPurpose, KeyWrapAad, KeyWrapPurpose, WrappedKeyMaterial,
@@ -47,10 +48,10 @@ use locket_scan::{FindingKind, redact_text, scan_text};
 #[cfg(test)]
 use locket_store::DeviceRecord;
 use locket_store::{
-    AuditContext, AuditLogRecord, AuditWrite, AutomationClientRecord, DirectoryGrantRecord,
-    KeyRecord, PasskeyCredentialRecord, ProfileRecord, RuntimeSessionRecord,
-    RuntimeSessionSecretNameRetention, SecretBlobRecord, SecretCopyTarget, SecretFingerprintRecord,
-    SecretMetadataUpdate, SecretRecord, SecretVersionRecord, Store, StoreError, VersionDeprecation,
+    AuditContext, AuditLogRecord, AuditWrite, DirectoryGrantRecord, KeyRecord, ProfileRecord,
+    RuntimeSessionRecord, RuntimeSessionSecretNameRetention, SecretBlobRecord, SecretCopyTarget,
+    SecretFingerprintRecord, SecretMetadataUpdate, SecretRecord, SecretVersionRecord, Store,
+    StoreError, VersionDeprecation,
 };
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -1027,9 +1028,9 @@ fn run_with_context(
         Command::Context(args) => context_command(context, output, &args)?,
         Command::AiSafe(args) => redact::ai_safe_command(context, output, &args)?,
         Command::Config { command } => config_command(context, output, command)?,
-        Command::Passkey { command } => passkey_command(context, output, command)?,
+        Command::Passkey { command } => passkey::passkey_command(context, output, command)?,
         Command::Device { command } => device::device_command(context, output, command)?,
-        Command::Client { command } => client_command(context, output, command)?,
+        Command::Client { command } => client::client_command(context, output, command)?,
         Command::Export(args) => bundle::export_bundle_command(context, output, &args)?,
         Command::ImportBundle(args) => bundle::import_bundle_command(context, output, &args)?,
         Command::Bundle { command } => bundle::bundle_command(context, output, command)?,
@@ -3307,376 +3308,6 @@ fn config_unset_command(
         write_config_update_audit_if_available(context, key, "unset")?;
     }
     writeln!(output, "unset {key}")?;
-    Ok(())
-}
-
-fn passkey_command(
-    context: &RuntimeContext,
-    output: &mut impl Write,
-    command: PasskeyCommand,
-) -> Result<(), CliError> {
-    match command {
-        PasskeyCommand::Register => Err(CliError::Config(
-            "passkey registration is not available in this build; no credential metadata was written"
-                .to_owned(),
-        )),
-        PasskeyCommand::List(args) => passkey_list_command(context, output, &args),
-        PasskeyCommand::Remove { passkey } => passkey_remove_command(context, output, &passkey),
-    }
-}
-
-fn passkey_list_command(
-    context: &RuntimeContext,
-    output: &mut impl Write,
-    args: &PasskeyListArgs,
-) -> Result<(), CliError> {
-    let resolved = require_project(context)?;
-    let store = open_store(context)?;
-    let project_id = resolved.config.project_id.as_str();
-    ensure_project_exists(&store, project_id)?;
-    let credentials = store.list_passkey_credentials(project_id, args.all)?;
-    if credentials.is_empty() {
-        writeln!(output, "credentials: none")?;
-    } else {
-        writeln!(output, "credentials:")?;
-        for credential in credentials {
-            writeln!(
-                output,
-                "- {} id={} credential_id_prefix={} transports={} prf={} backup_eligible={} backup_state={} created_at={} last_used_at={} revoked_at={}",
-                credential.label,
-                credential.id,
-                credential_id_prefix(&credential.credential_id),
-                render_passkey_transports(&credential.transports),
-                yes_no(credential.prf_capable),
-                render_optional_bool(credential.backup_eligible),
-                render_optional_bool(credential.backup_state),
-                format_unix_nanos(credential.created_at),
-                credential.last_used_at.map_or_else(|| "never".to_owned(), format_unix_nanos),
-                credential.revoked_at.map_or_else(|| "active".to_owned(), format_unix_nanos),
-            )?;
-        }
-    }
-    writeln!(output, "include_revoked: {}", if args.all { "yes" } else { "no" })?;
-    writeln!(output, "private_key_material: never displayed")?;
-    Ok(())
-}
-
-fn passkey_remove_command(
-    context: &RuntimeContext,
-    output: &mut impl Write,
-    passkey: &str,
-) -> Result<(), CliError> {
-    let selector = passkey.trim();
-    if selector.is_empty() {
-        return Err(CliError::Config("passkey identifier cannot be empty".to_owned()));
-    }
-    let resolved = require_project(context)?;
-    let mut store = open_store(context)?;
-    let project_id = resolved.config.project_id.as_str();
-    ensure_project_exists(&store, project_id)?;
-    let matches = store.find_passkey_credentials(project_id, selector)?;
-    let active_matches = matches
-        .into_iter()
-        .filter(|credential| credential.revoked_at.is_none())
-        .collect::<Vec<_>>();
-    let credential = match active_matches.as_slice() {
-        [] => return Err(CliError::Config("passkey credential not found".to_owned())),
-        [credential] => credential.clone(),
-        _ => {
-            return Err(CliError::Config(
-                "passkey identifier is ambiguous; use a longer credential id prefix".to_owned(),
-            ));
-        }
-    };
-    writeln!(output, "passkey: revoke")?;
-    writeln!(output, "label: {}", credential.label)?;
-    writeln!(output, "credential_id_prefix: {}", credential_id_prefix(&credential.credential_id))?;
-    writeln!(output, "transports: {}", render_passkey_transports(&credential.transports))?;
-    writeln!(output, "prf: {}", yes_no(credential.prf_capable))?;
-    let confirmation = context.confirmation_reader.read_confirmation("passkey remove")?;
-    if confirmation.trim_end() != selector {
-        return Err(CliError::Config("confirmation did not match passkey identifier".to_owned()));
-    }
-    let timestamp = now_unix_nanos()?;
-    store.revoke_passkey_credential(project_id, &credential.id, timestamp)?;
-    write_passkey_remove_audit_if_available(
-        context,
-        &mut store,
-        &resolved,
-        &credential,
-        timestamp,
-    )?;
-    writeln!(output, "passkey: revoked")?;
-    writeln!(output, "passkey_id: {}", credential.id)?;
-    writeln!(output, "revoked_at: {}", format_unix_nanos(timestamp))?;
-    writeln!(output, "metadata_only: yes")?;
-    Ok(())
-}
-
-fn credential_id_prefix(credential_id: &[u8]) -> String {
-    format_hex(credential_id).chars().take(12).collect()
-}
-
-fn render_passkey_transports(transports: &[String]) -> String {
-    if transports.is_empty() { "-".to_owned() } else { transports.join(",") }
-}
-
-fn render_optional_bool(value: Option<bool>) -> &'static str {
-    value.map_or("unknown", yes_no)
-}
-
-fn write_passkey_remove_audit_if_available(
-    context: &RuntimeContext,
-    store: &mut Store,
-    resolved: &ResolvedProject,
-    credential: &PasskeyCredentialRecord,
-    timestamp: i64,
-) -> Result<(), CliError> {
-    let Ok(audit_key) =
-        load_project_key(context, store, resolved.config.project_id.as_str(), KeyPurpose::Audit)
-    else {
-        return Ok(());
-    };
-    let metadata = json!({
-        "schema_version": 1,
-        "action": "PASSKEY_REMOVE",
-        "status": "SUCCESS",
-        "command": "passkey remove",
-        "passkey_id": credential.id,
-        "label": credential.label,
-        "credential_id_prefix": credential_id_prefix(&credential.credential_id),
-        "transports": credential.transports,
-        "prf_capable": credential.prf_capable,
-        "backup_eligible": credential.backup_eligible,
-        "backup_state": credential.backup_state,
-    });
-    let audit = AuditWrite {
-        project_id: resolved.config.project_id.as_str(),
-        profile_id: None,
-        action: "PASSKEY_REMOVE",
-        status: "SUCCESS",
-        secret_name: None,
-        command: Some("passkey remove"),
-        metadata_json: &metadata,
-        timestamp,
-    };
-    store.append_audit(audit_key.as_ref(), &audit)?;
-    Ok(())
-}
-
-fn client_command(
-    context: &RuntimeContext,
-    output: &mut impl Write,
-    command: ClientCommand,
-) -> Result<(), CliError> {
-    match command {
-        ClientCommand::Create(args) => client_create_command(context, output, &args),
-        ClientCommand::Add(args) => client_add_command(context, output, &args),
-        ClientCommand::List(args) => client_list_command(context, output, args.all),
-        ClientCommand::Revoke { client } => client_revoke_command(context, output, &client),
-    }
-}
-
-fn client_create_command(
-    context: &RuntimeContext,
-    output: &mut impl Write,
-    args: &ClientCreateArgs,
-) -> Result<(), CliError> {
-    let seed = generate_key()?;
-    let signing_key = SigningKey::from_bytes(&seed);
-    let public_key = signing_key.verifying_key().to_bytes();
-    register_client_metadata(
-        context,
-        output,
-        ClientRegistrationRequest {
-            name: &args.name,
-            public_key: &public_key,
-            storage: args.storage.as_str(),
-            actions: &args.actions,
-            policies: &args.policies,
-            created_by_locket: true,
-        },
-    )
-}
-
-fn client_add_command(
-    context: &RuntimeContext,
-    output: &mut impl Write,
-    args: &ClientAddArgs,
-) -> Result<(), CliError> {
-    let public_key = parse_client_public_key(&args.pubkey)?;
-    register_client_metadata(
-        context,
-        output,
-        ClientRegistrationRequest {
-            name: &args.name,
-            public_key: &public_key,
-            storage: "external",
-            actions: &args.actions,
-            policies: &args.policies,
-            created_by_locket: false,
-        },
-    )
-}
-
-#[derive(Clone, Copy)]
-struct ClientRegistrationRequest<'a> {
-    name: &'a str,
-    public_key: &'a [u8; 32],
-    storage: &'a str,
-    actions: &'a [String],
-    policies: &'a [String],
-    created_by_locket: bool,
-}
-
-fn register_client_metadata(
-    context: &RuntimeContext,
-    output: &mut impl Write,
-    request: ClientRegistrationRequest<'_>,
-) -> Result<(), CliError> {
-    let resolved = require_project(context)?;
-    let mut store = open_store(context)?;
-    ensure_project_exists(&store, resolved.config.project_id.as_str())?;
-    ensure_trusted_project_root(&store, &resolved)?;
-    let name = validate_client_name(request.name)?;
-    let actions = validate_client_actions(request.actions)?;
-    let policies = validate_client_policies(&resolved, request.policies)?;
-    let timestamp = now_unix_nanos()?;
-    let id = ClientId::generate().map_err(|error| CliError::Config(error.to_string()))?;
-    let fingerprint = client_public_key_fingerprint(request.public_key);
-    let client = AutomationClientRecord {
-        id: id.as_str().to_owned(),
-        project_id: resolved.config.project_id.to_string(),
-        name: name.to_owned(),
-        public_key: request.public_key.to_vec(),
-        fingerprint: fingerprint.clone(),
-        storage: request.storage.to_owned(),
-        allowed_actions: actions.clone(),
-        allowed_policies: policies.clone(),
-        created_at: timestamp,
-        last_used_at: None,
-        revoked_at: None,
-    };
-    store.insert_automation_client(&client)?;
-    let metadata = json!({
-        "schema_version": 1,
-        "action": "CLIENT_ADD",
-        "status": "SUCCESS",
-        "project_id": resolved.config.project_id.as_str(),
-        "client_id": &client.id,
-        "client_name": &client.name,
-        "public_key_fingerprint": &fingerprint,
-        "storage": request.storage,
-        "allowed_actions": &actions,
-        "allowed_policies": &policies,
-        "created_by_locket": request.created_by_locket,
-    });
-    write_client_audit_if_available(
-        context,
-        &mut store,
-        &resolved,
-        "CLIENT_ADD",
-        &metadata,
-        timestamp,
-    )?;
-
-    writeln!(output, "client: {}", client.name)?;
-    writeln!(output, "client_id: {}", client.id)?;
-    writeln!(output, "fingerprint: {}", client.fingerprint)?;
-    writeln!(output, "storage: {}", client.storage)?;
-    writeln!(output, "allowed_actions: {}", client.allowed_actions.join(","))?;
-    writeln!(output, "allowed_policies: {}", client.allowed_policies.join(","))?;
-    writeln!(output, "private_key_material: never displayed")?;
-    if request.created_by_locket {
-        writeln!(output, "private_key_storage: not implemented in this metadata foundation")?;
-    }
-    Ok(())
-}
-
-fn client_list_command(
-    context: &RuntimeContext,
-    output: &mut impl Write,
-    include_revoked: bool,
-) -> Result<(), CliError> {
-    let resolved = require_project(context)?;
-    let store = open_store(context)?;
-    ensure_project_exists(&store, resolved.config.project_id.as_str())?;
-    let clients =
-        store.list_automation_clients(resolved.config.project_id.as_str(), include_revoked)?;
-    if clients.is_empty() {
-        writeln!(output, "clients: none")?;
-        writeln!(output, "include_revoked: {}", if include_revoked { "yes" } else { "no" })?;
-        writeln!(output, "private_key_material: never displayed")?;
-        return Ok(());
-    }
-    for client in clients {
-        writeln!(
-            output,
-            "{} {} fingerprint={} actions={} policies={} created_at={} last_used_at={} revoked_at={}",
-            client.id,
-            client.name,
-            truncated_fingerprint(&client.fingerprint),
-            client.allowed_actions.join(","),
-            client.allowed_policies.join(","),
-            format_unix_nanos(client.created_at),
-            client.last_used_at.map_or_else(|| "never".to_owned(), format_unix_nanos),
-            client.revoked_at.map_or_else(|| "active".to_owned(), format_unix_nanos),
-        )?;
-    }
-    writeln!(output, "private_key_material: never displayed")?;
-    Ok(())
-}
-
-fn client_revoke_command(
-    context: &RuntimeContext,
-    output: &mut impl Write,
-    client_ref: &str,
-) -> Result<(), CliError> {
-    if client_ref.trim().is_empty() {
-        return Err(CliError::Config("client identifier cannot be empty".to_owned()));
-    }
-    let resolved = require_project(context)?;
-    let mut store = open_store(context)?;
-    ensure_project_exists(&store, resolved.config.project_id.as_str())?;
-    ensure_trusted_project_root(&store, &resolved)?;
-    let Some(client) =
-        store.get_automation_client(resolved.config.project_id.as_str(), client_ref)?
-    else {
-        return Err(CliError::Config(format!("automation client not found: {client_ref}")));
-    };
-    if client.revoked_at.is_some() {
-        writeln!(output, "client: {}", client.name)?;
-        writeln!(output, "client_id: {}", client.id)?;
-        writeln!(output, "status: already revoked")?;
-        return Ok(());
-    }
-    let timestamp = now_unix_nanos()?;
-    store.revoke_automation_client(resolved.config.project_id.as_str(), &client.id, timestamp)?;
-    let metadata = json!({
-        "schema_version": 1,
-        "action": "CLIENT_REVOKE",
-        "status": "SUCCESS",
-        "project_id": resolved.config.project_id.as_str(),
-        "client_id": &client.id,
-        "client_name": &client.name,
-        "public_key_fingerprint": &client.fingerprint,
-        "storage": &client.storage,
-        "allowed_actions": &client.allowed_actions,
-        "allowed_policies": &client.allowed_policies,
-        "revoked_at": timestamp,
-    });
-    write_client_audit_if_available(
-        context,
-        &mut store,
-        &resolved,
-        "CLIENT_REVOKE",
-        &metadata,
-        timestamp,
-    )?;
-    writeln!(output, "client: {}", client.name)?;
-    writeln!(output, "client_id: {}", client.id)?;
-    writeln!(output, "revoked_at: {}", format_unix_nanos(timestamp))?;
-    writeln!(output, "private_key_material: never displayed")?;
     Ok(())
 }
 
@@ -8461,115 +8092,6 @@ fn format_hex(bytes: &[u8]) -> String {
         output.push(char::from(HEX[usize::from(byte & 0x0f)]));
     }
     output
-}
-
-fn parse_client_public_key(value: &str) -> Result<[u8; 32], CliError> {
-    let value = value.strip_prefix("0x").unwrap_or(value);
-    if value.len() != 64 {
-        return Err(CliError::Config("public key must be 64 hex characters".to_owned()));
-    }
-    let mut output = [0_u8; 32];
-    for (index, chunk) in value.as_bytes().chunks_exact(2).enumerate() {
-        let high = hex_nibble_with_message(chunk[0], "public key must be hex encoded")?;
-        let low = hex_nibble_with_message(chunk[1], "public key must be hex encoded")?;
-        output[index] = (high << 4) | low;
-    }
-    Ok(output)
-}
-
-fn client_public_key_fingerprint(public_key: &[u8; 32]) -> String {
-    let digest = Sha256::digest(public_key);
-    format_hex(&digest[..16])
-}
-
-fn truncated_fingerprint(fingerprint: &str) -> &str {
-    fingerprint.get(..16).unwrap_or(fingerprint)
-}
-
-fn validate_client_name(name: &str) -> Result<&str, CliError> {
-    let name = name.trim();
-    let mut chars = name.chars();
-    let Some(first) = chars.next() else {
-        return Err(CliError::Config("client name cannot be empty".to_owned()));
-    };
-    if !first.is_ascii_lowercase()
-        || !chars.all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-' || ch == '_')
-        || name.len() > 64
-    {
-        return Err(CliError::Config("client name must match ^[a-z][a-z0-9_-]{0,63}$".to_owned()));
-    }
-    Ok(name)
-}
-
-fn validate_client_actions(actions: &[String]) -> Result<Vec<String>, CliError> {
-    if actions.is_empty() {
-        return Err(CliError::Config(
-            "InvalidPolicy: at least one --action is required".to_owned(),
-        ));
-    }
-    let mut normalized = BTreeSet::new();
-    for action in actions {
-        match action.as_str() {
-            "run-policy" | "resolve-reference" | "scan-known-values" | "redact" => {
-                normalized.insert(action.clone());
-            }
-            unsupported => {
-                return Err(CliError::Config(format!(
-                    "InvalidPolicy: unsupported automation-client action: {unsupported}"
-                )));
-            }
-        }
-    }
-    Ok(normalized.into_iter().collect())
-}
-
-fn validate_client_policies(
-    resolved: &ResolvedProject,
-    policies: &[String],
-) -> Result<Vec<String>, CliError> {
-    if policies.is_empty() {
-        return Err(CliError::Config(
-            "InvalidPolicy: at least one --policy is required".to_owned(),
-        ));
-    }
-    let mut normalized = BTreeSet::new();
-    for policy in policies {
-        if policy == "*" || policy.trim().is_empty() {
-            return Err(CliError::Config(
-                "InvalidPolicy: wildcard or empty client policies are not supported".to_owned(),
-            ));
-        }
-        load_command_policy(resolved, policy)?;
-        normalized.insert(policy.clone());
-    }
-    Ok(normalized.into_iter().collect())
-}
-
-fn write_client_audit_if_available(
-    context: &RuntimeContext,
-    store: &mut Store,
-    resolved: &ResolvedProject,
-    action: &'static str,
-    metadata: &Value,
-    timestamp: i64,
-) -> Result<(), CliError> {
-    let Ok(audit_key) =
-        load_project_key(context, store, resolved.config.project_id.as_str(), KeyPurpose::Audit)
-    else {
-        return Ok(());
-    };
-    let audit = AuditWrite {
-        project_id: resolved.config.project_id.as_str(),
-        profile_id: None,
-        action,
-        status: "SUCCESS",
-        secret_name: None,
-        command: Some("client"),
-        metadata_json: metadata,
-        timestamp,
-    };
-    store.append_audit(audit_key.as_ref(), &audit)?;
-    Ok(())
 }
 
 fn parse_root_hash(value: &str) -> Result<[u8; 32], CliError> {
