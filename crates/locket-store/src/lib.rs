@@ -109,6 +109,33 @@ pub struct KeyRecord {
     pub created_at: i64,
 }
 
+/// Trusted device public metadata row.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DeviceRecord {
+    /// Device identifier.
+    pub id: String,
+    /// Parent project identifier.
+    pub project_id: String,
+    /// Human-readable device name.
+    pub name: String,
+    /// Ed25519 signing public key bytes.
+    pub signing_public_key: Vec<u8>,
+    /// X25519 sealing public key bytes.
+    pub sealing_public_key: Vec<u8>,
+    /// Lowercase hex SHA-256 fingerprint.
+    pub fingerprint: String,
+    /// Safety words as metadata-only display strings.
+    pub safety_words: Vec<String>,
+    /// Whether this row represents the current local machine's device identity.
+    pub local: bool,
+    /// Creation timestamp in nanoseconds since the Unix epoch.
+    pub created_at: i64,
+    /// Last-seen timestamp in nanoseconds since the Unix epoch.
+    pub last_seen_at: Option<i64>,
+    /// Revocation timestamp in nanoseconds since the Unix epoch.
+    pub revoked_at: Option<i64>,
+}
+
 /// Secret metadata row.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SecretRecord {
@@ -1023,6 +1050,141 @@ impl Store {
         Ok(())
     }
 
+    /// Inserts a trusted device public metadata row.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Sqlite`] when `SQLite` rejects the insert.
+    pub fn insert_device(&self, device: &DeviceRecord) -> Result<(), StoreError> {
+        let safety_words_json = serde_json::to_string(&device.safety_words)?;
+        self.connection.execute(
+            "INSERT INTO devices(
+               id, project_id, name, signing_public_key, sealing_public_key, fingerprint,
+               safety_words_json, local, created_at, last_seen_at, revoked_at
+             )
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            params![
+                device.id.as_str(),
+                device.project_id.as_str(),
+                device.name.as_str(),
+                device.signing_public_key.as_slice(),
+                device.sealing_public_key.as_slice(),
+                device.fingerprint.as_str(),
+                safety_words_json.as_str(),
+                device.local,
+                device.created_at,
+                device.last_seen_at,
+                device.revoked_at,
+            ],
+        )?;
+
+        Ok(())
+    }
+
+    /// Lists trusted devices for a project ordered by creation time.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Sqlite`] when `SQLite` cannot query device rows.
+    pub fn list_devices(
+        &self,
+        project_id: &str,
+        include_revoked: bool,
+    ) -> Result<Vec<DeviceRecord>, StoreError> {
+        let sql = if include_revoked {
+            "SELECT id, project_id, name, signing_public_key, sealing_public_key, fingerprint,
+                    safety_words_json, local, created_at, last_seen_at, revoked_at
+             FROM devices
+             WHERE project_id = ?1
+             ORDER BY created_at, id"
+        } else {
+            "SELECT id, project_id, name, signing_public_key, sealing_public_key, fingerprint,
+                    safety_words_json, local, created_at, last_seen_at, revoked_at
+             FROM devices
+             WHERE project_id = ?1 AND revoked_at IS NULL
+             ORDER BY created_at, id"
+        };
+        let mut statement = self.connection.prepare(sql)?;
+        let devices = statement
+            .query_map([project_id], device_record_from_row)?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(devices)
+    }
+
+    /// Returns the active local device row for a project.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Sqlite`] when `SQLite` cannot query device rows.
+    pub fn get_active_local_device(
+        &self,
+        project_id: &str,
+    ) -> Result<Option<DeviceRecord>, StoreError> {
+        Ok(self
+            .connection
+            .query_row(
+                "SELECT id, project_id, name, signing_public_key, sealing_public_key, fingerprint,
+                        safety_words_json, local, created_at, last_seen_at, revoked_at
+                 FROM devices
+                 WHERE project_id = ?1 AND local = 1 AND revoked_at IS NULL
+                 ORDER BY created_at DESC
+                 LIMIT 1",
+                [project_id],
+                device_record_from_row,
+            )
+            .optional()?)
+    }
+
+    /// Finds a device by id, name, or fingerprint for a project.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Sqlite`] when `SQLite` cannot query device rows.
+    pub fn find_device(
+        &self,
+        project_id: &str,
+        selector: &str,
+    ) -> Result<Option<DeviceRecord>, StoreError> {
+        Ok(self
+            .connection
+            .query_row(
+                "SELECT id, project_id, name, signing_public_key, sealing_public_key, fingerprint,
+                        safety_words_json, local, created_at, last_seen_at, revoked_at
+                 FROM devices
+                 WHERE project_id = ?1
+                   AND (id = ?2 OR name = ?2 OR fingerprint = lower(?2))
+                 ORDER BY revoked_at IS NULL DESC, created_at DESC
+                 LIMIT 1",
+                params![project_id, selector],
+                device_record_from_row,
+            )
+            .optional()?)
+    }
+
+    /// Marks a device revoked.
+    ///
+    /// Returns `true` when a row changed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Sqlite`] when `SQLite` rejects the update.
+    pub fn revoke_device(
+        &self,
+        project_id: &str,
+        device_id: &str,
+        revoked_at: i64,
+    ) -> Result<bool, StoreError> {
+        self.connection.execute(
+            "UPDATE devices
+             SET revoked_at = ?3
+             WHERE project_id = ?1 AND id = ?2 AND revoked_at IS NULL",
+            params![project_id, device_id, revoked_at],
+        )?;
+
+        Ok(self.connection.changes() == 1)
+    }
+
     /// Returns wrapped key material by id.
     ///
     /// # Errors
@@ -1912,6 +2074,27 @@ fn key_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<KeyRecord> {
     })
 }
 
+fn device_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<DeviceRecord> {
+    let safety_words_json = row.get::<_, String>(6)?;
+    let safety_words =
+        serde_json::from_str::<Vec<String>>(&safety_words_json).map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(6, Type::Text, Box::new(error))
+        })?;
+    Ok(DeviceRecord {
+        id: row.get(0)?,
+        project_id: row.get(1)?,
+        name: row.get(2)?,
+        signing_public_key: row.get(3)?,
+        sealing_public_key: row.get(4)?,
+        fingerprint: row.get(5)?,
+        safety_words,
+        local: row.get(7)?,
+        created_at: row.get(8)?,
+        last_seen_at: row.get(9)?,
+        revoked_at: row.get(10)?,
+    })
+}
+
 fn secret_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SecretRecord> {
     Ok(SecretRecord {
         id: row.get(0)?,
@@ -2187,6 +2370,10 @@ pub enum StoreError {
     #[error(transparent)]
     Sqlite(#[from] rusqlite::Error),
 
+    /// JSON metadata encoding failed.
+    #[error(transparent)]
+    Json(#[from] serde_json::Error),
+
     /// Audit HMAC canonicalization failed.
     #[error(transparent)]
     AuditCanonicalization(#[from] AuditCanonicalizationError),
@@ -2429,6 +2616,26 @@ CREATE UNIQUE INDEX IF NOT EXISTS keys_profile_scope_unique
   ON keys(project_id, profile_id, purpose)
   WHERE profile_id IS NOT NULL;
 
+CREATE TABLE IF NOT EXISTS devices (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  signing_public_key BLOB NOT NULL CHECK (length(signing_public_key) = 32),
+  sealing_public_key BLOB NOT NULL CHECK (length(sealing_public_key) = 32),
+  fingerprint TEXT NOT NULL,
+  safety_words_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(safety_words_json)),
+  local INTEGER NOT NULL CHECK (local IN (0, 1)),
+  created_at INTEGER NOT NULL,
+  last_seen_at INTEGER,
+  revoked_at INTEGER,
+  UNIQUE (project_id, name),
+  UNIQUE (project_id, fingerprint)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS devices_one_active_local_idx
+  ON devices(project_id)
+  WHERE local = 1 AND revoked_at IS NULL;
+
 CREATE TABLE IF NOT EXISTS audit_log (
   project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   sequence INTEGER NOT NULL CHECK (sequence >= 1),
@@ -2507,10 +2714,10 @@ mod tests {
     use tempfile::{TempDir, tempdir};
 
     use super::{
-        AuditContext, AuditWrite, DirectoryGrantRecord, KeyRecord, ProfileRecord, ProjectRecord,
-        ProjectRootRecord, RuntimeSessionRecord, RuntimeSessionSecretNameRetention, SCHEMA_VERSION,
-        SecretBlobRecord, SecretFingerprintRecord, SecretRecord, SecretVersionRecord, Store,
-        StoreError,
+        AuditContext, AuditWrite, DeviceRecord, DirectoryGrantRecord, KeyRecord, ProfileRecord,
+        ProjectRecord, ProjectRootRecord, RuntimeSessionRecord, RuntimeSessionSecretNameRetention,
+        SCHEMA_VERSION, SecretBlobRecord, SecretFingerprintRecord, SecretRecord,
+        SecretVersionRecord, Store, StoreError,
     };
 
     struct TestStore {
@@ -2632,6 +2839,22 @@ mod tests {
         }
     }
 
+    fn test_device() -> DeviceRecord {
+        DeviceRecord {
+            id: "lk_dev_test".to_owned(),
+            project_id: "lk_proj_test".to_owned(),
+            name: "work-laptop".to_owned(),
+            signing_public_key: vec![1; 32],
+            sealing_public_key: vec![2; 32],
+            fingerprint: "ab".repeat(32),
+            safety_words: vec!["amber".to_owned(), "river".to_owned(), "north".to_owned()],
+            local: true,
+            created_at: 100,
+            last_seen_at: Some(100),
+            revoked_at: None,
+        }
+    }
+
     #[test]
     fn creates_schema_and_records_migration() -> Result<(), Box<dyn Error>> {
         let test_store = open_initialized_store()?;
@@ -2644,6 +2867,7 @@ mod tests {
             "secret_versions",
             "blobs",
             "keys",
+            "devices",
             "project_roots",
             "directory_grants",
             "audit_log",
@@ -2729,6 +2953,33 @@ mod tests {
         );
 
         assert!(result.is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn stores_lists_and_revokes_devices() -> Result<(), Box<dyn Error>> {
+        let test_store = open_initialized_store()?;
+        insert_project_profile(&test_store.store)?;
+        let device = test_device();
+
+        test_store.store.insert_device(&device)?;
+
+        assert_eq!(test_store.store.get_active_local_device("lk_proj_test")?, Some(device.clone()));
+        assert_eq!(
+            test_store.store.find_device("lk_proj_test", "work-laptop")?,
+            Some(device.clone())
+        );
+        assert_eq!(
+            test_store.store.find_device("lk_proj_test", &device.fingerprint)?,
+            Some(device)
+        );
+
+        assert!(test_store.store.revoke_device("lk_proj_test", "lk_dev_test", 200)?);
+        assert!(test_store.store.get_active_local_device("lk_proj_test")?.is_none());
+        assert!(test_store.store.list_devices("lk_proj_test", false)?.is_empty());
+        let all = test_store.store.list_devices("lk_proj_test", true)?;
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].revoked_at, Some(200));
         Ok(())
     }
 

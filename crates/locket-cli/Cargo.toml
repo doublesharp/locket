@@ -20,6 +20,7 @@ workspace = true
 [dependencies]
 clap = { workspace = true }
 clap_complete = { workspace = true }
+data-encoding = { workspace = true }
 directories = { workspace = true }
 flate2 = { workspace = true }
 ignore = { workspace = true }

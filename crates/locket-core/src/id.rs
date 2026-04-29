@@ -96,6 +96,7 @@ opaque_id!(ProjectId, "lk_proj_");
 opaque_id!(ProfileId, "lk_prof_");
 opaque_id!(SecretId, "lk_sec_");
 opaque_id!(KeyId, "lk_key_");
+opaque_id!(DeviceId, "lk_dev_");
 opaque_id!(SessionId, "lk_session_");
 opaque_id!(ClientId, "lk_client_");
 opaque_id!(KdfProfileId, "lk_kdf_");
@@ -144,7 +145,9 @@ fn append_lower_hex(output: &mut String, bytes: &[u8]) {
 mod tests {
     use std::collections::HashSet;
 
-    use super::{ClientId, KdfProfileId, KeyId, ProfileId, ProjectId, SecretId, SessionId};
+    use super::{
+        ClientId, DeviceId, KdfProfileId, KeyId, ProfileId, ProjectId, SecretId, SessionId,
+    };
 
     #[test]
     fn accepts_ids_with_expected_prefixes() {
@@ -152,6 +155,7 @@ mod tests {
         assert!(ProfileId::new("lk_prof_default").is_ok());
         assert!(SecretId::new("lk_sec_database").is_ok());
         assert!(KeyId::new("lk_key_01").is_ok());
+        assert!(DeviceId::new("lk_dev_laptop").is_ok());
         assert!(SessionId::new("lk_session_shell").is_ok());
         assert!(ClientId::new("lk_client_ci").is_ok());
         assert!(KdfProfileId::new("lk_kdf_argon2id").is_ok());
@@ -223,6 +227,7 @@ mod tests {
             (ProfileId::PREFIX, ProfileId::generate()?.into_string()),
             (SecretId::PREFIX, SecretId::generate()?.into_string()),
             (KeyId::PREFIX, KeyId::generate()?.into_string()),
+            (DeviceId::PREFIX, DeviceId::generate()?.into_string()),
             (SessionId::PREFIX, SessionId::generate()?.into_string()),
             (ClientId::PREFIX, ClientId::generate()?.into_string()),
             (KdfProfileId::PREFIX, KdfProfileId::generate()?.into_string()),
