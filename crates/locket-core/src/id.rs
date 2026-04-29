@@ -3,7 +3,11 @@
 use std::fmt::{self, Display};
 use std::str::FromStr;
 
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use thiserror::Error;
+
+const GENERATED_ID_RANDOM_BYTES: usize = 16;
+const GENERATED_ID_SUFFIX_CHARS: usize = GENERATED_ID_RANDOM_BYTES * 2;
 
 macro_rules! opaque_id {
     ($name:ident, $prefix:literal) => {
@@ -25,6 +29,19 @@ macro_rules! opaque_id {
                 let value = value.into();
                 validate_id(&value, Self::PREFIX)?;
                 Ok(Self(value))
+            }
+
+            /// Generates a new opaque identifier using operating-system randomness.
+            ///
+            /// The generated identifier has this type's required prefix followed by
+            /// a lowercase hexadecimal random suffix.
+            ///
+            /// # Errors
+            ///
+            /// Returns [`IdGenerationError`] when secure random bytes cannot be read
+            /// from the operating system.
+            pub fn generate() -> Result<Self, IdGenerationError> {
+                generate_id(Self::PREFIX).map(Self)
             }
 
             /// Returns the validated string value.
@@ -53,6 +70,25 @@ macro_rules! opaque_id {
                 Self::new(value)
             }
         }
+
+        impl Serialize for $name {
+            fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+            where
+                S: Serializer,
+            {
+                serializer.serialize_str(self.as_str())
+            }
+        }
+
+        impl<'de> Deserialize<'de> for $name {
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+            where
+                D: Deserializer<'de>,
+            {
+                let value = String::deserialize(deserializer)?;
+                Self::new(value).map_err(serde::de::Error::custom)
+            }
+        }
     };
 }
 
@@ -72,6 +108,11 @@ pub struct InvalidId {
     pub expected_prefix: &'static str,
 }
 
+/// Error returned when an opaque identifier cannot be generated.
+#[derive(Debug, Clone, Eq, Error, PartialEq)]
+#[error("secure random id generation failed")]
+pub struct IdGenerationError;
+
 fn validate_id(value: &str, expected_prefix: &'static str) -> Result<(), InvalidId> {
     if value.strip_prefix(expected_prefix).is_some_and(|suffix| !suffix.is_empty()) {
         Ok(())
@@ -80,8 +121,29 @@ fn validate_id(value: &str, expected_prefix: &'static str) -> Result<(), Invalid
     }
 }
 
+fn generate_id(prefix: &str) -> Result<String, IdGenerationError> {
+    let mut random = [0_u8; GENERATED_ID_RANDOM_BYTES];
+    getrandom::getrandom(&mut random).map_err(|_| IdGenerationError)?;
+
+    let mut value = String::with_capacity(prefix.len() + GENERATED_ID_SUFFIX_CHARS);
+    value.push_str(prefix);
+    append_lower_hex(&mut value, &random);
+    Ok(value)
+}
+
+fn append_lower_hex(output: &mut String, bytes: &[u8]) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+
+    for byte in bytes {
+        output.push(char::from(HEX[usize::from(byte >> 4)]));
+        output.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
     use super::{ClientId, KdfProfileId, KeyId, ProfileId, ProjectId, SecretId, SessionId};
 
     #[test]
@@ -106,5 +168,41 @@ mod tests {
     fn rejects_empty_id_suffixes() {
         assert!(ProjectId::new("lk_proj_").is_err());
         assert!(ClientId::new("lk_client_").is_err());
+    }
+
+    #[test]
+    fn generates_lowercase_hex_project_ids() -> Result<(), super::IdGenerationError> {
+        let id = ProjectId::generate()?;
+
+        assert!(id.as_str().starts_with(ProjectId::PREFIX));
+        let suffix = &id.as_str()[ProjectId::PREFIX.len()..];
+
+        assert_eq!(suffix.len(), 32);
+        assert!(suffix.chars().all(|value| value.is_ascii_hexdigit() && !value.is_uppercase()));
+        Ok(())
+    }
+
+    #[test]
+    fn generated_ids_have_type_prefixes_and_unique_shape() -> Result<(), super::IdGenerationError> {
+        let ids = [
+            (ProfileId::PREFIX, ProfileId::generate()?.into_string()),
+            (SecretId::PREFIX, SecretId::generate()?.into_string()),
+            (KeyId::PREFIX, KeyId::generate()?.into_string()),
+            (SessionId::PREFIX, SessionId::generate()?.into_string()),
+            (ClientId::PREFIX, ClientId::generate()?.into_string()),
+            (KdfProfileId::PREFIX, KdfProfileId::generate()?.into_string()),
+        ];
+
+        let unique = ids.iter().map(|(_, id)| id).collect::<HashSet<_>>();
+        assert_eq!(unique.len(), ids.len());
+
+        for (prefix, id) in ids {
+            assert!(id.starts_with(prefix));
+            let suffix = &id[prefix.len()..];
+            assert_eq!(suffix.len(), 32);
+            assert!(suffix.chars().all(|value| value.is_ascii_hexdigit() && !value.is_uppercase()));
+        }
+
+        Ok(())
     }
 }

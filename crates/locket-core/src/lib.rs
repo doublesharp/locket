@@ -4,6 +4,8 @@ pub mod audit;
 pub mod env;
 pub mod error;
 pub mod id;
+pub mod profile_name;
+pub mod project;
 pub mod secret_name;
 pub mod time;
 
@@ -14,6 +16,11 @@ pub use audit::{
 };
 pub use env::{EnvMap, EnvMergeError, EnvMode, EnvOverrideMode, merge_environment};
 pub use error::{ExitCode, LocketError};
-pub use id::{ClientId, InvalidId, KdfProfileId, KeyId, ProfileId, ProjectId, SecretId, SessionId};
+pub use id::{
+    ClientId, IdGenerationError, InvalidId, KdfProfileId, KeyId, ProfileId, ProjectId, SecretId,
+    SessionId,
+};
+pub use profile_name::{InvalidProfileName, MAX_PROFILE_NAME_LEN, ProfileName};
+pub use project::{PROJECT_CONFIG_SCHEMA_VERSION, ProjectConfig};
 pub use secret_name::{InvalidSecretName, SecretName};
 pub use time::{Duration, InvalidDuration, Timestamp};

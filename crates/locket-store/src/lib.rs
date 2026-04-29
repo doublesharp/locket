@@ -3,7 +3,7 @@
 use std::path::Path;
 use std::time::Duration;
 
-use rusqlite::{Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params};
 use thiserror::Error;
 
 /// Current storage schema version.
@@ -15,6 +15,32 @@ const BUSY_TIMEOUT_MS: u64 = 5_000;
 #[derive(Debug)]
 pub struct Store {
     connection: Connection,
+}
+
+/// Metadata for a stored project.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProjectRecord {
+    /// Project identifier.
+    pub id: String,
+    /// Human-readable project name.
+    pub name: String,
+    /// Creation timestamp in nanoseconds since the Unix epoch.
+    pub created_at: i64,
+}
+
+/// Metadata for a stored profile.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProfileRecord {
+    /// Profile identifier.
+    pub id: String,
+    /// Parent project identifier.
+    pub project_id: String,
+    /// Human-readable profile name.
+    pub name: String,
+    /// Whether the profile is marked dangerous.
+    pub dangerous: bool,
+    /// Creation timestamp in nanoseconds since the Unix epoch.
+    pub created_at: i64,
 }
 
 impl Store {
@@ -54,6 +80,168 @@ impl Store {
     pub const fn connection_mut(&mut self) -> &mut Connection {
         &mut self.connection
     }
+
+    /// Inserts a project metadata row when `id` does not already exist.
+    ///
+    /// Returns `true` when the project was inserted and `false` when a project
+    /// with the same `id` already existed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Sqlite`] when `SQLite` rejects the insert.
+    pub fn insert_project_if_absent(
+        &self,
+        id: &str,
+        name: &str,
+        created_at: i64,
+    ) -> Result<bool, StoreError> {
+        self.connection.execute(
+            "INSERT OR IGNORE INTO projects(id, name, created_at) VALUES (?1, ?2, ?3)",
+            (id, name, created_at),
+        )?;
+
+        Ok(self.connection.changes() == 1)
+    }
+
+    /// Returns project metadata by id.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Sqlite`] when `SQLite` cannot query the project row.
+    pub fn get_project(&self, id: &str) -> Result<Option<ProjectRecord>, StoreError> {
+        self.connection
+            .query_row(
+                "SELECT id, name, created_at FROM projects WHERE id = ?1",
+                [id],
+                project_record_from_row,
+            )
+            .optional()
+            .map_err(StoreError::from)
+    }
+
+    /// Inserts a profile metadata row when `id` and `(project_id, name)` are absent.
+    ///
+    /// Returns `true` when the profile was inserted and `false` when either the
+    /// profile id or the project-scoped profile name already existed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Sqlite`] when `SQLite` rejects the insert, including
+    /// when `project_id` does not reference an existing project.
+    pub fn insert_profile_if_absent(
+        &self,
+        id: &str,
+        project_id: &str,
+        name: &str,
+        dangerous: bool,
+        created_at: i64,
+    ) -> Result<bool, StoreError> {
+        self.connection.execute(
+            "INSERT OR IGNORE INTO profiles(id, project_id, name, dangerous, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            (id, project_id, name, dangerous, created_at),
+        )?;
+
+        Ok(self.connection.changes() == 1)
+    }
+
+    /// Lists project profile metadata ordered by profile name.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Sqlite`] when `SQLite` cannot query profile rows.
+    pub fn list_profiles(&self, project_id: &str) -> Result<Vec<ProfileRecord>, StoreError> {
+        let mut statement = self.connection.prepare(
+            "SELECT id, project_id, name, dangerous, created_at
+             FROM profiles
+             WHERE project_id = ?1
+             ORDER BY name",
+        )?;
+        let profiles = statement
+            .query_map([project_id], profile_record_from_row)?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(profiles)
+    }
+
+    /// Returns profile metadata by project id and profile name.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Sqlite`] when `SQLite` cannot query the profile row.
+    pub fn get_profile_by_name(
+        &self,
+        project_id: &str,
+        name: &str,
+    ) -> Result<Option<ProfileRecord>, StoreError> {
+        self.connection
+            .query_row(
+                "SELECT id, project_id, name, dangerous, created_at
+                 FROM profiles
+                 WHERE project_id = ?1 AND name = ?2",
+                (project_id, name),
+                profile_record_from_row,
+            )
+            .optional()
+            .map_err(StoreError::from)
+    }
+
+    /// Records or refreshes trust for a project root hash.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Sqlite`] when `SQLite` rejects the write.
+    pub fn trust_project_root(
+        &self,
+        project_id: &str,
+        root_hash: &[u8; 32],
+        display_path: Option<&str>,
+        timestamp: i64,
+    ) -> Result<(), StoreError> {
+        self.connection.execute(
+            "INSERT INTO project_roots(project_id, root_hash, display_path, created_at, last_seen_at)
+             VALUES (?1, ?2, ?3, ?4, ?4)
+             ON CONFLICT(project_id, root_hash) DO UPDATE SET
+               display_path = excluded.display_path,
+               last_seen_at = excluded.last_seen_at",
+            params![project_id, root_hash.as_slice(), display_path, timestamp],
+        )?;
+
+        Ok(())
+    }
+
+    /// Returns whether a root hash is trusted for a project.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Sqlite`] when `SQLite` cannot query the root row.
+    pub fn project_root_is_trusted(
+        &self,
+        project_id: &str,
+        root_hash: &[u8; 32],
+    ) -> Result<bool, StoreError> {
+        let row_count = self.connection.query_row(
+            "SELECT COUNT(*) FROM project_roots WHERE project_id = ?1 AND root_hash = ?2",
+            params![project_id, root_hash.as_slice()],
+            |row| row.get::<_, i64>(0),
+        )?;
+
+        Ok(row_count > 0)
+    }
+}
+
+fn project_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProjectRecord> {
+    Ok(ProjectRecord { id: row.get(0)?, name: row.get(1)?, created_at: row.get(2)? })
+}
+
+fn profile_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProfileRecord> {
+    Ok(ProfileRecord {
+        id: row.get(0)?,
+        project_id: row.get(1)?,
+        name: row.get(2)?,
+        dangerous: row.get(3)?,
+        created_at: row.get(4)?,
+    })
 }
 
 /// Error returned by the storage layer.
@@ -307,7 +495,7 @@ mod tests {
 
     use tempfile::{TempDir, tempdir};
 
-    use super::{SCHEMA_VERSION, Store};
+    use super::{ProfileRecord, ProjectRecord, SCHEMA_VERSION, Store};
 
     struct TestStore {
         _directory: TempDir,
@@ -418,6 +606,142 @@ mod tests {
         );
 
         assert!(result.is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn project_insert_if_absent_is_idempotent() -> Result<(), Box<dyn Error>> {
+        let test_store = open_initialized_store()?;
+
+        let inserted = test_store.store.insert_project_if_absent("lk_proj_test", "test", 100)?;
+        assert!(inserted);
+
+        let inserted = test_store.store.insert_project_if_absent("lk_proj_test", "changed", 200)?;
+        assert!(!inserted);
+
+        assert_eq!(
+            test_store.store.get_project("lk_proj_test")?,
+            Some(ProjectRecord {
+                id: "lk_proj_test".to_owned(),
+                name: "test".to_owned(),
+                created_at: 100,
+            })
+        );
+        assert_eq!(test_store.store.get_project("lk_proj_missing")?, None);
+
+        Ok(())
+    }
+
+    #[test]
+    fn profile_insert_if_absent_handles_duplicate_id_and_name() -> Result<(), Box<dyn Error>> {
+        let test_store = open_initialized_store()?;
+        test_store.store.insert_project_if_absent("lk_proj_test", "test", 100)?;
+
+        let inserted = test_store.store.insert_profile_if_absent(
+            "lk_prof_default",
+            "lk_proj_test",
+            "default",
+            false,
+            200,
+        )?;
+        assert!(inserted);
+
+        let inserted = test_store.store.insert_profile_if_absent(
+            "lk_prof_default",
+            "lk_proj_test",
+            "other",
+            true,
+            300,
+        )?;
+        assert!(!inserted);
+
+        let inserted = test_store.store.insert_profile_if_absent(
+            "lk_prof_duplicate_name",
+            "lk_proj_test",
+            "default",
+            true,
+            400,
+        )?;
+        assert!(!inserted);
+
+        assert_eq!(
+            test_store.store.get_profile_by_name("lk_proj_test", "default")?,
+            Some(ProfileRecord {
+                id: "lk_prof_default".to_owned(),
+                project_id: "lk_proj_test".to_owned(),
+                name: "default".to_owned(),
+                dangerous: false,
+                created_at: 200,
+            })
+        );
+        assert_eq!(test_store.store.get_profile_by_name("lk_proj_test", "missing")?, None);
+
+        Ok(())
+    }
+
+    #[test]
+    fn list_profiles_orders_by_name() -> Result<(), Box<dyn Error>> {
+        let test_store = open_initialized_store()?;
+        test_store.store.insert_project_if_absent("lk_proj_test", "test", 100)?;
+        test_store.store.insert_project_if_absent("lk_proj_other", "other", 100)?;
+
+        test_store.store.insert_profile_if_absent(
+            "lk_prof_zed",
+            "lk_proj_test",
+            "zed",
+            false,
+            300,
+        )?;
+        test_store.store.insert_profile_if_absent(
+            "lk_prof_alpha",
+            "lk_proj_test",
+            "alpha",
+            true,
+            100,
+        )?;
+        test_store.store.insert_profile_if_absent(
+            "lk_prof_middle",
+            "lk_proj_test",
+            "middle",
+            false,
+            200,
+        )?;
+        test_store.store.insert_profile_if_absent(
+            "lk_prof_other",
+            "lk_proj_other",
+            "aardvark",
+            false,
+            100,
+        )?;
+
+        let profiles = test_store.store.list_profiles("lk_proj_test")?;
+        let names = profiles.iter().map(|profile| profile.name.as_str()).collect::<Vec<_>>();
+        assert_eq!(names, ["alpha", "middle", "zed"]);
+        assert_eq!(profiles[0].id, "lk_prof_alpha");
+        assert!(profiles[0].dangerous);
+
+        Ok(())
+    }
+
+    #[test]
+    fn trust_project_root_upserts_and_checks_root_hash() -> Result<(), Box<dyn Error>> {
+        let test_store = open_initialized_store()?;
+        test_store.store.insert_project_if_absent("lk_proj_test", "test", 100)?;
+
+        let root_hash = [7_u8; 32];
+        assert!(!test_store.store.project_root_is_trusted("lk_proj_test", &root_hash)?);
+
+        test_store.store.trust_project_root("lk_proj_test", &root_hash, Some("/tmp/app"), 200)?;
+        assert!(test_store.store.project_root_is_trusted("lk_proj_test", &root_hash)?);
+
+        test_store.store.trust_project_root("lk_proj_test", &root_hash, Some("/tmp/app2"), 300)?;
+        let row_count = test_store.store.connection().query_row(
+            "SELECT COUNT(*) FROM project_roots WHERE project_id = 'lk_proj_test'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )?;
+        assert_eq!(row_count, 1);
+
         Ok(())
     }
 
