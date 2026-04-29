@@ -256,9 +256,6 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
   name; reject at every editor before write.
 - [ ] `locket init` atomic rollback and resumable-partial-state when
   store/keychain/recovery-envelope creation fails mid-flight.
-  - Spec: `docs/specs/project-cli.md` CLI Contract.
-  - Errors: `StorageError` (90), `KeychainEntryMissing` (100).
-  - Files: `crates/locket-cli/src/commands/project/init.rs`.
 - [ ] Dotenv import: name-level parity check (never run user app) and
   explicit post-import confirmation to delete `.env`.
 - [~] [6e4d05db] `.env.example` Locket-managed block markers
@@ -327,14 +324,9 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
   monotonic `sequence`, not treated as state change).
 - [x] Process-bound grant binding via `(pid, process_start_time)` per
   platform; PIDs are never trusted alone.
-- [ ] Replace metadata-only `agent start/status/stop/logs` with real agent
-  process behavior and redacted log retention.
-  - Spec: `docs/specs/agent.md:99-110` (start/stop/status semantics),
-    `docs/specs/operations.md` (logs).
-  - Errors: `AgentSocketInUse` (81), `AgentUnavailable` (80).
-  - Audit actions: `LOCK` on stop where keys were held; `AGENT_REVOKE` per
-    revoked grant.
-  - Files: `crates/locket-cli/src/agent.rs`, `crates/locket-agent/src/`.
+- [ ] Replace metadata-only `agent start/status/stop/logs` with real
+  agent process behavior and redacted log retention
+  (`docs/specs/agent.md:99-110`).
 - [~] `locket run` spec coverage. Argv policy execution exists. Remaining work
   is broken into subtasks below; pick any open one.
   - Spec: `docs/specs/runtime.md:5-122`, `docs/specs/policy.md`.
@@ -373,17 +365,11 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
     `require_agent = true`.
 - [~] [70c448c4] ready: agent-70c448c4/external-env-parent @ 829b571 — `ExternalEnvSource::Parent` re-injects only policy-allowed parent names for `locket run`.
   Claim: branch agent-70c448c4/external-env-parent, worktree .worktrees/agent-70c448c4-external-env-parent.
-- [ ] External env source resolution: `ExternalEnvSource::File(path)` (canonical, in-project, non-symlink-escape;
-  `policy doctor` warns), `::Compose` (shell out to `docker compose config
-  --format json`, names-only audit), `::Ide` (consume VS Code terminal
-  `LOCKET_IDE_ENV_SESSION` map over the agent socket, names-only audit, no
-  persistence).
-  - Spec: `docs/specs/runtime.md:117-118`.
-  - Errors: `InvalidPolicy` (65), `ExternalSourceUnavailable` (89).
-  - Audit actions: existing `RUN`/`EXEC` rows with `external_sources` name list.
-  - Files: `crates/locket-core/src/policy/` (enum + validation),
-    `crates/locket-exec/src/` (resolver), `crates/locket-cli/src/main.rs`
-    (Compose subprocess invocation, IDE socket consumer).
+- [ ] External env source resolution: `::File` (canonical, in-project,
+  non-symlink-escape; `policy doctor` warns), `::Compose` (shell out to
+  `docker compose config --format json`, names-only audit), `::Ide`
+  (consume `LOCKET_IDE_ENV_SESSION` over the agent socket; names-only;
+  no persistence) (`docs/specs/runtime.md:117-118`).
 - [x] Shell prompt indicator renders lock state and respects privacy
   aliases (degrades to "stopped" when the agent is unreachable).
 - [~] [70c448c4] blocked: policy surface changes require `crates/locket-cli/src/commands/policy.rs`, currently owned by active claim agent-6e4d05db/audit-key-failures.
@@ -706,17 +692,13 @@ editing — they drift. Severity: **blocker** (security/correctness),
     callsites in `commands/vault/recovery.rs` migrated to
     `metadata_invalid_error(...)` (exit 64) in `8013f25`. Regression covers
     a corrupted `recovery/kdf.toml` exiting 64.
-  - [~] [bec7ddfc] **subtask** — typed-policy-not-found: migrate `command policy not
-    Claim: branch agent-bec7ddfc/typed-policy-not-found, worktree .worktrees/agent-bec7ddfc-typed-policy-not-found. Scope: add a typed PolicyNotFound variant, migrate command-policy and automation-client not-found callsites, update the quick-index, and add exit-code regressions.
-    found: {name}` (3 sites in `main.rs`/`commands/policy.rs`) and
-    `automation client not found: {client_ref}` (1 site) to a new
-    `LocketError::PolicyNotFound` typed variant (band 64-69). Update the
-    Reference Quick-Index. Add per-site exit-code regression.
-  - [~] [70c448c4] **subtask** — typed-project-not-found: migrate `project not found`
+  - [~] [bec7ddfc] ready: agent-bec7ddfc/typed-policy-not-found @ d3c4355 —
+    `PolicyNotFound` (exit 64) added and wired for command-policy misses in
+    `main.rs` / `commands/policy.rs` plus automation-client revoke misses;
+    docs/spec error tables and focused CLI/core regressions updated. Verified:
+    fmt, clippy, workspace tests, and leak-canary pass.
+  - [~] [70c448c4] ready: agent-70c448c4/typed-project-not-found @ a2d9a1e — `ProjectNotFound` (exit 64) added and wired for project resolution misses in `require_project` and `ai-safe`; focused CLI/core regressions added. Verified after merge to `main`: fmt, clippy, workspace tests, and leak-canary pass.
     Claim: branch agent-70c448c4/typed-project-not-found, worktree .worktrees/agent-70c448c4-typed-project-not-found.
-    (2 sites: `main.rs`, `commands/scan/redact.rs`) to a new
-    `LocketError::ProjectNotFound` typed variant (input band) — semantically
-    distinct from `ProjectRootUntrusted`. Regression covers both callers.
   - [x] **subtask** — typed-secret-overflow: migrate `secret version overflow`
     (3 sites) to a new `LocketError::SecretVersionOverflow` variant (input or
     integrity band, per spec). Regression covers a stubbed overflow path.
@@ -946,9 +928,10 @@ disagrees with the spec, the spec wins — fix the table and open a PR.
 ### Canonical typed errors (`crates/locket-core/src/error.rs`)
 
 Input/config band (64-69): `InvalidReference` / `GitWorktreeRequired` /
-`MetadataInvalid` (64), `PolicyValidationIncomplete` (65),
-`EnvironmentConflict` / `MetadataLooksLikeSecret` (66), `SecretAlreadyExists`
-(67), `ConfirmationFailed` / `TtyRequired` (68).
+`MetadataInvalid` / `PolicyNotFound` / `ProjectNotFound` (64),
+`PolicyValidationIncomplete` (65), `EnvironmentConflict` /
+`MetadataLooksLikeSecret` (66), `SecretAlreadyExists` (67),
+`ConfirmationFailed` / `TtyRequired` (68).
 
 Auth/trust/secret-access band (70-79): `AccessDenied` (70),
 `ProjectRootUntrusted` (71), `UnlockRequired` (72), `GrantRequired` (73),
@@ -1031,28 +1014,8 @@ echoed inside `metadata_json` so the HMAC chain covers them. Never write
 | Pattern/entropy/known-value scanner, redactor | `crates/locket-scan/` |
 | Tauri desktop, tray (planned) | `crates/locket-app/` |
 
-### Where each command lives
-
-`init` / `bootstrap` / `emit-example` / `new` / `completion` →
-`crates/locket-cli/src/bootstrap.rs` and `onboarding.rs`.
-`status` / `context` → `crates/locket-cli/src/main.rs` (status_*/context_* fns).
-`set` / `get` / `list` / `rotate` / `rm` / `purge` / `copy` / `history` →
-`crates/locket-cli/src/secrets_cmd.rs`.
-`meta` → `meta.rs`. `diff` → `diff.rs`. `redact` → `redact.rs`.
-`scan` → `scan.rs`. `audit` → `audit.rs`.
-`config` → `config_cmd.rs`. `debug` → `debug_cmd.rs`. `lock`/`unlock` → `lock.rs`.
-`profile` / `use` → `profile.rs`. `project` → `project.rs`.
-`shellenv` / `hook` / `allow` / `deny` → `shell.rs`.
-`bundle` (export/import/verify) → `bundle.rs`.
-`recovery` (`recover`, `recovery rotate`) → `recovery.rs`.
-`device` → `device.rs`. `passkey` → `passkey.rs`. `client` → `client.rs`.
-`agent` → `agent.rs`. `doctor` / `debug bundle` → `diagnostics.rs`.
-`policy *` → `policy_authoring.rs` (currently mostly stubbed).
-`team *` → not yet created (`team.rs`).
-
 ## Latest Verified Checkpoint
 
-- Tip of `main`: `98487fd` ("Define tray notification privacy policy").
 - `cargo fmt --all -- --check` clean on `main`.
 - `cargo test --workspace --all-targets --all-features` passes on `main`.
 - `cargo clippy --workspace --all-targets --all-features -- -D warnings` clean
