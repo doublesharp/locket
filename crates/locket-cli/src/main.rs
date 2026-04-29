@@ -17,8 +17,9 @@ use locket_scan::{
     FindingKind, KnownRedaction, ScanFinding, redact_text, redact_text_with_known_values, scan_text,
 };
 use locket_store::{
-    AuditContext, AuditWrite, KeyRecord, ProfileRecord, SecretBlobRecord, SecretFingerprintRecord,
-    SecretRecord, SecretVersionRecord, Store, StoreError, VersionDeprecation,
+    AuditContext, AuditWrite, DirectoryGrantRecord, KeyRecord, ProfileRecord, SecretBlobRecord,
+    SecretFingerprintRecord, SecretRecord, SecretVersionRecord, Store, StoreError,
+    VersionDeprecation,
 };
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -42,6 +43,9 @@ const EXAMPLE_BEGIN: &str = "# --- BEGIN LOCKET MANAGED ---";
 const EXAMPLE_END: &str = "# --- END LOCKET MANAGED ---";
 const HOOK_BEGIN: &str = "# --- BEGIN LOCKET PRE-COMMIT ---";
 const HOOK_END: &str = "# --- END LOCKET PRE-COMMIT ---";
+const SHELL_HOOK_BEGIN: &str = "# --- BEGIN LOCKET SHELL HOOK ---";
+const SHELL_HOOK_END: &str = "# --- END LOCKET SHELL HOOK ---";
+const DIRECTORY_GRANT_SCOPE_PROJECT_ROOT: &str = "project-root";
 const GITIGNORE_ENTRIES: [&str; 4] = [".env", ".env.*", ".locket.local", ".locketignore"];
 const DEFAULT_MAX_GRACE_TTL_SECONDS: u64 = 7 * 24 * 60 * 60;
 const NANOS_PER_SECOND: i64 = 1_000_000_000;
@@ -91,6 +95,14 @@ enum Command {
         #[command(subcommand)]
         command: ProjectCommand,
     },
+    /// Emit shell rc integration.
+    Shellenv(ShellenvArgs),
+    /// Emit or install a metadata-only shell hook.
+    Hook(HookArgs),
+    /// Allow shell integration for the trusted project root and active profile.
+    Allow,
+    /// Revoke shell integration consent for the active profile or project.
+    Deny(DenyArgs),
     /// Regenerate .env.example.
     EmitExample,
     /// Install Git hooks.
@@ -237,6 +249,40 @@ enum ProfileCommand {
 struct ProfileNameArgs {
     /// Profile name.
     profile: String,
+}
+
+#[derive(Debug, Args)]
+struct ShellenvArgs {
+    /// Shell syntax to emit.
+    #[arg(long, value_enum)]
+    shell: Option<ShellArg>,
+}
+
+#[derive(Debug, Args)]
+struct HookArgs {
+    /// Shell syntax to emit.
+    #[arg(long, value_enum)]
+    shell: Option<ShellArg>,
+    /// Describe installation status. Full agent-backed install is not available in this build.
+    #[arg(long)]
+    install: bool,
+}
+
+#[derive(Debug, Args)]
+struct DenyArgs {
+    /// Revoke every durable directory grant for this project across profiles.
+    #[arg(long)]
+    all: bool,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum ShellArg {
+    /// Bourne Again Shell syntax.
+    Bash,
+    /// Z shell syntax.
+    Zsh,
+    /// Fish shell syntax.
+    Fish,
 }
 
 #[derive(Debug, Subcommand)]
@@ -450,6 +496,10 @@ fn run_with_context(
         Command::InstallHooks => install_hooks_command(context, output)?,
         Command::Profile { command } => profile_command(context, output, command)?,
         Command::Project { command } => project_command(context, output, command)?,
+        Command::Shellenv(args) => shellenv_command(output, &args)?,
+        Command::Hook(args) => hook_command(output, &args)?,
+        Command::Allow => allow_command(context, output)?,
+        Command::Deny(args) => deny_command(context, output, &args)?,
         Command::Agent { command } => agent_command(context, output, command)?,
         Command::Use(args) => use_profile_command(context, output, args)?,
         Command::Scan(args) => scan_command(context, output, args)?,
@@ -1157,6 +1207,130 @@ fn untrust_root_command(
     )?;
     writeln!(output, "project_id: {}", resolved.config.project_id)?;
     writeln!(output, "root_hash: {}", format_hex(&hash))?;
+    Ok(())
+}
+
+fn shellenv_command(output: &mut impl Write, args: &ShellenvArgs) -> Result<(), CliError> {
+    let shell = args.shell.unwrap_or_else(detect_shell);
+    write_shellenv_snippet(output, shell)
+}
+
+fn hook_command(output: &mut impl Write, args: &HookArgs) -> Result<(), CliError> {
+    let shell = args.shell.unwrap_or_else(detect_shell);
+    if args.install {
+        writeln!(output, "hook install: no-op")?;
+        writeln!(output, "agent: unavailable")?;
+        writeln!(
+            output,
+            "reason: full agent-backed shell grant installation is not available in this build"
+        )?;
+        writeln!(output, "metadata_only: yes")?;
+        return Ok(());
+    }
+
+    write_shell_hook_snippet(output, shell)
+}
+
+fn allow_command(context: &RuntimeContext, output: &mut impl Write) -> Result<(), CliError> {
+    let resolved = require_project(context)?;
+    let store = open_store(context)?;
+    ensure_project_exists(&store, resolved.config.project_id.as_str())?;
+    let profile = default_profile(&store, &resolved.config)?;
+    let root_hash = root_hash(&resolved.root)?;
+    if !store.project_root_is_trusted(resolved.config.project_id.as_str(), &root_hash)? {
+        return Err(CliError::Config(
+            "ProjectRootNotTrusted: current project root is not trusted; run locket project trust-root"
+                .to_owned(),
+        ));
+    }
+
+    let timestamp = now_unix_nanos()?;
+    let directory_hash = root_hash;
+    let display_path = resolved.root.to_string_lossy().to_string();
+    let grant = DirectoryGrantRecord {
+        grant_id: directory_grant_id(
+            resolved.config.project_id.as_str(),
+            &profile.id,
+            &root_hash,
+            &directory_hash,
+            DIRECTORY_GRANT_SCOPE_PROJECT_ROOT,
+        ),
+        project_id: resolved.config.project_id.as_str().to_owned(),
+        profile_id: profile.id.clone(),
+        root_hash,
+        directory_hash,
+        grant_scope: DIRECTORY_GRANT_SCOPE_PROJECT_ROOT.to_owned(),
+        display_path: Some(display_path),
+        created_at: timestamp,
+        updated_at: timestamp,
+    };
+
+    let existed = store
+        .get_directory_grant(
+            resolved.config.project_id.as_str(),
+            &profile.id,
+            &root_hash,
+            &directory_hash,
+            DIRECTORY_GRANT_SCOPE_PROJECT_ROOT,
+        )?
+        .is_some();
+    store.allow_directory_grant(&grant)?;
+
+    writeln!(
+        output,
+        "{}",
+        if existed { "directory grant already present" } else { "directory grant allowed" }
+    )?;
+    writeln!(output, "project_id: {}", resolved.config.project_id)?;
+    writeln!(output, "profile_id: {}", profile.id)?;
+    writeln!(output, "grant_scope: {}", grant.grant_scope)?;
+    writeln!(output, "root_hash: {}", format_hex(&root_hash))?;
+    writeln!(output, "directory_hash: {}", format_hex(&directory_hash))?;
+    writeln!(output, "metadata_only: yes")?;
+    writeln!(output, "live_grant: unavailable")?;
+    Ok(())
+}
+
+fn deny_command(
+    context: &RuntimeContext,
+    output: &mut impl Write,
+    args: &DenyArgs,
+) -> Result<(), CliError> {
+    let resolved = require_project(context)?;
+    let store = open_store(context)?;
+    ensure_project_exists(&store, resolved.config.project_id.as_str())?;
+
+    if args.all {
+        let removed = store.deny_all_directory_grants(resolved.config.project_id.as_str())?;
+        writeln!(output, "directory grants revoked: {removed}")?;
+        writeln!(output, "project_id: {}", resolved.config.project_id)?;
+        writeln!(output, "metadata_only: yes")?;
+        writeln!(output, "live_grants: unavailable")?;
+        return Ok(());
+    }
+
+    let profile = default_profile(&store, &resolved.config)?;
+    let root_hash = root_hash(&resolved.root)?;
+    let directory_hash = root_hash;
+    let removed = store.deny_directory_grant(
+        resolved.config.project_id.as_str(),
+        &profile.id,
+        &root_hash,
+        &directory_hash,
+        DIRECTORY_GRANT_SCOPE_PROJECT_ROOT,
+    )?;
+
+    writeln!(
+        output,
+        "{}",
+        if removed { "directory grant revoked" } else { "directory grant not found" }
+    )?;
+    writeln!(output, "project_id: {}", resolved.config.project_id)?;
+    writeln!(output, "profile_id: {}", profile.id)?;
+    writeln!(output, "grant_scope: {DIRECTORY_GRANT_SCOPE_PROJECT_ROOT}")?;
+    writeln!(output, "root_hash: {}", format_hex(&root_hash))?;
+    writeln!(output, "metadata_only: yes")?;
+    writeln!(output, "live_grant: unavailable")?;
     Ok(())
 }
 
@@ -3031,6 +3205,128 @@ fn fallback_project_name(root: &Path) -> String {
         .map_or_else(|| "locket-project".to_owned(), ToOwned::to_owned)
 }
 
+fn detect_shell() -> ShellArg {
+    std::env::var("SHELL").map_or(ShellArg::Bash, |shell| shell_arg_from_name(&shell))
+}
+
+fn shell_arg_from_name(shell: &str) -> ShellArg {
+    let name = Path::new(shell).file_name().and_then(|name| name.to_str()).unwrap_or(shell);
+    match name {
+        "zsh" => ShellArg::Zsh,
+        "fish" => ShellArg::Fish,
+        _ => ShellArg::Bash,
+    }
+}
+
+fn write_shellenv_snippet(output: &mut impl Write, shell: ShellArg) -> Result<(), CliError> {
+    match shell {
+        ShellArg::Bash | ShellArg::Zsh => {
+            writeln!(output, "{SHELL_HOOK_BEGIN}")?;
+            writeln!(output, "if [ -z \"${{__LOCKET_SHELLENV_SOURCED:-}}\" ]; then")?;
+            writeln!(output, "  export __LOCKET_SHELLENV_SOURCED=1")?;
+            writeln!(
+                output,
+                "  locket_prompt_segment() {{ locket status 2>/dev/null | sed -n 's/^project: //p; s/^default_profile: //p' | paste -sd ' / ' -; }}"
+            )?;
+            writeln!(output, "fi")?;
+            writeln!(output, "{SHELL_HOOK_END}")?;
+        }
+        ShellArg::Fish => {
+            writeln!(output, "{SHELL_HOOK_BEGIN}")?;
+            writeln!(output, "if not set -q __LOCKET_SHELLENV_SOURCED")?;
+            writeln!(output, "  set -gx __LOCKET_SHELLENV_SOURCED 1")?;
+            writeln!(output, "  function locket_prompt_segment")?;
+            writeln!(
+                output,
+                "    locket status 2>/dev/null | string match -r '^(project|default_profile): ' | string replace -r '^[^:]+: ' '' | string join ' / '"
+            )?;
+            writeln!(output, "  end")?;
+            writeln!(output, "end")?;
+            writeln!(output, "{SHELL_HOOK_END}")?;
+        }
+    }
+    Ok(())
+}
+
+fn write_shell_hook_snippet(output: &mut impl Write, shell: ShellArg) -> Result<(), CliError> {
+    match shell {
+        ShellArg::Bash => {
+            writeln!(output, "{SHELL_HOOK_BEGIN}")?;
+            writeln!(output, "__locket_hook() {{")?;
+            writeln!(output, "  local dir=\"$PWD\"")?;
+            writeln!(output, "  while [ \"$dir\" != \"/\" ]; do")?;
+            writeln!(output, "    if [ -f \"$dir/locket.toml\" ]; then")?;
+            writeln!(output, "      locket hook --install >/dev/null 2>&1 || true")?;
+            writeln!(output, "      return")?;
+            writeln!(output, "    fi")?;
+            writeln!(output, "    dir=\"${{dir%/*}}\"")?;
+            writeln!(output, "    [ -n \"$dir\" ] || dir=\"/\"")?;
+            writeln!(output, "  done")?;
+            writeln!(output, "}}")?;
+            output.write_all(
+                br#"case ";${PROMPT_COMMAND:-};" in *';__locket_hook;'*) ;; *) PROMPT_COMMAND="__locket_hook;${PROMPT_COMMAND:-}" ;; esac
+"#,
+            )?;
+            writeln!(output, "{SHELL_HOOK_END}")?;
+        }
+        ShellArg::Zsh => {
+            writeln!(output, "{SHELL_HOOK_BEGIN}")?;
+            writeln!(output, "__locket_hook() {{")?;
+            writeln!(output, "  local dir=\"$PWD\"")?;
+            writeln!(output, "  while [ \"$dir\" != \"/\" ]; do")?;
+            writeln!(output, "    if [ -f \"$dir/locket.toml\" ]; then")?;
+            writeln!(output, "      locket hook --install >/dev/null 2>&1 || true")?;
+            writeln!(output, "      return")?;
+            writeln!(output, "    fi")?;
+            output.write_all(
+                br#"    dir="${dir:h}"
+"#,
+            )?;
+            writeln!(output, "  done")?;
+            writeln!(output, "}}")?;
+            writeln!(
+                output,
+                "if ! ((${{chpwd_functions[(I)__locket_hook]}})); then chpwd_functions+=(__locket_hook); fi"
+            )?;
+            writeln!(output, "__locket_hook")?;
+            writeln!(output, "{SHELL_HOOK_END}")?;
+        }
+        ShellArg::Fish => {
+            writeln!(output, "{SHELL_HOOK_BEGIN}")?;
+            writeln!(output, "function __locket_hook --on-variable PWD")?;
+            writeln!(output, "  set -l dir $PWD")?;
+            writeln!(output, "  while test \"$dir\" != /")?;
+            writeln!(output, "    if test -f \"$dir/locket.toml\"")?;
+            writeln!(output, "      locket hook --install >/dev/null 2>&1; or true")?;
+            writeln!(output, "      return")?;
+            writeln!(output, "    end")?;
+            writeln!(output, "    set dir (dirname \"$dir\")")?;
+            writeln!(output, "  end")?;
+            writeln!(output, "end")?;
+            writeln!(output, "{SHELL_HOOK_END}")?;
+        }
+    }
+    Ok(())
+}
+
+fn directory_grant_id(
+    project_id: &str,
+    profile_id: &str,
+    root_hash: &[u8; 32],
+    directory_hash: &[u8; 32],
+    grant_scope: &str,
+) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"locket-directory-grant-v1");
+    hasher.update(project_id.as_bytes());
+    hasher.update(profile_id.as_bytes());
+    hasher.update(root_hash);
+    hasher.update(directory_hash);
+    hasher.update(grant_scope.as_bytes());
+    let digest = hasher.finalize();
+    format!("lk_dgrant_{}", format_hex(&digest[..16]))
+}
+
 fn root_hash(root: &Path) -> Result<[u8; 32], CliError> {
     let canonical = root.canonicalize()?;
     let digest = Sha256::digest(canonical.to_string_lossy().as_bytes());
@@ -3177,6 +3473,13 @@ mod tests {
             &["locket", "project", "trust-root"],
             &["locket", "project", "list-roots"],
             &["locket", "project", "untrust-root", "abc123"],
+            &["locket", "shellenv"],
+            &["locket", "shellenv", "--shell", "zsh"],
+            &["locket", "hook"],
+            &["locket", "hook", "--install"],
+            &["locket", "allow"],
+            &["locket", "deny"],
+            &["locket", "deny", "--all"],
             &["locket", "agent", "start"],
             &["locket", "agent", "status"],
             &["locket", "agent", "stop"],
@@ -3370,6 +3673,182 @@ mod tests {
             &mut retrust_output,
         )?;
         assert!(String::from_utf8(retrust_output)?.contains("trusted root added"));
+        Ok(())
+    }
+
+    #[test]
+    fn shell_snippets_are_metadata_only() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        let mut output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut output,
+        )?;
+        let args = test_secret_write_args("DATABASE_URL");
+        super::set_secret_value(&context, &args, "postgres://localhost/app", "manual", 1_000)?;
+
+        let mut shellenv_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "shellenv", "--shell", "bash"])?,
+            &context,
+            &mut shellenv_output,
+        )?;
+        let shellenv_output = String::from_utf8(shellenv_output)?;
+        assert!(shellenv_output.contains(super::SHELL_HOOK_BEGIN));
+        assert!(shellenv_output.contains("__LOCKET_SHELLENV_SOURCED"));
+        assert!(!shellenv_output.contains("postgres://localhost/app"));
+        assert!(!shellenv_output.contains("grant_id"));
+        assert!(!shellenv_output.contains("token"));
+
+        let mut hook_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "hook", "--shell", "zsh"])?,
+            &context,
+            &mut hook_output,
+        )?;
+        let hook_output = String::from_utf8(hook_output)?;
+        assert!(hook_output.contains(super::SHELL_HOOK_BEGIN));
+        assert!(hook_output.contains("locket.toml"));
+        assert!(!hook_output.contains("postgres://localhost/app"));
+        assert!(!hook_output.contains("grant_id"));
+        assert!(!hook_output.contains("token"));
+
+        let mut install_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "hook", "--install"])?,
+            &context,
+            &mut install_output,
+        )?;
+        let install_output = String::from_utf8(install_output)?;
+        assert!(install_output.contains("hook install: no-op"));
+        assert!(install_output.contains("metadata_only: yes"));
+        assert!(!install_output.contains("postgres://localhost/app"));
+        Ok(())
+    }
+
+    #[test]
+    fn allow_and_deny_manage_profile_scoped_directory_grants()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        let mut output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut output,
+        )?;
+        let args = test_secret_write_args("DATABASE_URL");
+        super::set_secret_value(&context, &args, "postgres://localhost/app", "manual", 1_000)?;
+
+        let mut allow_output = Vec::new();
+        run_with_context(Cli::try_parse_from(["locket", "allow"])?, &context, &mut allow_output)?;
+        let allow_output = String::from_utf8(allow_output)?;
+        assert!(allow_output.contains("directory grant allowed"));
+        assert!(allow_output.contains("metadata_only: yes"));
+        assert!(!allow_output.contains("postgres://localhost/app"));
+
+        let store = locket_store::Store::open(directory.path().join("store.db"))?;
+        let grant_count: u32 =
+            store
+                .connection()
+                .query_row("SELECT COUNT(*) FROM directory_grants", [], |row| row.get(0))?;
+        assert_eq!(grant_count, 1);
+        let dev_profile_id: String =
+            store
+                .connection()
+                .query_row("SELECT profile_id FROM directory_grants", [], |row| row.get(0))?;
+
+        let mut create_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "profile", "create", "staging"])?,
+            &context,
+            &mut create_output,
+        )?;
+        let mut use_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "use", "staging"])?,
+            &context,
+            &mut use_output,
+        )?;
+
+        let mut staging_deny_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "deny"])?,
+            &context,
+            &mut staging_deny_output,
+        )?;
+        assert!(String::from_utf8(staging_deny_output)?.contains("directory grant not found"));
+        let grant_count_after_staging_deny: u32 = store.connection().query_row(
+            "SELECT COUNT(*) FROM directory_grants WHERE profile_id = ?1",
+            [dev_profile_id.as_str()],
+            |row| row.get(0),
+        )?;
+        assert_eq!(grant_count_after_staging_deny, 1);
+
+        let mut deny_all_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "deny", "--all"])?,
+            &context,
+            &mut deny_all_output,
+        )?;
+        let deny_all_output = String::from_utf8(deny_all_output)?;
+        assert!(deny_all_output.contains("directory grants revoked: 1"));
+        assert!(!deny_all_output.contains("postgres://localhost/app"));
+        let remaining: u32 =
+            store
+                .connection()
+                .query_row("SELECT COUNT(*) FROM directory_grants", [], |row| row.get(0))?;
+        assert_eq!(remaining, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn allow_requires_trusted_project_root() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        let mut output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut output,
+        )?;
+        let mut roots_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "project", "list-roots"])?,
+            &context,
+            &mut roots_output,
+        )?;
+        let root_hash = String::from_utf8(roots_output)?
+            .lines()
+            .find_map(|line| line.strip_prefix("root_hash: "))
+            .ok_or("root hash should be listed")?
+            .to_owned();
+        let mut untrust_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "project", "untrust-root", root_hash.as_str()])?,
+            &context,
+            &mut untrust_output,
+        )?;
+
+        let mut allow_output = Vec::new();
+        let error = match run_with_context(
+            Cli::try_parse_from(["locket", "allow"])?,
+            &context,
+            &mut allow_output,
+        ) {
+            Ok(()) => return Err("allow should fail for untrusted roots".into()),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("ProjectRootNotTrusted"));
+
+        let store = locket_store::Store::open(directory.path().join("store.db"))?;
+        let grant_count: u32 =
+            store
+                .connection()
+                .query_row("SELECT COUNT(*) FROM directory_grants", [], |row| row.get(0))?;
+        assert_eq!(grant_count, 0);
         Ok(())
     }
 
