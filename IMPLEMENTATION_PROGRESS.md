@@ -515,9 +515,8 @@ to touch. Items marked `[x]` are merged to `main` and verified.
     includes degraded flags.
   - Files: `crates/locket-platform/src/` (per-OS hardening modules),
     `crates/locket-agent/src/`.
-- [~] [e9003b76] Metadata privacy validation for secret metadata, config, policies,
+- [x] Metadata privacy validation for secret metadata, config, policies,
   templates, team/member/device labels, and UI edits.
-  Claim: branch agent-e9003b76/metadata-privacy, worktree .worktrees/agent-e9003b76-metadata-privacy. Scope: add shared metadata validator and wire current metadata-editing CLI surfaces with focused typed-error tests.
   - Spec: `docs/specs/data-model.md` (metadata validation rules);
     `docs/specs/audit.md:40+` (no plaintext secrets in metadata).
   - Errors: `MetadataInvalid` (64), `MetadataLooksLikeSecret` (66).
@@ -911,7 +910,7 @@ echoed inside `metadata_json` so the HMAC chain covers them. Never write
 
 ## Latest Verified Checkpoint
 
-- Tip of `main`: `44d0140` ("Mark source precedence slice ready").
+- Tip of `main`: `147fbd5` ("Add typed metadata privacy validation").
 - `cargo fmt --all -- --check` clean on `main`.
 - `cargo test --workspace --all-targets --all-features` passes on `main`.
 - `cargo clippy --workspace --all-targets --all-features -- -D warnings` clean
