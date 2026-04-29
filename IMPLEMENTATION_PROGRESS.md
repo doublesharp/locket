@@ -633,9 +633,16 @@ to touch. Items marked `[x]` are merged to `main` and verified.
     refusals, role denials, grant denials, and reveal/copy denials.
   - Files: `crates/locket-store/src/audit.rs` (helper writers); per-command
     call sites.
-- [~] [bec7ddfc] Local user verification gates for unlock, dangerous actions, recovery,
-  team/device trust, and reveal/copy.
-  Claim: branch agent-bec7ddfc/user-verification-gates, worktree .worktrees/agent-bec7ddfc-user-verification-gates. Scope: introduce the shared verification helper and wire the `get --reveal/--copy --verify-user` gate with typed failure/audit metadata.
+- [~] [bec7ddfc] ready: agent-bec7ddfc/user-verification-gates @ d21fced — first
+  slice landed: `LocalUserVerifier` is on `RuntimeContext`, `require_user_verification`
+  helper lives in `crates/locket-cli/src/runtime/user_verification.rs`, and
+  `get --reveal/--copy --verify-user` calls it before decrypt/copy. Denials
+  return typed `UserVerificationFailed` (exit 74) and write `REVEAL`/`COPY`
+  rows with `status: DENIED, denial_reason: user_verification_failed,
+  user_verification.required: true, satisfied: false`. Successful
+  verifications echo `user_verification.method` in metadata. Item stays
+  `[~]` for the broader sweep across `unlock`, `recovery`, team/device, and
+  dangerous-profile actions.
   - Spec: `docs/specs/crypto.md:192-218`.
   - Errors: `UserVerificationFailed` (76), `PasskeyUnsupported` (102).
   - Audit actions: extend `UNLOCK`, `REVEAL`, `COPY`, `TEAM_*`, `RECOVER*`
