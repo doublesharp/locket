@@ -613,52 +613,20 @@ editing — they drift. Severity: **blocker** (security/correctness),
   - Tests: per-variant exit-code regression covering at least one callsite
     per variant.
 
-- [x] **important** — `profile create` writes no audit row.
+- [x] **important** — `profile create` now appends a `PROFILE_CREATE`
+  audit row.
 
-- [x] **important** — `locket use` writes no audit row.
-  - Where: `crates/locket-cli/src/commands/trust/profile.rs::use_profile_command`
-    around line 202 (verify). Mutates `locket.toml` and changes which
-    profile `exec`/`run`/`get` resolve against, but appends nothing to
-    audit.
-  - Fix: append a `PROFILE_CHANGE` row with `operation = "use"` to match
-    `docs/specs/data-model.md`. Metadata: prior profile id and name,
-    new profile id and name, project id, root hash.
-  - Tests: assert audit row on successful switch; assert no row if the
-    target profile is missing or the same as the current default.
+- [x] **important** — `locket use` now appends a `PROFILE_CHANGE` audit
+  row with prior/new profile metadata.
 
-- [x] **important** — `*_audit_if_available` helpers swallow missing audit
-  keys silently.
-  - Where: 46 `let Ok(audit_key) = load_project_key(...) else { return
-    Ok(()) };` callsites across `crates/locket-cli/src/commands/team/device.rs:332`,
-    `commands/vault/passkey.rs:137`, `commands/team/client.rs:331`,
-    `commands/policy.rs:281`, `commands/team/bundle.rs:331`,
-    `support/secret_helpers.rs:334`, and `main.rs:4458` (verify with
-    `grep -rn "let Ok(audit_key) = " crates/locket-cli/src/commands/`).
-    State-mutating revoke/remove/update commands finish successfully with
-    no audit row and no log if the audit key cannot be loaded.
-  - Fix: pick one — either treat key-load failure as fatal (return the
-    underlying `LocketError`, fail the command, surface
-    `IntegrityFailure`/`KeychainEntryMissing`), or log a metadata-only
-    warning to stderr and add a `DEGRADED_AUDIT` row when the audit chain
-    is otherwise reachable. The current swallow violates the
-    audit-discipline rule under Definition of Done step 3.
-  - Tests: simulate audit-key-load failure and assert the chosen behavior
-    (failure or warning + DEGRADED_AUDIT row); existing happy-path tests
-    must continue to pass.
+- [x] **important** — `*_audit_if_available` helpers no longer swallow
+  audit-key load failures; missing keys hard-fail the command.
 
-- [x] **nit** — Two near-duplicate "format optional value" helpers with
-  different empty markers.
-  - Where: `crates/locket-cli/src/support/time.rs:206`
-    (`optional_i64`) and `:221` (`format_optional_unix_nanos`) return `"-"`
-    for `None`, while `crates/locket-cli/src/main.rs:1361`
-    (`format_optional_str`) returns `"none"`. CLI scrapers parsing one
-    consistently will trip over the other.
-  - Fix: pick one sentinel (recommend `"-"` for parity with history/diff
-    output) and migrate `format_optional_str` callers, or document an
-    explicit reason for the difference.
-  - Tests: snapshot tests on history/audit/diff lines.
+- [x] **nit** — Optional-value formatters unified on the `"-"` sentinel
+  across history/diff/audit output.
 
-- [x] **nit** — Audit-write helpers re-open the store independently of the caller.
+- [x] **nit** — Audit-write helpers reuse the caller's store handle
+  instead of re-opening.
 
 ### Diagnostics, Distribution, and Quality Gates
 
@@ -728,7 +696,8 @@ against the named spec file.
   Claim: branch agent-70c448c4/product-gate, worktree .worktrees/agent-70c448c4-product-gate.
 - [~] [6e4d05db] `invariants.md`
   Claim: branch agent-6e4d05db/spec-invariants-gate, worktree .worktrees/agent-6e4d05db-spec-invariants-gate.
-- [ ] `architecture.md`
+- [~] [b64508c7] `architecture.md`
+  Claim: branch agent-b64508c7/architecture-gate, worktree .worktrees/agent-b64508c7-architecture-gate.
 - [ ] `data-model.md`
 - [ ] `storage.md`
 - [ ] `crypto.md`
