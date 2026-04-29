@@ -522,6 +522,35 @@ struct HistoryArgs {
     /// Profile to inspect.
     #[arg(long)]
     profile: Option<String>,
+    /// Restrict the listing to a single runtime source.
+    #[arg(long, value_enum)]
+    source: Option<SecretSourceArg>,
+    /// Restrict the listing to versions in a single state.
+    #[arg(long, value_enum)]
+    state: Option<HistoryStateFilter>,
+    /// Maximum number of versions to display per source.
+    #[arg(long)]
+    limit: Option<u32>,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum HistoryStateFilter {
+    /// Current/active versions only.
+    Current,
+    /// Deprecated versions only.
+    Deprecated,
+    /// Purged versions only.
+    Purged,
+}
+
+impl HistoryStateFilter {
+    fn matches(self, state: &str) -> bool {
+        match self {
+            Self::Current => state == "current",
+            Self::Deprecated => state == "deprecated",
+            Self::Purged => state == "purged",
+        }
+    }
 }
 
 #[derive(Debug, Args)]
@@ -1681,33 +1710,69 @@ fn history_command(
     } else {
         default_profile(&store, &resolved.config)?
     };
-    let secrets = store.list_secrets_by_name(
+    let all_secrets = store.list_secrets_by_name(
         resolved.config.project_id.as_str(),
         &profile.id,
         name.as_str(),
     )?;
-    if secrets.is_empty() {
+    if all_secrets.is_empty() {
         return Err(CliError::Config("secret not found".to_owned()));
     }
+
+    let secrets = if let Some(source) = args.source {
+        let target = source_arg_to_str(source);
+        let filtered =
+            all_secrets.into_iter().filter(|secret| secret.source == target).collect::<Vec<_>>();
+        if filtered.is_empty() {
+            return Err(CliError::Config(format!(
+                "secret {} has no source {target}",
+                name.as_str()
+            )));
+        }
+        filtered
+    } else {
+        all_secrets
+    };
+
+    writeln!(output, "history {} profile={}", name.as_str(), profile.name)?;
 
     let mut displayed = 0_u32;
     for secret in secrets {
         writeln!(
             output,
-            "{} source={} state={} current_version={}",
-            secret.name, secret.source, secret.state, secret.current_version
+            "{} source={} state={} current_version={} created_at={} updated_at={} last_rotated_at={} deleted_at={}",
+            secret.name,
+            secret.source,
+            secret.state,
+            secret.current_version,
+            format_unix_nanos(secret.created_at),
+            format_unix_nanos(secret.updated_at),
+            format_optional_unix_nanos(secret.last_rotated_at),
+            format_optional_unix_nanos(secret.deleted_at)
         )?;
+        let mut shown_for_source = 0_u32;
         for version in store.list_secret_versions(&secret.id)? {
+            if let Some(state_filter) = args.state
+                && !state_filter.matches(&version.state)
+            {
+                continue;
+            }
+            if let Some(limit) = args.limit
+                && shown_for_source >= limit
+            {
+                break;
+            }
+            shown_for_source += 1;
             displayed += 1;
             writeln!(
                 output,
                 "  v{} state={} created_at={} deprecated_at={} grace_until={} purged_at={}",
                 version.version,
                 version.state,
-                version.created_at,
-                optional_i64(version.deprecated_at),
-                optional_i64(version.grace_until),
-                optional_i64(version.purged_at)
+                format_unix_nanos(version.created_at),
+                format_optional_unix_nanos(version.deprecated_at),
+                format_optional_unix_nanos(version.grace_until),
+                format_optional_unix_nanos(version.purged_at)
             )?;
         }
     }
@@ -6764,6 +6829,58 @@ fn optional_i64(value: Option<i64>) -> String {
     value.map_or_else(|| "-".to_owned(), |value| value.to_string())
 }
 
+/// Renders a Unix nanosecond timestamp as `<nanos>(<rfc3339>)`.
+///
+/// The numeric form preserves byte-for-byte parity with prior history output that
+/// downstream tooling parses, while the parenthesised RFC 3339 form gives humans
+/// a readable rendering. Negative or out-of-range values fall back to the numeric
+/// form alone so we never mask the underlying database value.
+fn format_unix_nanos(nanos: i64) -> String {
+    unix_nanos_to_rfc3339(nanos)
+        .map_or_else(|| nanos.to_string(), |rendered| format!("{nanos}({rendered})"))
+}
+
+fn format_optional_unix_nanos(value: Option<i64>) -> String {
+    value.map_or_else(|| "-".to_owned(), format_unix_nanos)
+}
+
+/// Renders Unix nanosecond timestamps as RFC 3339 in UTC.
+///
+/// Returns `None` when the timestamp is negative or would overflow our calendar
+/// arithmetic; the caller is expected to fall back to the raw integer form.
+fn unix_nanos_to_rfc3339(nanos: i64) -> Option<String> {
+    let nanos = u64::try_from(nanos).ok()?;
+    let secs = nanos / 1_000_000_000;
+    let sub_nanos = u32::try_from(nanos % 1_000_000_000).ok()?;
+    let days = secs / 86_400;
+    let time_of_day = secs % 86_400;
+    let hour = u32::try_from(time_of_day / 3_600).ok()?;
+    let minute = u32::try_from((time_of_day % 3_600) / 60).ok()?;
+    let second = u32::try_from(time_of_day % 60).ok()?;
+    let (year, month, day) = days_to_ymd(days)?;
+    Some(format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{sub_nanos:09}Z"))
+}
+
+/// Converts whole days since the Unix epoch into a `(year, month, day)` triple.
+///
+/// Uses the civil-from-days algorithm so the conversion stays self-contained and
+/// avoids pulling a date dependency into the workspace just for history rendering.
+fn days_to_ymd(days: u64) -> Option<(i32, u32, u32)> {
+    let z = days.checked_add(719_468)?;
+    let era = z / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = u32::try_from(doy - (153 * mp + 2) / 5 + 1).ok()?;
+    let month_u64 = if mp < 10 { mp + 3 } else { mp - 9 };
+    let month = u32::try_from(month_u64).ok()?;
+    let year = if month <= 2 { y + 1 } else { y };
+    let year = i32::try_from(year).ok()?;
+    Some((year, month, day))
+}
+
 const fn metadata_flags_have_updates(metadata: &SecretMetadataFlags) -> bool {
     metadata.description.is_some()
         || metadata.owner.is_some()
@@ -10425,6 +10542,196 @@ argv = []
 
         assert_lifecycle_audit_log(&directory)?;
         Ok(())
+    }
+
+    #[test]
+    fn history_filters_by_source_state_limit_and_renders_iso_timestamps()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        let mut output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut output,
+        )?;
+
+        let user_local = test_secret_write_args("DATABASE_URL");
+        super::set_secret_value(
+            &context,
+            &user_local,
+            "postgres://localhost/u-v1",
+            "manual",
+            1_000,
+        )?;
+        let rotate_user = test_rotate_args("DATABASE_URL", Some("24h"));
+        let grace_user = super::grace_until_from_args(rotate_user.grace_ttl.as_deref(), 2_000)?;
+        super::rotate_secret_value(
+            &context,
+            &rotate_user,
+            "postgres://localhost/u-v2",
+            2_000,
+            grace_user,
+        )?;
+
+        let mut machine_local = test_secret_write_args("DATABASE_URL");
+        machine_local.source =
+            super::SourceArg { source: Some(super::SecretSourceArg::MachineLocal) };
+        super::set_secret_value(
+            &context,
+            &machine_local,
+            "postgres://localhost/m-v1",
+            "manual",
+            3_000,
+        )?;
+
+        let mut all_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "history", "DATABASE_URL"])?,
+            &context,
+            &mut all_output,
+        )?;
+        let all_output = String::from_utf8(all_output)?;
+        assert!(all_output.contains("history DATABASE_URL profile=dev"));
+        assert!(all_output.contains("source=user-local"));
+        assert!(all_output.contains("source=machine-local"));
+        assert!(all_output.contains("v1 state=deprecated"));
+        assert!(all_output.contains("v2 state=current"));
+        assert!(all_output.contains("created_at=1000(1970-01-01T00:00:00.000001000Z)"));
+        assert!(!all_output.contains("postgres://"));
+
+        let mut user_only = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "history", "DATABASE_URL", "--source", "user-local"])?,
+            &context,
+            &mut user_only,
+        )?;
+        let user_only = String::from_utf8(user_only)?;
+        assert!(user_only.contains("source=user-local"));
+        assert!(!user_only.contains("source=machine-local"));
+
+        let mut current_only = Vec::new();
+        run_with_context(
+            Cli::try_parse_from([
+                "locket",
+                "history",
+                "DATABASE_URL",
+                "--source",
+                "user-local",
+                "--state",
+                "current",
+            ])?,
+            &context,
+            &mut current_only,
+        )?;
+        let current_only = String::from_utf8(current_only)?;
+        assert!(current_only.contains("v2 state=current"));
+        assert!(!current_only.contains("v1 state=deprecated"));
+
+        let mut limit_one = Vec::new();
+        run_with_context(
+            Cli::try_parse_from([
+                "locket",
+                "history",
+                "DATABASE_URL",
+                "--source",
+                "user-local",
+                "--limit",
+                "1",
+            ])?,
+            &context,
+            &mut limit_one,
+        )?;
+        let limit_one = String::from_utf8(limit_one)?;
+        let version_lines = limit_one.matches("\n  v").count();
+        assert_eq!(version_lines, 1, "limit=1 should print exactly one version line");
+
+        Ok(())
+    }
+
+    #[test]
+    fn history_state_filter_prints_no_versions_notice_and_exits_ok()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        let mut output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut output,
+        )?;
+        let args = test_secret_write_args("API_TOKEN");
+        super::set_secret_value(&context, &args, "tok-v1", "manual", 1_000)?;
+
+        let mut history_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "history", "API_TOKEN", "--state", "purged"])?,
+            &context,
+            &mut history_output,
+        )?;
+        let history_output = String::from_utf8(history_output)?;
+        assert!(history_output.contains("history: no versions"));
+        assert!(!history_output.contains("v1"));
+        Ok(())
+    }
+
+    #[test]
+    fn history_unknown_source_fails_without_listing_other_sources()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        let mut output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut output,
+        )?;
+        let args = test_secret_write_args("API_TOKEN");
+        super::set_secret_value(&context, &args, "tok-v1", "manual", 1_000)?;
+
+        let mut history_output = Vec::new();
+        let result = run_with_context(
+            Cli::try_parse_from(["locket", "history", "API_TOKEN", "--source", "team-managed"])?,
+            &context,
+            &mut history_output,
+        );
+        assert!(result.is_err(), "missing source should error");
+        assert!(history_output.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn history_missing_key_errors_with_secret_not_found() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        let mut output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut output,
+        )?;
+        let mut history_output = Vec::new();
+        let result = run_with_context(
+            Cli::try_parse_from(["locket", "history", "NOPE_TOKEN"])?,
+            &context,
+            &mut history_output,
+        );
+        assert_error_contains(result, "secret not found");
+        Ok(())
+    }
+
+    #[test]
+    fn unix_nanos_to_rfc3339_renders_known_timestamps() {
+        assert_eq!(
+            super::unix_nanos_to_rfc3339(0),
+            Some("1970-01-01T00:00:00.000000000Z".to_owned())
+        );
+        assert_eq!(
+            super::unix_nanos_to_rfc3339(1_700_000_000_000_000_000),
+            Some("2023-11-14T22:13:20.000000000Z".to_owned())
+        );
+        assert_eq!(super::unix_nanos_to_rfc3339(-1), None);
     }
 
     #[test]
