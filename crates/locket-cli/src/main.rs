@@ -643,11 +643,6 @@ fn import_command(
     output: &mut impl Write,
     args: &ImportArgs,
 ) -> Result<(), CliError> {
-    if args.overwrite {
-        return Err(CliError::Config(
-            "import --overwrite is not wired in this build yet".to_owned(),
-        ));
-    }
     if let Some(profile) = &args.profile {
         let resolved = require_project(context)?;
         if profile != resolved.config.default_profile.as_str() {
@@ -662,6 +657,7 @@ fn import_command(
     let source = args.source.unwrap_or(SecretSourceArg::UserLocal);
     let parsed = parse_env_import(&env_file_text);
     let mut imported = 0_u32;
+    let mut overwritten = 0_u32;
     let mut skipped = 0_u32;
     let mut invalid = 0_u32;
 
@@ -682,6 +678,30 @@ fn import_command(
                 match set_secret_value(context, &write_args, &value, "imported", now_unix_nanos()?)
                 {
                     Ok(()) => imported += 1,
+                    Err(CliError::Config(message))
+                        if message.contains("already exists") && args.overwrite =>
+                    {
+                        let rotate_args = RotateArgs {
+                            key,
+                            source: SourceArg { source: Some(source) },
+                            metadata: SecretMetadataFlags {
+                                description: None,
+                                owner: None,
+                                tags: Vec::new(),
+                                required: false,
+                                optional: false,
+                            },
+                            grace_ttl: None,
+                        };
+                        rotate_secret_value(
+                            context,
+                            &rotate_args,
+                            &value,
+                            now_unix_nanos()?,
+                            None,
+                        )?;
+                        overwritten += 1;
+                    }
                     Err(CliError::Config(message)) if message.contains("already exists") => {
                         skipped += 1;
                     }
@@ -695,6 +715,7 @@ fn import_command(
     refresh_example_for_project(context)?;
     ensure_gitignore(&require_project(context)?.root)?;
     writeln!(output, "imported: {imported}")?;
+    writeln!(output, "overwritten: {overwritten}")?;
     writeln!(output, "skipped: {skipped}")?;
     writeln!(output, "invalid: {invalid}")?;
     Ok(())
@@ -2590,6 +2611,25 @@ mod tests {
         assert!(example.contains("DATABASE_URL="));
         assert!(example.contains("OPENAI_API_KEY="));
         assert!(!example.contains("postgres://localhost/app"));
+
+        std::fs::write(directory.path().join(".env"), "DATABASE_URL=postgres://localhost/new\n")?;
+        let mut overwrite_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "import", ".env", "--overwrite"])?,
+            &context,
+            &mut overwrite_output,
+        )?;
+        let overwrite_output = String::from_utf8(overwrite_output)?;
+        assert!(overwrite_output.contains("overwritten: 1"));
+        assert!(!overwrite_output.contains("postgres://localhost/new"));
+
+        let mut reveal_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "get", "DATABASE_URL", "--reveal"])?,
+            &context,
+            &mut reveal_output,
+        )?;
+        assert_eq!(String::from_utf8(reveal_output)?, "postgres://localhost/new\n");
         Ok(())
     }
 
