@@ -476,8 +476,13 @@ to touch. Items marked `[x]` are merged to `main` and verified.
   - Audit actions: `TEAM_INVITE`, `TEAM_ACCEPT`.
   - Files: shared invite codec in new `crates/locket-core/src/invite.rs`;
     consumer in `crates/locket-cli/src/team.rs`.
-- [ ] Audit coverage for every sensitive success, denial, and failure event
-  described in the specs.
+- [~] [bec7ddfc] ready: agent-bec7ddfc/audit-coverage-denials @ 1e2b5c7 — first
+  reveal/copy denial slice landed (`get --reveal` now writes a `REVEAL` audit
+  row with `status = DENIED` and `denial_reason = "noninteractive_terminal"`
+  when stdout is not a TTY and `--force` is not passed; `command` echo added
+  to `write_value_access_audit_if_available` per DoD #4). Remaining sweep:
+  dangerous-profile reads, locked-vault refusals (need a degraded-audit
+  mechanism since the audit key is locked too), role denials, grant denials.
   - Spec: `docs/specs/audit.md`, plus action references throughout other specs.
   - Errors: any new `LocketError` variants needed for denied paths; existing
     typed errors when behavior changes class.
