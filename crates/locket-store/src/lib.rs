@@ -1478,6 +1478,11 @@ impl Store {
             "schema_version": 1,
             "action": "AUDIT_VERIFY",
             "status": "SUCCESS",
+            "check_names": ["audit_hmac_chain"],
+            "pass_count": 1,
+            "warn_count": 0,
+            "fail_count": 0,
+            "skip_count": 0,
             "rows_verified": rows_verified,
         });
         let audit = AuditWrite {
@@ -2807,6 +2812,72 @@ mod tests {
             |row| row.get::<_, i64>(0),
         )?;
         assert_eq!(audit_rows, 2);
+        let verify_metadata = test_store.store.connection().query_row(
+            "SELECT metadata_json
+             FROM audit_log
+             WHERE project_id = 'lk_proj_test' AND action = 'AUDIT_VERIFY'",
+            [],
+            |row| row.get::<_, String>(0),
+        )?;
+        let verify_metadata: serde_json::Value = serde_json::from_str(&verify_metadata)?;
+        assert_eq!(verify_metadata["check_names"], json!(["audit_hmac_chain"]));
+        assert_eq!(verify_metadata["pass_count"], 1);
+        assert_eq!(verify_metadata["warn_count"], 0);
+        assert_eq!(verify_metadata["fail_count"], 0);
+        assert_eq!(verify_metadata["skip_count"], 0);
+        assert_eq!(verify_metadata["rows_verified"], 1);
+
+        Ok(())
+    }
+
+    #[test]
+    fn audit_verify_reports_first_break_without_appending_success() -> Result<(), Box<dyn Error>> {
+        let mut test_store = open_initialized_store()?;
+        insert_project_profile(&test_store.store)?;
+        let metadata = json!({
+            "schema_version": 1,
+            "action": "SET",
+            "status": "SUCCESS",
+            "secret_name": "DATABASE_URL",
+            "profile_id": "lk_prof_test",
+            "source": "user-local",
+            "version": 1,
+        });
+        let audit = AuditWrite {
+            project_id: "lk_proj_test",
+            profile_id: Some("lk_prof_test"),
+            action: "SET",
+            status: "SUCCESS",
+            secret_name: Some("DATABASE_URL"),
+            command: None,
+            metadata_json: &metadata,
+            timestamp: 100,
+        };
+
+        test_store.store.append_audit(&[42; 32], &audit)?;
+        test_store.store.connection().execute(
+            "UPDATE audit_log SET action = 'DELETE'
+             WHERE project_id = 'lk_proj_test' AND sequence = 1",
+            [],
+        )?;
+
+        let error = test_store
+            .store
+            .verify_audit_chain_and_append("lk_proj_test", &[42; 32], 200)
+            .expect_err("tampered row should fail verification");
+        match error {
+            StoreError::AuditIntegrity { sequence, reason } => {
+                assert_eq!(sequence, 1);
+                assert_eq!(reason, "row hmac mismatch");
+            }
+            other => panic!("expected audit integrity error, got {other}"),
+        }
+        let audit_rows = test_store.store.connection().query_row(
+            "SELECT COUNT(*) FROM audit_log WHERE project_id = 'lk_proj_test'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )?;
+        assert_eq!(audit_rows, 1);
 
         Ok(())
     }
