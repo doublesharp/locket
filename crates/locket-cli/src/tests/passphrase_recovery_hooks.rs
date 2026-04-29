@@ -257,6 +257,23 @@ fn install_hooks_confirms_unmanaged_hook_and_preserves_existing_hook()
         |row| row.get(0),
     )?;
     assert_eq!(hook_installs, 2);
+    let (command, metadata_json): (String, String) = store.connection().query_row(
+        "SELECT command, metadata_json FROM audit_log WHERE action = 'HOOK_INSTALL' ORDER BY sequence LIMIT 1",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    let metadata: serde_json::Value = serde_json::from_str(&metadata_json)?;
+    assert_eq!(command, "install-hooks");
+    assert_eq!(metadata["schema_version"], 1);
+    assert_eq!(metadata["action"], "HOOK_INSTALL");
+    assert_eq!(metadata["status"], "SUCCESS");
+    assert_eq!(metadata["command"], "install-hooks");
+    assert_eq!(metadata["hook"], "pre-commit");
+    assert_eq!(metadata["hook_change"], "prepended-after-confirmation");
+    assert_eq!(metadata["hook_command"], "locket scan --staged");
+    assert_eq!(metadata["hook_path_kind"], "git-hooks/pre-commit");
+    assert_eq!(metadata["hook_path_hash"].as_str().map(str::len), Some(64));
+    assert!(metadata.get("secret_name").is_none());
     Ok(())
 }
 

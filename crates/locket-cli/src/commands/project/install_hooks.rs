@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use locket_crypto::KeyPurpose;
 use locket_store::AuditWrite;
 use serde_json::json;
+use sha2::{Digest, Sha256};
 
 use crate::{
     CliError, HOOK_BEGIN, HOOK_END, ResolvedProject, RuntimeContext, confirmation_failed_error,
@@ -41,7 +42,7 @@ pub fn install_hooks_command(
         fs::write(&hook_path, plan.updated)?;
     }
     make_executable(&hook_path)?;
-    write_hook_install_audit_if_available(context, &resolved)?;
+    write_hook_install_audit_if_available(context, &resolved, &hook_path, plan.change)?;
 
     writeln!(output, "installed {}", hook_path.display())?;
     writeln!(output, "hook_change: {}", plan.change.as_str())?;
@@ -201,6 +202,8 @@ fn make_executable(_path: &Path) -> Result<(), CliError> {
 fn write_hook_install_audit_if_available(
     context: &RuntimeContext,
     resolved: &ResolvedProject,
+    hook_path: &Path,
+    change: HookInstallChange,
 ) -> Result<(), CliError> {
     let mut store = open_store(context)?;
     if store.get_project(resolved.config.project_id.as_str())?.is_none() {
@@ -208,12 +211,17 @@ fn write_hook_install_audit_if_available(
     }
     let audit_key =
         load_project_key(context, &store, resolved.config.project_id.as_str(), KeyPurpose::Audit)?;
+    let hook_path_hash = metadata_path_hash(hook_path);
     let metadata = json!({
         "schema_version": 1,
         "action": "HOOK_INSTALL",
         "status": "SUCCESS",
+        "command": "install-hooks",
         "hook": "pre-commit",
-        "command": "locket scan --staged",
+        "hook_change": change.as_str(),
+        "hook_command": "locket scan --staged",
+        "hook_path_kind": "git-hooks/pre-commit",
+        "hook_path_hash": hook_path_hash,
     });
     let audit = AuditWrite {
         project_id: resolved.config.project_id.as_str(),
@@ -227,4 +235,15 @@ fn write_hook_install_audit_if_available(
     };
     store.append_audit(audit_key.as_ref(), &audit)?;
     Ok(())
+}
+
+fn metadata_path_hash(path: &Path) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let digest = Sha256::digest(path.to_string_lossy().as_bytes());
+    let mut hex = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        hex.push(HEX[usize::from(byte >> 4)] as char);
+        hex.push(HEX[usize::from(byte & 0x0f)] as char);
+    }
+    hex
 }
