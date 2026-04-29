@@ -247,7 +247,7 @@ to touch. Items marked `[x]` are merged to `main` and verified.
   - Errors: `ConfirmationFailed` (66).
   - Audit actions: `POLICY_UPDATE` with deletion metadata.
   - Files: future `crates/locket-cli/src/policy_authoring.rs` deletion path.
-- [~] [70c448c4] Source-precedence and multi-source behavior across `set`, `get`, `list`,
+- [~] [70c448c4] ready: agent-70c448c4/source-precedence @ f20dfcb — run audit records selected source by precedence; set tombstone preflight returns typed SecretDeleted.
   Claim: branch agent-70c448c4/source-precedence, worktree .worktrees/agent-70c448c4-source-precedence.
   `rotate`, `rm`, `purge`, `history`, `diff`, `copy`, reveal/copy, and execution.
   - Spec: `docs/specs/data-model.md` (`SecretSource` precedence ordering),
