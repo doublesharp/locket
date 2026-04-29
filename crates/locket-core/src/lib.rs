@@ -6,6 +6,7 @@ pub mod error;
 pub mod id;
 pub mod profile_name;
 pub mod project;
+pub mod reference_uri;
 pub mod secret_name;
 pub mod time;
 
@@ -22,5 +23,8 @@ pub use id::{
 };
 pub use profile_name::{InvalidProfileName, MAX_PROFILE_NAME_LEN, ProfileName};
 pub use project::{PROJECT_CONFIG_SCHEMA_VERSION, ProjectConfig};
+pub use reference_uri::{
+    InvalidReferenceUri, InvalidSecretSource, LkReferenceUri, SecretSource, SecretVersion,
+};
 pub use secret_name::{InvalidSecretName, SecretName};
 pub use time::{Duration, InvalidDuration, Timestamp};
