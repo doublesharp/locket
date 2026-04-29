@@ -9,7 +9,7 @@ use thiserror::Error;
 
 /// Parent environment names considered safe in [`EnvMode::Minimal`].
 pub const DEFAULT_SAFE_ALLOWLIST: &[&str] =
-    &["PATH", "HOME", "USER", "LOGNAME", "SHELL", "TMPDIR", "TEMP", "TMP"];
+    &["PATH", "HOME", "USER", "SHELL", "TMPDIR", "LANG", "LC_*", "TERM", "CI"];
 
 /// Execution request before a child process is built.
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -154,12 +154,37 @@ mod tests {
     #[test]
     fn minimal_mode_inherits_safe_allowlist() -> Result<(), ExecError> {
         let mut request = ExecutionRequest::strict(vec!["tool".to_owned()]);
-        request.parent_env = env(&[("PATH", "/bin"), ("SECRET", "parent")]);
+        request.parent_env = env(&[
+            ("PATH", "/bin"),
+            ("HOME", "/home/dev"),
+            ("USER", "dev"),
+            ("SHELL", "/bin/zsh"),
+            ("TMPDIR", "/tmp"),
+            ("LANG", "en_US.UTF-8"),
+            ("LC_CTYPE", "UTF-8"),
+            ("TERM", "xterm-256color"),
+            ("CI", "true"),
+            ("LOGNAME", "dev"),
+            ("TEMP", "/tmp"),
+            ("TMP", "/tmp"),
+            ("SECRET", "parent"),
+        ]);
         request.env_mode = EnvMode::Minimal;
 
         let prepared = prepare_execution(&request)?;
 
         assert_eq!(prepared.env.get("PATH").map(|value| value.as_str()), Some("/bin"));
+        assert_eq!(prepared.env.get("HOME").map(|value| value.as_str()), Some("/home/dev"));
+        assert_eq!(prepared.env.get("USER").map(|value| value.as_str()), Some("dev"));
+        assert_eq!(prepared.env.get("SHELL").map(|value| value.as_str()), Some("/bin/zsh"));
+        assert_eq!(prepared.env.get("TMPDIR").map(|value| value.as_str()), Some("/tmp"));
+        assert_eq!(prepared.env.get("LANG").map(|value| value.as_str()), Some("en_US.UTF-8"));
+        assert_eq!(prepared.env.get("LC_CTYPE").map(|value| value.as_str()), Some("UTF-8"));
+        assert_eq!(prepared.env.get("TERM").map(|value| value.as_str()), Some("xterm-256color"));
+        assert_eq!(prepared.env.get("CI").map(|value| value.as_str()), Some("true"));
+        assert!(!prepared.env.contains_key("LOGNAME"));
+        assert!(!prepared.env.contains_key("TEMP"));
+        assert!(!prepared.env.contains_key("TMP"));
         assert!(!prepared.env.contains_key("SECRET"));
         Ok(())
     }

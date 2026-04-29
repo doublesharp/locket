@@ -152,7 +152,7 @@ pub fn merge_environment(
 ) -> Result<EnvMap, EnvMergeError> {
     let mut child = match mode {
         EnvMode::Strict => EnvMap::new(),
-        EnvMode::Minimal => select_names(parent, safe_allowlist),
+        EnvMode::Minimal => select_allowlisted_names(parent, safe_allowlist),
         EnvMode::Merge | EnvMode::Passthrough => parent.clone(),
     };
 
@@ -180,6 +180,18 @@ fn select_names(source: &EnvMap, names: &[&str]) -> EnvMap {
         .iter()
         .filter_map(|name| source.get(*name).map(|value| ((*name).to_owned(), value.clone())))
         .collect()
+}
+
+fn select_allowlisted_names(source: &EnvMap, patterns: &[&str]) -> EnvMap {
+    source
+        .iter()
+        .filter(|(name, _)| patterns.iter().any(|pattern| env_name_matches(pattern, name)))
+        .map(|(name, value)| (name.clone(), value.clone()))
+        .collect()
+}
+
+fn env_name_matches(pattern: &str, name: &str) -> bool {
+    pattern.strip_suffix('*').map_or(pattern == name, |prefix| name.starts_with(prefix))
 }
 
 #[cfg(test)]
@@ -221,8 +233,13 @@ mod tests {
     #[test]
     fn minimal_inherits_safe_allowlist() -> Result<(), EnvMergeError> {
         let merged = merge_environment(
-            &env(&[("PATH", "/bin"), ("HOME", "/home/me"), ("SECRET", "parent")]),
-            &["PATH", "HOME"],
+            &env(&[
+                ("PATH", "/bin"),
+                ("HOME", "/home/me"),
+                ("LC_CTYPE", "UTF-8"),
+                ("SECRET", "parent"),
+            ]),
+            &["PATH", "HOME", "LC_*"],
             &[],
             &EnvMap::new(),
             &EnvMap::new(),
@@ -230,8 +247,10 @@ mod tests {
             EnvOverrideMode::Locket,
         )?;
 
-        assert_eq!(merged.len(), 2);
+        assert_eq!(merged.len(), 3);
         assert_eq!(merged.get("PATH").map(|value| value.as_str()), Some("/bin"));
+        assert_eq!(merged.get("HOME").map(|value| value.as_str()), Some("/home/me"));
+        assert_eq!(merged.get("LC_CTYPE").map(|value| value.as_str()), Some("UTF-8"));
         assert!(!merged.contains_key("SECRET"));
         Ok(())
     }

@@ -2156,16 +2156,10 @@ pub(crate) fn write_runtime_policy_audit_if_available(
     let external_sources =
         policy.external_env_sources.iter().map(external_env_source_label).collect::<Vec<_>>();
     let secrets = policy_secret_audit_entries(selections);
-    let allowed_secret_names = policy
-        .allowed_secrets
-        .iter()
-        .map(locket_core::SecretName::as_str)
-        .collect::<Vec<_>>();
-    let required_secret_names = policy
-        .required_secrets
-        .iter()
-        .map(locket_core::SecretName::as_str)
-        .collect::<Vec<_>>();
+    let allowed_secret_names =
+        policy.allowed_secrets.iter().map(locket_core::SecretName::as_str).collect::<Vec<_>>();
+    let required_secret_names =
+        policy.required_secrets.iter().map(locket_core::SecretName::as_str).collect::<Vec<_>>();
     let metadata = json!({
         "schema_version": 1,
         "action": "RUN_POLICY",

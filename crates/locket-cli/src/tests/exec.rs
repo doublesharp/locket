@@ -337,8 +337,7 @@ inherit_env = ["PATH"]
 }
 
 #[test]
-fn run_policy_audit_records_child_exit_code_on_failure()
--> Result<(), Box<dyn std::error::Error>> {
+fn run_policy_audit_records_child_exit_code_on_failure() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempdir()?;
     let context = test_context(&directory);
     run_with_context(

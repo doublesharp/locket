@@ -155,6 +155,7 @@ fn doctor(context: &RuntimeContext, output: &mut impl Write) -> Result<(), CliEr
     writeln!(output, "policy_doctor: ok")?;
     writeln!(output, "policies: {}", document.commands.len())?;
     writeln!(output, "metadata_only: yes")?;
+    writeln!(output, "minimal_env_allowlist: {}", locket_exec::DEFAULT_SAFE_ALLOWLIST.join(" "))?;
     if policy_text.contains("lk://") {
         writeln!(output, "warning: lk:// validation skipped because agent is unavailable")?;
     }

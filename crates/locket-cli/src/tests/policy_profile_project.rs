@@ -80,6 +80,10 @@ fn policy_commands_update_locket_toml_without_duplicates_and_audit_metadata()
     let doctor_output = String::from_utf8(doctor_output)?;
     assert!(doctor_output.contains("policy_doctor: ok"));
     assert!(doctor_output.contains("metadata_only: yes"));
+    assert!(
+        doctor_output
+            .contains("minimal_env_allowlist: PATH HOME USER SHELL TMPDIR LANG LC_* TERM CI")
+    );
 
     assert_error_contains(
         run_with_context(
