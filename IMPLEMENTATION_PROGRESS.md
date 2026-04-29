@@ -574,26 +574,15 @@ editing — they drift. Severity: **blocker** (security/correctness),
 
 - [x] **blocker** — `locket new` now appends an `INIT` audit row.
 
-- [x] **important** — `commands/config.rs` is a thin shell of `main.rs`.
-  - Where: `crates/locket-cli/src/commands/config.rs` reaches back into
-    `main.rs`/`support` for `CONFIG_KEY_SPECS`, `ConfigKeySpec`,
-    `ConfigValueKind`, validators, parsers, and the audit helper. The
-    extraction moved the wrapper but left the data and validation in
-    `main.rs`.
-  - Fix: collocate `ConfigKeySpec`, `ConfigValueKind`, `CONFIG_KEY_SPECS`,
-    and the validators/parsers with `commands/config.rs` (or a new
-    `crates/locket-cli/src/commands/config/spec.rs` if the spec table is
-    large). Keep `main.rs` reduced to wiring only.
-  - Tests: unchanged behavior; existing config tests should pass.
+- [x] **important** — `ConfigKeySpec`/`ConfigValueKind`/`CONFIG_KEY_SPECS`
+  and validators/parsers moved out of `main.rs` into
+  `commands/config/spec.rs`.
 
-- [x] **important** — `LocketError` lacks `SecretAlreadyExists`.
-  - Root cause of the blocker above. Five different callsites return
-    string-only `"already exists"` errors today (verify with `grep -rn
-    'already exists' crates/`).
-  - Fix: tracked together with the import-overwrite blocker; closing one
-    closes both.
+- [x] **important** — `SecretAlreadyExists` (67) added to `LocketError`
+  (closed alongside the import-overwrite blocker).
 
-- [x] **important** — Decrypted secret values lose `Zeroizing` in `EnvMap`.
+- [x] **important** — `EnvMap` values now wrap in `Zeroizing` so
+  decrypted secrets clear on drop.
 
 - [~] **important** — Typed error system underused: ~6 typed callers vs ~249
   `CliError::Config`.
@@ -737,7 +726,8 @@ against the named spec file.
 - [x] `index.md`
 - [~] [70c448c4] `product.md`
   Claim: branch agent-70c448c4/product-gate, worktree .worktrees/agent-70c448c4-product-gate.
-- [ ] `invariants.md`
+- [~] [6e4d05db] `invariants.md`
+  Claim: branch agent-6e4d05db/spec-invariants-gate, worktree .worktrees/agent-6e4d05db-spec-invariants-gate.
 - [ ] `architecture.md`
 - [ ] `data-model.md`
 - [ ] `storage.md`
