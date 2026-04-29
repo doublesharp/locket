@@ -749,7 +749,8 @@ editing — they drift. Severity: **blocker** (security/correctness),
   deny-by-default policy, malformed AAD/nonces, replayed nonces, audit
   tampering, locked-vault scans, expired versions, and
   dangerous-profile.
-- [ ] Fuzz tooling and gates: `make fuzz-list`/`fuzz-smoke`/`fuzz`/
+- [~] [6e4d05db] Fuzz tooling and gates: `make fuzz-list`/`fuzz-smoke`/`fuzz`/
+  Claim: branch agent-6e4d05db/fuzz-tooling-gates, worktree .worktrees/agent-6e4d05db-fuzz-tooling-gates.
   `fuzz-nightly`; PR gate ≥60 s/target on touched fuzzed paths;
   nightly ≥15 min/target with ASan+UBSan; pre-public-release
   ≥8 cumulative CPU-hours/target since prior release; deterministic
