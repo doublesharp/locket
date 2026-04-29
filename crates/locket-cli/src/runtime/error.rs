@@ -97,6 +97,10 @@ pub fn secret_not_found_error(message: impl Into<String>) -> CliError {
     typed_cli_error(LocketError::SecretNotFound, message)
 }
 
+pub fn secret_version_overflow_error(message: impl Into<String>) -> CliError {
+    typed_cli_error(LocketError::SecretVersionOverflow, message)
+}
+
 pub fn profile_not_found_error(message: impl Into<String>) -> CliError {
     typed_cli_error(LocketError::ProfileNotFound, message)
 }

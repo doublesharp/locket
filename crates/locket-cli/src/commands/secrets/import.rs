@@ -25,8 +25,8 @@ use crate::support::project_files::{ensure_gitignore, refresh_example_for_projec
 use crate::support::secret_helpers::{SecretEncryptRequest, encrypt_secret_version};
 use crate::{
     ImportArgs, ResolvedProject, SecretSourceArg, absolutize, active_profile_secret_names,
-    ensure_trusted_project_root, now_unix_nanos, open_store, require_project, secret_deleted_error,
-    source_arg_to_str,
+    ensure_trusted_project_root, next_secret_version, now_unix_nanos, open_store, require_project,
+    secret_deleted_error, source_arg_to_str,
 };
 
 pub fn import_command(
@@ -276,10 +276,7 @@ fn rotate_import_secret_value_in_profile(
     if secret.state == "deleted" {
         return Err(secret_deleted_error("secret source is deleted"));
     }
-    let new_version = secret
-        .current_version
-        .checked_add(1)
-        .ok_or_else(|| CliError::Config("secret version overflow".to_owned()))?;
+    let new_version = next_secret_version(secret.current_version)?;
     let audit_key = load_project_key(
         context,
         store,

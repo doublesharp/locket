@@ -131,6 +131,17 @@ fn secret_not_found_errors_exit_77() {
 }
 
 #[test]
+fn secret_version_overflow_errors_exit_90() -> Result<(), Box<dyn std::error::Error>> {
+    let Err(error) = crate::next_secret_version(u32::MAX) else {
+        return Err("max u32 secret version should fail before wrapping".into());
+    };
+
+    assert_eq!(error.exit_code(), 90);
+    assert_eq!(error.to_string(), "secret version overflow");
+    Ok(())
+}
+
+#[test]
 fn profile_not_found_errors_exit_78() {
     let error = crate::profile_not_found_error("profile not found");
 
