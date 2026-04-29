@@ -2142,6 +2142,7 @@ pub(crate) fn write_runtime_policy_audit_if_available(
     status: &str,
     selections: &[PolicySecretSelection],
     child_exit: Option<i32>,
+    confirmation_source: Option<&str>,
 ) -> Result<(), CliError> {
     if store.get_project(resolved.config.project_id.as_str())?.is_none() {
         return Ok(());
@@ -2176,7 +2177,7 @@ pub(crate) fn write_runtime_policy_audit_if_available(
         "required_secret_names": required_secret_names,
         "external_env_sources": external_sources,
         "external_sources": external_sources,
-        "confirmation_source": Value::Null,
+        "confirmation_source": confirmation_source,
         "child_exit": child_exit,
     });
     let audit = AuditWrite {

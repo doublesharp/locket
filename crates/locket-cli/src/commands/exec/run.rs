@@ -13,7 +13,8 @@ use locket_store::{ProfileRecord, RuntimeSessionRecord, RuntimeSessionSecretName
 use crate::commands::config::spec::{config_get_value, read_user_config};
 use crate::runtime::RuntimeContext;
 use crate::runtime::error::{
-    CliError, child_exit_error, exec_prepare_error, unimplemented_in_build_error,
+    CliError, child_exit_error, confirmation_failed_error, exec_prepare_error,
+    unimplemented_in_build_error,
 };
 use crate::runtime::key_access::default_profile;
 use crate::support::secret_helpers::{
@@ -56,9 +57,17 @@ pub fn run_command(
             "shell policy execution is not wired in this build",
         ));
     }
-    if policy.confirm {
-        return Err(unimplemented_in_build_error("policy confirmation is not wired in this build"));
-    }
+    let confirmation_source = if policy.confirm {
+        let expected = format!("run {}", policy.name);
+        writeln!(output, "type '{expected}' to confirm run")?;
+        let confirmation = context.confirmation_reader.read_confirmation("run")?;
+        if confirmation.trim_end_matches(['\r', '\n']) != expected {
+            return Err(confirmation_failed_error("confirmation did not match run scope"));
+        }
+        Some("interactive")
+    } else {
+        None
+    };
     if policy.require_user_verification {
         return Err(unimplemented_in_build_error(
             "policy user verification is not wired in this build",
@@ -120,6 +129,7 @@ pub fn run_command(
         audit_status,
         &selections,
         status.code(),
+        confirmation_source,
     )?;
     if status.success() {
         return Ok(());

@@ -722,3 +722,100 @@ required_secrets = ["DATABASE_URL"]
     assert!(!configured_output.contains("env_check"));
     Ok(())
 }
+
+#[test]
+fn run_policy_confirm_gate_rejects_wrong_confirmation() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let key_store: Arc<dyn MasterKeyStore + Send + Sync> =
+        Arc::new(MemoryMasterKeyStore::default());
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &test_context_with_key_store(&directory, Arc::clone(&key_store)),
+        &mut Vec::new(),
+    )?;
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(directory.path().join("locket.toml"))?
+        .write_all(
+            br#"
+[commands.deploy]
+argv = ["/bin/sh", "-c", "true"]
+confirm = true
+env_mode = "strict"
+inherit_env = ["PATH"]
+"#,
+        )?;
+
+    let bad_context =
+        test_context_with_key_store_and_confirmation(&directory, Arc::clone(&key_store), "wrong\n");
+    let result = run_with_context(
+        Cli::try_parse_from(["locket", "run", "deploy"])?,
+        &bad_context,
+        &mut Vec::new(),
+    );
+    let Err(error) = result else {
+        return Err("policy with confirm=true must reject wrong confirmation".into());
+    };
+    assert_eq!(error.exit_code(), 68);
+    assert!(error.to_string().contains("confirmation did not match run scope"));
+
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let count: i64 = store.connection().query_row(
+        "SELECT COUNT(*) FROM audit_log WHERE action = 'RUN_POLICY'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(count, 0, "rejected run must not write a RUN_POLICY audit row");
+    Ok(())
+}
+
+#[test]
+fn run_policy_confirm_gate_accepts_typed_confirmation() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let key_store: Arc<dyn MasterKeyStore + Send + Sync> =
+        Arc::new(MemoryMasterKeyStore::default());
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &test_context_with_key_store(&directory, Arc::clone(&key_store)),
+        &mut Vec::new(),
+    )?;
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(directory.path().join("locket.toml"))?
+        .write_all(
+            br#"
+[commands.deploy]
+argv = ["/bin/sh", "-c", "true"]
+confirm = true
+env_mode = "strict"
+inherit_env = ["PATH"]
+"#,
+        )?;
+
+    let good_context = test_context_with_key_store_and_confirmation(
+        &directory,
+        Arc::clone(&key_store),
+        "run deploy\n",
+    );
+    let mut output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "run", "deploy"])?,
+        &good_context,
+        &mut output,
+    )?;
+    let output = String::from_utf8(output)?;
+    assert!(output.contains("type 'run deploy' to confirm run"));
+
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let metadata: String = store.connection().query_row(
+        "SELECT metadata_json FROM audit_log WHERE action = 'RUN_POLICY'
+         ORDER BY sequence DESC LIMIT 1",
+        [],
+        |row| row.get(0),
+    )?;
+    let metadata_json: serde_json::Value = serde_json::from_str(&metadata)?;
+    assert_eq!(metadata_json["status"], "SUCCESS");
+    assert_eq!(metadata_json["confirmation_source"], json!("interactive"));
+    assert_eq!(metadata_json["policy"], "deploy");
+    Ok(())
+}
