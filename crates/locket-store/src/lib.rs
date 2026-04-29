@@ -249,6 +249,48 @@ pub struct RuntimeSessionRecord {
     pub completion_audit_sequence: Option<u64>,
 }
 
+/// Public metadata for a registered automation client.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AutomationClientRecord {
+    /// Automation-client identifier.
+    pub id: String,
+    /// Parent project identifier.
+    pub project_id: String,
+    /// Human-readable client name.
+    pub name: String,
+    /// Ed25519 public key bytes.
+    pub public_key: Vec<u8>,
+    /// Stable public-key fingerprint.
+    pub fingerprint: String,
+    /// Persisted private-key storage mode metadata.
+    pub storage: String,
+    /// Allowed agent action strings.
+    pub allowed_actions: Vec<String>,
+    /// Allowed command-policy names.
+    pub allowed_policies: Vec<String>,
+    /// Creation timestamp in nanoseconds since the Unix epoch.
+    pub created_at: i64,
+    /// Last successful use timestamp in nanoseconds since the Unix epoch.
+    pub last_used_at: Option<i64>,
+    /// Revocation timestamp in nanoseconds since the Unix epoch.
+    pub revoked_at: Option<i64>,
+}
+
+/// Recently seen automation-client challenge nonce.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AutomationClientNonceRecord {
+    /// Parent automation-client identifier.
+    pub client_id: String,
+    /// Agent-issued challenge nonce.
+    pub nonce: [u8; 24],
+    /// Request timestamp in nanoseconds since the Unix epoch.
+    pub request_timestamp: i64,
+    /// Timestamp when the nonce was observed.
+    pub seen_at: i64,
+    /// Timestamp after which the nonce can be pruned.
+    pub expires_at: i64,
+}
+
 /// Retention behavior for `runtime_sessions.secret_names`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RuntimeSessionSecretNameRetention {
@@ -655,6 +697,146 @@ impl Store {
                    AND secret_names_json != '[]'",
                 params![project_id, started_before_or_at],
             )
+            .map_err(StoreError::from)
+    }
+
+    /// Registers or refreshes public automation-client metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Sqlite`] when `SQLite` rejects the row.
+    pub fn insert_automation_client(
+        &self,
+        client: &AutomationClientRecord,
+    ) -> Result<(), StoreError> {
+        let allowed_actions_json = json!(&client.allowed_actions).to_string();
+        let allowed_policies_json = json!(&client.allowed_policies).to_string();
+        self.connection.execute(
+            "INSERT INTO automation_clients(
+               id, project_id, name, public_key, fingerprint, storage,
+               allowed_actions_json, allowed_policies_json, created_at, last_used_at, revoked_at
+             )
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            params![
+                client.id.as_str(),
+                client.project_id.as_str(),
+                client.name.as_str(),
+                client.public_key.as_slice(),
+                client.fingerprint.as_str(),
+                client.storage.as_str(),
+                allowed_actions_json,
+                allowed_policies_json,
+                client.created_at,
+                client.last_used_at,
+                client.revoked_at,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Lists automation-client metadata for a project.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Sqlite`] when rows cannot be queried or parsed.
+    pub fn list_automation_clients(
+        &self,
+        project_id: &str,
+        include_revoked: bool,
+    ) -> Result<Vec<AutomationClientRecord>, StoreError> {
+        let mut statement = self.connection.prepare(
+            "SELECT id, project_id, name, public_key, fingerprint, storage,
+                    allowed_actions_json, allowed_policies_json, created_at, last_used_at, revoked_at
+             FROM automation_clients
+             WHERE project_id = ?1 AND (?2 OR revoked_at IS NULL)
+             ORDER BY name, created_at, id",
+        )?;
+        statement
+            .query_map(params![project_id, include_revoked], automation_client_from_row)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(StoreError::from)
+    }
+
+    /// Returns one automation client by id or project-scoped name.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Sqlite`] when the row cannot be queried or parsed.
+    pub fn get_automation_client(
+        &self,
+        project_id: &str,
+        client: &str,
+    ) -> Result<Option<AutomationClientRecord>, StoreError> {
+        self.connection
+            .query_row(
+                "SELECT id, project_id, name, public_key, fingerprint, storage,
+                        allowed_actions_json, allowed_policies_json, created_at, last_used_at, revoked_at
+                 FROM automation_clients
+                 WHERE project_id = ?1 AND (id = ?2 OR name = ?2)
+                 ORDER BY CASE WHEN id = ?2 THEN 0 ELSE 1 END, created_at
+                 LIMIT 1",
+                params![project_id, client],
+                automation_client_from_row,
+            )
+            .optional()
+            .map_err(StoreError::from)
+    }
+
+    /// Revokes an automation client by id.
+    ///
+    /// Returns `true` when an active client was revoked.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Sqlite`] when `SQLite` rejects the update.
+    pub fn revoke_automation_client(
+        &self,
+        project_id: &str,
+        client_id: &str,
+        revoked_at: i64,
+    ) -> Result<bool, StoreError> {
+        self.connection.execute(
+            "UPDATE automation_clients
+             SET revoked_at = ?3
+             WHERE project_id = ?1 AND id = ?2 AND revoked_at IS NULL",
+            params![project_id, client_id, revoked_at],
+        )?;
+        Ok(self.connection.changes() == 1)
+    }
+
+    /// Records an automation-client challenge nonce.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Sqlite`] when `SQLite` rejects the nonce.
+    pub fn insert_automation_client_nonce(
+        &self,
+        nonce: &AutomationClientNonceRecord,
+    ) -> Result<(), StoreError> {
+        self.connection.execute(
+            "INSERT INTO automation_client_nonces(
+               client_id, nonce, request_timestamp, seen_at, expires_at
+             )
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                nonce.client_id.as_str(),
+                nonce.nonce.as_slice(),
+                nonce.request_timestamp,
+                nonce.seen_at,
+                nonce.expires_at,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Prunes expired automation-client nonces.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Sqlite`] when `SQLite` rejects the delete.
+    pub fn prune_automation_client_nonces(&self, now: i64) -> Result<usize, StoreError> {
+        self.connection
+            .execute("DELETE FROM automation_client_nonces WHERE expires_at <= ?1", [now])
             .map_err(StoreError::from)
     }
 
@@ -2187,6 +2369,32 @@ fn runtime_session_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Runtime
     })
 }
 
+fn automation_client_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AutomationClientRecord> {
+    let allowed_actions_json = row.get::<_, String>(6)?;
+    let allowed_actions =
+        serde_json::from_str::<Vec<String>>(&allowed_actions_json).map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(6, Type::Text, Box::new(error))
+        })?;
+    let allowed_policies_json = row.get::<_, String>(7)?;
+    let allowed_policies =
+        serde_json::from_str::<Vec<String>>(&allowed_policies_json).map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(7, Type::Text, Box::new(error))
+        })?;
+    Ok(AutomationClientRecord {
+        id: row.get(0)?,
+        project_id: row.get(1)?,
+        name: row.get(2)?,
+        public_key: row.get(3)?,
+        fingerprint: row.get(4)?,
+        storage: row.get(5)?,
+        allowed_actions,
+        allowed_policies,
+        created_at: row.get(8)?,
+        last_used_at: row.get(9)?,
+        revoked_at: row.get(10)?,
+    })
+}
+
 fn root_hash_from_row(
     row: &rusqlite::Row<'_>,
     column: usize,
@@ -2733,9 +2941,21 @@ CREATE TABLE IF NOT EXISTS automation_clients (
   id TEXT PRIMARY KEY,
   project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   name TEXT NOT NULL,
+  public_key BLOB NOT NULL CHECK (length(public_key) = 32),
+  fingerprint TEXT NOT NULL,
+  storage TEXT NOT NULL CHECK (storage IN ('external', 'os-keychain', 'wrapped-local-file')),
+  allowed_actions_json TEXT NOT NULL CHECK (json_valid(allowed_actions_json)),
+  allowed_policies_json TEXT NOT NULL CHECK (json_valid(allowed_policies_json)),
   created_at INTEGER NOT NULL,
-  revoked_at INTEGER
+  last_used_at INTEGER,
+  revoked_at INTEGER,
+  UNIQUE (project_id, name),
+  UNIQUE (project_id, fingerprint)
 );
+
+CREATE INDEX IF NOT EXISTS automation_clients_project_active_idx
+  ON automation_clients(project_id, name)
+  WHERE revoked_at IS NULL;
 
 CREATE TABLE IF NOT EXISTS automation_client_nonces (
   client_id TEXT NOT NULL REFERENCES automation_clients(id) ON DELETE CASCADE,
@@ -2761,10 +2981,11 @@ mod tests {
     use tempfile::{TempDir, tempdir};
 
     use super::{
-        AuditContext, AuditWrite, DeviceRecord, DirectoryGrantRecord, KeyRecord, ProfileRecord,
-        ProjectRecord, ProjectRootRecord, RuntimeSessionRecord, RuntimeSessionSecretNameRetention,
-        SCHEMA_VERSION, SecretBlobRecord, SecretFingerprintRecord, SecretRecord,
-        SecretVersionRecord, Store, StoreError,
+        AuditContext, AuditWrite, AutomationClientNonceRecord, AutomationClientRecord,
+        DeviceRecord, DirectoryGrantRecord, KeyRecord, ProfileRecord, ProjectRecord,
+        ProjectRootRecord, RuntimeSessionRecord, RuntimeSessionSecretNameRetention, SCHEMA_VERSION,
+        SecretBlobRecord, SecretFingerprintRecord, SecretRecord, SecretVersionRecord, Store,
+        StoreError,
     };
 
     struct TestStore {
@@ -3550,6 +3771,81 @@ mod tests {
         )?;
         assert_eq!(remaining_count, 1);
 
+        Ok(())
+    }
+
+    #[test]
+    fn automation_clients_store_public_metadata_and_revocation() -> Result<(), Box<dyn Error>> {
+        let test_store = open_initialized_store()?;
+        test_store.store.insert_project_if_absent("lk_proj_test", "test", 100)?;
+        let client = AutomationClientRecord {
+            id: "lk_client_test".to_owned(),
+            project_id: "lk_proj_test".to_owned(),
+            name: "ci".to_owned(),
+            public_key: vec![7; 32],
+            fingerprint: "6b86b273ff34fce1".to_owned(),
+            storage: "external".to_owned(),
+            allowed_actions: vec!["run-policy".to_owned(), "redact".to_owned()],
+            allowed_policies: vec!["test".to_owned()],
+            created_at: 200,
+            last_used_at: None,
+            revoked_at: None,
+        };
+
+        test_store.store.insert_automation_client(&client)?;
+        let clients = test_store.store.list_automation_clients("lk_proj_test", false)?;
+        assert_eq!(clients, vec![client]);
+        let by_name = test_store
+            .store
+            .get_automation_client("lk_proj_test", "ci")?
+            .ok_or("client should exist")?;
+        assert_eq!(by_name.id, "lk_client_test");
+
+        assert!(test_store.store.revoke_automation_client(
+            "lk_proj_test",
+            "lk_client_test",
+            300
+        )?);
+        assert!(test_store.store.list_automation_clients("lk_proj_test", false)?.is_empty());
+        let revoked = test_store.store.list_automation_clients("lk_proj_test", true)?;
+        assert_eq!(revoked[0].revoked_at, Some(300));
+        assert!(!test_store.store.revoke_automation_client(
+            "lk_proj_test",
+            "lk_client_test",
+            400
+        )?);
+        Ok(())
+    }
+
+    #[test]
+    fn automation_client_nonces_are_unique_and_prunable() -> Result<(), Box<dyn Error>> {
+        let test_store = open_initialized_store()?;
+        test_store.store.insert_project_if_absent("lk_proj_test", "test", 100)?;
+        test_store.store.insert_automation_client(&AutomationClientRecord {
+            id: "lk_client_test".to_owned(),
+            project_id: "lk_proj_test".to_owned(),
+            name: "ci".to_owned(),
+            public_key: vec![7; 32],
+            fingerprint: "fingerprint".to_owned(),
+            storage: "external".to_owned(),
+            allowed_actions: vec!["run-policy".to_owned()],
+            allowed_policies: vec!["test".to_owned()],
+            created_at: 200,
+            last_used_at: None,
+            revoked_at: None,
+        })?;
+        let nonce = AutomationClientNonceRecord {
+            client_id: "lk_client_test".to_owned(),
+            nonce: [9; 24],
+            request_timestamp: 210,
+            seen_at: 220,
+            expires_at: 230,
+        };
+
+        test_store.store.insert_automation_client_nonce(&nonce)?;
+        assert!(test_store.store.insert_automation_client_nonce(&nonce).is_err());
+        assert_eq!(test_store.store.prune_automation_client_nonces(229)?, 0);
+        assert_eq!(test_store.store.prune_automation_client_nonces(230)?, 1);
         Ok(())
     }
 

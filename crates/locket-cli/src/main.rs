@@ -8,10 +8,11 @@ use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::Shell as CompletionShell;
 use data_encoding::BASE64URL_NOPAD;
 use directories::{BaseDirs, ProjectDirs};
+use ed25519_dalek::SigningKey;
 use ignore::{WalkBuilder, gitignore::GitignoreBuilder};
 use locket_core::{
-    CommandPolicy, CommandSpec, DeviceId, Duration as LocketDuration, ExternalEnvSource, KeyId,
-    LocketError, PROJECT_CONFIG_SCHEMA_VERSION, PolicyDocument, ProfileId, ProfileName,
+    ClientId, CommandPolicy, CommandSpec, DeviceId, Duration as LocketDuration, ExternalEnvSource,
+    KeyId, LocketError, PROJECT_CONFIG_SCHEMA_VERSION, PolicyDocument, ProfileId, ProfileName,
     ProjectConfig, ProjectId, SecretId, SecretName,
 };
 use locket_crypto::{
@@ -32,10 +33,10 @@ use locket_scan::{
     redact_text, redact_text_with_known_values, scan_text,
 };
 use locket_store::{
-    AuditContext, AuditLogRecord, AuditWrite, DeviceRecord, DirectoryGrantRecord, KeyRecord,
-    ProfileRecord, RuntimeSessionSecretNameRetention, SecretBlobRecord, SecretCopyTarget,
-    SecretFingerprintRecord, SecretMetadataUpdate, SecretRecord, SecretVersionRecord, Store,
-    StoreError, VersionDeprecation,
+    AuditContext, AuditLogRecord, AuditWrite, AutomationClientRecord, DeviceRecord,
+    DirectoryGrantRecord, KeyRecord, ProfileRecord, RuntimeSessionSecretNameRetention,
+    SecretBlobRecord, SecretCopyTarget, SecretFingerprintRecord, SecretMetadataUpdate, SecretRecord,
+    SecretVersionRecord, Store, StoreError, VersionDeprecation,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -218,6 +219,12 @@ enum Command {
         /// Device command.
         #[command(subcommand)]
         command: DeviceCommand,
+    },
+    /// Manage automation clients.
+    Client {
+        /// Automation-client command.
+        #[command(subcommand)]
+        command: ClientCommand,
     },
     /// Restore vault access from a recovery code.
     Recover(RecoverArgs),
@@ -748,6 +755,75 @@ struct DeviceRemoveArgs {
     force: bool,
 }
 
+#[derive(Debug, Subcommand)]
+enum ClientCommand {
+    /// Create a Locket-managed automation client metadata record.
+    Create(ClientCreateArgs),
+    /// Add an externally managed automation client public key.
+    Add(ClientAddArgs),
+    /// List registered automation clients.
+    List(ClientListArgs),
+    /// Revoke an automation client.
+    Revoke {
+        /// Client name or id.
+        client: String,
+    },
+}
+
+#[derive(Debug, Args)]
+struct ClientCreateArgs {
+    /// Client display name.
+    name: String,
+    /// Locket-managed private-key storage mode metadata.
+    #[arg(long, value_enum, default_value_t = ClientStorageArg::OsKeychain)]
+    storage: ClientStorageArg,
+    /// Allowed automation action. May be repeated.
+    #[arg(long = "action")]
+    actions: Vec<String>,
+    /// Allowed command policy. May be repeated.
+    #[arg(long = "policy")]
+    policies: Vec<String>,
+}
+
+#[derive(Debug, Args)]
+struct ClientAddArgs {
+    /// Client display name.
+    name: String,
+    /// Ed25519 public key as 64 lowercase or uppercase hex characters.
+    #[arg(long)]
+    pubkey: String,
+    /// Allowed automation action. May be repeated.
+    #[arg(long = "action")]
+    actions: Vec<String>,
+    /// Allowed command policy. May be repeated.
+    #[arg(long = "policy")]
+    policies: Vec<String>,
+}
+
+#[derive(Debug, Args)]
+struct ClientListArgs {
+    /// Include revoked clients.
+    #[arg(long)]
+    all: bool,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum ClientStorageArg {
+    /// Store client private key in the OS keychain.
+    OsKeychain,
+    /// Store a wrapped local private-key file.
+    WrappedLocalFile,
+}
+
+impl ClientStorageArg {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::OsKeychain => "os-keychain",
+            Self::WrappedLocalFile => "wrapped-local-file",
+        }
+    }
+}
+
 #[derive(Debug, Args)]
 struct PasskeyListArgs {
     /// Include revoked credentials.
@@ -885,6 +961,7 @@ fn run_with_context(
         Command::Config { command } => config_command(context, output, command)?,
         Command::Passkey { command } => passkey_command(output, command)?,
         Command::Device { command } => device_command(context, output, command)?,
+        Command::Client { command } => client_command(context, output, command)?,
         Command::Recover(args) => recover_command(context, output, &args)?,
         Command::Recovery { command } => recovery_command(context, output, command)?,
     }
@@ -3651,6 +3728,222 @@ fn write_device_audit_if_available(
         timestamp: now_unix_nanos()?,
     };
     store.append_audit(audit_key.as_ref(), &audit)?;
+    Ok(())
+}
+
+fn client_command(
+    context: &RuntimeContext,
+    output: &mut impl Write,
+    command: ClientCommand,
+) -> Result<(), CliError> {
+    match command {
+        ClientCommand::Create(args) => client_create_command(context, output, &args),
+        ClientCommand::Add(args) => client_add_command(context, output, &args),
+        ClientCommand::List(args) => client_list_command(context, output, args.all),
+        ClientCommand::Revoke { client } => client_revoke_command(context, output, &client),
+    }
+}
+
+fn client_create_command(
+    context: &RuntimeContext,
+    output: &mut impl Write,
+    args: &ClientCreateArgs,
+) -> Result<(), CliError> {
+    let seed = generate_key()?;
+    let signing_key = SigningKey::from_bytes(&seed);
+    let public_key = signing_key.verifying_key().to_bytes();
+    register_client_metadata(
+        context,
+        output,
+        ClientRegistrationRequest {
+            name: &args.name,
+            public_key: &public_key,
+            storage: args.storage.as_str(),
+            actions: &args.actions,
+            policies: &args.policies,
+            created_by_locket: true,
+        },
+    )
+}
+
+fn client_add_command(
+    context: &RuntimeContext,
+    output: &mut impl Write,
+    args: &ClientAddArgs,
+) -> Result<(), CliError> {
+    let public_key = parse_client_public_key(&args.pubkey)?;
+    register_client_metadata(
+        context,
+        output,
+        ClientRegistrationRequest {
+            name: &args.name,
+            public_key: &public_key,
+            storage: "external",
+            actions: &args.actions,
+            policies: &args.policies,
+            created_by_locket: false,
+        },
+    )
+}
+
+#[derive(Clone, Copy)]
+struct ClientRegistrationRequest<'a> {
+    name: &'a str,
+    public_key: &'a [u8; 32],
+    storage: &'a str,
+    actions: &'a [String],
+    policies: &'a [String],
+    created_by_locket: bool,
+}
+
+fn register_client_metadata(
+    context: &RuntimeContext,
+    output: &mut impl Write,
+    request: ClientRegistrationRequest<'_>,
+) -> Result<(), CliError> {
+    let resolved = require_project(context)?;
+    let mut store = open_store(context)?;
+    ensure_project_exists(&store, resolved.config.project_id.as_str())?;
+    ensure_trusted_project_root(&store, &resolved)?;
+    let name = validate_client_name(request.name)?;
+    let actions = validate_client_actions(request.actions)?;
+    let policies = validate_client_policies(&resolved, request.policies)?;
+    let timestamp = now_unix_nanos()?;
+    let id = ClientId::generate().map_err(|error| CliError::Config(error.to_string()))?;
+    let fingerprint = client_public_key_fingerprint(request.public_key);
+    let client = AutomationClientRecord {
+        id: id.as_str().to_owned(),
+        project_id: resolved.config.project_id.to_string(),
+        name: name.to_owned(),
+        public_key: request.public_key.to_vec(),
+        fingerprint: fingerprint.clone(),
+        storage: request.storage.to_owned(),
+        allowed_actions: actions.clone(),
+        allowed_policies: policies.clone(),
+        created_at: timestamp,
+        last_used_at: None,
+        revoked_at: None,
+    };
+    store.insert_automation_client(&client)?;
+    let metadata = json!({
+        "schema_version": 1,
+        "action": "CLIENT_ADD",
+        "status": "SUCCESS",
+        "project_id": resolved.config.project_id.as_str(),
+        "client_id": &client.id,
+        "client_name": &client.name,
+        "public_key_fingerprint": &fingerprint,
+        "storage": request.storage,
+        "allowed_actions": &actions,
+        "allowed_policies": &policies,
+        "created_by_locket": request.created_by_locket,
+    });
+    write_client_audit_if_available(
+        context,
+        &mut store,
+        &resolved,
+        "CLIENT_ADD",
+        &metadata,
+        timestamp,
+    )?;
+
+    writeln!(output, "client: {}", client.name)?;
+    writeln!(output, "client_id: {}", client.id)?;
+    writeln!(output, "fingerprint: {}", client.fingerprint)?;
+    writeln!(output, "storage: {}", client.storage)?;
+    writeln!(output, "allowed_actions: {}", client.allowed_actions.join(","))?;
+    writeln!(output, "allowed_policies: {}", client.allowed_policies.join(","))?;
+    writeln!(output, "private_key_material: never displayed")?;
+    if request.created_by_locket {
+        writeln!(output, "private_key_storage: not implemented in this metadata foundation")?;
+    }
+    Ok(())
+}
+
+fn client_list_command(
+    context: &RuntimeContext,
+    output: &mut impl Write,
+    include_revoked: bool,
+) -> Result<(), CliError> {
+    let resolved = require_project(context)?;
+    let store = open_store(context)?;
+    ensure_project_exists(&store, resolved.config.project_id.as_str())?;
+    let clients =
+        store.list_automation_clients(resolved.config.project_id.as_str(), include_revoked)?;
+    if clients.is_empty() {
+        writeln!(output, "clients: none")?;
+        writeln!(output, "include_revoked: {}", if include_revoked { "yes" } else { "no" })?;
+        writeln!(output, "private_key_material: never displayed")?;
+        return Ok(());
+    }
+    for client in clients {
+        writeln!(
+            output,
+            "{} {} fingerprint={} actions={} policies={} created_at={} last_used_at={} revoked_at={}",
+            client.id,
+            client.name,
+            truncated_fingerprint(&client.fingerprint),
+            client.allowed_actions.join(","),
+            client.allowed_policies.join(","),
+            format_unix_nanos(client.created_at),
+            client.last_used_at.map_or_else(|| "never".to_owned(), format_unix_nanos),
+            client.revoked_at.map_or_else(|| "active".to_owned(), format_unix_nanos),
+        )?;
+    }
+    writeln!(output, "private_key_material: never displayed")?;
+    Ok(())
+}
+
+fn client_revoke_command(
+    context: &RuntimeContext,
+    output: &mut impl Write,
+    client_ref: &str,
+) -> Result<(), CliError> {
+    if client_ref.trim().is_empty() {
+        return Err(CliError::Config("client identifier cannot be empty".to_owned()));
+    }
+    let resolved = require_project(context)?;
+    let mut store = open_store(context)?;
+    ensure_project_exists(&store, resolved.config.project_id.as_str())?;
+    ensure_trusted_project_root(&store, &resolved)?;
+    let Some(client) =
+        store.get_automation_client(resolved.config.project_id.as_str(), client_ref)?
+    else {
+        return Err(CliError::Config(format!("automation client not found: {client_ref}")));
+    };
+    if client.revoked_at.is_some() {
+        writeln!(output, "client: {}", client.name)?;
+        writeln!(output, "client_id: {}", client.id)?;
+        writeln!(output, "status: already revoked")?;
+        return Ok(());
+    }
+    let timestamp = now_unix_nanos()?;
+    store.revoke_automation_client(resolved.config.project_id.as_str(), &client.id, timestamp)?;
+    let metadata = json!({
+        "schema_version": 1,
+        "action": "CLIENT_REVOKE",
+        "status": "SUCCESS",
+        "project_id": resolved.config.project_id.as_str(),
+        "client_id": &client.id,
+        "client_name": &client.name,
+        "public_key_fingerprint": &client.fingerprint,
+        "storage": &client.storage,
+        "allowed_actions": &client.allowed_actions,
+        "allowed_policies": &client.allowed_policies,
+        "revoked_at": timestamp,
+    });
+    write_client_audit_if_available(
+        context,
+        &mut store,
+        &resolved,
+        "CLIENT_REVOKE",
+        &metadata,
+        timestamp,
+    )?;
+    writeln!(output, "client: {}", client.name)?;
+    writeln!(output, "client_id: {}", client.id)?;
+    writeln!(output, "revoked_at: {}", format_unix_nanos(timestamp))?;
+    writeln!(output, "private_key_material: never displayed")?;
     Ok(())
 }
 
@@ -9633,6 +9926,115 @@ fn format_hex(bytes: &[u8]) -> String {
     output
 }
 
+fn parse_client_public_key(value: &str) -> Result<[u8; 32], CliError> {
+    let value = value.strip_prefix("0x").unwrap_or(value);
+    if value.len() != 64 {
+        return Err(CliError::Config("public key must be 64 hex characters".to_owned()));
+    }
+    let mut output = [0_u8; 32];
+    for (index, chunk) in value.as_bytes().chunks_exact(2).enumerate() {
+        let high = hex_nibble_with_message(chunk[0], "public key must be hex encoded")?;
+        let low = hex_nibble_with_message(chunk[1], "public key must be hex encoded")?;
+        output[index] = (high << 4) | low;
+    }
+    Ok(output)
+}
+
+fn client_public_key_fingerprint(public_key: &[u8; 32]) -> String {
+    let digest = Sha256::digest(public_key);
+    format_hex(&digest[..16])
+}
+
+fn truncated_fingerprint(fingerprint: &str) -> &str {
+    fingerprint.get(..16).unwrap_or(fingerprint)
+}
+
+fn validate_client_name(name: &str) -> Result<&str, CliError> {
+    let name = name.trim();
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return Err(CliError::Config("client name cannot be empty".to_owned()));
+    };
+    if !first.is_ascii_lowercase()
+        || !chars.all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-' || ch == '_')
+        || name.len() > 64
+    {
+        return Err(CliError::Config("client name must match ^[a-z][a-z0-9_-]{0,63}$".to_owned()));
+    }
+    Ok(name)
+}
+
+fn validate_client_actions(actions: &[String]) -> Result<Vec<String>, CliError> {
+    if actions.is_empty() {
+        return Err(CliError::Config(
+            "InvalidPolicy: at least one --action is required".to_owned(),
+        ));
+    }
+    let mut normalized = BTreeSet::new();
+    for action in actions {
+        match action.as_str() {
+            "run-policy" | "resolve-reference" | "scan-known-values" | "redact" => {
+                normalized.insert(action.clone());
+            }
+            unsupported => {
+                return Err(CliError::Config(format!(
+                    "InvalidPolicy: unsupported automation-client action: {unsupported}"
+                )));
+            }
+        }
+    }
+    Ok(normalized.into_iter().collect())
+}
+
+fn validate_client_policies(
+    resolved: &ResolvedProject,
+    policies: &[String],
+) -> Result<Vec<String>, CliError> {
+    if policies.is_empty() {
+        return Err(CliError::Config(
+            "InvalidPolicy: at least one --policy is required".to_owned(),
+        ));
+    }
+    let mut normalized = BTreeSet::new();
+    for policy in policies {
+        if policy == "*" || policy.trim().is_empty() {
+            return Err(CliError::Config(
+                "InvalidPolicy: wildcard or empty client policies are not supported".to_owned(),
+            ));
+        }
+        load_command_policy(resolved, policy)?;
+        normalized.insert(policy.clone());
+    }
+    Ok(normalized.into_iter().collect())
+}
+
+fn write_client_audit_if_available(
+    context: &RuntimeContext,
+    store: &mut Store,
+    resolved: &ResolvedProject,
+    action: &'static str,
+    metadata: &Value,
+    timestamp: i64,
+) -> Result<(), CliError> {
+    let Ok(audit_key) =
+        load_project_key(context, store, resolved.config.project_id.as_str(), KeyPurpose::Audit)
+    else {
+        return Ok(());
+    };
+    let audit = AuditWrite {
+        project_id: resolved.config.project_id.as_str(),
+        profile_id: None,
+        action,
+        status: "SUCCESS",
+        secret_name: None,
+        command: Some("client"),
+        metadata_json: metadata,
+        timestamp,
+    };
+    store.append_audit(audit_key.as_ref(), &audit)?;
+    Ok(())
+}
+
 fn parse_root_hash(value: &str) -> Result<[u8; 32], CliError> {
     let value = value.strip_prefix("0x").unwrap_or(value);
     if value.len() != 64 {
@@ -9648,11 +10050,15 @@ fn parse_root_hash(value: &str) -> Result<[u8; 32], CliError> {
 }
 
 fn hex_nibble(byte: u8) -> Result<u8, CliError> {
+    hex_nibble_with_message(byte, "root hash must be hex encoded")
+}
+
+fn hex_nibble_with_message(byte: u8, message: &str) -> Result<u8, CliError> {
     match byte {
         b'0'..=b'9' => Ok(byte - b'0'),
         b'a'..=b'f' => Ok(byte - b'a' + 10),
         b'A'..=b'F' => Ok(byte - b'A' + 10),
-        _ => Err(CliError::Config("root hash must be hex encoded".to_owned())),
+        _ => Err(CliError::Config(message.to_owned())),
     }
 }
 
@@ -10575,6 +10981,13 @@ mod tests {
             &["locket", "device", "add", "work-laptop", "--device", "lkdev1_abc"],
             &["locket", "device", "list", "--all"],
             &["locket", "device", "remove", "work-laptop", "--force"],
+            &["locket", "client", "create", "ci", "--action", "run-policy", "--policy", "dev"],
+            &[
+                "locket", "client", "add", "ci", "--pubkey", "00", "--action", "redact",
+                "--policy", "dev",
+            ],
+            &["locket", "client", "list", "--all"],
+            &["locket", "client", "revoke", "ci"],
             &["locket", "new", "--from-template", "basic"],
             &["locket", "bootstrap"],
             &["locket", "completion", "bash"],
@@ -10685,6 +11098,142 @@ mod tests {
         assert!(output.contains("complete -F _locket"));
         assert!(output.contains("completion"));
         assert!(!directory.path().join("locket.toml").exists());
+        Ok(())
+    }
+
+    #[test]
+    fn client_add_list_and_revoke_are_metadata_only() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut Vec::new(),
+        )?;
+        run_with_context(
+            Cli::try_parse_from(["locket", "policy", "add", "ci", "--", "cargo", "test"])?,
+            &context,
+            &mut Vec::new(),
+        )?;
+        let public_key = "11".repeat(32);
+        let mut add_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from([
+                "locket",
+                "client",
+                "add",
+                "ci_bot",
+                "--pubkey",
+                &public_key,
+                "--action",
+                "run-policy",
+                "--action",
+                "redact",
+                "--policy",
+                "ci",
+            ])?,
+            &context,
+            &mut add_output,
+        )?;
+
+        let add_output = String::from_utf8(add_output)?;
+        assert!(add_output.contains("client: ci_bot"));
+        assert!(add_output.contains("private_key_material: never displayed"));
+        assert!(!add_output.contains(&public_key));
+
+        let mut list_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "client", "list"])?,
+            &context,
+            &mut list_output,
+        )?;
+        let list_output = String::from_utf8(list_output)?;
+        assert!(list_output.contains("ci_bot"));
+        assert!(list_output.contains("actions=redact,run-policy"));
+        assert!(list_output.contains("policies=ci"));
+        assert!(list_output.contains("private_key_material: never displayed"));
+        assert!(!list_output.contains(&public_key));
+
+        let mut revoke_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "client", "revoke", "ci_bot"])?,
+            &context,
+            &mut revoke_output,
+        )?;
+        let revoke_output = String::from_utf8(revoke_output)?;
+        assert!(revoke_output.contains("revoked_at:"));
+
+        let store = locket_store::Store::open(directory.path().join("store.db"))?;
+        let resolved = super::resolve_project(&context.cwd)?.ok_or("project should resolve")?;
+        assert!(
+            store.list_automation_clients(resolved.config.project_id.as_str(), false)?.is_empty()
+        );
+        assert!(
+            store.list_automation_clients(resolved.config.project_id.as_str(), true)?[0]
+                .revoked_at
+                .is_some()
+        );
+        let mut statement = store
+            .connection()
+            .prepare("SELECT action, metadata_json FROM audit_log ORDER BY sequence")?;
+        let rows = statement
+            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?
+            .collect::<Result<Vec<_>, _>>()?;
+        assert!(rows.iter().any(|(action, _)| action == "CLIENT_ADD"));
+        assert!(rows.iter().any(|(action, _)| action == "CLIENT_REVOKE"));
+        for (_, metadata) in rows {
+            assert!(!metadata.contains(&public_key));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn client_rejects_unsupported_actions_and_missing_policies()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut Vec::new(),
+        )?;
+        let public_key = "22".repeat(32);
+        assert_error_contains(
+            run_with_context(
+                Cli::try_parse_from([
+                    "locket",
+                    "client",
+                    "add",
+                    "ci_bot",
+                    "--pubkey",
+                    &public_key,
+                    "--action",
+                    "reveal",
+                    "--policy",
+                    "ci",
+                ])?,
+                &context,
+                &mut Vec::new(),
+            ),
+            "InvalidPolicy",
+        );
+        assert_error_contains(
+            run_with_context(
+                Cli::try_parse_from([
+                    "locket",
+                    "client",
+                    "add",
+                    "ci_bot",
+                    "--pubkey",
+                    &public_key,
+                    "--action",
+                    "run-policy",
+                ])?,
+                &context,
+                &mut Vec::new(),
+            ),
+            "at least one --policy",
+        );
         Ok(())
     }
 

@@ -22,6 +22,7 @@ clap = { workspace = true }
 clap_complete = { workspace = true }
 data-encoding = { workspace = true }
 directories = { workspace = true }
+ed25519-dalek = { workspace = true }
 flate2 = { workspace = true }
 ignore = { workspace = true }
 locket-crypto = { path = "../locket-crypto" }
