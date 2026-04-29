@@ -22,8 +22,8 @@ pub use env::{
 };
 pub use error::{ExitCode, LocketError};
 pub use id::{
-    ClientId, DeviceId, IdGenerationError, InvalidId, KdfProfileId, KeyId, ProfileId, ProjectId,
-    SecretId, SessionId,
+    ClientId, DeviceId, IdGenerationError, InvalidId, KdfProfileId, KeyId, PasskeyId, ProfileId,
+    ProjectId, SecretId, SessionId,
 };
 pub use policy::{
     CommandPolicy, CommandSpec, ExternalEnvSource, MAX_COMMAND_POLICY_TTL_SECONDS, PolicyDocument,

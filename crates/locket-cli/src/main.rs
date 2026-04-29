@@ -34,9 +34,9 @@ use locket_scan::{
 };
 use locket_store::{
     AuditContext, AuditLogRecord, AuditWrite, AutomationClientRecord, DeviceRecord,
-    DirectoryGrantRecord, KeyRecord, ProfileRecord, RuntimeSessionSecretNameRetention,
-    SecretBlobRecord, SecretCopyTarget, SecretFingerprintRecord, SecretMetadataUpdate, SecretRecord,
-    SecretVersionRecord, Store, StoreError, VersionDeprecation,
+    DirectoryGrantRecord, KeyRecord, PasskeyCredentialRecord, ProfileRecord,
+    RuntimeSessionSecretNameRetention, SecretBlobRecord, SecretCopyTarget, SecretFingerprintRecord,
+    SecretMetadataUpdate, SecretRecord, SecretVersionRecord, Store, StoreError, VersionDeprecation,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -1018,7 +1018,7 @@ fn run_with_context(
         Command::Context(args) => context_command(context, output, &args)?,
         Command::AiSafe(args) => ai_safe_command(context, output, &args)?,
         Command::Config { command } => config_command(context, output, command)?,
-        Command::Passkey { command } => passkey_command(output, command)?,
+        Command::Passkey { command } => passkey_command(context, output, command)?,
         Command::Device { command } => device_command(context, output, command)?,
         Command::Client { command } => client_command(context, output, command)?,
         Command::Export(args) => export_bundle_command(context, output, &args)?,
@@ -3421,29 +3421,158 @@ fn config_unset_command(
     Ok(())
 }
 
-fn passkey_command(output: &mut impl Write, command: PasskeyCommand) -> Result<(), CliError> {
+fn passkey_command(
+    context: &RuntimeContext,
+    output: &mut impl Write,
+    command: PasskeyCommand,
+) -> Result<(), CliError> {
     match command {
         PasskeyCommand::Register => Err(CliError::Config(
             "passkey registration is not available in this build; no credential metadata was written"
                 .to_owned(),
         )),
-        PasskeyCommand::List(args) => {
-            writeln!(output, "passkey: platform unavailable in this build")?;
-            writeln!(output, "credentials: none")?;
-            writeln!(output, "include_revoked: {}", if args.all { "yes" } else { "no" })?;
-            writeln!(output, "private_key_material: never displayed")?;
-            Ok(())
-        }
-        PasskeyCommand::Remove { passkey } => {
-            if passkey.trim().is_empty() {
-                return Err(CliError::Config("passkey identifier cannot be empty".to_owned()));
-            }
-            Err(CliError::Config(
-                "passkey removal is not available in this build; no credential metadata was changed"
-                    .to_owned(),
-            ))
+        PasskeyCommand::List(args) => passkey_list_command(context, output, &args),
+        PasskeyCommand::Remove { passkey } => passkey_remove_command(context, output, &passkey),
+    }
+}
+
+fn passkey_list_command(
+    context: &RuntimeContext,
+    output: &mut impl Write,
+    args: &PasskeyListArgs,
+) -> Result<(), CliError> {
+    let resolved = require_project(context)?;
+    let store = open_store(context)?;
+    let project_id = resolved.config.project_id.as_str();
+    ensure_project_exists(&store, project_id)?;
+    let credentials = store.list_passkey_credentials(project_id, args.all)?;
+    if credentials.is_empty() {
+        writeln!(output, "credentials: none")?;
+    } else {
+        writeln!(output, "credentials:")?;
+        for credential in credentials {
+            writeln!(
+                output,
+                "- {} id={} credential_id_prefix={} transports={} prf={} backup_eligible={} backup_state={} created_at={} last_used_at={} revoked_at={}",
+                credential.label,
+                credential.id,
+                credential_id_prefix(&credential.credential_id),
+                render_passkey_transports(&credential.transports),
+                yes_no(credential.prf_capable),
+                render_optional_bool(credential.backup_eligible),
+                render_optional_bool(credential.backup_state),
+                format_unix_nanos(credential.created_at),
+                credential.last_used_at.map_or_else(|| "never".to_owned(), format_unix_nanos),
+                credential.revoked_at.map_or_else(|| "active".to_owned(), format_unix_nanos),
+            )?;
         }
     }
+    writeln!(output, "include_revoked: {}", if args.all { "yes" } else { "no" })?;
+    writeln!(output, "private_key_material: never displayed")?;
+    Ok(())
+}
+
+fn passkey_remove_command(
+    context: &RuntimeContext,
+    output: &mut impl Write,
+    passkey: &str,
+) -> Result<(), CliError> {
+    let selector = passkey.trim();
+    if selector.is_empty() {
+        return Err(CliError::Config("passkey identifier cannot be empty".to_owned()));
+    }
+    let resolved = require_project(context)?;
+    let mut store = open_store(context)?;
+    let project_id = resolved.config.project_id.as_str();
+    ensure_project_exists(&store, project_id)?;
+    let matches = store.find_passkey_credentials(project_id, selector)?;
+    let active_matches = matches
+        .into_iter()
+        .filter(|credential| credential.revoked_at.is_none())
+        .collect::<Vec<_>>();
+    let credential = match active_matches.as_slice() {
+        [] => return Err(CliError::Config("passkey credential not found".to_owned())),
+        [credential] => credential.clone(),
+        _ => {
+            return Err(CliError::Config(
+                "passkey identifier is ambiguous; use a longer credential id prefix".to_owned(),
+            ));
+        }
+    };
+    writeln!(output, "passkey: revoke")?;
+    writeln!(output, "label: {}", credential.label)?;
+    writeln!(output, "credential_id_prefix: {}", credential_id_prefix(&credential.credential_id))?;
+    writeln!(output, "transports: {}", render_passkey_transports(&credential.transports))?;
+    writeln!(output, "prf: {}", yes_no(credential.prf_capable))?;
+    let confirmation = context.confirmation_reader.read_confirmation("passkey remove")?;
+    if confirmation.trim_end() != selector {
+        return Err(CliError::Config("confirmation did not match passkey identifier".to_owned()));
+    }
+    let timestamp = now_unix_nanos()?;
+    store.revoke_passkey_credential(project_id, &credential.id, timestamp)?;
+    write_passkey_remove_audit_if_available(
+        context,
+        &mut store,
+        &resolved,
+        &credential,
+        timestamp,
+    )?;
+    writeln!(output, "passkey: revoked")?;
+    writeln!(output, "passkey_id: {}", credential.id)?;
+    writeln!(output, "revoked_at: {}", format_unix_nanos(timestamp))?;
+    writeln!(output, "metadata_only: yes")?;
+    Ok(())
+}
+
+fn credential_id_prefix(credential_id: &[u8]) -> String {
+    format_hex(credential_id).chars().take(12).collect()
+}
+
+fn render_passkey_transports(transports: &[String]) -> String {
+    if transports.is_empty() { "-".to_owned() } else { transports.join(",") }
+}
+
+fn render_optional_bool(value: Option<bool>) -> &'static str {
+    value.map_or("unknown", yes_no)
+}
+
+fn write_passkey_remove_audit_if_available(
+    context: &RuntimeContext,
+    store: &mut Store,
+    resolved: &ResolvedProject,
+    credential: &PasskeyCredentialRecord,
+    timestamp: i64,
+) -> Result<(), CliError> {
+    let Ok(audit_key) =
+        load_project_key(context, store, resolved.config.project_id.as_str(), KeyPurpose::Audit)
+    else {
+        return Ok(());
+    };
+    let metadata = json!({
+        "schema_version": 1,
+        "action": "PASSKEY_REMOVE",
+        "status": "SUCCESS",
+        "command": "passkey remove",
+        "passkey_id": credential.id,
+        "label": credential.label,
+        "credential_id_prefix": credential_id_prefix(&credential.credential_id),
+        "transports": credential.transports,
+        "prf_capable": credential.prf_capable,
+        "backup_eligible": credential.backup_eligible,
+        "backup_state": credential.backup_state,
+    });
+    let audit = AuditWrite {
+        project_id: resolved.config.project_id.as_str(),
+        profile_id: None,
+        action: "PASSKEY_REMOVE",
+        status: "SUCCESS",
+        secret_name: None,
+        command: Some("passkey remove"),
+        metadata_json: &metadata,
+        timestamp,
+    };
+    store.append_audit(audit_key.as_ref(), &audit)?;
+    Ok(())
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -14247,21 +14376,10 @@ required_secrets = ["DATABASE_URL"]
     }
 
     #[test]
-    fn passkey_commands_are_metadata_only_when_platform_is_unavailable()
+    fn passkey_register_is_unavailable_without_writing_metadata()
     -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempdir()?;
         let context = test_context(&directory);
-
-        let mut list_output = Vec::new();
-        run_with_context(
-            Cli::try_parse_from(["locket", "passkey", "list", "--all"])?,
-            &context,
-            &mut list_output,
-        )?;
-        let list_output = String::from_utf8(list_output)?;
-        assert!(list_output.contains("platform unavailable"));
-        assert!(list_output.contains("credentials: none"));
-        assert!(list_output.contains("private_key_material: never displayed"));
 
         let mut register_output = Vec::new();
         let register = run_with_context(
@@ -14271,15 +14389,74 @@ required_secrets = ["DATABASE_URL"]
         );
         assert_error_contains(register, "not available");
         assert!(register_output.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn passkey_list_and_remove_use_project_store_and_audit()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context_with_confirmation(&directory, "work-laptop\n");
+        let mut init_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut init_output,
+        )?;
+        let resolved = super::resolve_project(&context.cwd)?.ok_or("project should resolve")?;
+        let project_id = resolved.config.project_id.to_string();
+        let credential = locket_store::PasskeyCredentialRecord {
+            id: "lk_passkey_test".to_owned(),
+            project_id: project_id.clone(),
+            label: "work-laptop".to_owned(),
+            credential_id: vec![0xab, 0xcd, 0xef, 0x12, 0x34, 0x56],
+            transports: vec!["internal".to_owned(), "usb".to_owned()],
+            prf_capable: true,
+            backup_eligible: Some(true),
+            backup_state: Some(false),
+            created_at: 100,
+            last_used_at: Some(200),
+            revoked_at: None,
+        };
+        let store = locket_store::Store::open(directory.path().join("store.db"))?;
+        store.insert_passkey_credential(&credential)?;
+
+        let mut list_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "passkey", "list"])?,
+            &context,
+            &mut list_output,
+        )?;
+        let list_output = String::from_utf8(list_output)?;
+        assert!(list_output.contains("work-laptop"));
+        assert!(list_output.contains("credential_id_prefix=abcdef123456"));
+        assert!(list_output.contains("transports=internal,usb"));
+        assert!(list_output.contains("prf=yes"));
+        assert!(list_output.contains("private_key_material: never displayed"));
 
         let mut remove_output = Vec::new();
-        let remove = run_with_context(
+        run_with_context(
             Cli::try_parse_from(["locket", "passkey", "remove", "work-laptop"])?,
             &context,
             &mut remove_output,
-        );
-        assert_error_contains(remove, "not available");
-        assert!(remove_output.is_empty());
+        )?;
+        let remove_output = String::from_utf8(remove_output)?;
+        assert!(remove_output.contains("passkey: revoked"));
+        assert!(remove_output.contains("passkey_id: lk_passkey_test"));
+        assert!(!remove_output.contains("abcdef123456abcdef"));
+
+        let active = store.list_passkey_credentials(&project_id, false)?;
+        assert!(active.is_empty());
+        let all = store.list_passkey_credentials(&project_id, true)?;
+        assert_eq!(all.len(), 1);
+        assert!(all[0].revoked_at.is_some());
+        let metadata: String = store.connection().query_row(
+            "SELECT metadata_json FROM audit_log WHERE action = 'PASSKEY_REMOVE'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert!(metadata.contains("\"credential_id_prefix\":\"abcdef123456\""));
+        assert!(!metadata.contains("abcdef123456abcdef"));
         Ok(())
     }
 

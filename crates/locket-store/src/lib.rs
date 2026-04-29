@@ -136,6 +136,33 @@ pub struct DeviceRecord {
     pub revoked_at: Option<i64>,
 }
 
+/// Passkey/WebAuthn credential public metadata row.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PasskeyCredentialRecord {
+    /// Credential metadata identifier.
+    pub id: String,
+    /// Parent project identifier.
+    pub project_id: String,
+    /// Human-readable authenticator label.
+    pub label: String,
+    /// Public `WebAuthn` credential id bytes. Never private key material.
+    pub credential_id: Vec<u8>,
+    /// Transport hints exposed by the platform/authenticator.
+    pub transports: Vec<String>,
+    /// Whether PRF/hmac-secret key-wrapping is supported.
+    pub prf_capable: bool,
+    /// Whether the authenticator reported backup eligibility.
+    pub backup_eligible: Option<bool>,
+    /// Whether the authenticator reported backup state.
+    pub backup_state: Option<bool>,
+    /// Creation timestamp in nanoseconds since the Unix epoch.
+    pub created_at: i64,
+    /// Last-use timestamp in nanoseconds since the Unix epoch.
+    pub last_used_at: Option<i64>,
+    /// Revocation timestamp in nanoseconds since the Unix epoch.
+    pub revoked_at: Option<i64>,
+}
+
 /// Secret metadata row.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SecretRecord {
@@ -1380,6 +1407,125 @@ impl Store {
         Ok(self.connection.changes() == 1)
     }
 
+    /// Inserts a passkey credential public metadata row.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Sqlite`] when `SQLite` rejects the insert or
+    /// [`StoreError::Json`] when transport metadata cannot be encoded.
+    pub fn insert_passkey_credential(
+        &self,
+        credential: &PasskeyCredentialRecord,
+    ) -> Result<(), StoreError> {
+        let transports_json = serde_json::to_string(&credential.transports)?;
+        self.connection.execute(
+            "INSERT INTO passkey_credentials(
+               id, project_id, label, credential_id, transports_json, prf_capable,
+               backup_eligible, backup_state, created_at, last_used_at, revoked_at
+             )
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            params![
+                credential.id.as_str(),
+                credential.project_id.as_str(),
+                credential.label.as_str(),
+                credential.credential_id.as_slice(),
+                transports_json.as_str(),
+                credential.prf_capable,
+                credential.backup_eligible,
+                credential.backup_state,
+                credential.created_at,
+                credential.last_used_at,
+                credential.revoked_at,
+            ],
+        )?;
+
+        Ok(())
+    }
+
+    /// Lists passkey credential metadata for a project ordered by creation time.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Sqlite`] when `SQLite` cannot query rows.
+    pub fn list_passkey_credentials(
+        &self,
+        project_id: &str,
+        include_revoked: bool,
+    ) -> Result<Vec<PasskeyCredentialRecord>, StoreError> {
+        let sql = if include_revoked {
+            "SELECT id, project_id, label, credential_id, transports_json, prf_capable,
+                    backup_eligible, backup_state, created_at, last_used_at, revoked_at
+             FROM passkey_credentials
+             WHERE project_id = ?1
+             ORDER BY created_at, id"
+        } else {
+            "SELECT id, project_id, label, credential_id, transports_json, prf_capable,
+                    backup_eligible, backup_state, created_at, last_used_at, revoked_at
+             FROM passkey_credentials
+             WHERE project_id = ?1 AND revoked_at IS NULL
+             ORDER BY created_at, id"
+        };
+        let mut statement = self.connection.prepare(sql)?;
+        let credentials = statement
+            .query_map([project_id], passkey_credential_from_row)?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(credentials)
+    }
+
+    /// Finds passkey credential metadata by label, id, or lowercase/uppercase credential-id hex prefix.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Sqlite`] when `SQLite` cannot query rows.
+    pub fn find_passkey_credentials(
+        &self,
+        project_id: &str,
+        selector: &str,
+    ) -> Result<Vec<PasskeyCredentialRecord>, StoreError> {
+        let selector = selector.trim();
+        let credential_hex_prefix = selector.strip_prefix("0x").unwrap_or(selector).to_uppercase();
+        let mut statement = self.connection.prepare(
+            "SELECT id, project_id, label, credential_id, transports_json, prf_capable,
+                    backup_eligible, backup_state, created_at, last_used_at, revoked_at
+             FROM passkey_credentials
+             WHERE project_id = ?1
+               AND (label = ?2 OR id = ?2 OR hex(credential_id) LIKE (?3 || '%'))
+             ORDER BY revoked_at IS NULL DESC, created_at DESC, id",
+        )?;
+        let credentials = statement
+            .query_map(
+                params![project_id, selector, credential_hex_prefix],
+                passkey_credential_from_row,
+            )?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(credentials)
+    }
+
+    /// Marks a passkey credential revoked.
+    ///
+    /// Returns `true` when a row changed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Sqlite`] when `SQLite` rejects the update.
+    pub fn revoke_passkey_credential(
+        &self,
+        project_id: &str,
+        credential_id: &str,
+        revoked_at: i64,
+    ) -> Result<bool, StoreError> {
+        self.connection.execute(
+            "UPDATE passkey_credentials
+             SET revoked_at = ?3
+             WHERE project_id = ?1 AND id = ?2 AND revoked_at IS NULL",
+            params![project_id, credential_id, revoked_at],
+        )?;
+
+        Ok(self.connection.changes() == 1)
+    }
+
     /// Returns wrapped key material by id.
     ///
     /// # Errors
@@ -2395,6 +2541,28 @@ fn automation_client_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Autom
     })
 }
 
+fn passkey_credential_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<PasskeyCredentialRecord> {
+    let transports_json = row.get::<_, String>(4)?;
+    let transports = serde_json::from_str::<Vec<String>>(&transports_json).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(4, Type::Text, Box::new(error))
+    })?;
+    Ok(PasskeyCredentialRecord {
+        id: row.get(0)?,
+        project_id: row.get(1)?,
+        label: row.get(2)?,
+        credential_id: row.get(3)?,
+        transports,
+        prf_capable: row.get(5)?,
+        backup_eligible: row.get(6)?,
+        backup_state: row.get(7)?,
+        created_at: row.get(8)?,
+        last_used_at: row.get(9)?,
+        revoked_at: row.get(10)?,
+    })
+}
+
 fn root_hash_from_row(
     row: &rusqlite::Row<'_>,
     column: usize,
@@ -2891,6 +3059,25 @@ CREATE UNIQUE INDEX IF NOT EXISTS devices_one_active_local_idx
   ON devices(project_id)
   WHERE local = 1 AND revoked_at IS NULL;
 
+CREATE TABLE IF NOT EXISTS passkey_credentials (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  label TEXT NOT NULL,
+  credential_id BLOB NOT NULL CHECK (length(credential_id) > 0),
+  transports_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(transports_json)),
+  prf_capable INTEGER NOT NULL CHECK (prf_capable IN (0, 1)),
+  backup_eligible INTEGER CHECK (backup_eligible IN (0, 1)),
+  backup_state INTEGER CHECK (backup_state IN (0, 1)),
+  created_at INTEGER NOT NULL,
+  last_used_at INTEGER,
+  revoked_at INTEGER,
+  UNIQUE (project_id, label),
+  UNIQUE (project_id, credential_id)
+);
+
+CREATE INDEX IF NOT EXISTS passkey_credentials_project_revoked_idx
+  ON passkey_credentials(project_id, revoked_at);
+
 CREATE TABLE IF NOT EXISTS audit_log (
   project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   sequence INTEGER NOT NULL CHECK (sequence >= 1),
@@ -2982,10 +3169,10 @@ mod tests {
 
     use super::{
         AuditContext, AuditWrite, AutomationClientNonceRecord, AutomationClientRecord,
-        DeviceRecord, DirectoryGrantRecord, KeyRecord, ProfileRecord, ProjectRecord,
-        ProjectRootRecord, RuntimeSessionRecord, RuntimeSessionSecretNameRetention, SCHEMA_VERSION,
-        SecretBlobRecord, SecretFingerprintRecord, SecretRecord, SecretVersionRecord, Store,
-        StoreError,
+        DeviceRecord, DirectoryGrantRecord, KeyRecord, PasskeyCredentialRecord, ProfileRecord,
+        ProjectRecord, ProjectRootRecord, RuntimeSessionRecord, RuntimeSessionSecretNameRetention,
+        SCHEMA_VERSION, SecretBlobRecord, SecretFingerprintRecord, SecretRecord,
+        SecretVersionRecord, Store, StoreError,
     };
 
     struct TestStore {
@@ -3123,6 +3310,22 @@ mod tests {
         }
     }
 
+    fn test_passkey_credential() -> PasskeyCredentialRecord {
+        PasskeyCredentialRecord {
+            id: "lk_passkey_test".to_owned(),
+            project_id: "lk_proj_test".to_owned(),
+            label: "work-laptop".to_owned(),
+            credential_id: vec![0xab, 0xcd, 0xef, 0x12, 0x34, 0x56],
+            transports: vec!["internal".to_owned(), "usb".to_owned()],
+            prf_capable: true,
+            backup_eligible: Some(true),
+            backup_state: Some(false),
+            created_at: 100,
+            last_used_at: Some(150),
+            revoked_at: None,
+        }
+    }
+
     #[test]
     fn creates_schema_and_records_migration() -> Result<(), Box<dyn Error>> {
         let test_store = open_initialized_store()?;
@@ -3136,6 +3339,7 @@ mod tests {
             "blobs",
             "keys",
             "devices",
+            "passkey_credentials",
             "project_roots",
             "directory_grants",
             "audit_log",
@@ -3293,6 +3497,43 @@ mod tests {
         let active = test_store.store.list_devices("lk_proj_test", false)?;
         assert_eq!(active.len(), 1);
         assert_eq!(active[0].id, "lk_dev_duplicate");
+        Ok(())
+    }
+
+    #[test]
+    fn stores_lists_finds_and_revokes_passkey_credentials() -> Result<(), Box<dyn Error>> {
+        let test_store = open_initialized_store()?;
+        insert_project_profile(&test_store.store)?;
+        let credential = test_passkey_credential();
+
+        test_store.store.insert_passkey_credential(&credential)?;
+
+        assert_eq!(
+            test_store.store.list_passkey_credentials("lk_proj_test", false)?,
+            vec![credential.clone()]
+        );
+        assert_eq!(
+            test_store.store.find_passkey_credentials("lk_proj_test", "work-laptop")?,
+            vec![credential.clone()]
+        );
+        assert_eq!(
+            test_store.store.find_passkey_credentials("lk_proj_test", "abcdef")?,
+            vec![credential.clone()]
+        );
+        assert_eq!(
+            test_store.store.find_passkey_credentials("lk_proj_test", "0xABCD")?,
+            vec![credential]
+        );
+
+        assert!(test_store.store.revoke_passkey_credential(
+            "lk_proj_test",
+            "lk_passkey_test",
+            200
+        )?);
+        assert!(test_store.store.list_passkey_credentials("lk_proj_test", false)?.is_empty());
+        let all = test_store.store.list_passkey_credentials("lk_proj_test", true)?;
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].revoked_at, Some(200));
         Ok(())
     }
 
