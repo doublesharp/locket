@@ -1,6 +1,11 @@
 use std::error::Error;
 
+use hmac::{Hmac, Mac};
+use locket_core::{
+    AUDIT_HMAC_LEN, AuditHmacInput, Timestamp, audit_hmac_v1_bytes, canonical_json_string,
+};
 use serde_json::json;
+use sha2::Sha256;
 
 use crate::{AuditContext, AuditWrite, StoreError};
 
@@ -143,6 +148,61 @@ fn audit_rows_since_filters_profile_and_timestamp() -> Result<(), Box<dyn Error>
     assert_eq!(rows[0].timestamp, 300);
     assert_eq!(rows[0].action, "ROTATE");
     assert_eq!(rows[0].secret_name.as_deref(), Some("DATABASE_URL"));
+    Ok(())
+}
+
+#[test]
+fn audit_verify_uses_each_rows_stored_schema_version() -> Result<(), Box<dyn Error>> {
+    let mut test_store = open_initialized_store()?;
+    insert_project_profile(&test_store.store)?;
+    let metadata = json!({
+        "schema_version": 2,
+        "action": "DOCTOR",
+        "status": "SUCCESS",
+        "command": "doctor",
+    });
+    let previous_hmac = [0_u8; AUDIT_HMAC_LEN];
+    let input = AuditHmacInput {
+        schema_version: 2,
+        sequence: 1,
+        timestamp: Timestamp::from_unix_nanos(100),
+        project_id: Some("lk_proj_test"),
+        profile_id: None,
+        action: "DOCTOR",
+        status: "SUCCESS",
+        metadata_json: Some(&metadata),
+        previous_hmac: Some(&previous_hmac),
+    };
+    let canonical = audit_hmac_v1_bytes(&input)?;
+    let mut mac = Hmac::<Sha256>::new_from_slice(&[42; AUDIT_HMAC_LEN])?;
+    mac.update(&canonical);
+    let hmac = mac.finalize().into_bytes();
+    let metadata_json = canonical_json_string(Some(&metadata));
+
+    test_store.store.connection().execute(
+        "INSERT INTO audit_log(
+            project_id, sequence, schema_version, timestamp, profile_id, action,
+            status, metadata_json, secret_name, command, previous_hmac, hmac
+         )
+         VALUES (?1, 1, 2, 100, NULL, 'DOCTOR', 'SUCCESS', ?2, NULL, 'doctor', ?3, ?4)",
+        rusqlite::params![
+            "lk_proj_test",
+            metadata_json,
+            previous_hmac.as_slice(),
+            hmac.as_slice(),
+        ],
+    )?;
+
+    let verified =
+        test_store.store.verify_audit_chain_and_append("lk_proj_test", &[42; 32], 200)?;
+    assert_eq!(verified, 1);
+    let audit_rows = test_store.store.connection().query_row(
+        "SELECT COUNT(*) FROM audit_log WHERE project_id = 'lk_proj_test'",
+        [],
+        |row| row.get::<_, i64>(0),
+    )?;
+    assert_eq!(audit_rows, 2);
+
     Ok(())
 }
 
