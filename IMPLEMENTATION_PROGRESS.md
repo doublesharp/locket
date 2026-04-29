@@ -790,8 +790,7 @@ Final audit pass before claiming full spec coverage. Each item means the
 implementation, tests, docs, diagnostics, and failure modes have been checked
 against the named spec file.
 
-- [~] [6e4d05db] `index.md`
-  Claim: branch agent-6e4d05db/spec-index-gate, worktree .worktrees/agent-6e4d05db-spec-index-gate.
+- [x] `index.md`
 - [~] [70c448c4] `product.md`
   Claim: branch agent-70c448c4/product-gate, worktree .worktrees/agent-70c448c4-product-gate.
 - [ ] `invariants.md`
