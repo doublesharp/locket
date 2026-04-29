@@ -5,6 +5,7 @@ use chacha20poly1305::{
     aead::{Aead, KeyInit, OsRng, Payload, rand_core::RngCore},
 };
 use hkdf::Hkdf;
+use hmac::{Hmac, Mac};
 use sha2::Sha256;
 use thiserror::Error;
 use zeroize::{Zeroize, Zeroizing};
@@ -27,6 +28,9 @@ pub const NONCE_LEN: usize = 24;
 /// Size in bytes of `Poly1305` authentication tags.
 pub const TAG_LEN: usize = 16;
 
+/// Size in bytes of keyed secret fingerprints.
+pub const FINGERPRINT_LEN: usize = 32;
+
 const AAD_V1_PREFIX: &[u8] = b"locket-aad-v1";
 const KEY_WRAP_V1_PREFIX: &[u8] = b"locket-key-wrap-v1";
 const HKDF_WRAP_INFO_V1_PREFIX: &[u8] = b"locket-wrap-v1";
@@ -37,6 +41,9 @@ pub type KeyBytes = [u8; KEY_LEN];
 
 /// Fixed-size `XChaCha20-Poly1305` nonce bytes.
 pub type NonceBytes = [u8; NONCE_LEN];
+
+/// Fixed-size keyed fingerprint bytes.
+pub type FingerprintBytes = [u8; FINGERPRINT_LEN];
 
 /// Result type used by this crate.
 pub type CryptoResult<T> = Result<T, CryptoError>;
@@ -386,6 +393,23 @@ pub fn unwrap_key_material_v1(
     Ok(key)
 }
 
+/// Computes a profile-scoped keyed fingerprint for known-value scan matching.
+///
+/// # Errors
+///
+/// Returns an error if `value` is not valid secret value text.
+pub fn secret_fingerprint_v1(
+    profile_fingerprint_key: &KeyBytes,
+    value: &str,
+) -> CryptoResult<FingerprintBytes> {
+    validate_secret_value(value)?;
+    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(profile_fingerprint_key)
+        .map_err(|_| CryptoError::KeyDerivationFailed)?;
+    mac.update(b"locket-secret-fingerprint-v1");
+    mac.update(value.as_bytes());
+    Ok(mac.finalize().into_bytes().into())
+}
+
 /// Encrypts a UTF-8 secret value and wraps its generated DEK.
 ///
 /// The returned `encrypted_dek` embeds its own wrap nonce. The returned
@@ -533,8 +557,8 @@ mod tests {
     use super::{
         AAD_SCHEMA_V1, CryptoError, HkdfWrapInfo, KEY_LEN, KEY_WRAP_SCHEMA_V1, KeyPurpose,
         KeyWrapAad, KeyWrapPurpose, NONCE_LEN, SecretBlobAad, TAG_LEN, decrypt_secret_value_v1,
-        derive_wrapping_key_v1, key_wrap_aad_v1, secret_blob_aad_v1, unwrap_dek_v1,
-        unwrap_key_material_v1, wrap_dek_v1, wrap_key_material_v1,
+        derive_wrapping_key_v1, key_wrap_aad_v1, secret_blob_aad_v1, secret_fingerprint_v1,
+        unwrap_dek_v1, unwrap_key_material_v1, wrap_dek_v1, wrap_key_material_v1,
     };
 
     const PROFILE_SECRET_KEY: [u8; KEY_LEN] = [7; KEY_LEN];
@@ -728,6 +752,17 @@ mod tests {
 
         assert_eq!(wrapped.nonce.len(), NONCE_LEN);
         assert_eq!(&*unwrapped, &key_material);
+        Ok(())
+    }
+
+    #[test]
+    fn secret_fingerprint_is_keyed_and_stable() -> Result<(), CryptoError> {
+        let first = secret_fingerprint_v1(&PROFILE_SECRET_KEY, "secret-value")?;
+        let second = secret_fingerprint_v1(&PROFILE_SECRET_KEY, "secret-value")?;
+        let other_key = secret_fingerprint_v1(&MASTER_KEY, "secret-value")?;
+
+        assert_eq!(first, second);
+        assert_ne!(first, other_key);
         Ok(())
     }
 }

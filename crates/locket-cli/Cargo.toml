@@ -20,11 +20,14 @@ workspace = true
 [dependencies]
 clap = { workspace = true }
 directories = { workspace = true }
+locket-crypto = { path = "../locket-crypto" }
 locket-core = { path = "../locket-core" }
+locket-platform = { path = "../locket-platform" }
 locket-scan = { path = "../locket-scan" }
 locket-store = { path = "../locket-store" }
 sha2 = { workspace = true }
 toml = { workspace = true }
+zeroize = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

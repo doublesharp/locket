@@ -485,11 +485,14 @@ dependencies = [
  "clap",
  "directories",
  "locket-core",
+ "locket-crypto",
+ "locket-platform",
  "locket-scan",
  "locket-store",
  "sha2",
  "tempfile",
  "toml",
+ "zeroize",
 ]
 
 [[package]]
@@ -508,6 +511,7 @@ version = "0.1.0"
 dependencies = [
  "chacha20poly1305",
  "hkdf",
+ "hmac",
  "sha2",
  "thiserror",
  "zeroize",

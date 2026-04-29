@@ -2,16 +2,27 @@
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use directories::ProjectDirs;
-use locket_core::{ProfileId, ProfileName, ProjectConfig, ProjectId};
+use locket_core::{KeyId, ProfileId, ProfileName, ProjectConfig, ProjectId, SecretId, SecretName};
+use locket_crypto::{
+    EncryptedSecretValue, HkdfWrapInfo, KeyPurpose, KeyWrapAad, KeyWrapPurpose, WrappedKeyMaterial,
+    decrypt_secret_value_v1, derive_wrapping_key_v1, encrypt_secret_value_v1, generate_key,
+    key_wrap_aad_v1, secret_blob_aad_v1, secret_fingerprint_v1, unwrap_key_material_v1,
+    wrap_key_material_v1,
+};
+use locket_platform::{KeyringMasterKeyStore, MasterKeyStore};
 use locket_scan::{FindingKind, ScanFinding, redact_text, scan_text};
-use locket_store::{Store, StoreError};
+use locket_store::{
+    KeyRecord, ProfileRecord, SecretBlobRecord, SecretFingerprintRecord, SecretRecord,
+    SecretVersionRecord, Store, StoreError,
+};
 use sha2::{Digest, Sha256};
 use std::error::Error;
 use std::fmt::{self, Display};
 use std::fs;
-use std::io::{self, Read, Write};
+use std::io::{self, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode as ProcessExitCode;
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const LOCKET_TOML: &str = "locket.toml";
@@ -363,6 +374,10 @@ fn run_with_context(
     match command {
         Command::Status => status(context, output)?,
         Command::Init(args) => init(context, output, args)?,
+        Command::Set(args) => set_command(context, output, &args)?,
+        Command::Get(args) => get_command(context, output, &args)?,
+        Command::Rm(args) => rm_command(context, output, &args)?,
+        Command::List(args) => list_command(context, output, &args)?,
         Command::EmitExample => emit_example_command(context, output)?,
         Command::Profile { command } => profile_command(context, output, command)?,
         Command::Scan(args) => scan_command(context, output, args)?,
@@ -376,10 +391,11 @@ fn run_with_context(
     Ok(())
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct RuntimeContext {
     cwd: PathBuf,
     store_path: PathBuf,
+    key_store: Arc<dyn MasterKeyStore + Send + Sync>,
 }
 
 impl RuntimeContext {
@@ -390,7 +406,11 @@ impl RuntimeContext {
         };
         let data_dir = project_dirs.data_dir();
         fs::create_dir_all(data_dir)?;
-        Ok(Self { cwd, store_path: data_dir.join("store.db") })
+        Ok(Self {
+            cwd,
+            store_path: data_dir.join("store.db"),
+            key_store: Arc::new(KeyringMasterKeyStore),
+        })
     }
 }
 
@@ -401,6 +421,8 @@ enum CliError {
     Store(StoreError),
     TomlDe(toml::de::Error),
     TomlSer(toml::ser::Error),
+    Crypto(locket_crypto::CryptoError),
+    Platform(locket_platform::PlatformError),
     Time,
 }
 
@@ -408,7 +430,8 @@ impl CliError {
     const fn exit_code(&self) -> u8 {
         match self {
             Self::Config(_) | Self::TomlDe(_) | Self::TomlSer(_) => 64,
-            Self::Io(_) | Self::Store(_) | Self::Time => 90,
+            Self::Platform(locket_platform::PlatformError::MasterKeyNotFound) => 72,
+            Self::Io(_) | Self::Store(_) | Self::Crypto(_) | Self::Platform(_) | Self::Time => 90,
         }
     }
 }
@@ -421,6 +444,8 @@ impl Display for CliError {
             Self::Store(error) => error.fmt(formatter),
             Self::TomlDe(error) => error.fmt(formatter),
             Self::TomlSer(error) => error.fmt(formatter),
+            Self::Crypto(error) => error.fmt(formatter),
+            Self::Platform(error) => error.fmt(formatter),
             Self::Time => formatter.write_str("system time is before the Unix epoch"),
         }
     }
@@ -449,6 +474,18 @@ impl From<toml::de::Error> for CliError {
 impl From<toml::ser::Error> for CliError {
     fn from(value: toml::ser::Error) -> Self {
         Self::TomlSer(value)
+    }
+}
+
+impl From<locket_crypto::CryptoError> for CliError {
+    fn from(value: locket_crypto::CryptoError) -> Self {
+        Self::Crypto(value)
+    }
+}
+
+impl From<locket_platform::PlatformError> for CliError {
+    fn from(value: locket_platform::PlatformError) -> Self {
+        Self::Platform(value)
     }
 }
 
@@ -514,6 +551,7 @@ fn init(context: &RuntimeContext, output: &mut impl Write, args: InitArgs) -> Re
     write_project_config(&config_path, &config)?;
     if let Err(error) = (|| -> Result<(), CliError> {
         ensure_project_metadata(&store, &config, timestamp)?;
+        initialize_project_keys(context, &store, &config, timestamp)?;
         trust_root(&store, &config, &context.cwd, timestamp)?;
         ensure_gitignore(&context.cwd)?;
         ensure_example_file(&context.cwd)?;
@@ -525,10 +563,93 @@ fn init(context: &RuntimeContext, output: &mut impl Write, args: InitArgs) -> Re
 
     writeln!(output, "initialized locket project {}", config.project_id)?;
     writeln!(output, "default_profile: {}", config.default_profile)?;
+    Ok(())
+}
+
+fn set_command(
+    context: &RuntimeContext,
+    output: &mut impl Write,
+    args: &SecretWriteArgs,
+) -> Result<(), CliError> {
+    let value = read_secret_value_from_stdin()?;
+    set_secret_value(context, args, &value, now_unix_nanos()?)?;
+    let source = source_arg_to_str(args.source.source.unwrap_or(SecretSourceArg::UserLocal));
+    writeln!(output, "set {} ({source})", args.key)?;
+    Ok(())
+}
+
+fn get_command(
+    context: &RuntimeContext,
+    output: &mut impl Write,
+    args: &GetArgs,
+) -> Result<(), CliError> {
+    let resolved_secret = resolve_active_secret(context, &args.key)?;
+    if args.copy {
+        return Err(CliError::Config("clipboard copy is not wired in this build yet".to_owned()));
+    }
+    if args.reveal {
+        let value = decrypt_current_secret(context, &resolved_secret)?;
+        writeln!(output, "{}", value.as_str())?;
+        return Ok(());
+    }
+
     writeln!(
         output,
-        "note: encrypted secret storage and recovery setup are not wired in this build yet"
+        "{} source={} version={}",
+        resolved_secret.secret.name,
+        resolved_secret.secret.source,
+        resolved_secret.secret.current_version
     )?;
+    Ok(())
+}
+
+fn rm_command(
+    context: &RuntimeContext,
+    output: &mut impl Write,
+    args: &SourceKeyArgs,
+) -> Result<(), CliError> {
+    let source = source_arg_to_str(args.source.source.unwrap_or(SecretSourceArg::UserLocal));
+    let resolved = require_project(context)?;
+    let store = open_store(context)?;
+    let profile = default_profile(&store, &resolved.config)?;
+    let Some(secret) = store.get_active_secret(
+        resolved.config.project_id.as_str(),
+        &profile.id,
+        &args.key,
+        source,
+    )?
+    else {
+        return Err(CliError::Config("secret not found".to_owned()));
+    };
+    store.tombstone_secret(&secret.id, now_unix_nanos()?)?;
+    writeln!(output, "removed {} ({source})", args.key)?;
+    Ok(())
+}
+
+fn list_command(
+    context: &RuntimeContext,
+    output: &mut impl Write,
+    args: &ListArgs,
+) -> Result<(), CliError> {
+    let resolved = require_project(context)?;
+    let store = open_store(context)?;
+    let profile = default_profile(&store, &resolved.config)?;
+    let secrets =
+        store.list_active_secrets_by_profile(resolved.config.project_id.as_str(), &profile.id)?;
+    if args.all {
+        writeln!(output, "list: deleted and deprecated rows are not wired in this build yet")?;
+    }
+    if secrets.is_empty() {
+        writeln!(output, "no secrets")?;
+        return Ok(());
+    }
+    for secret in secrets {
+        writeln!(
+            output,
+            "{} source={} version={}",
+            secret.name, secret.source, secret.current_version
+        )?;
+    }
     Ok(())
 }
 
@@ -595,9 +716,15 @@ fn create_profile(
     if !inserted {
         return Err(CliError::Config("profile already exists".to_owned()));
     }
+    initialize_profile_keys(
+        context,
+        &store,
+        &resolved.config,
+        profile_id.as_str(),
+        now_unix_nanos()?,
+    )?;
 
     writeln!(output, "created profile {profile_name} ({profile_id})")?;
-    writeln!(output, "note: profile key generation is not wired in this build yet")?;
     Ok(())
 }
 
@@ -707,6 +834,284 @@ fn ensure_project_metadata(
         )?;
     }
     Ok(())
+}
+
+fn initialize_project_keys(
+    context: &RuntimeContext,
+    store: &Store,
+    config: &ProjectConfig,
+    timestamp: i64,
+) -> Result<(), CliError> {
+    let master_key = generate_key()?;
+    context.key_store.store_master_key(config.project_id.as_str(), &master_key)?;
+    insert_wrapped_key(
+        store,
+        config.project_id.as_str(),
+        None,
+        KeyPurpose::ProjectMetadata,
+        &master_key,
+        timestamp,
+    )?;
+    insert_wrapped_key(
+        store,
+        config.project_id.as_str(),
+        None,
+        KeyPurpose::Audit,
+        &master_key,
+        timestamp,
+    )?;
+    let profile = default_profile(store, config)?;
+    initialize_profile_keys(context, store, config, &profile.id, timestamp)?;
+    Ok(())
+}
+
+fn initialize_profile_keys(
+    context: &RuntimeContext,
+    store: &Store,
+    config: &ProjectConfig,
+    profile_id: &str,
+    timestamp: i64,
+) -> Result<(), CliError> {
+    let master_key = context.key_store.load_master_key(config.project_id.as_str())?;
+    insert_wrapped_key(
+        store,
+        config.project_id.as_str(),
+        Some(profile_id),
+        KeyPurpose::ProfileSecret,
+        &master_key,
+        timestamp,
+    )?;
+    insert_wrapped_key(
+        store,
+        config.project_id.as_str(),
+        Some(profile_id),
+        KeyPurpose::ProfileFingerprint,
+        &master_key,
+        timestamp,
+    )?;
+    Ok(())
+}
+
+fn insert_wrapped_key(
+    store: &Store,
+    project_id: &str,
+    profile_id: Option<&str>,
+    purpose: KeyPurpose,
+    master_key: &locket_crypto::KeyBytes,
+    timestamp: i64,
+) -> Result<(), CliError> {
+    let key_id = KeyId::generate().map_err(|_| CliError::Time)?;
+    let key_material = generate_key()?;
+    let wrapping_key =
+        derive_wrapping_key_v1(master_key, &HkdfWrapInfo::new(project_id, profile_id, purpose))?;
+    let aad = key_wrap_aad_v1(&KeyWrapAad::new(
+        project_id,
+        key_id.as_str(),
+        profile_id,
+        0,
+        KeyWrapPurpose::from(purpose),
+    ))?;
+    let wrapped = wrap_key_material_v1(&wrapping_key, &key_material, &aad)?;
+    store.insert_key(&KeyRecord {
+        id: key_id.into_string(),
+        project_id: project_id.to_owned(),
+        profile_id: profile_id.map(ToOwned::to_owned),
+        purpose: purpose.as_str().to_owned(),
+        wrapped_material: wrapped.ciphertext,
+        nonce: wrapped.nonce,
+        created_at: timestamp,
+    })?;
+    Ok(())
+}
+
+fn default_profile(store: &Store, config: &ProjectConfig) -> Result<ProfileRecord, CliError> {
+    store
+        .get_profile_by_name(config.project_id.as_str(), config.default_profile.as_str())?
+        .ok_or_else(|| CliError::Config("default profile is missing".to_owned()))
+}
+
+fn set_secret_value(
+    context: &RuntimeContext,
+    args: &SecretWriteArgs,
+    value: &str,
+    timestamp: i64,
+) -> Result<(), CliError> {
+    let name = SecretName::new(args.key.clone())
+        .map_err(|_| CliError::Config("invalid secret name".to_owned()))?;
+    let source = source_arg_to_str(args.source.source.unwrap_or(SecretSourceArg::UserLocal));
+    let resolved = require_project(context)?;
+    let mut store = open_store(context)?;
+    let profile = default_profile(&store, &resolved.config)?;
+    if store
+        .get_active_secret(resolved.config.project_id.as_str(), &profile.id, name.as_str(), source)?
+        .is_some()
+    {
+        return Err(CliError::Config("secret already exists; use rotate".to_owned()));
+    }
+
+    let secret_id = SecretId::generate().map_err(|_| CliError::Time)?;
+    let version = 1;
+    let profile_secret_key = load_profile_key(
+        context,
+        &store,
+        resolved.config.project_id.as_str(),
+        &profile.id,
+        KeyPurpose::ProfileSecret,
+    )?;
+    let profile_fingerprint_key = load_profile_key(
+        context,
+        &store,
+        resolved.config.project_id.as_str(),
+        &profile.id,
+        KeyPurpose::ProfileFingerprint,
+    )?;
+    let value_aad = secret_blob_aad_v1(&locket_crypto::SecretBlobAad::new(
+        resolved.config.project_id.as_str(),
+        &profile.id,
+        secret_id.as_str(),
+        name.as_str(),
+        version,
+    ))?;
+    let wrap_aad = key_wrap_aad_v1(&KeyWrapAad::new(
+        resolved.config.project_id.as_str(),
+        secret_id.as_str(),
+        Some(&profile.id),
+        version,
+        KeyWrapPurpose::SecretDek,
+    ))?;
+    let encrypted = encrypt_secret_value_v1(&profile_secret_key, value, &value_aad, &wrap_aad)?;
+    let fingerprint = secret_fingerprint_v1(&profile_fingerprint_key, value)?;
+    let secret_id_string = secret_id.into_string();
+
+    store.create_active_secret(
+        &SecretRecord {
+            id: secret_id_string.clone(),
+            project_id: resolved.config.project_id.as_str().to_owned(),
+            profile_id: profile.id,
+            name: name.as_str().to_owned(),
+            source: source.to_owned(),
+            origin: "manual".to_owned(),
+            current_version: version,
+            state: "active".to_owned(),
+            created_at: timestamp,
+            updated_at: timestamp,
+            last_rotated_at: None,
+            deleted_at: None,
+        },
+        &SecretVersionRecord {
+            secret_id: secret_id_string.clone(),
+            version,
+            source: source.to_owned(),
+            origin: "manual".to_owned(),
+            state: "current".to_owned(),
+            created_at: timestamp,
+            deprecated_at: None,
+            grace_until: None,
+            purged_at: None,
+        },
+        &SecretBlobRecord {
+            secret_id: secret_id_string.clone(),
+            version,
+            encrypted_dek: encrypted.encrypted_dek,
+            ciphertext: encrypted.ciphertext,
+            value_nonce: encrypted.value_nonce,
+            aad_schema_version: encrypted.aad_schema_version,
+            created_at: timestamp,
+        },
+        &SecretFingerprintRecord {
+            secret_id: secret_id_string,
+            version,
+            fingerprint: fingerprint.to_vec(),
+            created_at: timestamp,
+        },
+    )?;
+    Ok(())
+}
+
+fn load_profile_key(
+    context: &RuntimeContext,
+    store: &Store,
+    project_id: &str,
+    profile_id: &str,
+    purpose: KeyPurpose,
+) -> Result<zeroize::Zeroizing<locket_crypto::KeyBytes>, CliError> {
+    let master_key = context.key_store.load_master_key(project_id)?;
+    let record = store
+        .get_key_by_scope(project_id, Some(profile_id), purpose.as_str())?
+        .ok_or_else(|| CliError::Config("profile key is missing".to_owned()))?;
+    let wrapping_key = derive_wrapping_key_v1(
+        &master_key,
+        &HkdfWrapInfo::new(project_id, Some(profile_id), purpose),
+    )?;
+    let aad = key_wrap_aad_v1(&KeyWrapAad::new(
+        project_id,
+        &record.id,
+        Some(profile_id),
+        0,
+        KeyWrapPurpose::from(purpose),
+    ))?;
+    let wrapped = WrappedKeyMaterial { ciphertext: record.wrapped_material, nonce: record.nonce };
+    Ok(unwrap_key_material_v1(&wrapping_key, &wrapped, &aad)?)
+}
+
+struct ResolvedSecret {
+    project: ResolvedProject,
+    profile: ProfileRecord,
+    secret: SecretRecord,
+}
+
+fn resolve_active_secret(context: &RuntimeContext, key: &str) -> Result<ResolvedSecret, CliError> {
+    let name = SecretName::new(key.to_owned())
+        .map_err(|_| CliError::Config("invalid secret name".to_owned()))?;
+    let project = require_project(context)?;
+    let store = open_store(context)?;
+    let profile = default_profile(&store, &project.config)?;
+    let secrets =
+        store.list_active_secrets_by_profile(project.config.project_id.as_str(), &profile.id)?;
+    let secret = secrets
+        .into_iter()
+        .filter(|secret| secret.name == name.as_str())
+        .max_by_key(|secret| source_precedence(&secret.source))
+        .ok_or_else(|| CliError::Config("secret not found".to_owned()))?;
+    Ok(ResolvedSecret { project, profile, secret })
+}
+
+fn decrypt_current_secret(
+    context: &RuntimeContext,
+    resolved: &ResolvedSecret,
+) -> Result<zeroize::Zeroizing<String>, CliError> {
+    let store = open_store(context)?;
+    let profile_secret_key = load_profile_key(
+        context,
+        &store,
+        resolved.project.config.project_id.as_str(),
+        &resolved.profile.id,
+        KeyPurpose::ProfileSecret,
+    )?;
+    let blob = store
+        .get_blob(&resolved.secret.id, resolved.secret.current_version)?
+        .ok_or_else(|| CliError::Config("secret blob is missing".to_owned()))?;
+    let value_aad = secret_blob_aad_v1(&locket_crypto::SecretBlobAad::new(
+        resolved.project.config.project_id.as_str(),
+        &resolved.profile.id,
+        &resolved.secret.id,
+        &resolved.secret.name,
+        resolved.secret.current_version,
+    ))?;
+    let wrap_aad = key_wrap_aad_v1(&KeyWrapAad::new(
+        resolved.project.config.project_id.as_str(),
+        &resolved.secret.id,
+        Some(&resolved.profile.id),
+        resolved.secret.current_version,
+        KeyWrapPurpose::SecretDek,
+    ))?;
+    let encrypted = EncryptedSecretValue {
+        encrypted_dek: blob.encrypted_dek,
+        ciphertext: blob.ciphertext,
+        value_nonce: blob.value_nonce,
+        aad_schema_version: blob.aad_schema_version,
+    };
+    Ok(decrypt_secret_value_v1(&profile_secret_key, &encrypted, &value_aad, &wrap_aad)?)
 }
 
 fn trust_root(
@@ -915,6 +1320,44 @@ fn absolutize(cwd: &Path, path: &Path) -> PathBuf {
     if path.is_absolute() { path.to_path_buf() } else { cwd.join(path) }
 }
 
+fn read_secret_value_from_stdin() -> Result<String, CliError> {
+    let mut stdin = io::stdin();
+    if stdin.is_terminal() {
+        return Err(CliError::Config(
+            "secure TTY prompt is not wired in this build; pipe secret value on stdin".to_owned(),
+        ));
+    }
+    let mut value = String::new();
+    stdin.read_to_string(&mut value)?;
+    if value.ends_with('\n') {
+        value.pop();
+        if value.ends_with('\r') {
+            value.pop();
+        }
+    }
+    if value.is_empty() {
+        return Err(CliError::Config("secret value cannot be empty".to_owned()));
+    }
+    Ok(value)
+}
+
+const fn source_arg_to_str(source: SecretSourceArg) -> &'static str {
+    match source {
+        SecretSourceArg::TeamManaged => "team-managed",
+        SecretSourceArg::UserLocal => "user-local",
+        SecretSourceArg::MachineLocal => "machine-local",
+    }
+}
+
+const fn source_precedence(source: &str) -> u8 {
+    match source.as_bytes() {
+        b"team-managed" => 1,
+        b"user-local" => 2,
+        b"machine-local" => 3,
+        _ => 0,
+    }
+}
+
 fn fallback_project_name(root: &Path) -> String {
     root.file_name()
         .and_then(|name| name.to_str())
@@ -938,9 +1381,18 @@ fn now_unix_nanos() -> Result<i64, CliError> {
 #[cfg(test)]
 mod tests {
     use clap::Parser;
+    use locket_platform::MemoryMasterKeyStore;
     use tempfile::tempdir;
 
     use super::{Cli, RuntimeContext, run_with_context};
+
+    fn test_context(directory: &tempfile::TempDir) -> RuntimeContext {
+        RuntimeContext {
+            cwd: directory.path().to_path_buf(),
+            store_path: directory.path().join("store.db"),
+            key_store: std::sync::Arc::new(MemoryMasterKeyStore::default()),
+        }
+    }
 
     #[test]
     fn parses_bare_status() {
@@ -990,10 +1442,7 @@ mod tests {
     #[test]
     fn status_reports_not_initialized_without_project() -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempdir()?;
-        let context = RuntimeContext {
-            cwd: directory.path().to_path_buf(),
-            store_path: directory.path().join("store.db"),
-        };
+        let context = test_context(&directory);
         let mut output = Vec::new();
 
         run_with_context(Cli::try_parse_from(["locket"])?, &context, &mut output)?;
@@ -1007,10 +1456,7 @@ mod tests {
     fn init_creates_project_metadata_files_and_profiles() -> Result<(), Box<dyn std::error::Error>>
     {
         let directory = tempdir()?;
-        let context = RuntimeContext {
-            cwd: directory.path().to_path_buf(),
-            store_path: directory.path().join("store.db"),
-        };
+        let context = test_context(&directory);
         let mut output = Vec::new();
 
         run_with_context(
@@ -1035,14 +1481,71 @@ mod tests {
     }
 
     #[test]
+    fn set_list_get_and_rm_secret_value() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        let mut output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut output,
+        )?;
+
+        let args = super::SecretWriteArgs {
+            key: "DATABASE_URL".to_owned(),
+            source: super::SourceArg { source: Some(super::SecretSourceArg::UserLocal) },
+            metadata: super::SecretMetadataFlags {
+                description: None,
+                owner: None,
+                tags: Vec::new(),
+                required: false,
+                optional: false,
+            },
+        };
+        super::set_secret_value(&context, &args, "postgres://localhost/app", 1_000)?;
+
+        let mut list_output = Vec::new();
+        run_with_context(Cli::try_parse_from(["locket", "list"])?, &context, &mut list_output)?;
+        let list_output = String::from_utf8(list_output)?;
+        assert!(list_output.contains("DATABASE_URL"));
+        assert!(!list_output.contains("postgres://localhost/app"));
+
+        let mut get_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "get", "DATABASE_URL"])?,
+            &context,
+            &mut get_output,
+        )?;
+        let get_output = String::from_utf8(get_output)?;
+        assert!(get_output.contains("version=1"));
+        assert!(!get_output.contains("postgres://localhost/app"));
+
+        let mut reveal_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "get", "DATABASE_URL", "--reveal"])?,
+            &context,
+            &mut reveal_output,
+        )?;
+        assert_eq!(String::from_utf8(reveal_output)?, "postgres://localhost/app\n");
+
+        let mut rm_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "rm", "DATABASE_URL"])?,
+            &context,
+            &mut rm_output,
+        )?;
+        let mut list_after_rm = Vec::new();
+        run_with_context(Cli::try_parse_from(["locket", "list"])?, &context, &mut list_after_rm)?;
+        assert!(String::from_utf8(list_after_rm)?.contains("no secrets"));
+        Ok(())
+    }
+
+    #[test]
     fn scan_reports_metadata_only_provider_findings() -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempdir()?;
         let sample_path = directory.path().join("sample.txt");
         std::fs::write(&sample_path, "token=sk_test_sampleTokenValue123\n")?;
-        let context = RuntimeContext {
-            cwd: directory.path().to_path_buf(),
-            store_path: directory.path().join("store.db"),
-        };
+        let context = test_context(&directory);
         let mut output = Vec::new();
 
         run_with_context(
@@ -1062,10 +1565,7 @@ mod tests {
         let directory = tempdir()?;
         let sample_path = directory.path().join("sample.log");
         std::fs::write(&sample_path, "token=ghp_sampleTokenValue123\n")?;
-        let context = RuntimeContext {
-            cwd: directory.path().to_path_buf(),
-            store_path: directory.path().join("store.db"),
-        };
+        let context = test_context(&directory);
         let mut output = Vec::new();
 
         run_with_context(
