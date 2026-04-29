@@ -238,7 +238,7 @@ to touch. Items marked `[x]` are merged to `main` and verified.
   - Files: `crates/locket-scan/src/rules.rs` (severity table),
     `crates/locket-cli/src/scan.rs` (exit-code mapping by max severity).
 - [x] Secure interactive secret input for `set`/`rotate`.
-- [~] Destructive confirmation flows. `purge`, dangerous-profile, root untrust
+- [ ] Destructive confirmation flows. `purge`, dangerous-profile, root untrust
   done. Remaining: policy deletion and other sensitive surfaces.
   - Spec: `docs/specs/policy.md:26` (`policy delete`); also any future
     UI/editor-driven sensitive flows.
@@ -316,7 +316,7 @@ to touch. Items marked `[x]` are merged to `main` and verified.
 
 ### Runtime/DX
 
-- [~] Local agent daemon: socket/pipe server, peer validation, unlock cache,
+- [ ] Local agent daemon: socket/pipe server, peer validation, unlock cache,
   TTL grants, grant revocation, status streaming. Decomposed into subtasks
   below; pick any open one (later subtasks depend on `agent-socket-server` —
   note the dependency on the claim line if you take a downstream task).
@@ -443,7 +443,7 @@ to touch. Items marked `[x]` are merged to `main` and verified.
   - Files: agent `ResolveReference` RPC handler; CLI consumers via `lk://`
     resolver in `crates/locket-core/src/reference.rs`.
 - [x] Wire Docker and Docker Compose into policy-backed CLI.
-- [~] `locket exec --all` typed-confirmation flow and `EXEC` audit done.
+- [ ] `locket exec --all` typed-confirmation flow and `EXEC` audit done.
   Remaining: `locket env inspect` enhancements and documented env layering /
   override-mode docs.
   - Spec: `docs/specs/runtime.md` env layering section; `docs/specs/project-cli.md`
@@ -459,7 +459,7 @@ to touch. Items marked `[x]` are merged to `main` and verified.
     audit directly.
   - Files: new `extensions/vscode/` (out-of-tree TS) or under `crates/locket-app/`
     once that crate exists; `LOCKET_IDE_ENV_SESSION` plumbing in shell.
-- [~] Automation-client flows. Public metadata storage, allowed action/policy
+- [ ] Automation-client flows. Public metadata storage, allowed action/policy
   fields, nonce primitives, CLI metadata flows are in. Remaining: private-key
   storage and challenge-response authentication.
   - Spec: `docs/specs/agent.md:62-79` (canonical-request hashing),
