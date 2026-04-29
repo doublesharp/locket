@@ -16,6 +16,7 @@ use locket_store::{
     SecretVersionRecord, Store, StoreError,
 };
 use sha2::{Digest, Sha256};
+use std::collections::BTreeSet;
 use std::error::Error;
 use std::fmt::{self, Display};
 use std::fs;
@@ -47,6 +48,8 @@ enum Command {
     Init(InitArgs),
     /// Store a new secret.
     Set(SecretWriteArgs),
+    /// Import secrets from an env file.
+    Import(ImportArgs),
     /// Get secret metadata, reveal, or copy.
     Get(GetArgs),
     /// Tombstone a secret source.
@@ -119,6 +122,21 @@ struct SecretWriteArgs {
     source: SourceArg,
     #[command(flatten)]
     metadata: SecretMetadataFlags,
+}
+
+#[derive(Debug, Args)]
+struct ImportArgs {
+    /// Env file to import.
+    file: String,
+    /// Profile to import into.
+    #[arg(long)]
+    profile: Option<String>,
+    /// Runtime source to target.
+    #[arg(long, value_enum)]
+    source: Option<SecretSourceArg>,
+    /// Rotate duplicate keys instead of skipping them.
+    #[arg(long)]
+    overwrite: bool,
 }
 
 #[derive(Debug, Args)]
@@ -375,6 +393,7 @@ fn run_with_context(
         Command::Status => status(context, output)?,
         Command::Init(args) => init(context, output, args)?,
         Command::Set(args) => set_command(context, output, &args)?,
+        Command::Import(args) => import_command(context, output, &args)?,
         Command::Get(args) => get_command(context, output, &args)?,
         Command::Rm(args) => rm_command(context, output, &args)?,
         Command::List(args) => list_command(context, output, &args)?,
@@ -572,9 +591,72 @@ fn set_command(
     args: &SecretWriteArgs,
 ) -> Result<(), CliError> {
     let value = read_secret_value_from_stdin()?;
-    set_secret_value(context, args, &value, now_unix_nanos()?)?;
+    set_secret_value(context, args, &value, "manual", now_unix_nanos()?)?;
+    refresh_example_for_project(context)?;
     let source = source_arg_to_str(args.source.source.unwrap_or(SecretSourceArg::UserLocal));
     writeln!(output, "set {} ({source})", args.key)?;
+    Ok(())
+}
+
+fn import_command(
+    context: &RuntimeContext,
+    output: &mut impl Write,
+    args: &ImportArgs,
+) -> Result<(), CliError> {
+    if args.overwrite {
+        return Err(CliError::Config(
+            "import --overwrite is not wired in this build yet".to_owned(),
+        ));
+    }
+    if let Some(profile) = &args.profile {
+        let resolved = require_project(context)?;
+        if profile != resolved.config.default_profile.as_str() {
+            return Err(CliError::Config(
+                "import --profile currently supports only the active default profile".to_owned(),
+            ));
+        }
+    }
+
+    let path = absolutize(&context.cwd, Path::new(&args.file));
+    let env_file_text = fs::read_to_string(path)?;
+    let source = args.source.unwrap_or(SecretSourceArg::UserLocal);
+    let parsed = parse_env_import(&env_file_text);
+    let mut imported = 0_u32;
+    let mut skipped = 0_u32;
+    let mut invalid = 0_u32;
+
+    for entry in parsed {
+        match entry {
+            EnvImportEntry::Secret { key, value } => {
+                let write_args = SecretWriteArgs {
+                    key: key.clone(),
+                    source: SourceArg { source: Some(source) },
+                    metadata: SecretMetadataFlags {
+                        description: None,
+                        owner: None,
+                        tags: Vec::new(),
+                        required: false,
+                        optional: false,
+                    },
+                };
+                match set_secret_value(context, &write_args, &value, "imported", now_unix_nanos()?)
+                {
+                    Ok(()) => imported += 1,
+                    Err(CliError::Config(message)) if message.contains("already exists") => {
+                        skipped += 1;
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+            EnvImportEntry::Invalid => invalid += 1,
+        }
+    }
+
+    refresh_example_for_project(context)?;
+    ensure_gitignore(&require_project(context)?.root)?;
+    writeln!(output, "imported: {imported}")?;
+    writeln!(output, "skipped: {skipped}")?;
+    writeln!(output, "invalid: {invalid}")?;
     Ok(())
 }
 
@@ -622,6 +704,7 @@ fn rm_command(
         return Err(CliError::Config("secret not found".to_owned()));
     };
     store.tombstone_secret(&secret.id, now_unix_nanos()?)?;
+    refresh_example_for_project(context)?;
     writeln!(output, "removed {} ({source})", args.key)?;
     Ok(())
 }
@@ -730,7 +813,7 @@ fn create_profile(
 
 fn emit_example_command(context: &RuntimeContext, output: &mut impl Write) -> Result<(), CliError> {
     let resolved = require_project(context)?;
-    ensure_example_file(&resolved.root)?;
+    refresh_example_for_project(context)?;
     writeln!(output, "updated {}", resolved.root.join(EXAMPLE_FILE).display())?;
     Ok(())
 }
@@ -934,6 +1017,7 @@ fn set_secret_value(
     context: &RuntimeContext,
     args: &SecretWriteArgs,
     value: &str,
+    origin: &str,
     timestamp: i64,
 ) -> Result<(), CliError> {
     let name = SecretName::new(args.key.clone())
@@ -990,7 +1074,7 @@ fn set_secret_value(
             profile_id: profile.id,
             name: name.as_str().to_owned(),
             source: source.to_owned(),
-            origin: "manual".to_owned(),
+            origin: origin.to_owned(),
             current_version: version,
             state: "active".to_owned(),
             created_at: timestamp,
@@ -1002,7 +1086,7 @@ fn set_secret_value(
             secret_id: secret_id_string.clone(),
             version,
             source: source.to_owned(),
-            origin: "manual".to_owned(),
+            origin: origin.to_owned(),
             state: "current".to_owned(),
             created_at: timestamp,
             deprecated_at: None,
@@ -1204,7 +1288,8 @@ fn ensure_gitignore(root: &Path) -> Result<(), CliError> {
 
 fn ensure_example_file(root: &Path) -> Result<(), CliError> {
     let path = root.join(EXAMPLE_FILE);
-    let managed_block = managed_example_block();
+    let names = BTreeSet::new();
+    let managed_block = managed_example_block(&names);
     let existing = match fs::read_to_string(&path) {
         Ok(content) => content,
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -1237,8 +1322,62 @@ fn ensure_example_file(root: &Path) -> Result<(), CliError> {
     Ok(())
 }
 
-fn managed_example_block() -> String {
-    format!("{EXAMPLE_BEGIN}\n{EXAMPLE_END}\n")
+fn refresh_example_for_project(context: &RuntimeContext) -> Result<(), CliError> {
+    let resolved = require_project(context)?;
+    let store = open_store(context)?;
+    let mut names = BTreeSet::new();
+    for profile in store.list_profiles(resolved.config.project_id.as_str())? {
+        for secret in store
+            .list_active_secrets_by_profile(resolved.config.project_id.as_str(), &profile.id)?
+        {
+            names.insert(secret.name);
+        }
+    }
+    write_example_block(&resolved.root, &names)
+}
+
+fn write_example_block(root: &Path, names: &BTreeSet<String>) -> Result<(), CliError> {
+    let path = root.join(EXAMPLE_FILE);
+    let managed_block = managed_example_block(names);
+    let existing = match fs::read_to_string(&path) {
+        Ok(content) => content,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            fs::write(path, managed_block)?;
+            return Ok(());
+        }
+        Err(error) => return Err(error.into()),
+    };
+    let Some(begin) = existing.find(EXAMPLE_BEGIN) else {
+        return Err(CliError::Config(
+            ".env.example exists without Locket managed markers; refusing silent overwrite"
+                .to_owned(),
+        ));
+    };
+    let Some(relative_end) = existing[begin..].find(EXAMPLE_END) else {
+        return Err(CliError::Config(
+            ".env.example has an unterminated Locket managed block".to_owned(),
+        ));
+    };
+    let end = begin + relative_end + EXAMPLE_END.len();
+    let mut updated = String::new();
+    updated.push_str(&existing[..begin]);
+    updated.push_str(&managed_block);
+    updated.push_str(&existing[end..]);
+    if updated != existing {
+        fs::write(path, updated)?;
+    }
+    Ok(())
+}
+
+fn managed_example_block(names: &BTreeSet<String>) -> String {
+    let mut block = format!("{EXAMPLE_BEGIN}\n");
+    for name in names {
+        block.push_str(name);
+        block.push_str("=\n");
+    }
+    block.push_str(EXAMPLE_END);
+    block.push('\n');
+    block
 }
 
 fn scan_path(root: &Path, path: &Path, findings: &mut Vec<ScanFinding>) -> Result<(), CliError> {
@@ -1341,6 +1480,53 @@ fn read_secret_value_from_stdin() -> Result<String, CliError> {
     Ok(value)
 }
 
+enum EnvImportEntry {
+    Secret { key: String, value: String },
+    Invalid,
+}
+
+fn parse_env_import(content: &str) -> Vec<EnvImportEntry> {
+    content
+        .lines()
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                return None;
+            }
+            Some(parse_env_line(trimmed))
+        })
+        .collect()
+}
+
+fn parse_env_line(line: &str) -> EnvImportEntry {
+    let line = line.strip_prefix("export ").unwrap_or(line);
+    let Some((key, value)) = line.split_once('=') else {
+        return EnvImportEntry::Invalid;
+    };
+    let key = key.trim();
+    if SecretName::new(key.to_owned()).is_err() {
+        return EnvImportEntry::Invalid;
+    }
+    let value = unquote_env_value(value.trim());
+    if value.contains('\0') {
+        return EnvImportEntry::Invalid;
+    }
+    EnvImportEntry::Secret { key: key.to_owned(), value }
+}
+
+fn unquote_env_value(value: &str) -> String {
+    if value.len() >= 2 {
+        let bytes = value.as_bytes();
+        if matches!(
+            (bytes.first(), bytes.last()),
+            (Some(b'"'), Some(b'"')) | (Some(b'\''), Some(b'\''))
+        ) {
+            return value[1..value.len() - 1].to_owned();
+        }
+    }
+    value.to_owned()
+}
+
 const fn source_arg_to_str(source: SecretSourceArg) -> &'static str {
     match source {
         SecretSourceArg::TeamManaged => "team-managed",
@@ -1405,6 +1591,7 @@ mod tests {
         for args in [
             ["locket", "init", "--name", "app"].as_slice(),
             &["locket", "set", "DATABASE_URL", "--source", "user-local"],
+            &["locket", "import", ".env", "--source", "user-local"],
             &["locket", "get", "DATABASE_URL", "--copy"],
             &["locket", "rm", "DATABASE_URL"],
             &["locket", "purge", "DATABASE_URL", "--all-versions"],
@@ -1502,7 +1689,7 @@ mod tests {
                 optional: false,
             },
         };
-        super::set_secret_value(&context, &args, "postgres://localhost/app", 1_000)?;
+        super::set_secret_value(&context, &args, "postgres://localhost/app", "manual", 1_000)?;
 
         let mut list_output = Vec::new();
         run_with_context(Cli::try_parse_from(["locket", "list"])?, &context, &mut list_output)?;
@@ -1537,6 +1724,40 @@ mod tests {
         let mut list_after_rm = Vec::new();
         run_with_context(Cli::try_parse_from(["locket", "list"])?, &context, &mut list_after_rm)?;
         assert!(String::from_utf8(list_after_rm)?.contains("no secrets"));
+        Ok(())
+    }
+
+    #[test]
+    fn import_env_encrypts_values_and_refreshes_example() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let directory = tempdir()?;
+        let context = test_context(&directory);
+        let mut output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+            &context,
+            &mut output,
+        )?;
+        std::fs::write(
+            directory.path().join(".env"),
+            "DATABASE_URL=postgres://localhost/app\nINVALID-NAME=value\nOPENAI_API_KEY='sk_test_sample'\n",
+        )?;
+
+        let mut import_output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "import", ".env"])?,
+            &context,
+            &mut import_output,
+        )?;
+        let import_output = String::from_utf8(import_output)?;
+        assert!(import_output.contains("imported: 2"));
+        assert!(import_output.contains("invalid: 1"));
+        assert!(!import_output.contains("postgres://localhost/app"));
+
+        let example = std::fs::read_to_string(directory.path().join(".env.example"))?;
+        assert!(example.contains("DATABASE_URL="));
+        assert!(example.contains("OPENAI_API_KEY="));
+        assert!(!example.contains("postgres://localhost/app"));
         Ok(())
     }
 
