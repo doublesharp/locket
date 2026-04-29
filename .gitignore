@@ -17,3 +17,4 @@
 # Local diagnostic output must be generated explicitly and reviewed before sharing.
 *.redacted-debug.tar
 *.lcov
+/.worktrees
