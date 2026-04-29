@@ -118,54 +118,41 @@ id from your claim file) · `[x]` merged and verified.
 
 ### Worktree and branch naming
 
-- Branch: `agent-<id>/<short-topic>` (e.g. `agent-3f7a91c2/team-metadata`).
-- Worktree: `.worktrees/agent-<id>-<Mshort-topic>` for in-repo worktrees, or a
-  sibling directory `../locket-agent-<id>-<short-topic>` if disk layout requires
-  it. Either is fine; record the path on the claim line.
-- Create with `git worktree add ".worktrees/agent-${AGENT_ID}-<topic>" -b "agent-${AGENT_ID}/<topic>" main`.
+- Branch: `agent-<id>/<short-topic>`.
+- Worktree: `.worktrees/agent-<id>-<short-topic>`.
+- Create with
+  `git worktree add ".worktrees/agent-${AGENT_ID}-<topic>" -b "agent-${AGENT_ID}/<topic>" main`.
 
 ### Scope discipline
 
-- Each slice covers ONE TODO item. Do not bundle unrelated changes.
-- Do not edit code owned by another active claim. If you need a change from another
-  agent's branch to land first, note the dependency on your claim line and pick a
-  different item, or coordinate via the integration agent.
-- Never overwrite or revert another agent's committed work to "fix" a merge. If
-  root `main` has changes that conflict with what you expect, stop and surface the
-  conflict; the owning agent resolves it.
+- One slice per TODO item; don't bundle.
+- Don't edit code another active claim owns. If you need it first, note
+  the dependency on your claim line and pick something else.
+- Never overwrite or revert another agent's committed work; if `main`
+  conflicts with your expectations, stop and surface it.
 
 ### Audit-row discipline
 
-Every spec-defined sensitive event MUST write an audit row. Before claiming a
-slice complete, confirm:
-
-- The success path writes the documented audit action with metadata-only fields.
-- Failure paths write the matching denial/failure rows where the spec requires.
-- No secret values, plaintext tokens, or high-entropy strings appear in audit
-  metadata.
-- The leak canary harness (`make leak-canary`) still passes.
+Before merging, confirm: success path writes the documented action with
+metadata-only fields; failure paths write the spec-required denial/failure
+rows; no secret values or high-entropy strings in metadata;
+`make leak-canary` passes.
 
 ### Conflict policy
 
-- Prefer rebase over merge for worker branches. Merge commits are acceptable when
-  integrating multiple worker branches into a single integration branch.
-- If two agents independently produce overlapping work, the integration agent
-  picks the more complete slice and credits the other in the commit message; the
-  losing agent rebases or abandons.
-- Do not use `--no-verify`, `--no-gpg-sign`, or `git push --force` on `main`.
+- Prefer rebase over merge for worker branches.
+- If two agents produce overlapping work, the more complete slice wins
+  and the loser rebases or abandons.
+- Never `--no-verify`, `--no-gpg-sign`, or `git push --force` on `main`.
 
-### Communicating state through this file
+### Communicating state
 
-- Use this file as the source of truth for what is open, claimed, in review, and
-  done. Do not rely on chat history.
-- Keep the Active Plan list short (only what is currently in motion). Once a slice
-  is merged, flip its TODO line to `[x]` and drop the entry from Active Plan.
-- Do not record who did what historically — `git log` is authoritative.
+This file is the source of truth for open / claimed / done.
+Don't record who-did-what — `git log` is authoritative.
 
 ## Active Plan
 
-Items currently in motion. An entry here means an agent has a live claim file
-under `.agents/active/` and is working the slice. Move items to `[x]` in the
+Items with a live claim file under `.agents/active/`. Move to `[x]` in the
 relevant TODO section once merged, then remove from this list. Drop entries
 whose claim is stale.
 
@@ -251,7 +238,7 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
   - Errors: `ConfirmationFailed` (68).
   - Audit: `HOOK_INSTALL`.
   - Files: `crates/locket-cli/src/commands/project/install_hooks.rs`.
-- [ ] `locket scan --no-gitignore` flag and `--require-known`
+- [x] `locket scan --no-gitignore` flag and `--require-known`
   pre-commit mode (locked → `UnlockRequired`; outside project →
   `ProjectNotFound`).
 - [x] Store/schema coverage for the full required-tables set
