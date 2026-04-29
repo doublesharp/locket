@@ -2,7 +2,7 @@
 
 Locket is a local-first secrets control plane for development environments.
 
-The product and implementation requirements live in [`LOCKET_PLAN.md`](LOCKET_PLAN.md).
+The product and implementation requirements live in [`locket.md`](locket.md).
 Engineering standards, testing expectations, and fuzzing guidance live under
 [`docs/`](docs/).
 
@@ -15,4 +15,4 @@ make test
 make coverage
 ```
 
-Fuzz targets are documented in [`docs/FUZZING.md`](docs/FUZZING.md).
+Fuzz targets are documented in [`docs/fuzzing.md`](docs/fuzzing.md).
