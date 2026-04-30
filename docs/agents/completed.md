@@ -135,6 +135,8 @@ Slices that have merged to `main` and verified. Open work tracked in
   validation.
 - [x] policy-doctor-agent-validation: Policy doctor now exits with a distinct incomplete
   status when agent-backed reference validation is unavailable.
+- [x] leak-canary-cli-artifacts: Leak canary coverage now includes CLI outputs and
+  generated project/debug artifacts.
 
 ## Full Spec Coverage TODO — Security/Recovery/Team
 
