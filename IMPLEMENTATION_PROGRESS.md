@@ -776,6 +776,36 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
   recovery affordances.
   - Spec: `docs/specs/desktop.md` UX Requirements.
   - Files: `crates/locket-app/ui/` error views.
+- [ ] Primary desktop views beyond version-history/execution-monitor:
+  project dashboard, profile switcher, secret metadata list, secret
+  editor, command-policy editor, scan results, audit log/verification,
+  backup/recovery, and Settings (`docs/specs/desktop.md`).
+- [ ] Tray template-image policy: macOS template-image (alpha-mask)
+  vs Windows/Linux full-color light/dark variants
+  (`docs/specs/desktop.md`).
+- [ ] Cross-surface error-text parity: CLI/UI/tray/shell/VS Code show
+  the same reason and next action for each typed error
+  (`docs/specs/desktop.md`).
+- [ ] Tray bounded recent-activity surface: counts/safe statuses
+  only; details remain in the in-app audit view
+  (`docs/specs/desktop.md`).
+- [ ] VS Code diagnostics: `process.env.KEY` missing in active
+  profile and pinned `lk://...@vN` near/past `grace_until`
+  (`docs/specs/integrations.md:48-49`).
+- [ ] VS Code reference completion for `lk://` in `.env.example`,
+  JSON, TOML, YAML, shell, and source files
+  (`docs/specs/integrations.md:48`).
+- [ ] VS Code gated reveal webview with short-lived data and no
+  plaintext persistence (separate from the generic Reveal/copy UI
+  gates) (`docs/specs/integrations.md:50-51`).
+- [ ] `locket allow` requires the current root hash to be trusted;
+  fails `ProjectRootUntrusted` before any grant
+  (`docs/specs/integrations.md:25`).
+- [ ] Profile-scoped grant invalidation on `locket use <profile>`;
+  hook re-prompts `GrantRequired` when no `directory_grants` row
+  exists for the now-active profile (`docs/specs/integrations.md:26`).
+- [ ] `locket deny --all` revokes every directory grant for the
+  project across all profiles (`docs/specs/integrations.md:27`).
 
 ### Code Health and Bug Fixes
 
