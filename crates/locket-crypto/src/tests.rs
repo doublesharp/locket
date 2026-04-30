@@ -2,11 +2,12 @@ use super::{
     AAD_SCHEMA_V1, CryptoError, HKDF_WRAP_INFO_SCHEMA_V1, HkdfWrapInfo, KEY_LEN,
     KEY_WRAP_SCHEMA_V1, KeyPurpose, KeyWrapAad, KeyWrapPurpose, NONCE_LEN,
     PASSPHRASE_FALLBACK_OUTPUT_LEN, PassphraseKdfParams, RECOVERY_CODE_BYTES,
-    RECOVERY_CODE_DATA_CHARS, SecretBlobAad, TAG_LEN, canonical_field, decrypt_secret_value_v1,
-    derive_passphrase_fallback_key_v1, derive_wrapping_key_v1, hkdf_wrap_info_v1, key_wrap_aad_v1,
-    passphrase_fallback_aad_v1, recovery_code_decode, recovery_code_encode, secret_blob_aad_v1,
-    secret_fingerprint_v1, unwrap_dek_v1, unwrap_key_material_v1, wrap_dek_v1,
-    wrap_key_material_v1,
+    RECOVERY_CODE_DATA_CHARS, RECOVERY_ENVELOPE_SCHEMA_V1, SecretBlobAad, TAG_LEN, canonical_field,
+    decrypt_secret_value_v1, derive_passphrase_fallback_key_v1, derive_wrapping_key_v1,
+    hkdf_wrap_info_v1, key_wrap_aad_v1, open_recovery_entry_v1, passphrase_fallback_aad_v1,
+    recovery_code_decode, recovery_code_encode, recovery_entry_aad_v1, recovery_entry_key_v1,
+    seal_recovery_entry_v1, secret_blob_aad_v1, secret_fingerprint_v1, unwrap_dek_v1,
+    unwrap_key_material_v1, wrap_dek_v1, wrap_key_material_v1,
 };
 
 const PROFILE_SECRET_KEY: [u8; KEY_LEN] = [7; KEY_LEN];
@@ -550,4 +551,188 @@ fn secret_fingerprint_is_keyed_and_stable() -> Result<(), CryptoError> {
     assert_eq!(first, second);
     assert_ne!(first, other_key);
     Ok(())
+}
+
+#[test]
+fn hkdf_wrap_info_with_profile_bytes_are_stable() -> Result<(), CryptoError> {
+    let info = hkdf_wrap_info_v1(&HkdfWrapInfo::new(
+        "lk_proj_123",
+        Some("lk_prof_dev"),
+        KeyPurpose::ProfileSecret,
+    ))?;
+    let expected = [
+        b"locket-wrap-v1".as_slice(),
+        &HKDF_WRAP_INFO_SCHEMA_V1.to_le_bytes(),
+        &[10, 0],
+        b"project_id",
+        &[11, 0, 0, 0],
+        b"lk_proj_123",
+        &[10, 0],
+        b"profile_id",
+        &[11, 0, 0, 0],
+        b"lk_prof_dev",
+        &[7, 0],
+        b"purpose",
+        &[14, 0, 0, 0],
+        b"profile-secret",
+    ]
+    .concat();
+
+    assert_eq!(info, expected);
+    Ok(())
+}
+
+#[test]
+fn key_wrap_aad_encodes_missing_profile_as_empty_field() -> Result<(), CryptoError> {
+    let aad = key_wrap_aad_v1(&KeyWrapAad::new(
+        "lk_proj_123",
+        "lk_key_master",
+        None,
+        0,
+        KeyWrapPurpose::ProjectMetadata,
+    ))?;
+    let expected = [
+        b"locket-key-wrap-v1".as_slice(),
+        &[10, 0],
+        b"project_id",
+        &[11, 0, 0, 0],
+        b"lk_proj_123",
+        &[6, 0],
+        b"key_id",
+        &[13, 0, 0, 0],
+        b"lk_key_master",
+        &[10, 0],
+        b"profile_id",
+        &[0, 0, 0, 0],
+        &[0, 0, 0, 0],
+        &[7, 0],
+        b"purpose",
+        &[16, 0, 0, 0],
+        b"project-metadata",
+        &KEY_WRAP_SCHEMA_V1.to_le_bytes(),
+    ]
+    .concat();
+
+    assert_eq!(aad, expected);
+    Ok(())
+}
+
+#[test]
+fn recovery_entry_aad_bytes_are_stable() -> Result<(), CryptoError> {
+    let aad = recovery_entry_aad_v1("lk_kdf_recovery_v1", "master_key", "lk_key_01")?;
+    let expected = [
+        b"locket-recovery-envelope-v1".as_slice(),
+        &RECOVERY_ENVELOPE_SCHEMA_V1.to_le_bytes(),
+        &[14, 0],
+        b"kdf_profile_id",
+        &[18, 0, 0, 0],
+        b"lk_kdf_recovery_v1",
+        &[10, 0],
+        b"entry_kind",
+        &[10, 0, 0, 0],
+        b"master_key",
+        &[8, 0],
+        b"entry_id",
+        &[9, 0, 0, 0],
+        b"lk_key_01",
+    ]
+    .concat();
+
+    assert_eq!(aad, expected);
+    Ok(())
+}
+
+#[test]
+fn recovery_entry_key_is_deterministic_and_domain_separated() -> Result<(), CryptoError> {
+    let unwrap_root = [0x55_u8; KEY_LEN];
+
+    let k1 = recovery_entry_key_v1(&unwrap_root, "master_key", "lk_key_01", "lk_kdf_v1")?;
+    let k2 = recovery_entry_key_v1(&unwrap_root, "master_key", "lk_key_01", "lk_kdf_v1")?;
+    let k_other_kind = recovery_entry_key_v1(&unwrap_root, "profile_key", "lk_key_01", "lk_kdf_v1")?;
+    let k_other_id = recovery_entry_key_v1(&unwrap_root, "master_key", "lk_key_02", "lk_kdf_v1")?;
+
+    assert_eq!(&*k1, &*k2);
+    assert_ne!(&*k1, &*k_other_kind);
+    assert_ne!(&*k1, &*k_other_id);
+    Ok(())
+}
+
+#[test]
+fn recovery_entry_seal_open_round_trips() -> Result<(), CryptoError> {
+    let unwrap_root = [0x77_u8; KEY_LEN];
+    let plaintext = b"secret-key-material";
+
+    let (nonce, ciphertext) =
+        seal_recovery_entry_v1(&unwrap_root, "lk_kdf_v1", "master_key", "lk_key_01", plaintext)?;
+    let recovered = open_recovery_entry_v1(
+        &unwrap_root,
+        "lk_kdf_v1",
+        "master_key",
+        "lk_key_01",
+        &nonce,
+        &ciphertext,
+    )?;
+
+    assert_eq!(recovered, plaintext);
+    Ok(())
+}
+
+#[test]
+fn recovery_entry_open_fails_on_tampered_ciphertext() -> Result<(), CryptoError> {
+    let unwrap_root = [0x77_u8; KEY_LEN];
+    let plaintext = b"secret-key-material";
+
+    let (nonce, mut ciphertext) =
+        seal_recovery_entry_v1(&unwrap_root, "lk_kdf_v1", "master_key", "lk_key_01", plaintext)?;
+    ciphertext[0] ^= 0xFF;
+
+    let result = open_recovery_entry_v1(
+        &unwrap_root,
+        "lk_kdf_v1",
+        "master_key",
+        "lk_key_01",
+        &nonce,
+        &ciphertext,
+    );
+
+    assert!(matches!(result, Err(CryptoError::DecryptionFailed)));
+    Ok(())
+}
+
+#[test]
+fn recovery_entry_open_fails_on_wrong_entry_id() -> Result<(), CryptoError> {
+    let unwrap_root = [0x77_u8; KEY_LEN];
+
+    let (nonce, ciphertext) = seal_recovery_entry_v1(
+        &unwrap_root,
+        "lk_kdf_v1",
+        "master_key",
+        "lk_key_01",
+        b"payload",
+    )?;
+    let result = open_recovery_entry_v1(
+        &unwrap_root,
+        "lk_kdf_v1",
+        "master_key",
+        "lk_key_02",
+        &nonce,
+        &ciphertext,
+    );
+
+    assert!(matches!(result, Err(CryptoError::DecryptionFailed)));
+    Ok(())
+}
+
+#[test]
+fn canonical_field_rejects_oversized_field_value() {
+    let value = "v".repeat(usize::try_from(u32::MAX).unwrap_or(usize::MAX).saturating_add(1));
+
+    // On 64-bit platforms the value will exceed u32::MAX; on 32-bit platforms
+    // saturating_add returns usize::MAX which also exceeds u32::MAX.
+    if value.len() > usize::try_from(u32::MAX).unwrap_or(usize::MAX) {
+        assert!(matches!(canonical_field("name", &value), Err(CryptoError::FieldValueTooLong)));
+    }
+    // The above is a no-op on 32-bit where the oversized string cannot be
+    // allocated. The name-too-long path (covered elsewhere) exercises the same
+    // error-code path for the v1 constraints.
 }
