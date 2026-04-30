@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, ref } from 'vue';
 
 import type { AuditLogRow } from '../types/views';
 
@@ -15,7 +15,18 @@ const emit = defineEmits<{
   (e: 'verify'): void;
 }>();
 
+const searchQuery = ref<string>('');
+
+const filteredRows = computed<AuditLogRow[]>(() => {
+  const query = searchQuery.value.trim().toLowerCase();
+  if (query.length === 0) {
+    return props.rows;
+  }
+  return props.rows.filter((row) => searchText(row).includes(query));
+});
+
 const isEmpty = computed<boolean>(() => props.rows.length === 0);
+const isFilteredEmpty = computed<boolean>(() => props.rows.length > 0 && filteredRows.value.length === 0);
 
 const firstBrokenSequence = computed<number | null>(() => {
   for (const row of props.rows) {
@@ -63,6 +74,21 @@ function statusLabel(status: AuditLogRow['status']): string {
   }
 }
 
+function searchText(row: AuditLogRow): string {
+  return [
+    String(row.sequence),
+    row.timestamp,
+    row.action,
+    row.status,
+    profileLabel(row),
+    secretLabel(row),
+    row.denialReason ?? '',
+    row.hmacOk ? 'hmac ok verified' : 'hmac broken failed',
+  ]
+    .join(' ')
+    .toLowerCase();
+}
+
 function onVerify(): void {
   emit('verify');
 }
@@ -72,9 +98,26 @@ function onVerify(): void {
   <section class="view" aria-labelledby="audit-log-heading">
     <header class="view__header">
       <h2 id="audit-log-heading">Audit log</h2>
-      <button type="button" class="view__action" aria-label="Verify audit chain" @click="onVerify">
-        Verify chain
-      </button>
+      <div class="view__actions">
+        <label class="view__search">
+          <span class="view__search-label">Search audit</span>
+          <input
+            v-model="searchQuery"
+            type="search"
+            autocomplete="off"
+            spellcheck="false"
+            placeholder="Search metadata"
+          />
+        </label>
+        <button
+          type="button"
+          class="view__action"
+          aria-label="Verify audit chain"
+          @click="onVerify"
+        >
+          Verify chain
+        </button>
+      </div>
     </header>
 
     <p
@@ -86,6 +129,8 @@ function onVerify(): void {
     </p>
 
     <p v-if="isEmpty" class="view__empty">No audit rows.</p>
+
+    <p v-else-if="isFilteredEmpty" class="view__empty">No matching audit rows.</p>
 
     <table v-else class="view__table" aria-describedby="audit-log-heading">
       <thead>
@@ -100,7 +145,7 @@ function onVerify(): void {
         </tr>
       </thead>
       <tbody>
-        <tr v-for="row in rows" :key="row.sequence">
+        <tr v-for="row in filteredRows" :key="row.sequence">
           <td>
             <span class="view__muted">{{ row.sequence }}</span>
           </td>
@@ -141,6 +186,7 @@ function onVerify(): void {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   margin-bottom: 0.75rem;
   gap: 0.75rem;
 }
@@ -150,6 +196,49 @@ function onVerify(): void {
   font-size: 1rem;
   letter-spacing: 0.04em;
   text-transform: uppercase;
+}
+
+.view__actions {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.view__search {
+  display: grid;
+  gap: 0.25rem;
+  min-width: min(18rem, 100%);
+}
+
+.view__search-label {
+  color: #9aa3b2;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.view__search input {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 2rem;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 0.375rem;
+  background: rgba(255, 255, 255, 0.05);
+  color: #e6e8ec;
+  font: inherit;
+  padding: 0.375rem 0.625rem;
+}
+
+.view__search input:focus {
+  border-color: #f8d77a;
+  outline: 2px solid rgba(248, 215, 122, 0.24);
+  outline-offset: 1px;
+}
+
+.view__search input::placeholder {
+  color: #667085;
 }
 
 .view__action {
