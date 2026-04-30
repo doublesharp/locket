@@ -112,6 +112,8 @@ Slices that have merged to `main` and verified. Open work tracked in
   - Spec: `docs/specs/desktop.md:94-96`.
 - [x] Accessibility baseline descriptors cover keyboard navigation, focus,
   labels, contrast, reduced motion, and post-TTL metadata scrubbing.
+- [x] Secret version history descriptors cover current/deprecated/purged
+  states, grace metadata, pinned eligibility, scan inclusion, and audit fields.
 - [x] Empty-state guidance for `locket init`/`team accept`/
   `profile create dev`/`set`/`import`/`policy add`/`agent start`/
   `device init`.
@@ -179,4 +181,3 @@ Slices that have merged to `main` and verified. Open work tracked in
 ## Spec-by-Spec Completion Gates
 
 - [x] `index.md`
-

@@ -652,9 +652,6 @@ the spec already covers. Closed slices land in
 - [ ] Status subscriptions from the agent (`SubscribeStatus`).
 - [ ] Privacy-mode rendering in desktop, tray, and editor-facing UI.
 - [ ] Audit, policy, profile, scan, and bootstrap views.
-- [~] [cb2437f7] Secret version history view (current/deprecated/purged with
-  `deprecated_at`, `grace_until`, pinned-reference eligibility).
-  Claim: branch agent-cb2437f7/version-history-view, worktree .worktrees/agent-cb2437f7-version-history-view, scope desktop metadata descriptors.
 - [ ] Execution/session monitor view backed by `runtime_sessions`.
 - [ ] Tauri hardening (`docs/specs/desktop.md`). Independent subtasks
   — pre-req: `locket-app` Tauri shell exists.
