@@ -213,6 +213,12 @@ make clippy
 make test
 make coverage
 make coverage-html
+make dependency-hygiene
+make vet
+make bench-fixtures
+make perf-passphrase-unlock
+make perf-recovery-envelope-unlock
+make slsa-provenance
 ```
 
 `make ci-local` is the default local quality gate. It uses `OFFLINE=1` by

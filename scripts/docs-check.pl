@@ -128,7 +128,7 @@ sub check_spec_backlinks {
 }
 
 sub check_make_targets {
-    my @required_targets = qw(test coverage coverage-html coverage-branch mutation);
+    my @required_targets = qw(test coverage coverage-html coverage-branch mutation vet);
     my (%targets, %phony);
     open my $fh, '<', 'Makefile' or die "open Makefile: $!";
     while (my $line = <$fh>) {

@@ -6,6 +6,7 @@ cargo_bin="${CARGO:-cargo}"
 cargo_deny="${CARGO_DENY:-cargo deny}"
 cargo_audit="${CARGO_AUDIT:-cargo audit}"
 cargo_geiger="${CARGO_GEIGER:-cargo geiger}"
+cargo_vet="${CARGO_VET:-cargo vet}"
 strict="${STRICT:-0}"
 quality_dir="target/quality"
 
@@ -74,6 +75,12 @@ audit_strict() {
   if require_tool "cargo-audit" "${cargo_audit}"; then
     metadata
     audit_with_policy --json
+  fi
+}
+
+vet() {
+  if require_tool "cargo-vet" "${cargo_vet}"; then
+    ${cargo_vet} --locked
   fi
 }
 
@@ -259,6 +266,9 @@ case "${mode}" in
       audit_local
     fi
     ;;
+  vet)
+    vet
+    ;;
   unsafe)
     unsafe_inventory
     ;;
@@ -273,6 +283,7 @@ case "${mode}" in
     metadata
     deny_strict
     audit_strict
+    vet
     unsafe_inventory
     sbom
     ;;

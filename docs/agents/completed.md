@@ -346,9 +346,26 @@ Slices that have merged to `main` and verified. Open work tracked in
   requires a dual-signed manifest (`docs/specs/operations.md`).
 - [x] Performance reference-runner spec, required report fields, and
   sampling rules (warmup, sample counts, p95 index, throughput formula)
+- [x] bench-fixtures: deterministic metadata, runtime, reference, scan,
+  full-scan, and Argon2 fixture generator for performance runs.
+- [x] performance-tolerance-gate: benchmark policy enforces PR/release
+  hard budgets and tracked-regression tolerance reports.
+- [x] perf-passphrase-unlock: passphrase unlock cold-path performance
+  harness and `make` target.
+- [x] perf-recovery-envelope-unlock: recovery-envelope unlock cold-path
+  performance harness and `make` target.
 - [x] make-test-targets: Testing Make targets are documented and guarded
   by docs-check so required coverage/test entrypoints stay exposed.
   (`docs/specs/performance.md`).
+- [x] cargo-vet-gate: strict supply-chain checks now expose a cargo-vet
+  target and docs-check requires the Make target.
+- [x] dependency-hygiene-gates: local cargo-machete/cargo-udeps gate
+  writes a review report and skips absent optional tools outside strict mode.
+- [x] property-audit-hmac: property-test harness covers audit HMAC
+  canonical byte invariants.
+- [x] slsa-provenance-policy: offline SLSA provenance policy verifier
+  validates artifact digest, builder, repository, build type, workflow,
+  and optional signature/L3 requirements.
 - [x] cargo-geiger-inventory: Unsafe inventory now produces a reviewable
   release artifact and is part of the strict quality gate.
 - [x] rustsec-severity-policy: RustSec advisory checks now apply the project

@@ -7,13 +7,25 @@ jobs="${CARGO_JOBS:-12}"
 offline="${OFFLINE:-1}"
 quality_dir="target/quality"
 jsonl="${quality_dir}/bench-smoke.jsonl"
+summary="${quality_dir}/bench-summary.json"
 report="${quality_dir}/bench-report.md"
 min_warmups="${BENCH_WARMUPS:-5}"
 min_samples="${BENCH_SAMPLES:-50}"
 build_profile="${BENCH_BUILD_PROFILE:-debug}"
+policy_mode="${BENCH_POLICY_MODE:-}"
+baseline_summary="${BENCH_BASELINE_SUMMARY:-}"
+accepted_regression_note="${BENCH_ACCEPTED_REGRESSION_NOTE:-}"
 
 if [[ "${mode}" == "full" ]]; then
   build_profile="${BENCH_BUILD_PROFILE:-release}"
+fi
+
+if [[ -z "${policy_mode}" ]]; then
+  if [[ "${mode}" == "full" ]]; then
+    policy_mode="release"
+  else
+    policy_mode="pr"
+  fi
 fi
 
 cargo_profile_args=()
@@ -152,6 +164,7 @@ write_report() {
     echo "# Locket Benchmark Smoke Report"
     echo
     echo "- mode: ${mode}"
+    echo "- policy_mode: ${policy_mode}"
     echo "- reference_runner: local-smoke"
     echo "- cpu_model: $(cpu_model)"
     echo "- core_count: $(metadata_value getconf _NPROCESSORS_ONLN)"
@@ -168,16 +181,34 @@ write_report() {
     echo "- warmup_iterations: ${min_warmups}"
     echo "- cli_help_samples: ${sample_count}"
     echo "- cli_help_p95_ms: ${cli_p95}"
+    echo "- cli_help_budget_ms: 100"
     echo "- p95_index_formula: ceil(0.95 * n) - 1 zero-based / report index ${p95_index} one-based"
     echo "- throughput_processed_bytes: ${processed_bytes}"
     echo "- throughput_elapsed_seconds: ${elapsed_seconds}"
     echo "- throughput_bytes_per_second: ${throughput}"
     echo
     echo "This report records the reference-runner fields and sampling rules required"
-    echo "by docs/specs/performance.md. Expanded fixtures and hard budget enforcement"
-    echo "remain tracked by the broader performance-gates item."
+    echo "by docs/specs/performance.md. Expanded fixtures remain tracked by the"
+    echo "broader performance-gates item."
   } > "${report}"
-  cat "${report}"
+  perl -MJSON::PP -e '
+    my ($path, $mode, $policy_mode, $profile, $samples, $p95) = @ARGV;
+    open my $fh, ">", $path or die "open $path: $!";
+    print {$fh} JSON::PP->new->canonical->pretty->encode({
+      mode => $mode,
+      policy_mode => $policy_mode,
+      build_profile => $profile,
+      benchmarks => [
+        {
+          name => "cli_help",
+          kind => "latency_ms",
+          budget_ms => 100,
+          samples => 0 + $samples,
+          p95_ms => 0 + $p95,
+        },
+      ],
+    });
+  ' "${summary}" "${mode}" "${policy_mode}" "${build_profile}" "${sample_count}" "${cli_p95}"
 }
 
 if [[ "${mode}" == "report" ]]; then
@@ -186,6 +217,10 @@ if [[ "${mode}" == "report" ]]; then
     exit 2
   fi
   cat "${report}"
+  if [[ -f "${quality_dir}/bench-policy.md" ]]; then
+    echo
+    cat "${quality_dir}/bench-policy.md"
+  fi
   exit 0
 fi
 
@@ -203,3 +238,12 @@ for _ in $(seq 1 "${min_samples}"); do
 done
 
 write_report
+policy_args=(--current "${summary}" --mode "${policy_mode}" --report "${quality_dir}/bench-policy.md")
+if [[ -n "${baseline_summary}" ]]; then
+  policy_args+=(--baseline "${baseline_summary}")
+fi
+if [[ -n "${accepted_regression_note}" ]]; then
+  policy_args+=(--accepted-regression-note "${accepted_regression_note}")
+fi
+scripts/bench-policy.pl "${policy_args[@]}"
+cat "${report}"

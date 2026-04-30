@@ -332,14 +332,13 @@ Re-verify file:line references before editing — they drift. Severity:
     desktop app and the VS Code extension. Pre-req: desktop-* and
     vscode-* items.
 - [ ] Bench harnesses and performance gates. Local smoke/report
-  scaffolding exists. Remaining: full spec fixtures, hard
-  p95/throughput budgets, `make bench` / `bench-ci` / `bench-report`
-  PR-vs-release modes (`docs/specs/performance.md`).
-- [~] [4ab55ee9] branch agent-4ab55ee9/cargo-vet-gate, worktree .worktrees/agent-4ab55ee9-cargo-vet-gate; cargo-vet strict supply-chain gate.
-  Offline-safe local commands and
-  strict-mode hooks exist. Remaining: enforced `cargo deny`/`audit`,
-  cargo-vet, unsafe inventory, SBOM, auditable builds, provenance,
-  signing.
+  scaffolding, deterministic fixtures, and PR/release tolerance policy
+  exist. Remaining: expand measured benchmark coverage beyond the
+  current CLI smoke runner (`docs/specs/performance.md`).
+- [ ] Distribution supply-chain gates. Offline-safe local commands,
+  strict-mode hooks, cargo-vet, unsafe inventory, SBOM, exception
+  ledger, and provenance policy verifier exist. Remaining: auditable
+  builds and signing.
 - [~] [4ab55ee9] branch agent-4ab55ee9/vscode-vsix-package, worktree .worktrees/agent-4ab55ee9-vscode-vsix-package; VS Code extension VSIX package builder with release digest output.
   Offline signed update-manifest verifier + typed
   `UpdateManifestInvalid` shipped. Remaining: package builders +
@@ -347,20 +346,14 @@ Re-verify file:line references before editing — they drift. Severity:
   package / VS Code extension (`docs/specs/operations.md:27-53`).
 - [ ] Cold-start budgets (`docs/specs/performance.md`). Each subtask
   adds one bench plus a regression that fails the budget:
-  - [~] [4ab55ee9] branch agent-4ab55ee9/perf-passphrase-unlock, worktree .worktrees/agent-4ab55ee9-perf-passphrase-unlock; **subtask** — perf-passphrase-unlock: ≤300 ms cold.
-  - [~] [4ab55ee9] branch agent-4ab55ee9/perf-recovery-envelope-unlock, worktree .worktrees/agent-4ab55ee9-perf-recovery-envelope-unlock; **subtask** — perf-recovery-envelope-unlock: ≤2 s cold.
   - [ ] **subtask** — perf-agent-idle-memory: ≤50 MB RSS after
     documented warmup. Pre-req: agent daemon subtasks.
-- [~] [4ab55ee9] branch agent-4ab55ee9/dependency-hygiene-gates, worktree .worktrees/agent-4ab55ee9-dependency-hygiene-gates; dependency-hygiene-gates: local `cargo machete`/`udeps` gate.
-- [~] [4ab55ee9] branch agent-4ab55ee9/property-audit-hmac, worktree .worktrees/agent-4ab55ee9-property-audit-hmac; Property-test harness for audit HMAC canonical byte invariants.
+- [ ] Property-test harness for new uncovered invariants.
   All current `proptest-*` subtasks shipped.
   Add new harnesses as uncovered invariants surface
   (`docs/specs/testing.md:14`).
 - [ ] Cross-platform test mocks and mutation tests
   (`docs/specs/testing.md`):
-- [~] [4ab55ee9] branch agent-4ab55ee9/bench-fixtures, worktree .worktrees/agent-4ab55ee9-bench-fixtures; Bench fixtures: metadata, runtime, reference-resolution, staged-scan, full-scan, Argon2 (`docs/specs/performance.md`).
-- [~] [4ab55ee9] branch agent-4ab55ee9/performance-tolerance-gate, worktree .worktrees/agent-4ab55ee9-performance-tolerance-gate; PR vs release tolerance gate: 10% PR / 20% tracked-regression / no-tolerance release (`docs/specs/performance.md`).
-- [~] [4ab55ee9] branch agent-4ab55ee9/slsa-provenance-policy, worktree .worktrees/agent-4ab55ee9-slsa-provenance-policy; slsa-provenance-policy: offline release provenance policy verifier (`docs/specs/operations.md`).
 - [~] [90b9f58a] branch agent-90b9f58a/pre-migration-backups, worktree .worktrees/agent-90b9f58a-pre-migration-backups; pre-migration backup metadata and doctor reporting (`docs/specs/storage.md`).
 
 ## Spec-by-spec completion gates

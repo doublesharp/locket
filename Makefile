@@ -4,6 +4,9 @@ CARGO ?= cargo
 CARGO_DENY ?= cargo deny
 CARGO_AUDIT ?= cargo audit
 CARGO_GEIGER ?= cargo geiger
+CARGO_VET ?= cargo vet
+CARGO_MACHETE ?= cargo machete
+CARGO_UDEPS ?= cargo +nightly udeps
 CARGO_LLVM_COV ?= cargo llvm-cov
 CARGO_FUZZ ?= cargo +nightly fuzz
 PNPM ?= $(shell command -v pnpm 2>/dev/null)
@@ -16,6 +19,14 @@ FUZZ_TIME ?= 60
 FUZZ_MAX_LEN ?= 65536
 FUZZ_TIMEOUT ?= 30
 FUZZ_RSS_LIMIT_MB ?= 2048
+BENCH_FIXTURE_PROFILE ?= smoke
+BENCH_FIXTURE_OUT ?= target/bench-fixtures
+SLSA_ARTIFACT ?=
+SLSA_PROVENANCE ?=
+SLSA_EXPECTED_REPOSITORY ?=
+SLSA_EXPECTED_BUILDER ?=
+SLSA_EXPECTED_BUILD_TYPE ?=
+SLSA_EXPECTED_WORKFLOW ?=
 
 ifeq ($(OFFLINE),1)
 CARGO_OFFLINE_FLAG := --offline
@@ -23,16 +34,16 @@ else
 CARGO_OFFLINE_FLAG :=
 endif
 
-.PHONY: ci ci-local ci-strict fmt fmt-check clippy test nextest coverage coverage-html coverage-branch mutation supply-chain supply-chain-local audit deny unsafe-inventory sbom supply-chain-exceptions bench bench-ci bench-report fuzz-list fuzz-smoke fuzz fuzz-nightly fuzz-minimize leak-canary docs-check app-ui-install app-ui-check app-ui-build clean
+.PHONY: ci ci-local ci-strict fmt fmt-check clippy test nextest coverage coverage-html coverage-branch mutation supply-chain supply-chain-local audit deny vet unsafe-inventory sbom supply-chain-exceptions dependency-hygiene machete udeps bench-fixtures bench bench-ci bench-report perf-passphrase-unlock perf-recovery-envelope-unlock slsa-provenance fuzz-list fuzz-smoke fuzz fuzz-nightly fuzz-minimize leak-canary docs-check app-ui-install app-ui-check app-ui-build clean
 
 # Local default gate. It avoids network by default and skips missing optional tools
 # with explicit warnings. Use `make ci-strict OFFLINE=0 STRICT=1` for release-style
 # blocking checks.
 ci: ci-local
 
-ci-local: fmt-check clippy test leak-canary bench-ci supply-chain-local
+ci-local: fmt-check clippy test leak-canary bench-ci supply-chain-local dependency-hygiene
 
-ci-strict: fmt-check clippy test coverage coverage-branch mutation leak-canary docs-check bench-ci deny audit unsafe-inventory sbom fuzz-smoke
+ci-strict: fmt-check clippy test coverage coverage-branch mutation leak-canary docs-check bench-ci deny audit vet unsafe-inventory sbom dependency-hygiene slsa-provenance fuzz-smoke
 
 fmt:
 	$(CARGO) fmt --all
@@ -72,6 +83,9 @@ audit:
 deny:
 	scripts/supply-chain.sh deny
 
+vet:
+	CARGO_VET="$(CARGO_VET)" STRICT="$(STRICT)" scripts/supply-chain.sh vet
+
 unsafe-inventory:
 	CARGO_GEIGER="$(CARGO_GEIGER)" scripts/supply-chain.sh unsafe
 
@@ -81,14 +95,47 @@ sbom:
 supply-chain-exceptions:
 	scripts/supply-chain.sh exceptions
 
-bench:
+dependency-hygiene:
+	CARGO_MACHETE="$(CARGO_MACHETE)" CARGO_UDEPS="$(CARGO_UDEPS)" STRICT="$(STRICT)" scripts/dependency-hygiene.sh local
+
+machete:
+	CARGO_MACHETE="$(CARGO_MACHETE)" STRICT="$(STRICT)" scripts/dependency-hygiene.sh machete
+
+udeps:
+	CARGO_UDEPS="$(CARGO_UDEPS)" STRICT="$(STRICT)" scripts/dependency-hygiene.sh udeps
+
+bench-fixtures:
+	scripts/bench-fixtures.pl --profile "$(BENCH_FIXTURE_PROFILE)" --out "$(BENCH_FIXTURE_OUT)"
+
+bench: BENCH_FIXTURE_PROFILE = release
+bench: bench-fixtures
 	scripts/bench-smoke.sh full
 
-bench-ci:
+bench-ci: BENCH_FIXTURE_PROFILE = smoke
+bench-ci: bench-fixtures
 	scripts/bench-smoke.sh ci
 
 bench-report:
 	scripts/bench-smoke.sh report
+
+perf-passphrase-unlock:
+	scripts/perf-passphrase-unlock.sh
+
+perf-recovery-envelope-unlock:
+	scripts/perf-recovery-envelope-unlock.sh
+
+slsa-provenance:
+	@if [ -z "$(SLSA_ARTIFACT)" ] || [ -z "$(SLSA_PROVENANCE)" ] || [ -z "$(SLSA_EXPECTED_REPOSITORY)" ] || [ -z "$(SLSA_EXPECTED_BUILDER)" ] || [ -z "$(SLSA_EXPECTED_BUILD_TYPE)" ] || [ -z "$(SLSA_EXPECTED_WORKFLOW)" ]; then \
+		echo "skip: set SLSA_ARTIFACT, SLSA_PROVENANCE, SLSA_EXPECTED_REPOSITORY, SLSA_EXPECTED_BUILDER, SLSA_EXPECTED_BUILD_TYPE, and SLSA_EXPECTED_WORKFLOW"; \
+	else \
+		scripts/slsa-provenance-policy.pl \
+			--artifact "$(SLSA_ARTIFACT)" \
+			--provenance "$(SLSA_PROVENANCE)" \
+			--expected-repository "$(SLSA_EXPECTED_REPOSITORY)" \
+			--expected-builder "$(SLSA_EXPECTED_BUILDER)" \
+			--expected-build-type "$(SLSA_EXPECTED_BUILD_TYPE)" \
+			--expected-workflow "$(SLSA_EXPECTED_WORKFLOW)"; \
+	fi
 
 fuzz-list:
 	CARGO_FUZZ="$(CARGO_FUZZ)" scripts/fuzz-smoke.sh list

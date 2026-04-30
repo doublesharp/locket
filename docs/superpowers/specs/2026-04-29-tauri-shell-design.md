@@ -47,7 +47,7 @@ Spec references: `docs/specs/desktop.md:5-65`,
 ## Architecture
 
 The existing `crates/locket-app` library crate stays as-is — pure
-descriptor types in [crates/locket-app/src/lib.rs](crates/locket-app/src/lib.rs)
+descriptor types in [crates/locket-app/src/lib.rs](../../../crates/locket-app/src/lib.rs)
 remain unchanged and load-bearing for spec parity tests.
 
 A new binary crate is added beside the lib:
@@ -107,7 +107,7 @@ default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; c
 
 This string is byte-for-byte equal to
 `ReleaseWebviewPolicy::default().content_security_policy` in
-[crates/locket-app/src/lib.rs:628](crates/locket-app/src/lib.rs#L628),
+[crates/locket-app/src/lib.rs](../../../crates/locket-app/src/lib.rs),
 which the existing
 `release_webview_policy_denies_broad_and_remote_capabilities` test
 already pins. The new config-parse test asserts that the release CSP
@@ -230,26 +230,26 @@ New targets gated on `pnpm` availability:
 PNPM ?= $(shell command -v pnpm 2>/dev/null)
 
 app-ui-install:
-	@if [ -z "$(PNPM)" ]; then \
-		echo "skip: pnpm not on PATH"; \
-	else \
-		$(PNPM) --dir crates/locket-app/ui install --frozen-lockfile; \
-	fi
+    @if [ -z "$(PNPM)" ]; then \
+        echo "skip: pnpm not on PATH"; \
+    else \
+        $(PNPM) --dir crates/locket-app/ui install --frozen-lockfile; \
+    fi
 
 app-ui-check: app-ui-install
-	@if [ -z "$(PNPM)" ]; then \
-		echo "skip: pnpm not on PATH"; \
-	else \
-		$(PNPM) --dir crates/locket-app/ui lint && \
-		$(PNPM) --dir crates/locket-app/ui typecheck; \
-	fi
+    @if [ -z "$(PNPM)" ]; then \
+        echo "skip: pnpm not on PATH"; \
+    else \
+        $(PNPM) --dir crates/locket-app/ui lint && \
+        $(PNPM) --dir crates/locket-app/ui typecheck; \
+    fi
 
 app-ui-build: app-ui-install
-	@if [ -z "$(PNPM)" ]; then \
-		echo "skip: pnpm not on PATH"; \
-	else \
-		$(PNPM) --dir crates/locket-app/ui build; \
-	fi
+    @if [ -z "$(PNPM)" ]; then \
+        echo "skip: pnpm not on PATH"; \
+    else \
+        $(PNPM) --dir crates/locket-app/ui build; \
+    fi
 ```
 
 CI integration of these targets is a follow-up TODO; this slice does
