@@ -118,8 +118,7 @@ skill set fits a leaf better.
   (`docs/specs/agent.md:62-79`). Pre-req:
   `automation-private-key-storage`.
 - [ ] Policy TOML — remaining (`docs/specs/policy.md`):
-  - [ ] **subtask** — policy-ttls: `ttl` translates to a grant TTL.
-    Pre-req: `agent-grant-table`.
+  - [~] [52c592db] branch agent-52c592db/policy-ttls, worktree .worktrees/agent-52c592db-policy-ttls; **subtask** — policy-ttls: `ttl` translates to a grant TTL.
 
 ### Security/Recovery/Team
 
