@@ -535,10 +535,7 @@ the spec already covers. Closed slices land in
   - [x] **subtask** — team-members-list: `locket team members` lists
     member metadata and pending invites with privacy aliases; locked vaults
     remain metadata-only.
-  - [~] [aa40a4ce] **subtask** — team-remove-member: implement `locket team remove`.
-    Audit `TEAM_REMOVE`. Errors: `TeamRoleDenied`. Depends on
-    `team-store-schema`.
-    Claim: branch agent-aa40a4ce/team-remove-member, worktree .worktrees/agent-aa40a4ce-team-remove-member. Scope: `locket team remove <member>` command, `TEAM_REMOVE` audit row, `TeamRoleDenied` typed error.
+  - [x] **subtask** — team-remove-member: `locket team remove` with `TEAM_REMOVE` audit and `TeamRoleDenied` typed error.
   - [~] [aa40a4ce] **subtask** — team-revoke-device: implement `locket team
     revoke-device`. Audit `DEVICE_REVOKE`. Errors: `TeamRoleDenied`. Depends
     on `team-store-schema`.
@@ -568,11 +565,7 @@ the spec already covers. Closed slices land in
 - [ ] Invite issuer/recipient trust ceremony
   (`docs/specs/team-sync-recovery.md:56-69`). Subtasks below; later
   ones depend on `invite-codec`.
-  - [~] [e7389a73] **subtask** — invite-codec: signed-invite struct (issuer pub
-    keys, recipient fingerprint, expiry, nonce, role, profiles,
-    project) plus encode/decode/verify in
-    `crates/locket-core/src/invite.rs`.
-    Claim: branch agent-e7389a73/invite-codec, worktree .worktrees/agent-e7389a73-invite-codec.
+  - [x] **subtask** — invite-codec: signed-invite struct with encode/decode/verify in `crates/locket-core/src/invite.rs`.
   - [ ] **subtask** — invite-issue: `team invite` produces a signed
     invite using the device signing key; emit `TEAM_INVITE` audit.
     Pre-req: `invite-codec`, team-store-schema.
@@ -609,10 +602,7 @@ the spec already covers. Closed slices land in
     pipe permissions; refuse to start if the bind path is wider.
   - [x] **subtask** — harden-memory-lock: `mlockall` at CLI startup;
     graceful `Degraded` on `RLIMIT_MEMLOCK` limit; `Unsupported` on macOS/Windows.
-  - [x] [e7389a73] **subtask** — harden-zeroize: ensure unwrapped keys/values
-    are wrapped in `Zeroizing`/equivalent at every owner; audit
-    sites that haven't been migrated.
-    Claim: branch agent-e7389a73/harden-zeroize, worktree .worktrees/agent-e7389a73-harden-zeroize.
+  - [x] **subtask** — harden-zeroize: `Zeroizing` wrappers at all key/value owner sites; recovery envelope return value wrapped.
   - [ ] **subtask** — harden-session-lock: lock on system sleep,
     screen lock, and user-session switch; emit `LOCK` audit row.
   - [x] **subtask** — harden-doctor-degraded: doctor reports
@@ -636,9 +626,7 @@ the spec already covers. Closed slices land in
   invariant — no phantom row, no sequence gap on rollback.
 - [x] `metadata_json` ≤64 KiB per-row cap enforced at write time;
   `AuditMetadataTooLarge` typed error (`MetadataInvalid` 64).
-- [~] [aa40a4ce] Caller-side summarization: large `secret_names`/`redacted_secret_names`
-  collections summarized before append to stay under 64 KiB cap.
-  Claim: branch agent-aa40a4ce/caller-side-summarization, worktree .worktrees/agent-aa40a4ce-caller-side-summarization. Scope: summarize_secret_names helper, applied to all 4 audit sites (exec, docker, run, redact).
+- [x] Caller-side summarization: `summarize_names` helper applied to all 4 audit sites; large collections stay under 64 KiB cap.
 - [x] `recovery rotate` prints the scrollback warning after revealing
   the new code (matches `init` behavior).
 - [~] [aa40a4ce] Optional screen-clear after one-time recovery code display on
@@ -669,9 +657,7 @@ the spec already covers. Closed slices land in
   and changed AAD fields all exit `DecryptionFailed`.
 - [x] `set`/`rotate`/`import` reject NUL and multiline secret values
   via `validate_secret_value_str` (`MetadataInvalid` 64).
-- [~] [aa40a4ce] Bytes-after-UTF-8 sweep across docker/compose/exec/redact/scan
-  paths (`docs/specs/crypto.md`).
-  Claim: branch agent-aa40a4ce/bytes-after-utf8, worktree .worktrees/agent-aa40a4ce-bytes-after-utf8. Scope: tests verifying non-ASCII UTF-8 secret values pass byte-for-byte through exec injection and redact/scan matching.
+- [x] Bytes-after-UTF-8 sweep: non-ASCII UTF-8 secret values pass byte-for-byte through exec, docker, run, redact, and scan paths.
 
 ### App/UI
 
@@ -822,21 +808,15 @@ editing — they drift. Severity: **blocker** (security/correctness),
   - [x] **subtask** — tests-env-merge: cover `minimal`/`strict`/
     `merge`/`passthrough` modes, `override = "preserve"`/"error",
     the conservative allowlist, and `LC_*` matching.
-  - [~] [e7389a73] **subtask** — tests-crypto-aad: cover AAD construction,
-    key-wrap canonicalization, audit HMAC canonicalization, recovery
-    envelope parsing, and device descriptor parsing in
-    `crates/locket-crypto/`.
-    Claim: branch agent-e7389a73/tests-crypto-aad, worktree .worktrees/agent-e7389a73-tests-crypto-aad.
-  - [~] [e7389a73] **subtask** — tests-store-migrations: cover schema migration
-    paths, `SCHEMA_MIGRATE` audit on every step, and rollback on
-    failure in `crates/locket-store/`.
-    Claim: branch agent-e7389a73/tests-store-migrations, worktree .worktrees/agent-e7389a73-tests-store-migrations.
+  - [x] **subtask** — tests-crypto-aad: AAD construction, key-wrap canonicalization, audit HMAC, recovery envelope, and device descriptor parsing in `crates/locket-crypto/`.
+  - [x] **subtask** — tests-store-migrations: schema migration paths, `SCHEMA_MIGRATE` audit on every step, rollback on failure.
   - [x] **subtask** — tests-typed-errors: per-variant exit-code
     regression for all `LocketError` variants.
-  - [ ] **subtask** — tests-source-precedence: cover the unified
+  - [~] [aa40a4ce] **subtask** — tests-source-precedence: cover the unified
     resolver across `set`, `get`, `list`, `rotate`, `rm`, `purge`,
     `history`, `diff`, `copy`, reveal/copy, and execution. Pairs with
     the source-precedence item under `Near-Term CLI/Core`.
+    Claim: branch agent-aa40a4ce/tests-source-precedence, worktree .worktrees/agent-aa40a4ce-tests-source-precedence.
   - [x] **subtask** — tests-scanner-rules: cover `crates/locket-scan/`
     rule matching, severity overrides, suppression markers, and the
     `--require-known` pre-commit mode.
@@ -869,10 +849,7 @@ editing — they drift. Severity: **blocker** (security/correctness),
   - [ ] **subtask** — e2e-docker-compose: `locket exec` and
     `locket run` against a stub `docker compose`, names-only audit,
     refusal of remote contexts.
-  - [~] [aa40a4ce] **subtask** — e2e-recovery-roundtrip: `init` → record code →
-    `recover` → `recovery rotate`. Covers refusal-when-keychain-valid
-    and `--force` audit override.
-    Claim: branch agent-aa40a4ce/e2e-recovery-roundtrip, worktree .worktrees/agent-aa40a4ce-e2e-recovery-roundtrip. Scope: integration test covering full recovery flow end to end.
+  - [x] **subtask** — e2e-recovery-roundtrip: `init` → `recover` → `recovery rotate`; refusal-when-keychain-valid and `--force` audit override.
   - [ ] **subtask** — e2e-team-invite-accept: `team init` →
     `team invite` → `team accept` (signature + safety-words display)
     → `team revoke-invite` failure path. Depends on the team-* and
