@@ -295,3 +295,53 @@ fn write_pending_invites(
     }
     Ok(())
 }
+
+fn team_name_label(team: &TeamRecord, redact_names: bool) -> String {
+    if redact_names { privacy_alias("team", &team.name) } else { team.name.clone() }
+}
+
+fn team_id_label(team: &TeamRecord, redact_names: bool) -> String {
+    if redact_names { privacy_alias("team", &team.id) } else { team.id.clone() }
+}
+
+fn member_id_label(member: &TeamMemberListRecord, redact_names: bool) -> String {
+    if redact_names { privacy_alias("member", &member.id) } else { member.id.clone() }
+}
+
+fn member_display_label(member: &TeamMemberListRecord, redact_names: bool) -> String {
+    if redact_names {
+        privacy_alias("member", &member.display_name)
+    } else {
+        member.display_name.clone()
+    }
+}
+
+fn invite_id_label(invite: &PendingTeamInviteRecord, redact_names: bool) -> String {
+    if redact_names { privacy_alias("invite", &invite.id) } else { invite.id.clone() }
+}
+
+fn invite_recipient_label(invite: &PendingTeamInviteRecord, redact_names: bool) -> String {
+    if redact_names {
+        privacy_alias("device", &invite.recipient_device_fingerprint)
+    } else {
+        invite.recipient_device_fingerprint.clone()
+    }
+}
+
+fn invite_profiles_label(invite: &PendingTeamInviteRecord, redact_names: bool) -> String {
+    if invite.profiles.is_empty() {
+        return "-".to_owned();
+    }
+    invite
+        .profiles
+        .iter()
+        .map(|profile| {
+            if redact_names { privacy_alias("profile", profile) } else { profile.clone() }
+        })
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn optional_timestamp_label(value: Option<i64>) -> String {
+    value.map_or_else(|| "-".to_owned(), |timestamp| timestamp.to_string())
+}

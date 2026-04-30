@@ -435,6 +435,8 @@ mod tests {
 #[cfg(test)]
 #[allow(clippy::panic)]
 #[allow(clippy::unwrap_used)]
+#[allow(clippy::expect_used)]
+#[allow(clippy::redundant_closure_for_method_calls)]
 mod proptest_lk_uri {
     use proptest::prelude::*;
 

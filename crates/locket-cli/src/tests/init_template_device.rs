@@ -960,6 +960,8 @@ fn seed_team_members_with_two_owners(
          VALUES (?1, ?2, ?3, ?4, ?5)",
         ("lk_member_owner2", "lk_team_two", "Bob Owner", "owner", 20_i64),
     )?;
+    Ok(())
+}
 
 #[test]
 fn init_writes_recovery_envelope_and_metadata_only_audit() -> Result<(), Box<dyn std::error::Error>>

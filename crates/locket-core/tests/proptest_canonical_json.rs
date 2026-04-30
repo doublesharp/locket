@@ -11,7 +11,14 @@
 //! - **Round-trip preserves value equality.** The encoded string is
 //!   valid JSON whose parsed `Value` equals the input.
 
-#![allow(clippy::panic, clippy::unwrap_used)]
+#![allow(
+    clippy::panic,
+    clippy::unwrap_used,
+    unused_crate_dependencies,
+    clippy::expect_used,
+    clippy::match_same_arms,
+    clippy::collapsible_if
+)]
 
 use locket_core::canonical_json;
 use proptest::prelude::*;
