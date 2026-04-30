@@ -206,6 +206,60 @@ pub struct AccessibilityDescriptor {
     pub plaintext_ttl_sensitive: bool,
 }
 
+/// Secret version states rendered by the desktop version history view.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum VersionHistoryState {
+    /// Current active version for a source.
+    Current,
+    /// Deprecated version retained for grace-window references.
+    Deprecated,
+    /// Purged version whose value material has been removed.
+    Purged,
+}
+
+/// Metadata fields rendered by the desktop version history view.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum VersionHistoryField {
+    /// Version state label.
+    State,
+    /// Timestamp at which the version became deprecated.
+    DeprecatedAt,
+    /// Grace-window expiry timestamp.
+    GraceUntil,
+    /// Whether pinned `lk://...@vN` references remain eligible.
+    PinnedReferenceEligibility,
+    /// Whether the version still participates in scans.
+    ScanInclusion,
+    /// Metadata-only rotation audit summary for the deprecation.
+    RotationAuditMetadata,
+}
+
+/// Metadata-only state descriptor for version history rows.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct VersionHistoryStateDescriptor {
+    /// Version state represented by this descriptor.
+    pub state: VersionHistoryState,
+    /// Stable display label.
+    pub label: &'static str,
+    /// Whether the encrypted value material is still retained.
+    pub retains_value_material: bool,
+    /// Whether deprecated-version grace metadata can make pinned references eligible.
+    pub supports_pinned_reference: bool,
+}
+
+/// Metadata-only field descriptor for version history columns.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct VersionHistoryFieldDescriptor {
+    /// Field represented by this descriptor.
+    pub field: VersionHistoryField,
+    /// Stable implementation key for the UI column.
+    pub key: &'static str,
+    /// Safe column label.
+    pub label: &'static str,
+    /// Whether the field is a timestamp.
+    pub timestamp: bool,
+}
+
 impl DenialReason {
     /// Return the desktop denial view descriptor for this reason.
     #[must_use]
@@ -231,6 +285,44 @@ impl DenialReason {
             }
         };
         DenialUxDescriptor { reason: self, title, next_action, affordance }
+    }
+}
+
+impl VersionHistoryState {
+    /// Return the desktop descriptor for this version state.
+    #[must_use]
+    pub const fn descriptor(self) -> VersionHistoryStateDescriptor {
+        let (label, retains_value_material, supports_pinned_reference) = match self {
+            Self::Current => ("current", true, true),
+            Self::Deprecated => ("deprecated", true, true),
+            Self::Purged => ("purged", false, false),
+        };
+        VersionHistoryStateDescriptor {
+            state: self,
+            label,
+            retains_value_material,
+            supports_pinned_reference,
+        }
+    }
+}
+
+impl VersionHistoryField {
+    /// Return the desktop descriptor for this version history field.
+    #[must_use]
+    pub const fn descriptor(self) -> VersionHistoryFieldDescriptor {
+        let (key, label, timestamp) = match self {
+            Self::State => ("state", "State", false),
+            Self::DeprecatedAt => ("deprecated-at", "Deprecated at", true),
+            Self::GraceUntil => ("grace-until", "Grace until", true),
+            Self::PinnedReferenceEligibility => {
+                ("pinned-reference-eligibility", "Pinned reference eligibility", false)
+            }
+            Self::ScanInclusion => ("scan-inclusion", "Scan inclusion", false),
+            Self::RotationAuditMetadata => {
+                ("rotation-audit-metadata", "Rotation audit metadata", false)
+            }
+        };
+        VersionHistoryFieldDescriptor { field: self, key, label, timestamp }
     }
 }
 
@@ -510,6 +602,37 @@ pub fn accessibility_descriptors() -> Vec<AccessibilityDescriptor> {
     accessibility_requirements().iter().map(|requirement| requirement.descriptor()).collect()
 }
 
+/// All version history states in desktop spec order.
+#[must_use]
+pub const fn version_history_states() -> &'static [VersionHistoryState] {
+    &[VersionHistoryState::Current, VersionHistoryState::Deprecated, VersionHistoryState::Purged]
+}
+
+/// Return all version history state descriptors in spec order.
+#[must_use]
+pub fn version_history_state_descriptors() -> Vec<VersionHistoryStateDescriptor> {
+    version_history_states().iter().map(|state| state.descriptor()).collect()
+}
+
+/// All version history fields required by the desktop spec.
+#[must_use]
+pub const fn version_history_fields() -> &'static [VersionHistoryField] {
+    &[
+        VersionHistoryField::State,
+        VersionHistoryField::DeprecatedAt,
+        VersionHistoryField::GraceUntil,
+        VersionHistoryField::PinnedReferenceEligibility,
+        VersionHistoryField::ScanInclusion,
+        VersionHistoryField::RotationAuditMetadata,
+    ]
+}
+
+/// Return all version history field descriptors in spec order.
+#[must_use]
+pub fn version_history_field_descriptors() -> Vec<VersionHistoryFieldDescriptor> {
+    version_history_fields().iter().map(|field| field.descriptor()).collect()
+}
+
 fn scan_notification_body(finding_count: Option<u32>) -> String {
     match finding_count {
         Some(1) => "1 scan warning needs attention.".to_owned(),
@@ -523,9 +646,11 @@ mod tests {
     use super::{
         AccessibilityRequirement, CapabilityAccess, DenialReason, EmptyState, ReleaseWebviewPolicy,
         TrayIconAssetStyle, TrayIconState, TrayNotificationContext, TrayNotificationKind,
-        accessibility_descriptors, accessibility_requirements, denial_reasons,
-        denial_ux_descriptors, empty_state_descriptors, empty_states, primary_views,
-        tray_icon_asset_styles_for_os, tray_icon_descriptors, tray_icon_states,
+        VersionHistoryField, VersionHistoryState, accessibility_descriptors,
+        accessibility_requirements, denial_reasons, denial_ux_descriptors, empty_state_descriptors,
+        empty_states, primary_views, tray_icon_asset_styles_for_os, tray_icon_descriptors,
+        tray_icon_states, version_history_field_descriptors, version_history_fields,
+        version_history_state_descriptors, version_history_states,
     };
 
     #[test]
@@ -745,6 +870,72 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(ttl_sensitive.len(), 1);
         assert_eq!(ttl_sensitive[0].requirement, AccessibilityRequirement::PostTtlMetadataScrub);
+    }
+
+    #[test]
+    fn version_history_states_match_desktop_spec_inventory() {
+        assert_eq!(
+            version_history_states(),
+            &[
+                VersionHistoryState::Current,
+                VersionHistoryState::Deprecated,
+                VersionHistoryState::Purged,
+            ]
+        );
+    }
+
+    #[test]
+    fn version_history_state_descriptors_capture_value_and_pin_semantics() {
+        let descriptors = version_history_state_descriptors();
+
+        assert_eq!(descriptors.len(), version_history_states().len());
+        assert_eq!(descriptors[0].label, "current");
+        assert!(descriptors[0].retains_value_material);
+        assert!(descriptors[0].supports_pinned_reference);
+        assert_eq!(descriptors[1].label, "deprecated");
+        assert!(descriptors[1].retains_value_material);
+        assert!(descriptors[1].supports_pinned_reference);
+        assert_eq!(descriptors[2].label, "purged");
+        assert!(!descriptors[2].retains_value_material);
+        assert!(!descriptors[2].supports_pinned_reference);
+
+        for descriptor in descriptors {
+            assert_eq!(descriptor, descriptor.state.descriptor());
+            assert!(!descriptor.label.contains("DATABASE_URL"));
+            assert!(!descriptor.label.contains("postgres://"));
+        }
+    }
+
+    #[test]
+    fn version_history_fields_cover_required_metadata_columns() {
+        assert_eq!(
+            version_history_fields(),
+            &[
+                VersionHistoryField::State,
+                VersionHistoryField::DeprecatedAt,
+                VersionHistoryField::GraceUntil,
+                VersionHistoryField::PinnedReferenceEligibility,
+                VersionHistoryField::ScanInclusion,
+                VersionHistoryField::RotationAuditMetadata,
+            ]
+        );
+
+        let descriptors = version_history_field_descriptors();
+        assert_eq!(descriptors[1].key, "deprecated-at");
+        assert!(descriptors[1].timestamp);
+        assert_eq!(descriptors[2].key, "grace-until");
+        assert!(descriptors[2].timestamp);
+        assert_eq!(descriptors[3].key, "pinned-reference-eligibility");
+        assert_eq!(descriptors[4].key, "scan-inclusion");
+        assert_eq!(descriptors[5].key, "rotation-audit-metadata");
+
+        for descriptor in descriptors {
+            assert_eq!(descriptor, descriptor.field.descriptor());
+            let rendered = format!("{} {}", descriptor.key, descriptor.label);
+            assert!(!rendered.contains("DATABASE_URL"));
+            assert!(!rendered.contains("postgres://"));
+            assert!(!rendered.contains("secret value"));
+        }
     }
 
     #[test]
