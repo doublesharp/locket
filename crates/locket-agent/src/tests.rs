@@ -45,6 +45,8 @@ fn agent_methods_round_trip_through_wire_names() -> Result<(), UnknownMethod> {
         AgentMethod::Reveal,
         AgentMethod::Copy,
         AgentMethod::VerifyAudit,
+        AgentMethod::ReadConfig,
+        AgentMethod::WriteConfig,
         AgentMethod::SubscribeStatus,
         AgentMethod::CancelSubscription,
         AgentMethod::ClientHello,

@@ -613,6 +613,8 @@ pub async fn dispatch(envelope: &RequestEnvelope, state: &AgentSocketState) -> R
         Ok(AgentMethod::ListVersions) => handle_list_versions(envelope),
         Ok(AgentMethod::VerifyAudit) => handle_verify_audit(envelope, state).await,
         Ok(AgentMethod::ListAudit) => handle_list_audit(envelope, state).await,
+        Ok(AgentMethod::ReadConfig) => crate::config::handle_read_config(envelope),
+        Ok(AgentMethod::WriteConfig) => crate::config::handle_write_config(envelope, state).await,
         Ok(method) => ResponseEnvelope::Error(ErrorEnvelope::new(
             envelope.id.clone(),
             "ProtocolError",

@@ -6,6 +6,7 @@
 
 mod audit_verify;
 mod audit;
+mod config;
 mod envelope;
 mod error;
 mod framing;
@@ -29,6 +30,11 @@ mod versions;
 
 pub use audit::{AuditChainStatus, ListAuditRequest, ListAuditResponse, ListAuditRow};
 pub use audit_verify::{VerifyAuditRequest, VerifyAuditResponse};
+pub use config::{
+    AgentConfigSettings, DangerousProfileSetting, EffectiveUserVerificationSettings,
+    ReadConfigRequest, UserVerificationSettings, WriteConfigChanges, WriteConfigRequest,
+    WriteConfigResponse,
+};
 pub use envelope::{ErrorEnvelope, RequestEnvelope, ResponseEnvelope, SuccessEnvelope};
 pub use error::ProtocolError;
 pub use framing::{decode_request_frame, decode_response_frame, encode_frame};

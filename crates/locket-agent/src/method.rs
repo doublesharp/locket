@@ -41,6 +41,10 @@ pub enum AgentMethod {
     VerifyAudit,
     /// List metadata-only audit rows.
     ListAudit,
+    /// Read metadata-only desktop settings.
+    ReadConfig,
+    /// Write desktop settings and audit/profile metadata.
+    WriteConfig,
     /// Subscribe to metadata-only status events.
     SubscribeStatus,
     /// Cancel a status subscription.
@@ -75,6 +79,8 @@ impl AgentMethod {
             Self::Copy => "Copy",
             Self::VerifyAudit => "VerifyAudit",
             Self::ListAudit => "ListAudit",
+            Self::ReadConfig => "ReadConfig",
+            Self::WriteConfig => "WriteConfig",
             Self::SubscribeStatus => "SubscribeStatus",
             Self::CancelSubscription => "CancelSubscription",
             Self::ClientHello => "ClientHello",
@@ -106,6 +112,8 @@ impl FromStr for AgentMethod {
             "Copy" => Ok(Self::Copy),
             "VerifyAudit" => Ok(Self::VerifyAudit),
             "ListAudit" => Ok(Self::ListAudit),
+            "ReadConfig" => Ok(Self::ReadConfig),
+            "WriteConfig" => Ok(Self::WriteConfig),
             "SubscribeStatus" => Ok(Self::SubscribeStatus),
             "CancelSubscription" => Ok(Self::CancelSubscription),
             "ClientHello" => Ok(Self::ClientHello),

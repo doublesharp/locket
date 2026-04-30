@@ -33,7 +33,7 @@ pub use error::StoreError;
 pub use grants::DirectoryGrantRecord;
 pub use keys::KeyRecord;
 pub use passkey::{DEFAULT_WEBAUTHN_RELYING_PARTY_ID, PasskeyCredentialRecord};
-pub use profile::ProfileRecord;
+pub use profile::{ProfileDangerousAudit, ProfileDangerousChange, ProfileRecord};
 pub use project::ProjectRecord;
 pub use roots::ProjectRootRecord;
 pub use runtime_session::{
