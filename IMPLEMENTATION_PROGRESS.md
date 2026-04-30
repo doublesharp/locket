@@ -945,10 +945,8 @@ editing — they drift. Severity: **blocker** (security/correctness),
   - [ ] **subtask** — mutation-malformed-crypto: tamper AAD/nonces
     and replay automation-client nonces; assert typed
     `IntegrityFailure`/`ReplayDetected` paths.
-  - [~] [6e4d05db] **subtask** — mutation-locked-vault-scan: scan against a
-    Claim: branch agent-6e4d05db/mutation-locked-vault-scan, worktree .worktrees/agent-6e4d05db-mutation-locked-vault-scan.
-    locked vault asserts the metadata-only path stays within the
-    locked-safe envelope.
+  - [x] **subtask** — mutation-locked-vault-scan: locked vault scan
+    stays metadata-only, no secret leakage, no SCAN row, `--require-known` exits `UnlockRequired`.
   - [ ] **subtask** — mutation-expired-versions: pinned `lk://...@vN`
     past `grace_until` returns typed `SecretVersionExpired`.
   - [ ] **subtask** — mutation-dangerous-profile: dangerous-profile

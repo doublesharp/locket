@@ -253,6 +253,8 @@ Slices that have merged to `main` and verified. Open work tracked in
   audit rows and chain links, then assert audit verification fails closed.
 - [x] **subtask** — tests-typed-errors: per-variant exit-code regression
   for all `LocketError` variants.
+- [x] **subtask** — mutation-locked-vault-scan: locked vault scan stays
+  metadata-only; no leakage; `--require-known` exits `UnlockRequired`.
 
 - [x] `locket allow` requires trusted root; regression test confirms
   untrusted root exits 71, no `ALLOW_DIRECTORY` row written.
