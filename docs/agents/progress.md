@@ -94,9 +94,7 @@ skill set fits a leaf better.
   - [~] **subtask** — agent-prepare-exec: dispatch arm wired with
     empty allow-list. Remaining: real policy resolution + scoped
     allowed-env-name set + policy-declared `ttl_seconds`.
-- [ ] Replace metadata-only `agent start/status/stop/logs` with real
-  process behavior and redacted log retention
-  (`docs/specs/agent.md:99-110`).
+- [~] [52c592db] branch agent-52c592db/agent-start-socket-idempotency, worktree .worktrees/agent-52c592db-agent-start-socket-idempotency; Replace metadata-only `agent start/status/stop/logs` with real process behavior and redacted log retention (`docs/specs/agent.md:99-110`) — socket-owner idempotency.
 - [~] `locket run` spec coverage. Argv policy execution exists.
   Remaining (`docs/specs/runtime.md:5-122`, `docs/specs/policy.md`):
   - [ ] **subtask** — run-ttl-grant: enforce policy `ttl = "Xs"`
