@@ -115,6 +115,8 @@ Slices that have merged to `main` and verified. Open work tracked in
   invariant — no phantom row, no sequence gap on rollback.
 - [x] `metadata_json` ≤64 KiB per-row cap enforced at write time;
   `AuditMetadataTooLarge` typed error (`MetadataInvalid` 64).
+- [x] Negative-path decryption tests: 9 cases covering wrong key/nonce
+  and changed AAD fields all exit `DecryptionFailed`.
 
 ## Full Spec Coverage TODO — Security/Recovery/Team
 

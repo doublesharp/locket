@@ -668,13 +668,8 @@ the spec already covers. Closed slices land in
   `locket.localhost` default, controlled signed-distribution RP ID
   with re-registration migration, synced-passkey backup-eligibility
   display (`docs/specs/crypto.md`).
-- [~] [e7389a73] Negative-path decryption tests across wrong key/nonce/AAD/
-  project/profile/secret-id/name/version dimensions
-  (`docs/specs/crypto.md`).
-  Claim: branch agent-e7389a73/negative-path-decryption-tests, worktree
-  .worktrees/agent-e7389a73-negative-path-decryption-tests. Scope:
-  per-dimension `decrypt_secret_value_v1` failure tests in
-  `crates/locket-crypto/src/tests.rs`.
+- [x] Negative-path decryption tests: 9 cases covering wrong key/nonce
+  and changed AAD fields all exit `DecryptionFailed`.
 - [x] `set`/`rotate`/`import` reject NUL and multiline secret values
   via `validate_secret_value_str` (`MetadataInvalid` 64).
 - [ ] Bytes-after-UTF-8 sweep across docker/compose/exec/redact/scan
