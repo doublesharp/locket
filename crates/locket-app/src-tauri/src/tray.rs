@@ -361,8 +361,8 @@ pub fn update_tray_state<R: Runtime>(
 #[cfg(test)]
 mod tests {
     use super::{
-        TrayMenuAction, TrayState, dark_bytes, icon_bytes_for, light_bytes, macos_bytes, tooltip_for,
-        tray_menu_action_for_id, tray_menu_actions,
+        TrayMenuAction, TrayState, dark_bytes, icon_bytes_for, light_bytes, macos_bytes,
+        tooltip_for, tray_menu_action_for_id, tray_menu_actions,
     };
     use locket_app::{TrayIconState, tray_icon_states};
 

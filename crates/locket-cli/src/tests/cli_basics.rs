@@ -500,7 +500,11 @@ fn dangerous_profile_bundle_export_honors_configured_user_verification()
         &context,
         &mut Vec::new(),
     )?;
-    run_with_context(Cli::try_parse_from(["locket", "device", "init"])?, &context, &mut Vec::new())?;
+    run_with_context(
+        Cli::try_parse_from(["locket", "device", "init"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
     run_with_context(
         Cli::try_parse_from(["locket", "profile", "mark-dangerous", "dev"])?,
         &context_with_confirmation(&context, "dev\n"),

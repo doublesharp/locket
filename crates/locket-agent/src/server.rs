@@ -752,7 +752,10 @@ async fn handle_verify_audit(
     }
 }
 
-async fn handle_list_audit(envelope: &RequestEnvelope, state: &AgentSocketState) -> ResponseEnvelope {
+async fn handle_list_audit(
+    envelope: &RequestEnvelope,
+    state: &AgentSocketState,
+) -> ResponseEnvelope {
     let payload: crate::audit::ListAuditRequest =
         match serde_json::from_value(envelope.payload.clone()) {
             Ok(payload) => payload,

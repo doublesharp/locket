@@ -276,7 +276,10 @@ fn read_locket_toml(path: &Path) -> Result<toml::Value, CliError> {
     toml::from_str::<toml::Value>(&content).map_err(CliError::from)
 }
 
-fn write_validated_locket_toml(path: &Path, document: &toml::Value) -> Result<PolicyDocument, CliError> {
+fn write_validated_locket_toml(
+    path: &Path,
+    document: &toml::Value,
+) -> Result<PolicyDocument, CliError> {
     let content = toml::to_string_pretty(document)?;
     let policy_document = PolicyDocument::from_toml_str(&content)
         .map_err(|error| metadata_invalid_error(error.to_string()))?;

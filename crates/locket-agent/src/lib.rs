@@ -4,8 +4,8 @@
 // alongside workspace versions. The sealed-bundle dependency owns that skew.
 #![allow(clippy::multiple_crate_versions)]
 
-mod audit_verify;
 mod audit;
+mod audit_verify;
 mod config;
 mod envelope;
 mod error;

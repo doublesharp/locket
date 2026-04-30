@@ -770,10 +770,8 @@ fn write_bundle_audit_if_available(
     if let Some(include_audit_requested) = request.include_audit_requested {
         metadata.insert("include_audit_requested".to_owned(), Value::from(include_audit_requested));
     }
-    metadata.insert(
-        "user_verification".to_owned(),
-        serde_json::to_value(&request.user_verification)?,
-    );
+    metadata
+        .insert("user_verification".to_owned(), serde_json::to_value(&request.user_verification)?);
     let metadata = Value::Object(metadata);
     let audit = AuditWrite {
         project_id: request.resolved.config.project_id.as_str(),
