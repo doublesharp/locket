@@ -2,7 +2,7 @@ use std::error::Error;
 
 use tempfile::tempdir;
 
-use crate::{SCHEMA_VERSION, Store, StoreError};
+use crate::{AUDIT_ACTION_SCHEMA_MIGRATE, SCHEMA_VERSION, Store, StoreError};
 
 use super::open_initialized_store;
 
@@ -285,5 +285,83 @@ fn foreign_keys_are_enforced() -> Result<(), Box<dyn Error>> {
     );
 
     assert!(result.is_err());
+    Ok(())
+}
+
+#[test]
+fn schema_migrate_audit_action_constant_matches_spec() {
+    assert_eq!(AUDIT_ACTION_SCHEMA_MIGRATE, "SCHEMA_MIGRATE");
+}
+
+#[test]
+fn wal_journal_mode_is_enabled() -> Result<(), Box<dyn Error>> {
+    let test_store = open_initialized_store()?;
+
+    let journal_mode = test_store.store.connection().query_row(
+        "PRAGMA journal_mode",
+        [],
+        |row| row.get::<_, String>(0),
+    )?;
+
+    // WAL mode reports "wal" after enabling.
+    assert_eq!(journal_mode, "wal");
+    Ok(())
+}
+
+#[test]
+fn schema_migrations_applied_at_is_positive_integer() -> Result<(), Box<dyn Error>> {
+    let test_store = open_initialized_store()?;
+
+    let applied_at = test_store.store.connection().query_row(
+        "SELECT applied_at FROM schema_migrations WHERE version = ?1",
+        [i64::from(SCHEMA_VERSION)],
+        |row| row.get::<_, i64>(0),
+    )?;
+
+    assert!(applied_at > 0, "applied_at should be a positive Unix nanoseconds timestamp");
+    Ok(())
+}
+
+#[test]
+fn schema_version_constant_is_one() {
+    assert_eq!(SCHEMA_VERSION, 1);
+}
+
+#[test]
+fn newer_schema_version_blocks_initialization_before_any_tables_are_created()
+-> Result<(), Box<dyn Error>> {
+    let directory = tempdir()?;
+    let path = directory.path().join("store.db");
+    let mut store = Store::open(path)?;
+
+    store.connection().execute(
+        "CREATE TABLE schema_migrations (
+           version INTEGER PRIMARY KEY,
+           applied_at INTEGER NOT NULL
+         )",
+        [],
+    )?;
+    store.connection().execute(
+        "INSERT INTO schema_migrations(version, applied_at) VALUES (?1, 1)",
+        [i64::from(SCHEMA_VERSION) + 1],
+    )?;
+
+    // The rest of the v1 tables are absent — verify the check fires before DDL.
+    let result = store.initialize_schema();
+
+    assert!(matches!(
+        result,
+        Err(StoreError::UnsupportedSchema { found, .. }) if found == i64::from(SCHEMA_VERSION) + 1
+    ));
+
+    let projects_absent = store
+        .connection()
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'projects'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )?;
+    assert_eq!(projects_absent, 0, "rollback must leave other tables absent");
+
     Ok(())
 }

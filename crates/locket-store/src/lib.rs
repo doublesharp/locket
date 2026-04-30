@@ -32,7 +32,7 @@ pub use runtime_session::{
     AutomationClientNonceRecord, AutomationClientRecord, InvalidRuntimeSessionSecretNameRetention,
     RuntimeSessionRecord, RuntimeSessionSecretNameRetention,
 };
-pub use schema::SCHEMA_VERSION;
+pub use schema::{AUDIT_ACTION_SCHEMA_MIGRATE, SCHEMA_VERSION};
 pub use secret::{
     SecretBlobRecord, SecretCopyTarget, SecretFingerprintRecord, SecretMetadataUpdate,
     SecretRecord, SecretVersionRecord, VersionDeprecation,

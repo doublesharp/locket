@@ -9,6 +9,9 @@ use crate::error::StoreError;
 /// Current storage schema version.
 pub const SCHEMA_VERSION: u32 = 1;
 
+/// Audit action written for each schema migration step when project context is available.
+pub const AUDIT_ACTION_SCHEMA_MIGRATE: &str = "SCHEMA_MIGRATE";
+
 const BUSY_TIMEOUT_MS: u64 = 5_000;
 
 pub fn configure_connection(connection: &Connection) -> Result<(), rusqlite::Error> {
