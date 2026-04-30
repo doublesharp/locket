@@ -79,6 +79,31 @@ pub struct TeamInviteRecord {
     pub expires_at: i64,
 }
 
+/// Stored invite metadata used for revocation and replay checks.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StoredTeamInviteRecord {
+    /// Invite identifier.
+    pub id: String,
+    /// Parent team identifier.
+    pub team_id: String,
+    /// Team member that issued the invite.
+    pub issuer_member_id: String,
+    /// Recipient device fingerprint.
+    pub recipient_device_fingerprint: String,
+    /// Granted role label.
+    pub role: String,
+    /// Profile names included in the invite metadata.
+    pub profiles: Vec<String>,
+    /// Creation timestamp in nanoseconds since the Unix epoch.
+    pub created_at: i64,
+    /// Expiration timestamp in nanoseconds since the Unix epoch.
+    pub expires_at: i64,
+    /// Acceptance timestamp, if already accepted.
+    pub accepted_at: Option<i64>,
+    /// Revocation timestamp, if already revoked.
+    pub revoked_at: Option<i64>,
+}
+
 fn team_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<TeamRecord> {
     Ok(TeamRecord {
         id: row.get(0)?,
@@ -116,6 +141,27 @@ fn pending_team_invite_record_from_row(
         recipient_device_fingerprint: row.get(3)?,
         created_at: row.get(4)?,
         expires_at: row.get(5)?,
+    })
+}
+
+fn stored_team_invite_record_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<StoredTeamInviteRecord> {
+    let profiles_json = row.get::<_, String>(5)?;
+    let profiles = serde_json::from_str::<Vec<String>>(&profiles_json).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(5, Type::Text, Box::new(error))
+    })?;
+    Ok(StoredTeamInviteRecord {
+        id: row.get(0)?,
+        team_id: row.get(1)?,
+        issuer_member_id: row.get(2)?,
+        recipient_device_fingerprint: row.get(3)?,
+        role: row.get(4)?,
+        profiles,
+        created_at: row.get(6)?,
+        expires_at: row.get(7)?,
+        accepted_at: row.get(8)?,
+        revoked_at: row.get(9)?,
     })
 }
 
@@ -388,6 +434,85 @@ impl Store {
             // transaction set accepted_at first.
             return Err(StoreError::InviteReplayDetected { invite_id: invite_id.to_owned() });
         }
+        Ok(())
+    }
+
+    /// Returns stored invite metadata for a team and invite id.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Sqlite`] when `SQLite` cannot query the row.
+    pub fn get_team_invite(
+        &self,
+        team_id: &str,
+        invite_id: &str,
+    ) -> Result<Option<StoredTeamInviteRecord>, StoreError> {
+        self.connection
+            .query_row(
+                "SELECT
+                   id,
+                   team_id,
+                   issuer_member_id,
+                   recipient_device_fingerprint,
+                   role,
+                   profiles_json,
+                   created_at,
+                   expires_at,
+                   accepted_at,
+                   revoked_at
+                 FROM team_invites
+                 WHERE team_id = ?1 AND id = ?2
+                 LIMIT 1",
+                params![team_id, invite_id],
+                stored_team_invite_record_from_row,
+            )
+            .optional()
+            .map_err(StoreError::from)
+    }
+
+    /// Marks a team invite as revoked and appends an optional audit row in the
+    /// same transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::InviteReplayDetected`] when the invite is already
+    /// accepted or revoked, [`StoreError::InviteNotFound`] when no row matches
+    /// `invite_id`, or [`StoreError`] when SQLite or audit append fails.
+    pub fn revoke_team_invite(
+        &mut self,
+        invite_id: &str,
+        revoked_at: i64,
+        audit: Option<AuditContext<'_>>,
+    ) -> Result<(), StoreError> {
+        let exists: Option<(Option<i64>, Option<i64>)> = self
+            .connection
+            .query_row(
+                "SELECT accepted_at, revoked_at FROM team_invites WHERE id = ?1",
+                [invite_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let Some((accepted_at, existing_revoked_at)) = exists else {
+            return Err(StoreError::InviteNotFound { invite_id: invite_id.to_owned() });
+        };
+        if accepted_at.is_some() || existing_revoked_at.is_some() {
+            return Err(StoreError::InviteReplayDetected { invite_id: invite_id.to_owned() });
+        }
+
+        let transaction = self.connection.transaction()?;
+        let updated = transaction.execute(
+            "UPDATE team_invites
+                SET revoked_at = ?1
+              WHERE id = ?2
+                AND accepted_at IS NULL
+                AND revoked_at IS NULL",
+            params![revoked_at, invite_id],
+        )?;
+        if updated == 0 {
+            return Err(StoreError::InviteReplayDetected { invite_id: invite_id.to_owned() });
+        }
+        append_optional_audit(&transaction, audit)?;
+        transaction.commit()?;
         Ok(())
     }
 

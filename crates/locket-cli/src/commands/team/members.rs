@@ -8,8 +8,8 @@ use ed25519_dalek::SigningKey;
 use locket_core::{InviteId, InvitePayload, MemberId, ProjectId, SignedInvite, TeamId, TeamRole};
 use locket_crypto::{KeyPurpose, generate_key};
 use locket_store::{
-    AuditContext, AuditWrite, DeviceRecord, PendingTeamInviteRecord, TeamInviteRecord,
-    TeamMemberListRecord, TeamRecord,
+    AuditContext, AuditWrite, DeviceRecord, PendingTeamInviteRecord, StoredTeamInviteRecord,
+    TeamInviteRecord, TeamMemberListRecord, TeamRecord,
 };
 use serde_json::json;
 
@@ -17,11 +17,12 @@ use super::device;
 use crate::support::time::NANOS_PER_SECOND;
 use crate::{
     CliError, RuntimeContext, TeamCommand, TeamInitArgs, TeamInviteArgs, TeamRemoveArgs,
-    TeamRevokeDeviceArgs, TeamRoleArg, confirmation_failed_error, ensure_project_exists,
-    invalid_reference_error, load_project_key, metadata_invalid_error, now_unix_nanos, open_store,
-    privacy_alias, privacy_redact_names_enabled, profile_not_found_error, require_project,
-    secret_already_exists_error, secret_not_found_error, set_user_only_file_options,
-    set_user_only_file_permissions, team_role_denied_error, unix_nanos_to_rfc3339,
+    TeamRevokeDeviceArgs, TeamRevokeInviteArgs, TeamRoleArg, confirmation_failed_error,
+    ensure_project_exists, invalid_reference_error, load_project_key, metadata_invalid_error,
+    now_unix_nanos, open_store, privacy_alias, privacy_redact_names_enabled,
+    profile_not_found_error, require_project, secret_already_exists_error, secret_not_found_error,
+    set_user_only_file_options, set_user_only_file_permissions, team_role_denied_error,
+    unix_nanos_to_rfc3339,
 };
 
 const DEFAULT_INVITE_TTL_SECONDS: i64 = 7 * 24 * 60 * 60;
@@ -34,6 +35,7 @@ pub fn team_command(
     match command {
         TeamCommand::Init(args) => team_init_command(context, output, &args),
         TeamCommand::Invite(args) => team_invite_command(context, output, &args),
+        TeamCommand::RevokeInvite(args) => team_revoke_invite_command(context, output, &args),
         TeamCommand::Members => team_members_command(context, output),
         TeamCommand::Remove(args) => team_remove_command(context, output, &args),
         TeamCommand::RevokeDevice(args) => team_revoke_device_command(context, output, &args),
@@ -162,6 +164,80 @@ fn team_invite_command(
 
     let redact_names = privacy_redact_names_enabled(context, false)?;
     write_invite_created_output(output, &invite_record, &output_path, redact_names)
+}
+
+fn team_revoke_invite_command(
+    context: &RuntimeContext,
+    output: &mut impl Write,
+    args: &TeamRevokeInviteArgs,
+) -> Result<(), CliError> {
+    let resolved = require_project(context)?;
+    let mut store = open_store(context)?;
+    let project_id = resolved.config.project_id.as_str();
+    ensure_project_exists(&store, project_id)?;
+
+    let issuer = load_invite_issuer(&store, project_id)?;
+    let invite = store.get_team_invite(&issuer.team.id, &args.invite_id)?.ok_or_else(|| {
+        secret_not_found_error(format!("team invite not found: {}", args.invite_id))
+    })?;
+    if invite.accepted_at.is_some() || invite.revoked_at.is_some() {
+        return Err(locket_store::StoreError::InviteReplayDetected {
+            invite_id: invite.id.clone(),
+        }
+        .into());
+    }
+    if !can_revoke_invite(&issuer.member.role, &issuer.member.id, &invite) {
+        return Err(team_role_denied_error("team role cannot revoke this invite"));
+    }
+
+    let timestamp = now_unix_nanos()?;
+    let audit_key = load_project_key(context, &store, project_id, KeyPurpose::Audit)?;
+    let metadata = json!({
+        "schema_version": 1,
+        "action": "TEAM_INVITE",
+        "status": "SUCCESS",
+        "command": "team revoke-invite",
+        "operation": "revoke",
+        "project_id": project_id,
+        "team_id": &issuer.team.id,
+        "invite_id": &invite.id,
+        "issuer_member_id": &invite.issuer_member_id,
+        "revoker_member_id": &issuer.member.id,
+        "recipient_device_fingerprint": &invite.recipient_device_fingerprint,
+        "role": &invite.role,
+        "profiles": &invite.profiles,
+        "created_at": invite.created_at,
+        "expires_at": invite.expires_at,
+        "revoked_at": timestamp,
+    });
+    let audit = AuditWrite {
+        project_id,
+        profile_id: None,
+        action: "TEAM_INVITE",
+        status: "SUCCESS",
+        secret_name: None,
+        command: Some("team revoke-invite"),
+        metadata_json: &metadata,
+        timestamp,
+    };
+    store.revoke_team_invite(
+        &args.invite_id,
+        timestamp,
+        Some(AuditContext { key: audit_key.as_ref(), write: &audit }),
+    )?;
+
+    let redact_names = privacy_redact_names_enabled(context, false)?;
+    writeln!(output, "team_invite: revoked")?;
+    writeln!(output, "invite_id: {}", invite_id_label_from_str(&args.invite_id, redact_names))?;
+    writeln!(output, "role: {}", invite.role)?;
+    writeln!(output, "profiles: {}", profiles_label(&invite.profiles, redact_names))?;
+    writeln!(
+        output,
+        "recipient_fingerprint: {}",
+        device_fingerprint_label(&invite.recipient_device_fingerprint, redact_names)
+    )?;
+    writeln!(output, "metadata_only: yes")?;
+    Ok(())
 }
 
 fn team_remove_command(
@@ -638,6 +714,18 @@ fn can_issue_role(issuer_role: &str, invite_role: TeamRoleArg) -> bool {
     match issuer_role {
         "owner" => true,
         "maintainer" => matches!(invite_role, TeamRoleArg::Developer | TeamRoleArg::ReadOnly),
+        _ => false,
+    }
+}
+
+fn can_revoke_invite(
+    revoker_role: &str,
+    revoker_member_id: &str,
+    invite: &StoredTeamInviteRecord,
+) -> bool {
+    match revoker_role {
+        "owner" => true,
+        "maintainer" => invite.issuer_member_id == revoker_member_id || invite.role != "owner",
         _ => false,
     }
 }

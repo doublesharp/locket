@@ -110,6 +110,41 @@ fn mark_invite_accepted_unknown_invite_returns_invite_not_found() -> Result<(), 
 }
 
 #[test]
+fn revoke_team_invite_first_call_sets_revoked_at() -> Result<(), Box<dyn Error>> {
+    let test = open_initialized_store()?;
+    insert_project_profile(&test.store)?;
+    insert_team_with_pending_invite(&test.store, "lk_invite_revoke_first")?;
+
+    let mut store = test.store;
+    store.revoke_team_invite("lk_invite_revoke_first", 900, None)?;
+
+    let revoked_at: Option<i64> = store.connection().query_row(
+        "SELECT revoked_at FROM team_invites WHERE id = 'lk_invite_revoke_first'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(revoked_at, Some(900));
+    Ok(())
+}
+
+#[test]
+fn revoke_team_invite_second_call_returns_replay_detected() -> Result<(), Box<dyn Error>> {
+    let test = open_initialized_store()?;
+    insert_project_profile(&test.store)?;
+    insert_team_with_pending_invite(&test.store, "lk_invite_revoke_replay")?;
+
+    let mut store = test.store;
+    store.revoke_team_invite("lk_invite_revoke_replay", 900, None)?;
+
+    let second = store.revoke_team_invite("lk_invite_revoke_replay", 901, None);
+    let Err(StoreError::InviteReplayDetected { invite_id }) = second else {
+        panic!("expected InviteReplayDetected, got {second:?}");
+    };
+    assert_eq!(invite_id, "lk_invite_revoke_replay");
+    Ok(())
+}
+
+#[test]
 fn invite_replay_detected_maps_to_locket_replay_detected() -> Result<(), Box<dyn Error>> {
     let test = open_initialized_store()?;
     insert_project_profile(&test.store)?;

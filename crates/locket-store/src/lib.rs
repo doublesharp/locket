@@ -41,7 +41,10 @@ pub use secret::{
     SecretBlobRecord, SecretCopyTarget, SecretFingerprintRecord, SecretMetadataUpdate,
     SecretRecord, SecretVersionRecord, VersionDeprecation,
 };
-pub use team::{PendingTeamInviteRecord, TeamInviteRecord, TeamMemberListRecord, TeamRecord};
+pub use team::{
+    PendingTeamInviteRecord, StoredTeamInviteRecord, TeamInviteRecord, TeamMemberListRecord,
+    TeamRecord,
+};
 
 /// SQLite-backed Locket store.
 #[derive(Debug)]

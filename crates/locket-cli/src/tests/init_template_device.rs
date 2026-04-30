@@ -1688,6 +1688,56 @@ fn team_invite_creates_signed_file_pending_row_and_audit() -> Result<(), Box<dyn
     assert_eq!(metadata["recipient_device_fingerprint"], recipient_fingerprint);
     assert_eq!(metadata["role"], "developer");
     assert_eq!(metadata["profiles"], json!(["dev"]));
+    drop(store);
+
+    let mut revoke_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from([
+            "locket",
+            "team",
+            "revoke-invite",
+            invite.payload.invite_id.as_str(),
+        ])?,
+        &context,
+        &mut revoke_output,
+    )?;
+    let revoke_output = String::from_utf8(revoke_output)?;
+    assert!(revoke_output.contains("team_invite: revoked"), "{revoke_output}");
+    assert!(revoke_output.contains(invite.payload.invite_id.as_str()), "{revoke_output}");
+    assert!(revoke_output.contains("role: developer"), "{revoke_output}");
+    assert!(revoke_output.contains("profiles: dev"), "{revoke_output}");
+    assert!(revoke_output.contains("metadata_only: yes"), "{revoke_output}");
+    assert!(!revoke_output.contains("recipient laptop"));
+
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let revoked_at: Option<i64> = store.connection().query_row(
+        "SELECT revoked_at FROM team_invites WHERE id = ?1",
+        [invite.payload.invite_id.as_str()],
+        |row| row.get(0),
+    )?;
+    assert!(revoked_at.is_some());
+    let pending_count: i64 = store.connection().query_row(
+        "SELECT COUNT(*) FROM team_invites WHERE id = ?1 AND revoked_at IS NULL",
+        [invite.payload.invite_id.as_str()],
+        |row| row.get(0),
+    )?;
+    assert_eq!(pending_count, 0);
+
+    let metadata: String = store.connection().query_row(
+        "SELECT metadata_json FROM audit_log
+         WHERE action = 'TEAM_INVITE' AND command = 'team revoke-invite'
+         ORDER BY sequence DESC LIMIT 1",
+        [],
+        |row| row.get(0),
+    )?;
+    let metadata: serde_json::Value = serde_json::from_str(&metadata)?;
+    assert_eq!(metadata["status"], "SUCCESS");
+    assert_eq!(metadata["command"], "team revoke-invite");
+    assert_eq!(metadata["operation"], "revoke");
+    assert_eq!(metadata["invite_id"], invite.payload.invite_id.as_str());
+    assert_eq!(metadata["recipient_device_fingerprint"], recipient_fingerprint);
+    assert_eq!(metadata["role"], "developer");
+    assert_eq!(metadata["profiles"], json!(["dev"]));
     Ok(())
 }
 
@@ -1802,6 +1852,69 @@ fn team_invite_locked_vault_fails_before_writing_output() -> Result<(), Box<dyn 
     };
     assert_eq!(error.exit_code(), locket_core::LocketError::UnlockRequired.exit_code());
     assert!(!output_path.exists());
+    Ok(())
+}
+
+#[test]
+fn team_revoke_invite_locked_vault_fails_before_revocation()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    run_with_context(
+        Cli::try_parse_from(["locket", "device", "init"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    run_with_context(
+        Cli::try_parse_from(["locket", "team", "init", "platform-team"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    let config = crate::read_project_config(&directory.path().join("locket.toml"))?;
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let (team_id, member_id): (String, String) = store.connection().query_row(
+        "SELECT t.id, m.id
+         FROM teams t JOIN team_members m ON m.team_id = t.id
+         WHERE t.project_id = ?1
+         LIMIT 1",
+        [config.project_id.as_str()],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    store.connection().execute(
+        "INSERT INTO team_invites(
+           id, team_id, issuer_member_id, recipient_device_fingerprint, role, profiles_json,
+           nonce, created_at, expires_at
+         )
+         VALUES (?1, ?2, ?3, 'recipient-fingerprint', 'developer', '[\"dev\"]', zeroblob(24), 1, 999999)",
+        ["lk_invite_locked_revoke", team_id.as_str(), member_id.as_str()],
+    )?;
+    let before = audit_row_count(&store)?;
+    drop(store);
+
+    context.key_store.delete_master_key(config.project_id.as_str())?;
+    let result = run_with_context(
+        Cli::try_parse_from(["locket", "team", "revoke-invite", "lk_invite_locked_revoke"])?,
+        &context,
+        &mut Vec::new(),
+    );
+    let Err(error) = result else {
+        return Err("locked vault revoke-invite must fail".into());
+    };
+    assert_eq!(error.exit_code(), locket_core::LocketError::UnlockRequired.exit_code());
+
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let revoked_at: Option<i64> = store.connection().query_row(
+        "SELECT revoked_at FROM team_invites WHERE id = 'lk_invite_locked_revoke'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert!(revoked_at.is_none());
+    assert_eq!(audit_row_count(&store)?, before);
     Ok(())
 }
 
