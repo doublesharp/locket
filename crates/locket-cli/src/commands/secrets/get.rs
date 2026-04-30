@@ -29,6 +29,28 @@ pub fn get_command_with_clipboard(
     args: &GetArgs,
     copy_to_clipboard: impl FnOnce(&str) -> Result<(), String>,
 ) -> Result<(), CliError> {
+    let limit = clipboard_clear_limit(
+        select_clipboard_command(CLIPBOARD_COMMANDS, command_exists),
+        std::env::var("XDG_SESSION_TYPE").ok().as_deref(),
+    );
+    get_command_with_clipboard_and_limit(
+        context,
+        output,
+        error_output,
+        args,
+        copy_to_clipboard,
+        limit,
+    )
+}
+
+pub fn get_command_with_clipboard_and_limit(
+    context: &RuntimeContext,
+    output: &mut impl Write,
+    error_output: &mut impl Write,
+    args: &GetArgs,
+    copy_to_clipboard: impl FnOnce(&str) -> Result<(), String>,
+    limit: ClipboardClearLimit,
+) -> Result<(), CliError> {
     let resolved_secret = resolve_active_secret(context, &args.key)?;
     if args.copy {
         return get_copy_command(
@@ -38,6 +60,7 @@ pub fn get_command_with_clipboard(
             &resolved_secret,
             args.verify_user,
             copy_to_clipboard,
+            limit,
         );
     }
     if args.reveal {
@@ -61,12 +84,10 @@ fn get_copy_command(
     resolved_secret: &ResolvedSecret,
     verify_user: bool,
     copy_to_clipboard: impl FnOnce(&str) -> Result<(), String>,
+    limit: ClipboardClearLimit,
 ) -> Result<(), CliError> {
     let ttl_seconds = reveal_ttl_seconds(context)?;
-    writeln!(
-        error_output,
-        "warning: clipboard TTL clearing is unsupported in this direct CLI path"
-    )?;
+    writeln!(error_output, "{}", limit.warning_text())?;
     let user_verification = value_access_user_verification_or_audit_denial(
         context,
         resolved_secret,
@@ -79,7 +100,10 @@ fn get_copy_command(
     let value = decrypt_current_secret(context, resolved_secret)?;
     let result = copy_to_clipboard(value.as_str());
     let status = if result.is_ok() { "SUCCESS" } else { "FAILED" };
-    let unsupported_reason = result.as_ref().err().map(String::as_str);
+    let unsupported_reason = match result.as_ref() {
+        Err(error) => Some(error.as_str()),
+        Ok(()) => Some(limit.audit_reason()),
+    };
     write_value_access_audit_if_available(&ValueAccessAudit {
         context,
         resolved: resolved_secret,
@@ -226,6 +250,62 @@ pub const CLIPBOARD_COMMANDS: &[ClipboardCommand] = if cfg!(target_os = "macos")
         ClipboardCommand { program: "xsel", args: &["--clipboard", "--input"] },
     ]
 };
+
+/// Why the direct-CLI clipboard path can't reliably clear the value at TTL.
+/// Used to drive both the pre-copy stderr warning and the
+/// `clipboard_clear_supported`/`unsupported_reason` audit metadata.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ClipboardClearLimit {
+    /// Direct-CLI copy cannot schedule a background clearer; clearing waits
+    /// on the agent path. This is the baseline limit on every platform.
+    DirectCli,
+    /// Wayland clipboards belong to the source process. When the CLI exits
+    /// after writing the value, a strict compositor may drop the selection
+    /// before TTL elapses; a permissive one may keep it past TTL with no
+    /// way for Locket to clear it. Either failure mode leaks intent.
+    WaylandSourceProcessLimited,
+}
+
+impl ClipboardClearLimit {
+    /// Stable string used in the audit metadata `unsupported_reason` field.
+    pub const fn audit_reason(self) -> &'static str {
+        match self {
+            Self::DirectCli => "direct_cli_no_background_clear",
+            Self::WaylandSourceProcessLimited => "wayland_source_process_limited",
+        }
+    }
+
+    /// Operator-facing pre-copy warning text written to stderr.
+    pub const fn warning_text(self) -> &'static str {
+        match self {
+            Self::DirectCli => {
+                "warning: clipboard TTL clearing is unsupported in this direct CLI path"
+            }
+            Self::WaylandSourceProcessLimited => {
+                "warning: Wayland clipboards belong to the source process; \
+                 the value may be cleared before TTL or persist past it"
+            }
+        }
+    }
+}
+
+/// Classifies how reliably the current environment can clear the clipboard
+/// after the documented TTL. `xdg_session_type` lets tests inject the
+/// session value (`Some("wayland")`) without touching the process env.
+pub fn clipboard_clear_limit(
+    selected: Option<&ClipboardCommand>,
+    xdg_session_type: Option<&str>,
+) -> ClipboardClearLimit {
+    let Some(command) = selected else {
+        return ClipboardClearLimit::DirectCli;
+    };
+    if command.program == "wl-copy"
+        || matches!(xdg_session_type, Some(value) if value.eq_ignore_ascii_case("wayland"))
+    {
+        return ClipboardClearLimit::WaylandSourceProcessLimited;
+    }
+    ClipboardClearLimit::DirectCli
+}
 
 pub fn copy_secret_to_clipboard(value: &str) -> Result<(), String> {
     copy_secret_to_clipboard_with(value, CLIPBOARD_COMMANDS, command_exists)

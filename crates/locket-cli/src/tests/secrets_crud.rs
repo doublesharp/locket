@@ -319,6 +319,100 @@ fn get_copy_writes_metadata_only_audit_without_value_leakage()
 }
 
 #[test]
+fn get_copy_wayland_limit_emits_targeted_warning_and_audit_reason()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    let args = test_secret_write_args("DATABASE_URL");
+    crate::set_secret_value(&context, &args, "postgres://localhost/app", "manual", 1_000)?;
+
+    let copy_args = crate::GetArgs {
+        key: "DATABASE_URL".to_owned(),
+        reveal: false,
+        force: false,
+        copy: true,
+        verify_user: false,
+    };
+    let mut copy_output = Vec::new();
+    let mut copy_stderr = Vec::new();
+    crate::get_command_with_clipboard_and_limit(
+        &context,
+        &mut copy_output,
+        &mut copy_stderr,
+        &copy_args,
+        |value| {
+            assert_eq!(value, "postgres://localhost/app");
+            Ok(())
+        },
+        crate::ClipboardClearLimit::WaylandSourceProcessLimited,
+    )?;
+    let copy_stderr = String::from_utf8(copy_stderr)?;
+    assert!(copy_stderr.contains("Wayland"));
+    assert!(copy_stderr.contains("source process"));
+    assert!(!copy_stderr.contains("postgres://localhost/app"));
+
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let metadata: String = store.connection().query_row(
+        "SELECT metadata_json FROM audit_log WHERE action = 'COPY'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert!(metadata.contains("\"unsupported_reason\":\"wayland_source_process_limited\""));
+    assert!(metadata.contains("\"clipboard_clear_supported\":false"));
+    assert!(metadata.contains("\"clipboard_supported\":true"));
+    assert!(!metadata.contains("postgres://localhost/app"));
+    Ok(())
+}
+
+#[test]
+fn get_copy_direct_cli_limit_records_audit_reason() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    let args = test_secret_write_args("DATABASE_URL");
+    crate::set_secret_value(&context, &args, "postgres://localhost/app", "manual", 1_000)?;
+
+    let copy_args = crate::GetArgs {
+        key: "DATABASE_URL".to_owned(),
+        reveal: false,
+        force: false,
+        copy: true,
+        verify_user: false,
+    };
+    let mut copy_output = Vec::new();
+    let mut copy_stderr = Vec::new();
+    crate::get_command_with_clipboard_and_limit(
+        &context,
+        &mut copy_output,
+        &mut copy_stderr,
+        &copy_args,
+        |_| Ok(()),
+        crate::ClipboardClearLimit::DirectCli,
+    )?;
+    let copy_stderr = String::from_utf8(copy_stderr)?;
+    assert!(copy_stderr.contains("clipboard TTL clearing is unsupported"));
+    assert!(!copy_stderr.contains("Wayland"));
+
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let metadata: String = store.connection().query_row(
+        "SELECT metadata_json FROM audit_log WHERE action = 'COPY'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert!(metadata.contains("\"unsupported_reason\":\"direct_cli_no_background_clear\""));
+    Ok(())
+}
+
+#[test]
 fn get_copy_unavailable_audits_unsupported_state_without_value_leakage()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempdir()?;

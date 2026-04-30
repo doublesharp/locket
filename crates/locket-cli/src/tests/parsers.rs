@@ -205,6 +205,68 @@ fn clipboard_command_selection_uses_first_available_candidate() {
 }
 
 #[test]
+fn clipboard_clear_limit_classifies_environment() {
+    static WL_COPY: crate::ClipboardCommand =
+        crate::ClipboardCommand { program: "wl-copy", args: &[] };
+    static XCLIP: crate::ClipboardCommand =
+        crate::ClipboardCommand { program: "xclip", args: &["-selection", "clipboard"] };
+    static PBCOPY: crate::ClipboardCommand =
+        crate::ClipboardCommand { program: "pbcopy", args: &[] };
+
+    // No clipboard command at all.
+    assert_eq!(crate::clipboard_clear_limit(None, None), crate::ClipboardClearLimit::DirectCli);
+
+    // wl-copy is selected -> Wayland-limited regardless of session var.
+    assert_eq!(
+        crate::clipboard_clear_limit(Some(&WL_COPY), None),
+        crate::ClipboardClearLimit::WaylandSourceProcessLimited
+    );
+
+    // X11 tool but XDG_SESSION_TYPE=wayland (XWayland) -> still Wayland-limited.
+    assert_eq!(
+        crate::clipboard_clear_limit(Some(&XCLIP), Some("wayland")),
+        crate::ClipboardClearLimit::WaylandSourceProcessLimited
+    );
+
+    // XDG_SESSION_TYPE=Wayland (mixed case) is still Wayland-limited.
+    assert_eq!(
+        crate::clipboard_clear_limit(Some(&XCLIP), Some("Wayland")),
+        crate::ClipboardClearLimit::WaylandSourceProcessLimited
+    );
+
+    // X11 tool on x11 session.
+    assert_eq!(
+        crate::clipboard_clear_limit(Some(&XCLIP), Some("x11")),
+        crate::ClipboardClearLimit::DirectCli
+    );
+
+    // pbcopy on macOS (no XDG_SESSION_TYPE).
+    assert_eq!(
+        crate::clipboard_clear_limit(Some(&PBCOPY), None),
+        crate::ClipboardClearLimit::DirectCli
+    );
+}
+
+#[test]
+fn clipboard_clear_limit_audit_reasons_are_distinct_and_stable() {
+    assert_eq!(
+        crate::ClipboardClearLimit::DirectCli.audit_reason(),
+        "direct_cli_no_background_clear"
+    );
+    assert_eq!(
+        crate::ClipboardClearLimit::WaylandSourceProcessLimited.audit_reason(),
+        "wayland_source_process_limited"
+    );
+    assert_ne!(
+        crate::ClipboardClearLimit::DirectCli.warning_text(),
+        crate::ClipboardClearLimit::WaylandSourceProcessLimited.warning_text(),
+    );
+    assert!(
+        crate::ClipboardClearLimit::WaylandSourceProcessLimited.warning_text().contains("Wayland")
+    );
+}
+
+#[test]
 fn clipboard_copy_reports_unavailable_without_value_leakage()
 -> Result<(), Box<dyn std::error::Error>> {
     static COMMANDS: &[crate::ClipboardCommand] = &[];
