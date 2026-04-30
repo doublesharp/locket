@@ -466,30 +466,67 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
 - [x] Device command surfaces (`device init`, `pubkey`, `add`, `list`,
   `remove`); local private-key persistence/recovery tracked under device
   descriptors and sealed-bundle/team work.
-- [ ] Sealed bundle (`docs/specs/team-sync-recovery.md:111-224`).
-  Decomposed below; later subtasks depend on `bundle-age-encryption`.
-  - [ ] **subtask** — bundle-age-encryption: age-compatible recipient
-    encryption for the bundle payload in
-    `crates/locket-crypto/src/`. Tests: round-trip encrypt/decrypt
-    against fixture recipients; tampering fails closed with
-    `BundleAuthFailed`.
-  - [ ] **subtask** — bundle-profile-keys: include profile key
-    payloads in the encrypted manifest so `import-bundle` can write
-    them on apply. Depends on `bundle-age-encryption`.
-  - [ ] **subtask** — bundle-import-apply: decrypt and apply
-    `import-bundle` state to the local store (insert profiles,
-    secret_versions, blobs, fingerprints). Depends on
+- [ ] Sealed bundle. Decomposed below; later subtasks depend on
+  `bundle-container-format` (`docs/specs/team-sync-recovery.md:111-224`).
+  - [ ] **subtask** — bundle-container-format: implement the versioned
+    container (magic header, schema version, plaintext-minimal
+    manifest, encrypted-payload section) plus a writer/reader pair.
+    Manifest minimization is enforced in code (no profile/secret/
+    policy/member/device names). Errors: `BundleVerificationFailed`
+    (110). Tests: round-trip a synthetic container; rejects unknown
+    schema, oversized manifest, and disallowed manifest fields.
+    Pre-req for all other bundle subtasks.
+  - [ ] **subtask** — bundle-age-encryption: integrate `age`/`rage`
+    library for the encrypted payload with multi-recipient support.
+    Errors: `BundleVerificationFailed` (110) on AAD/auth-tag failure.
+    Tests: encrypt to N recipients, decrypt with matching key, reject
+    on tag tamper. Depends on `bundle-container-format`.
+  - [ ] **subtask** — bundle-export-payload: serialize selected
+    profiles, policies, secret metadata, `secret_versions`, blobs, and
+    per-profile `ProfileSecret`/`ProfileFingerprint` keys into the
+    canonical encrypted payload. Forbid master/audit/device/recovery
+    key material in the payload. Audit: `BACKUP_EXPORT` records counts
+    and recipient fingerprints only. Tests: golden-path export,
+    dangerous-profile typed-confirmation gate,
+    refuse-when-output-exists. Depends on `bundle-age-encryption`.
+  - [ ] **subtask** — bundle-import-apply: decrypt and apply imported
+    state — rewrap profile keys under the receiver's master key,
+    append blobs, and write metadata rows in a single SQLite
+    transaction. Audit: `BACKUP_IMPORT` and `TEAM_ACCEPT` (when
+    invoked through team accept). Errors:
+    `BundleVerificationFailed` (110), `StorageError`. Tests:
+    fresh-target import, idempotent re-import of identical content.
+    Depends on `bundle-age-encryption`.
+  - [ ] **subtask** — bundle-import-conflicts: implement the conflict
+    matrix (identical, newer-incoming, divergent, deleted-vs-active)
+    with metadata-only summary, `--accept-incoming` and
+    `--accept-local`, and interactive resolution. Errors:
+    `ConfirmationFailed` (68) on user abort. Tests: each cell of the
+    matrix with metadata-only output. Depends on `bundle-import-apply`.
+  - [ ] **subtask** — bundle-verify-cmd: implement `locket bundle
+    verify` structural-only and decryptable paths, exiting `0` for
+    both; malformed → `BundleVerificationFailed` (110); unsupported
+    schema → `ConfigError`. Audit: `BUNDLE_VERIFY` records bundle
+    digest, schema version, decryptability, counts. Tests:
+    structural-only (no matching recipient), decryptable success,
+    malformed rejection, unsupported-schema rejection. Depends on
     `bundle-age-encryption`.
-  - [ ] **subtask** — bundle-conflict-resolution: `--accept-incoming`
-    / `--accept-local` for divergent versions during apply, with
-    typed `BundleConflict` when neither flag is passed and versions
-    differ. Depends on `bundle-import-apply`.
-  - [ ] **subtask** — bundle-verify-decryptability: `bundle verify`
-    runs a decryptability probe against a recipient and reports
-    success/failure metadata-only (no plaintext logged).
-  - [ ] **subtask** — bundle-audit-import: import remote audit chains
-    into `imported_audit_chains` and surface chain status on
-    `BACKUP_IMPORT`. Depends on `bundle-import-apply`.
+  - [ ] **subtask** — bundle-include-audit-import: when
+    `--include-audit` is set, append imported audit rows to
+    `imported_audit_chains` with structural verification (monotonic
+    sequence, prev-HMAC linkage, checkpoint HMAC match against the
+    bundle checkpoint). Errors: `BundleVerificationFailed` (110) on
+    chain inconsistency. Tests: valid chain, broken sequence, broken
+    prev-HMAC, mismatched checkpoint. Pairs with the existing
+    `imported_audit_chains` structural verifier line in this section.
+    Depends on `bundle-import-apply`.
+  - [ ] **subtask** — bundle-rotate-on-newer: when import applies a
+    newer version over an active target, run the `rotate`-with-no-grace
+    lifecycle (mark prior `Deprecated`, set `last_rotated_at` to import
+    timestamp, incoming becomes current). Tests: import v2 over v1,
+    import v1 into a missing target leaves `last_rotated_at = None`.
+    Pairs with the existing `rotate-with-no-grace` follow-up below.
+    Depends on `bundle-import-apply`.
 - [~] Team command surfaces (`team init`, `invite`, `accept`,
   `revoke-invite`, `members`, `remove`, `revoke-device`). Decomposed
   below; later subtasks depend on `team-store-schema`
@@ -841,8 +878,78 @@ editing — they drift. Severity: **blocker** (security/correctness),
 - [x] Redacted `locket agent logs`.
 - [x] `locket debug bundle --redacted`.
 - [ ] Expand tests toward spec coverage (90% line/branch gate).
-- [ ] End-to-end coverage for agent, policy/run, Docker/Compose,
-  recovery, bundles, team invite accept, and UI/editor smoke flows.
+  Decomposed by spec surface; subtasks are independent and may be
+  claimed in parallel. Each subtask must add tests that demonstrably
+  raise covered lines/branches; cite `cargo llvm-cov` deltas in the
+  commit message (`docs/specs/testing.md:8-72`).
+  - [ ] **subtask** — tests-policy-evaluation: cover
+    `crates/locket-core/src/policy/` deny-by-default evaluation,
+    required vs optional secret semantics, malformed-policy rejection,
+    and `confirm`/`require_user_verification`/`ttl` edge cases.
+  - [ ] **subtask** — tests-env-merge: cover `minimal`/`strict`/
+    `merge`/`passthrough` modes, `override = "preserve"`/"error",
+    the conservative allowlist, and `LC_*` matching.
+  - [ ] **subtask** — tests-crypto-aad: cover AAD construction,
+    key-wrap canonicalization, audit HMAC canonicalization, recovery
+    envelope parsing, and device descriptor parsing in
+    `crates/locket-crypto/`.
+  - [ ] **subtask** — tests-store-migrations: cover schema migration
+    paths, `SCHEMA_MIGRATE` audit on every step, and rollback on
+    failure in `crates/locket-store/`.
+  - [ ] **subtask** — tests-typed-errors: a per-variant exit-code
+    regression covering at least one callsite per `LocketError`
+    variant in `crates/locket-core/src/error.rs`.
+  - [ ] **subtask** — tests-source-precedence: cover the unified
+    resolver across `set`, `get`, `list`, `rotate`, `rm`, `purge`,
+    `history`, `diff`, `copy`, reveal/copy, and execution. Pairs with
+    the source-precedence item under `Near-Term CLI/Core`.
+  - [ ] **subtask** — tests-scanner-rules: cover `crates/locket-scan/`
+    rule matching, severity overrides, suppression markers, and the
+    `--require-known` pre-commit mode.
+  - [ ] **subtask** — tests-audit-hmac: verify the audit chain HMAC
+    recomputes against each row's stored `schema_version`; pairs with
+    the existing audit-chain HMAC line in `Security/Recovery/Team`.
+  - [ ] **subtask** — tests-runtime-sessions: cover
+    `runtime_sessions` storage, retention, and `exec`/`run` recording.
+  - [ ] **subtask** — tests-coverage-ratchet: raise the
+    `make coverage-branch` gate by visible deltas after each `tests-*`
+    subtask lands. Final acceptance for the parent: 90% line and
+    branch on the listed security-critical crates.
+- [ ] End-to-end coverage. Decomposed by representative flow; each
+  subtask is one E2E harness that drives the CLI/agent/UI through a
+  golden path plus the documented failure paths
+  (`docs/specs/testing.md:38`). Subtasks are independent.
+  - [ ] **subtask** — e2e-greenfield-init: `locket init` →
+    `device init` → `profile create dev` → `set` → `get`. Asserts
+    audit chain integrity and 0600 file modes.
+  - [ ] **subtask** — e2e-dotenv-migration: `import` from `.env` →
+    confirmation prompt → tombstone old → emit `.env.example`. Covers
+    the post-import delete-`.env` confirmation.
+  - [ ] **subtask** — e2e-agent-rpc: drive the agent socket through
+    `Status`, `Lock`, `Unlock`, `RequestGrant`, `RevokeGrant`,
+    `SubscribeStatus`. Depends on the daemon subtasks.
+  - [ ] **subtask** — e2e-policy-run: write a policy, `policy doctor`,
+    `locket run` argv path with required/optional secrets, deny path,
+    confirm gate, user-verification gate. Pairs with the `locket run`
+    subtask tree.
+  - [ ] **subtask** — e2e-docker-compose: `locket exec` and
+    `locket run` against a stub `docker compose`, names-only audit,
+    refusal of remote contexts.
+  - [ ] **subtask** — e2e-recovery-roundtrip: `init` → record code →
+    `recover` → `recovery rotate`. Covers refusal-when-keychain-valid
+    and `--force` audit override.
+  - [ ] **subtask** — e2e-team-invite-accept: `team init` →
+    `team invite` → `team accept` (signature + safety-words display)
+    → `team revoke-invite` failure path. Depends on the team-* and
+    invite-ceremony subtasks.
+  - [ ] **subtask** — e2e-bundle-roundtrip: `export --sealed` →
+    `import-bundle` (fresh, identical, newer-incoming, divergent),
+    `bundle verify` structural-only and decryptable. Depends on the
+    sealed-bundle subtasks.
+  - [ ] **subtask** — e2e-ui-editor-smoke: smoke flows in the desktop
+    app (vault status, secrets list, reveal/copy gates) and the VS
+    Code extension. Depends on `desktop-tauri-shell` and the VS Code
+    extension item.
 - [x] Required fuzz targets landed under `fuzz/fuzz_targets/` (cadence
   and sanitizer gates tracked under the fuzz tooling TODO below).
 - [~] Bench harnesses and performance gates. Local smoke/report
@@ -873,9 +980,17 @@ editing — they drift. Severity: **blocker** (security/correctness),
 - [x] Performance reference-runner spec, required report fields, and
   sampling rules (warmup, sample counts, p95 index, throughput formula)
   (`docs/specs/performance.md`).
-- [ ] Cold-start budgets: passphrase fallback unlock <300 ms,
-  recovery-envelope unlock <2 s, agent idle memory <50 MB
-  (`docs/specs/performance.md`).
+- [ ] Cold-start budgets. Decomposed per metric; each subtask adds
+  one bench plus a regression that fails the budget
+  (`docs/specs/performance.md`). Depends on the perf reference-runner
+  sampling work above.
+  - [ ] **subtask** — perf-passphrase-unlock: ≤300 ms passphrase
+    fallback unlock, measured cold (no warm cache).
+  - [ ] **subtask** — perf-recovery-envelope-unlock: ≤2 s recovery-
+    envelope unlock, measured cold.
+  - [ ] **subtask** — perf-agent-idle-memory: ≤50 MB agent idle RSS
+    after a documented warmup window. Depends on the agent daemon
+    subtasks landing first.
 - [x] Production-crate clippy denies (`unwrap_used`, `expect_used`,
   `panic`, `todo`, `unimplemented`, `dbg_macro`, `print_stdout`,
   `print_stderr`) plus workspace-wide `unsafe_code = "forbid"`.
@@ -883,9 +998,25 @@ editing — they drift. Severity: **blocker** (security/correctness),
   Scorecard once public; keyless signing with transparency logs for CI
   artifacts; frontend `pnpm lint`/`typecheck`/`test`/`build` once
   `locket-app` exists.
-- [ ] Property tests for `.env` parsing, policy TOML normalization,
-  `lk://` parsing, canonical JSON, device descriptors, and bundle
-  manifests.
+- [ ] Property tests. Decomposed per surface; subtasks are
+  independent and each lands one `proptest`/`quickcheck` harness
+  asserting the documented invariants
+  (`docs/specs/testing.md:14`).
+  - [ ] **subtask** — proptest-dotenv: `.env` parser round-trip and
+    rejection invariants.
+  - [ ] **subtask** — proptest-policy-toml: policy TOML parse →
+    normalize → re-serialize round-trip; rejection of disallowed
+    fields.
+  - [ ] **subtask** — proptest-lk-uri: `lk://` parser round-trip,
+    fragment/query rejection, and pinned-version normalization.
+  - [ ] **subtask** — proptest-canonical-json: canonical JSON encoder
+    is total-ordered, idempotent, and stable across permutations.
+  - [ ] **subtask** — proptest-device-descriptor: descriptor codec
+    round-trip; rejects malformed `lkdev1_` payloads, version-bump
+    behavior. Depends on the descriptor codec landing.
+  - [ ] **subtask** — proptest-bundle-manifest: plaintext-manifest
+    round-trip; rejects forbidden fields (profile/secret/policy/
+    member/device names). Depends on `bundle-container-format`.
 - [ ] Cross-platform test mocks and mutation tests
   (`docs/specs/testing.md`). Subtasks are independent — pick any:
   - [ ] **subtask** — mock-os-keychain: trait-based mock for
