@@ -133,6 +133,8 @@ Slices that have merged to `main` and verified. Open work tracked in
   and final metadata-only decisions. External file values stay out of command output.
 - [x] mock-peer-credentials: Added spoofable peer-credential tests for agent socket
   validation.
+- [x] policy-doctor-agent-validation: Policy doctor now exits with a distinct incomplete
+  status when agent-backed reference validation is unavailable.
 
 ## Full Spec Coverage TODO — Security/Recovery/Team
 
