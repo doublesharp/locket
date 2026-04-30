@@ -219,6 +219,8 @@ Slices that have merged to `main` and verified. Open work tracked in
 - [x] profile-grant-invalidation: Shell hook install now validates the active profile's
   durable grant before proceeding. Switching profiles requires a matching grant before
   the hook can recreate live access.
+- [x] desktop-policy-editor-view: Adds the read-only policy editor surface to the
+  desktop shell. Wires the Policies nav entry to metadata-only policy rows.
 
 ## Full Spec Coverage TODO — Code Health and Bug Fixes
 

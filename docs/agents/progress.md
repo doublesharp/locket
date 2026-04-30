@@ -302,7 +302,6 @@ Slices 1+2 shipped (agent client, tray binding, 6 view scaffolds,
   - [ ] **subtask** — agent-policy-doctor-rpc: RPC exercising
     `lk://` resolution + env-mode expansion. Pre-req:
     `agent-resolve-reference-impl`.
-  - [~] [52c592db] branch agent-52c592db/desktop-policy-editor-view, worktree .worktrees/agent-52c592db-desktop-policy-editor-view; **subtask** — desktop-policy-editor-view: `PolicyEditor.vue` (read-only). Slice 12a.
   - [ ] **subtask** — desktop-policy-editor-write: create/edit/delete
     forms backed by `agent-policy-write` RPC. Dangerous-profile
     requires typed confirmation; `POLICY_UPDATE` audit.
