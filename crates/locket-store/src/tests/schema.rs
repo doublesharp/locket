@@ -48,6 +48,17 @@ fn creates_schema_and_records_migration() -> Result<(), Box<dyn Error>> {
             .query_row("SELECT version FROM schema_migrations", [], |row| row.get::<_, u32>(0))?;
     assert_eq!(schema_version, SCHEMA_VERSION);
 
+    let rp_id_column = connection.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('passkey_credentials')
+         WHERE name = 'webauthn_relying_party_id'
+           AND type = 'TEXT'
+           AND \"notnull\" = 1
+           AND dflt_value = '''locket.localhost'''",
+        [],
+        |row| row.get::<_, i64>(0),
+    )?;
+    assert_eq!(rp_id_column, 1, "passkey credentials must persist the WebAuthn RP ID");
+
     let foreign_keys =
         connection.query_row("PRAGMA foreign_keys", [], |row| row.get::<_, i64>(0))?;
     assert_eq!(foreign_keys, 1);
