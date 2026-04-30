@@ -349,9 +349,7 @@ Slices 1+2 shipped (agent client, tray binding, 6 view scaffolds,
   VS Code show the same reason and next action per typed error
   (`docs/specs/desktop.md`).
   - [~] [acda32e4] branch agent-acda32e4/error-copy-table, worktree .worktrees/agent-acda32e4-error-copy-table; **subtask** — error-copy-table: shared typed-error display copy with coverage regression.
-- [ ] VS Code diagnostics: `process.env.KEY` missing in active
-  profile; pinned `lk://...@vN` near/past `grace_until`
-  (`docs/specs/integrations.md:48-49`).
+- [~] [4ab55ee9] branch agent-4ab55ee9/vscode-diagnostics, worktree .worktrees/agent-4ab55ee9-vscode-diagnostics; VS Code diagnostics for missing `process.env.KEY` and pinned `lk://...@vN` metadata.
 - [~] [90b9f58a] branch agent-90b9f58a/vscode-reveal-webview, worktree .worktrees/agent-90b9f58a-vscode-reveal-webview; VS Code gated reveal webview with short-lived data (`docs/specs/integrations.md:50-51`).
 - [~] [90b9f58a] branch agent-90b9f58a/profile-grant-invalidation, worktree .worktrees/agent-90b9f58a-profile-grant-invalidation; Profile-scoped grant invalidation on `locket use <profile>` (`docs/specs/integrations.md:26`).
 
