@@ -265,10 +265,11 @@ mod tests {
     use super::display_copy_for_agent_code;
 
     #[test]
-    fn agent_error_codes_use_shared_locket_error_copy() {
-        let copy = display_copy_for_agent_code("UnlockRequired").expect("known typed error");
+    fn agent_error_codes_use_shared_locket_error_copy() -> Result<(), Box<dyn std::error::Error>> {
+        let copy = display_copy_for_agent_code("UnlockRequired").ok_or("known typed error")?;
         assert_eq!(copy.reason, "The vault is locked.");
         assert_eq!(copy.next_action, "Run locket unlock or approve an agent unlock prompt.");
         assert!(display_copy_for_agent_code("ProtocolError").is_none());
+        Ok(())
     }
 }

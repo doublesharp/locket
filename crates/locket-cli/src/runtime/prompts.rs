@@ -161,11 +161,11 @@ mod secret_value_validation_tests {
     use locket_core::error::LocketError;
 
     #[allow(clippy::panic)]
-    fn assert_kind(result: Result<(), CliError>, expected: &LocketError) {
+    fn assert_kind(result: &Result<(), CliError>, expected: LocketError) {
         let Err(CliError::Typed { kind, .. }) = result else {
             panic!("expected typed {expected:?}");
         };
-        assert_eq!(&kind, expected);
+        assert_eq!(*kind, expected);
     }
 
     #[test]
@@ -175,26 +175,26 @@ mod secret_value_validation_tests {
 
     #[test]
     fn rejects_empty_value() {
-        assert_kind(validate_secret_value_str(""), &LocketError::InvalidReference);
+        assert_kind(&validate_secret_value_str(""), LocketError::InvalidReference);
     }
 
     #[test]
     fn rejects_nul_byte() {
-        assert_kind(validate_secret_value_str("foo\0bar"), &LocketError::MetadataInvalid);
+        assert_kind(&validate_secret_value_str("foo\0bar"), LocketError::MetadataInvalid);
     }
 
     #[test]
     fn rejects_embedded_lf() {
-        assert_kind(validate_secret_value_str("foo\nbar"), &LocketError::MetadataInvalid);
+        assert_kind(&validate_secret_value_str("foo\nbar"), LocketError::MetadataInvalid);
     }
 
     #[test]
     fn rejects_embedded_cr() {
-        assert_kind(validate_secret_value_str("foo\rbar"), &LocketError::MetadataInvalid);
+        assert_kind(&validate_secret_value_str("foo\rbar"), LocketError::MetadataInvalid);
     }
 
     #[test]
     fn rejects_trailing_newline() {
-        assert_kind(validate_secret_value_str("foo\n"), &LocketError::MetadataInvalid);
+        assert_kind(&validate_secret_value_str("foo\n"), LocketError::MetadataInvalid);
     }
 }

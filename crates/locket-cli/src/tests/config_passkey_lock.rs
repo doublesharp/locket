@@ -263,7 +263,7 @@ fn config_value_validation_errors_are_typed_metadata_failures()
             &context,
             &mut Vec::new(),
         ),
-        &locket_core::LocketError::MetadataInvalid,
+        locket_core::LocketError::MetadataInvalid,
         "true or false",
     )?;
     assert_typed_config_error(
@@ -272,7 +272,7 @@ fn config_value_validation_errors_are_typed_metadata_failures()
             &context,
             &mut Vec::new(),
         ),
-        &locket_core::LocketError::MetadataInvalid,
+        locket_core::LocketError::MetadataInvalid,
         "invalid config duration",
     )?;
     for value in ["0s", "1h30m", "1.5h", "1H", " 1h", "1h "] {
@@ -282,7 +282,7 @@ fn config_value_validation_errors_are_typed_metadata_failures()
                 &context,
                 &mut Vec::new(),
             ),
-            &locket_core::LocketError::MetadataInvalid,
+            locket_core::LocketError::MetadataInvalid,
             "invalid config duration",
         )?;
     }
@@ -298,7 +298,7 @@ fn config_value_validation_errors_are_typed_metadata_failures()
             &context,
             &mut Vec::new(),
         ),
-        &locket_core::LocketError::MetadataInvalid,
+        locket_core::LocketError::MetadataInvalid,
         "HTTPS URL",
     )?;
     assert_typed_config_error(
@@ -313,7 +313,7 @@ fn config_value_validation_errors_are_typed_metadata_failures()
             &context,
             &mut Vec::new(),
         ),
-        &locket_core::LocketError::MetadataLooksLikeSecret,
+        locket_core::LocketError::MetadataLooksLikeSecret,
         "looks like a secret",
     )?;
 
@@ -324,7 +324,7 @@ fn config_value_validation_errors_are_typed_metadata_failures()
             &context,
             &mut Vec::new(),
         ),
-        &locket_core::LocketError::MetadataInvalid,
+        locket_core::LocketError::MetadataInvalid,
         "invalid stored config value",
     )?;
 
@@ -335,7 +335,7 @@ fn config_value_validation_errors_are_typed_metadata_failures()
             &context,
             &mut Vec::new(),
         ),
-        &locket_core::LocketError::MetadataInvalid,
+        locket_core::LocketError::MetadataInvalid,
         "config section is not a table",
     )?;
     Ok(())
@@ -757,7 +757,7 @@ fn lock_stays_metadata_only_when_vault_is_locked() -> Result<(), Box<dyn std::er
 
 fn assert_typed_config_error<T>(
     result: Result<T, crate::CliError>,
-    expected_kind: &locket_core::LocketError,
+    expected_kind: locket_core::LocketError,
     expected_message: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let Err(error) = result else {
@@ -767,7 +767,7 @@ fn assert_typed_config_error<T>(
     let crate::CliError::Typed { kind, message } = error else {
         return Err(format!("expected typed config error, got {error:?}").into());
     };
-    assert_eq!(&kind, expected_kind);
+    assert_eq!(kind, expected_kind);
     assert!(message.contains(expected_message), "{message}");
     Ok(())
 }
