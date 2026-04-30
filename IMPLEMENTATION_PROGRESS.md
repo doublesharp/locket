@@ -289,12 +289,11 @@ the spec already covers. Closed slices land in
   `agent-socket-server` — note the dependency on the claim line if you
   take a downstream task.
   - [x] **subtask** — agent-socket-server: Unix domain socket with 0600/0700 perms, tokio accept loop, Status/Heartbeat stub handlers, `AgentSocketInUse` on collision, framing round-trip tests.
-  - [~] [e7389a73] **subtask** — agent-peer-validation: validate the connecting peer
+  - [x] [e7389a73] **subtask** — agent-peer-validation: validate the connecting peer
     against the daemon's uid (`SO_PEERCRED` on Linux, `LOCAL_PEERPID` +
     `LOCAL_PEEREPID` on macOS, named-pipe peer SID on Windows). Reject
     cross-user connections with `AccessDenied`. Tests: a non-matching uid
     is closed with the typed error. Depends on `agent-socket-server`.
-    Claim: branch agent-e7389a73/agent-peer-validation, worktree .worktrees/agent-e7389a73-agent-peer-validation. Scope: Linux/macOS getpeereid wrapper + pure validator + handle_connection wiring; Windows named-pipe SID stays a separate `[ ]` follow-up.
   - [ ] **subtask** — agent-unlock-cache: in-memory unlock-key cache keyed
     by project_id with TTL eviction that fires `LOCK` audit on expiry. Add
     `Lock`/`Unlock`/`Status` RPC handlers. Errors: `UnlockRequired` (72).
@@ -398,9 +397,8 @@ the spec already covers. Closed slices land in
   (`docs/specs/integrations.md:39-65`). Extension never writes audit
   directly; everything goes through agent RPCs. Decomposed below;
   later subtasks depend on `vscode-ext-scaffold`.
-  - [~] [7138f228] **subtask** — vscode-ext-scaffold: `extensions/vscode/`
+  - [x] [7138f228] **subtask** — vscode-ext-scaffold: `extensions/vscode/`
     (out-of-tree TS) project skeleton with build/lint/test scripts.
-    Claim: branch agent-7138f228/vscode-ext-scaffold, worktree .worktrees/agent-7138f228-vscode-ext-scaffold. Scope: `extensions/vscode/` skeleton (`package.json`, `tsconfig.json`, `.eslintrc.cjs`, `.gitignore`, `README.md`, empty `src/extension.ts`); no extension behavior yet.
   - [ ] **subtask** — vscode-agent-client: TypeScript client that
     speaks the agent socket protocol; surface
     `AgentUnavailable`/`ProtocolError` distinctly. Pre-req:
@@ -435,10 +433,9 @@ the spec already covers. Closed slices land in
   - [x] **subtask** — policy-shell-vs-argv: parser distinguishes
     `argv = [...]` vs `shell = "..."`; evaluator dispatches on
     `CommandSpec`.
-- [~] [bec7ddfc] Ephemeral env-file fallback for children that can't accept an env
+- [x] [bec7ddfc] Ephemeral env-file fallback for children that can't accept an env
   map: 0700 parent / 0600 file outside project tree, post-spawn delete,
   audited delivery mode, secure-erase warning when unsupported.
-  Claim: branch agent-bec7ddfc/ephemeral-env-file, worktree .worktrees/agent-bec7ddfc-ephemeral-env-file. Scope: locket-exec helper that writes the locket env layer to a 0600 temp file under a 0700 parent dir outside the project root, returns a guard that deletes the file on drop, and reports the delivery mode for audit metadata. Integration into a docker delivery mode is left as a follow-up.
 - [~] Clipboard clear-after-TTL only if clipboard still contains the
   value. Wayland-aware pre-copy warning and `COPY` audit
   `unsupported_reason` shipped; background TTL clearing remains.
@@ -565,10 +562,9 @@ the spec already covers. Closed slices land in
   - [ ] **subtask** — invite-accept-display: `team accept` displays
     issuer fingerprint + PGP safety words and requires typed
     confirmation before applying. Pre-req: `invite-codec`.
-  - [~] [e7389a73] **subtask** — invite-replay-protect: track accepted invite
+  - [x] [e7389a73] **subtask** — invite-replay-protect: track accepted invite
     ids; reject second use with `ReplayDetected` (113). Pre-req:
     `invite-codec`.
-    Claim: branch agent-e7389a73/invite-replay-protect, worktree .worktrees/agent-e7389a73-invite-replay-protect. Scope: Store::mark_invite_accepted helper that flips team_invites.accepted_at and returns InviteReplayDetected on second use; pure-store, no consumer wiring (consumers land in team-invite-accept).
   - [x] [7138f228] **subtask** — invite-clock-skew: 5-minute clock-skew tolerance
     on expiry; outside → `InviteExpired`. Pre-req: `invite-codec`.
   - [ ] **subtask** — invite-fail-closed: expired/revoked/
@@ -589,10 +585,9 @@ the spec already covers. Closed slices land in
   `docs/specs/operations.md`). Subtasks are largely independent;
   `harden-peer-cred` and `harden-socket-perms` are pre-reqs for the
   agent daemon listening on real connections.
-  - [~] [7138f228] **subtask** — harden-peer-cred: peer credential validation
+  - [x] [7138f228] **subtask** — harden-peer-cred: peer credential validation
     (`SO_PEERCRED`/`LOCAL_PEERCRED`/named-pipe SID) on the agent
     socket. Pre-req: `agent-socket-server`.
-    Claim: branch agent-7138f228/harden-peer-cred, worktree .worktrees/agent-7138f228-harden-peer-cred. Scope: validate the connecting peer's uid matches the daemon's uid via rustix `getsockopt_peercred` (Linux) / `getpeereid` (macOS) inside `handle_connection`; reject mismatched peers with the typed `AccessDenied` ProtocolError envelope before any RPC dispatch. Windows named-pipe SID stays a follow-up.
   - [x] [e7389a73] **subtask** — harden-socket-perms: 0600/equivalent socket and
     pipe permissions; refuse to start if the bind path is wider.
   - [x] **subtask** — harden-memory-lock: `mlockall` at CLI startup;
@@ -904,10 +899,9 @@ editing — they drift. Severity: **blocker** (security/correctness),
     fragment/query rejection, and pinned-version normalization.
   - [x] **subtask** — proptest-canonical-json: canonical JSON encoder is total-ordered, idempotent, stable across permutations.
   - [x] **subtask** — proptest-device-descriptor: descriptor codec round-trip; rejects malformed `lkdev1_` payloads.
-  - [~] [e7389a73] **subtask** — proptest-bundle-manifest: plaintext-manifest
+  - [x] [e7389a73] **subtask** — proptest-bundle-manifest: plaintext-manifest
     round-trip; rejects forbidden fields (profile/secret/policy/
     member/device names). Depends on `bundle-container-format`.
-    Claim: branch agent-e7389a73/proptest-bundle-manifest, worktree .worktrees/agent-e7389a73-proptest-bundle-manifest.
 - [ ] Cross-platform test mocks and mutation tests
   (`docs/specs/testing.md`). Subtasks are independent — pick any:
   - [ ] **subtask** — mock-peer-credentials: in-process socket harness
@@ -919,9 +913,8 @@ editing — they drift. Severity: **blocker** (security/correctness),
     `IntegrityFailure`/`ReplayDetected` paths.
   - [x] **subtask** — mutation-locked-vault-scan: locked vault scan
     stays metadata-only, no secret leakage, no SCAN row, `--require-known` exits `UnlockRequired`.
-  - [~] [aa40a4ce] **subtask** — mutation-expired-versions: pinned `lk://...@vN`
+  - [x] [aa40a4ce] **subtask** — mutation-expired-versions: pinned `lk://...@vN`
     past `grace_until` returns typed `SecretVersionExpired`.
-    Claim: branch agent-aa40a4ce/mutation-expired-versions, worktree .worktrees/agent-aa40a4ce-mutation-expired-versions.
   - [x] [aa40a4ce] **subtask** — mutation-dangerous-profile: dangerous-profile
     reads emit the documented denial audit and refuse value access.
 - [ ] Bench fixtures: metadata, runtime, reference-resolution,

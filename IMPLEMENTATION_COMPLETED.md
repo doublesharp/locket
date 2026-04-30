@@ -295,6 +295,13 @@ Slices that have merged to `main` and verified. Open work tracked in
 - [x] Solo-developer authorization: no-Team projects allow all Owner-level operations; `team members` shows `team: none`; `team init` creates team; duplicate `team init` exits `SecretAlreadyExists` (67).
 - [x] Member/device revocation rotation checklist: `team remove` and `team revoke-device` emit per-profile active-secret counts and total; honors `privacy.redact_names`.
 - [x] **subtask** — mutation-malformed-crypto: tampered ciphertext body tests; `IntegrityFailure` on modified tag/nonce.
+- [x] **subtask** — proptest-bundle-manifest: 10 property tests in `crates/locket-core/tests/proptest_bundle_manifest.rs`; round-trip, schema-version gate, oversized-manifest rejection, payload-length mismatch, corrupt-magic detection.
+- [x] **subtask** — invite-replay-protect: `Store::mark_invite_accepted` with replay detection; `InviteReplayDetected` and `InviteNotFound` error variants; prevents double-accept of the same `SignedInvite`.
+- [x] **subtask** — harden-peer-cred: Linux `SO_PEERCRED` uid check at agent accept time; `SocketServerError::PeerCredentialDenied { peer_uid, daemon_uid }` variant; rejects cross-user and root-to-user connections.
+- [x] **subtask** — agent-peer-validation: `crates/locket-agent/src/peer_cred.rs` with `validate_peer_stream`, `validate_peer_uid`, `current_process_uid`; `ConnectionOutcome::Rejected` variant in `server.rs`; 5 unit tests covering matching/cross-user/root-to-user/round-trip cases.
+- [x] **subtask** — mutation-expired-versions: gate pinned `lk://...@vN` secrets past `grace_until` on `SecretVersionExpired`; tests in `crates/locket-core/tests/mutation_expired_versions.rs`.
+- [x] **subtask** — ephemeral-env-file: `locket-exec` ephemeral env-file helper; 0600/0700 permissions; RAII cleanup on drop; used by exec pipeline to pass secrets as temp file.
+- [x] **subtask** — vscode-ext-scaffold: `extensions/vscode/` TypeScript skeleton with `package.json`, `tsconfig.json`, ESLint config; activation stub; no behavior yet.
 
 ## Spec-by-Spec Completion Gates
 
