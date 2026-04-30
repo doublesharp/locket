@@ -14,10 +14,10 @@ use sha2::{Digest, Sha256};
 use super::device;
 use crate::{
     BundleCommand, BundleVerifyArgs, CliError, ExportArgs, ImportBundleArgs, ResolvedProject,
-    RuntimeContext, bundle_verification_error, default_profile, ensure_project_exists,
-    ensure_trusted_project_root, format_hex, invalid_reference_error, load_project_key,
-    metadata_invalid_error, now_unix_nanos, open_store, profile_not_found_error, require_project,
-    set_user_only_file_options, set_user_only_file_permissions,
+    RuntimeContext, bundle_verification_error, confirmation_failed_error, default_profile,
+    ensure_project_exists, ensure_trusted_project_root, format_hex, invalid_reference_error,
+    load_project_key, metadata_invalid_error, now_unix_nanos, open_store, profile_not_found_error,
+    require_project, set_user_only_file_options, set_user_only_file_permissions,
 };
 
 const BUNDLE_MAGIC_V1: &str = "LOCKET-BUNDLE-V1";
@@ -79,6 +79,7 @@ pub fn export_bundle_command(
     ensure_trusted_project_root(&store, &resolved)?;
     let recipient_fingerprints = bundle_recipient_fingerprints(&args.recipients)?;
     let selected_profiles = selected_bundle_profiles(&store, &resolved, args)?;
+    confirm_dangerous_profile_export(context, output, &selected_profiles)?;
     let timestamp = now_unix_nanos()?;
     let payload = bundle_payload(&store, &selected_profiles, args.include_audit)?;
     let manifest_digest_sha256 = bundle_payload_digest(&payload)?;
@@ -217,6 +218,30 @@ fn selected_bundle_profiles(
             .ok_or_else(|| profile_not_found_error(format!("profile not found: {profile_name}")));
     }
     Ok(vec![default_profile(store, &resolved.config)?])
+}
+
+fn confirm_dangerous_profile_export(
+    context: &RuntimeContext,
+    output: &mut impl Write,
+    profiles: &[ProfileRecord],
+) -> Result<(), CliError> {
+    let dangerous: Vec<&str> =
+        profiles.iter().filter(|p| p.dangerous).map(|p| p.name.as_str()).collect();
+    if dangerous.is_empty() {
+        return Ok(());
+    }
+    let names = dangerous.join(",");
+    writeln!(output, "dangerous_profiles: {names}")?;
+    writeln!(output, "metadata_only: yes")?;
+    writeln!(output, "type 'export --sealed {names}' to confirm dangerous bundle export")?;
+    let confirmation = context.confirmation_reader.read_confirmation("export --sealed")?;
+    let expected = format!("export --sealed {names}");
+    if confirmation.trim_end_matches(['\r', '\n']) != expected {
+        return Err(confirmation_failed_error(
+            "confirmation did not match dangerous bundle export scope",
+        ));
+    }
+    Ok(())
 }
 
 fn bundle_payload(
