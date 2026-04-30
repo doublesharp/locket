@@ -20,6 +20,7 @@ pub(crate) use runtime::key_access::{
     load_master_key_verified_by_project_key, load_project_key, load_project_key_with_source,
     store_master_key_with_fallback,
 };
+use runtime::prompts::validate_secret_value_str;
 #[cfg(test)]
 pub(crate) use runtime::prompts::{
     ConfirmationReader, PassphraseReader, RecoveryCodeReader, SecretValueReader,
@@ -1441,6 +1442,7 @@ fn rotate_secret_value(
 ) -> Result<(String, u32), CliError> {
     let name = SecretName::new(args.key.clone())
         .map_err(|_| invalid_secret_name_error("invalid secret name"))?;
+    validate_secret_value_str(value)?;
     let resolved_secret =
         resolve_active_secret_for_source(context, name.as_str(), args.source.source)?;
     let new_version = next_secret_version(resolved_secret.secret.current_version)?;

@@ -76,17 +76,18 @@ fn secret_value_reader_preserves_piped_values_and_rejects_invalid_input()
         crate::read_secret_value_from_reader(b"postgres://localhost/app\r\n".as_slice())?.as_str(),
         "postgres://localhost/app"
     );
-    assert_eq!(
-        crate::read_secret_value_from_reader(b"line1\nline2".as_slice())?.as_str(),
-        "line1\nline2"
+
+    assert_error_contains(
+        crate::read_secret_value_from_reader(b"line1\nline2".as_slice()).map(|_| ()),
+        "newlines",
     );
-    assert_eq!(
-        crate::read_secret_value_from_reader(b"line1\nline2\n".as_slice())?.as_str(),
-        "line1\nline2"
+    assert_error_contains(
+        crate::read_secret_value_from_reader(b"line1\nline2\n".as_slice()).map(|_| ()),
+        "newlines",
     );
-    assert_eq!(
-        crate::read_secret_value_from_reader(b"line1\nline2\n\n".as_slice())?.as_str(),
-        "line1\nline2\n"
+    assert_error_contains(
+        crate::read_secret_value_from_reader(b"line1\nline2\n\n".as_slice()).map(|_| ()),
+        "newlines",
     );
 
     assert_error_contains(

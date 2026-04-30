@@ -125,13 +125,23 @@ pub fn read_secret_value_from_reader(
 pub fn validate_secret_value(
     value: zeroize::Zeroizing<String>,
 ) -> Result<zeroize::Zeroizing<String>, CliError> {
+    validate_secret_value_str(&value)?;
+    Ok(value)
+}
+
+pub fn validate_secret_value_str(value: &str) -> Result<(), CliError> {
     if value.is_empty() {
         return Err(invalid_reference_error("secret value cannot be empty"));
     }
     if value.contains('\0') {
         return Err(metadata_invalid_error("secret value cannot contain NUL bytes"));
     }
-    Ok(value)
+    if value.contains('\n') || value.contains('\r') {
+        return Err(metadata_invalid_error(
+            "secret value cannot contain newlines; v1 has no multiline mode",
+        ));
+    }
+    Ok(())
 }
 
 pub fn read_recovery_code(prompt: &str) -> Result<zeroize::Zeroizing<String>, CliError> {
@@ -142,4 +152,48 @@ pub fn read_recovery_code(prompt: &str) -> Result<zeroize::Zeroizing<String>, Cl
     let mut value = String::new();
     io::stdin().read_to_string(&mut value)?;
     Ok(zeroize::Zeroizing::new(value))
+}
+
+#[cfg(test)]
+mod secret_value_validation_tests {
+    use super::validate_secret_value_str;
+    use crate::runtime::error::CliError;
+    use locket_core::error::LocketError;
+
+    fn assert_kind(result: Result<(), CliError>, expected: LocketError) {
+        match result {
+            Err(CliError::Typed { kind, .. }) => assert_eq!(kind, expected),
+            other => panic!("expected typed {expected:?}, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn accepts_single_line_utf8() {
+        assert!(validate_secret_value_str("hunter2").is_ok());
+    }
+
+    #[test]
+    fn rejects_empty_value() {
+        assert_kind(validate_secret_value_str(""), LocketError::InvalidReference);
+    }
+
+    #[test]
+    fn rejects_nul_byte() {
+        assert_kind(validate_secret_value_str("foo\0bar"), LocketError::MetadataInvalid);
+    }
+
+    #[test]
+    fn rejects_embedded_lf() {
+        assert_kind(validate_secret_value_str("foo\nbar"), LocketError::MetadataInvalid);
+    }
+
+    #[test]
+    fn rejects_embedded_cr() {
+        assert_kind(validate_secret_value_str("foo\rbar"), LocketError::MetadataInvalid);
+    }
+
+    #[test]
+    fn rejects_trailing_newline() {
+        assert_kind(validate_secret_value_str("foo\n"), LocketError::MetadataInvalid);
+    }
 }
