@@ -85,20 +85,51 @@ impl LocalUserVerifier for UnavailableLocalUserVerifier {
 /// Deterministic in-memory verifier for tests and integration harnesses.
 #[derive(Debug, Clone)]
 pub struct MemoryLocalUserVerifier {
-    allow: bool,
+    outcome: MemoryLocalUserVerificationOutcome,
+}
+
+/// Deterministic outcomes supported by [`MemoryLocalUserVerifier`].
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum MemoryLocalUserVerificationOutcome {
+    /// Verification succeeds with [`LocalUserVerificationMethod::Test`].
+    Allow,
+    /// Verification is rejected by the user or local policy.
+    Deny,
+    /// The platform/build has no verifier available.
+    Unavailable,
+    /// The user cancelled the ceremony before satisfying it.
+    Cancelled,
 }
 
 impl MemoryLocalUserVerifier {
     /// Creates a verifier that always succeeds with a test-only method.
     #[must_use]
     pub const fn allowing() -> Self {
-        Self { allow: true }
+        Self { outcome: MemoryLocalUserVerificationOutcome::Allow }
     }
 
     /// Creates a verifier that always fails local user verification.
     #[must_use]
     pub const fn denying() -> Self {
-        Self { allow: false }
+        Self { outcome: MemoryLocalUserVerificationOutcome::Deny }
+    }
+
+    /// Creates a verifier that behaves like an unsupported platform.
+    #[must_use]
+    pub const fn unavailable() -> Self {
+        Self { outcome: MemoryLocalUserVerificationOutcome::Unavailable }
+    }
+
+    /// Creates a verifier that behaves like a user-cancelled ceremony.
+    #[must_use]
+    pub const fn cancelled() -> Self {
+        Self { outcome: MemoryLocalUserVerificationOutcome::Cancelled }
+    }
+
+    /// Creates a verifier for the requested deterministic outcome.
+    #[must_use]
+    pub const fn with_outcome(outcome: MemoryLocalUserVerificationOutcome) -> Self {
+        Self { outcome }
     }
 }
 
@@ -107,10 +138,17 @@ impl LocalUserVerifier for MemoryLocalUserVerifier {
         &self,
         _request: &LocalUserVerificationRequest,
     ) -> Result<LocalUserVerification, PlatformError> {
-        if self.allow {
-            Ok(LocalUserVerification::new(LocalUserVerificationMethod::Test, platform_name()))
-        } else {
-            Err(PlatformError::LocalUserVerificationFailed)
+        match self.outcome {
+            MemoryLocalUserVerificationOutcome::Allow => {
+                Ok(LocalUserVerification::new(LocalUserVerificationMethod::Test, platform_name()))
+            }
+            MemoryLocalUserVerificationOutcome::Deny
+            | MemoryLocalUserVerificationOutcome::Cancelled => {
+                Err(PlatformError::LocalUserVerificationFailed)
+            }
+            MemoryLocalUserVerificationOutcome::Unavailable => {
+                Err(PlatformError::LocalUserVerificationUnavailable)
+            }
         }
     }
 }

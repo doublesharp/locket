@@ -99,6 +99,20 @@ fn memory_user_verifier_supports_success_and_failure() -> Result<(), PlatformErr
 }
 
 #[test]
+fn memory_user_verifier_covers_unavailable_and_cancelled_paths() {
+    let request = LocalUserVerificationRequest::new("reveal", "Reveal secret");
+
+    assert!(matches!(
+        MemoryLocalUserVerifier::unavailable().verify_user(&request),
+        Err(PlatformError::LocalUserVerificationUnavailable)
+    ));
+    assert!(matches!(
+        MemoryLocalUserVerifier::cancelled().verify_user(&request),
+        Err(PlatformError::LocalUserVerificationFailed)
+    ));
+}
+
+#[test]
 fn current_process_binding_matches_current_process() -> Result<(), PlatformError> {
     let binding = current_process_binding()?;
 
