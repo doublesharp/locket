@@ -223,9 +223,7 @@ skill set fits a leaf better.
   `harden-doctor-degraded` shipped. Remaining:
   - [ ] **subtask** — harden-session-lock: lock on system sleep,
     screen lock, user-session switch; emit `LOCK` audit row.
-- [ ] `imported_audit_chains` structural verifier (monotonic
-  sequence, prev-HMAC linkage, checkpoint HMAC match) used by
-  `import-bundle` / `team accept` and surfaced via `audit verify`.
+- [~] [52c592db] branch agent-52c592db/imported-audit-chain-verifier, worktree .worktrees/agent-52c592db-imported-audit-chain-verifier; `imported_audit_chains` structural verifier (monotonic sequence, prev-HMAC linkage, checkpoint HMAC match).
 - [ ] `import-bundle` / `team accept` apply rotate-with-no-grace
   when importing a newer version over an active target.
 - [ ] `locket device init --force` rekey: atomic
