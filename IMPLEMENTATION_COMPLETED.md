@@ -56,6 +56,9 @@ Slices that have merged to `main` and verified. Open work tracked in
 - [x] `locket scan --no-gitignore` flag and `--require-known`
   pre-commit mode (locked → `UnlockRequired`; outside project →
   `ProjectNotFound`).
+- [x] Known-value scan coverage includes deleted current versions with
+  blobs and grace-window deprecated versions, while excluding purged
+  versions.
 - [x] Store/schema coverage for the full required-tables set
   (automation/teams/passkey/imported-audit tables + indexes/triggers,
   with `SCHEMA_MIGRATE` audit on migrations).
