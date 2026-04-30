@@ -41,19 +41,77 @@ const AGENT_STOP_WAIT: StdDuration = StdDuration::from_secs(5);
 const AGENT_STOP_POLL_INTERVAL: StdDuration = StdDuration::from_millis(50);
 
 fn agent_start_command(context: &RuntimeContext, output: &mut impl Write) -> Result<(), CliError> {
+    let report = ensure_agent_running_with_launcher(context, &ProcessAgentDaemonLauncher)?;
+    if report.started {
+        append_agent_log(context, "start", "running", "daemon started")?;
+        writeln!(output, "agent: running")?;
+    } else {
+        writeln!(output, "agent: already running")?;
+    }
+    writeln!(output, "running: yes")?;
+    match report.pid {
+        Some(pid) => writeln!(output, "pid: {pid}")?,
+        None => writeln!(output, "pid: -")?,
+    }
+    write_agent_paths(context, output)?;
+    Ok(())
+}
+
+#[cfg(not(test))]
+pub(crate) fn ensure_agent_running_for_execution(context: &RuntimeContext) -> Result<(), CliError> {
+    ensure_agent_running_with_launcher(context, &ProcessAgentDaemonLauncher).map(|_| ())
+}
+
+#[cfg(test)]
+pub(crate) fn ensure_agent_running_for_execution(
+    _context: &RuntimeContext,
+) -> Result<(), CliError> {
+    // `cargo test` runs the libtest harness as `current_exe()`, so the
+    // production spawn path cannot exec `internal-agent-serve`. The startup
+    // state machine itself is covered below with an injectable launcher.
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct AgentStartupReport {
+    started: bool,
+    pid: Option<u32>,
+}
+
+trait AgentDaemonLauncher {
+    fn spawn(&self, socket: &Path, pid_file: &Path) -> Result<(), CliError>;
+    fn status_snapshot(&self, socket: &Path) -> Result<Value, io::Error>;
+}
+
+struct ProcessAgentDaemonLauncher;
+
+impl AgentDaemonLauncher for ProcessAgentDaemonLauncher {
+    fn spawn(&self, socket: &Path, pid_file: &Path) -> Result<(), CliError> {
+        spawn_agent_daemon(socket, pid_file)
+    }
+
+    fn status_snapshot(&self, socket: &Path) -> Result<Value, io::Error> {
+        request_status_snapshot(socket)
+    }
+}
+
+fn ensure_agent_running_with_launcher(
+    context: &RuntimeContext,
+    launcher: &dyn AgentDaemonLauncher,
+) -> Result<AgentStartupReport, CliError> {
     fs::create_dir_all(agent_data_dir(context))?;
 
     let pid_path = agent_pid_path(context);
     let socket_path = agent_socket_path(context);
 
-    // Idempotency: if a live PID owns the pid file, print status and exit
-    // 0 without spawning a second daemon.
+    // Idempotency: if a live PID owns the pid file and responds on the
+    // socket, execution can proceed without spawning a second daemon.
     if let Some(pid) = read_running_pid(context)? {
-        writeln!(output, "agent: already running")?;
-        writeln!(output, "running: yes")?;
-        writeln!(output, "pid: {pid}")?;
-        write_agent_paths(context, output)?;
-        return Ok(());
+        if launcher.status_snapshot(&socket_path).is_ok() {
+            return Ok(AgentStartupReport { started: false, pid: Some(pid) });
+        }
+        let _ignored = fs::remove_file(&pid_path);
+        let _ignored = fs::remove_file(&socket_path);
     }
 
     // If the pid file is missing or stale but the socket owner still
@@ -76,22 +134,20 @@ fn agent_start_command(context: &RuntimeContext, output: &mut impl Write) -> Res
     let _ignored = fs::remove_file(&pid_path);
     let _ignored = fs::remove_file(&socket_path);
 
-    spawn_agent_daemon(&socket_path, &pid_path)?;
+    launcher.spawn(&socket_path, &pid_path)?;
 
     // Poll for the socket to appear so the caller's first
     // `agent status`/connect attempt does not race the child.
     wait_for_path_to_exist(&socket_path, AGENT_START_SOCKET_WAIT, AGENT_START_POLL_INTERVAL);
 
     let pid = read_running_pid(context)?;
-    append_agent_log(context, "start", "running", "daemon started")?;
-    writeln!(output, "agent: running")?;
-    writeln!(output, "running: yes")?;
-    match pid {
-        Some(pid) => writeln!(output, "pid: {pid}")?,
-        None => writeln!(output, "pid: -")?,
-    }
-    write_agent_paths(context, output)?;
-    Ok(())
+    launcher.status_snapshot(&socket_path).map_err(|error| {
+        typed_cli_error(
+            locket_core::LocketError::AgentUnavailable,
+            format!("agent did not become reachable after on-demand startup: {error}"),
+        )
+    })?;
+    Ok(AgentStartupReport { started: true, pid })
 }
 
 fn agent_status_command(context: &RuntimeContext, output: &mut impl Write) -> Result<(), CliError> {
@@ -601,5 +657,119 @@ fn follow_agent_logs(
             }
         }
         std::thread::sleep(StdDuration::from_millis(AGENT_LOG_FOLLOW_SLEEP_MS));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+    use std::sync::Arc;
+
+    use locket_platform::{
+        KeyringMasterKeyStore, PassphraseFallbackMasterKeyStore, UnavailableLocalUserVerifier,
+    };
+    use serde_json::json;
+    use tempfile::{TempDir, tempdir};
+
+    use super::*;
+    use crate::runtime::prompts::{
+        EnvOrPromptPassphraseReader, StdinConfirmationReader, StdinOrPromptSecretValueReader,
+        TtyRecoveryCodeReader,
+    };
+
+    struct FakeLauncher {
+        spawn_calls: Cell<usize>,
+        status_ok: Cell<bool>,
+        spawn_ok: bool,
+    }
+
+    impl FakeLauncher {
+        const fn succeeding() -> Self {
+            Self { spawn_calls: Cell::new(0), status_ok: Cell::new(true), spawn_ok: true }
+        }
+
+        const fn status_failing() -> Self {
+            Self { spawn_calls: Cell::new(0), status_ok: Cell::new(false), spawn_ok: true }
+        }
+
+        fn spawn_calls(&self) -> usize {
+            self.spawn_calls.get()
+        }
+    }
+
+    impl AgentDaemonLauncher for FakeLauncher {
+        fn spawn(&self, socket: &Path, pid_file: &Path) -> Result<(), CliError> {
+            self.spawn_calls.set(self.spawn_calls.get() + 1);
+            if !self.spawn_ok {
+                return Err(typed_cli_error(locket_core::LocketError::AgentUnavailable, "spawn"));
+            }
+            if let Some(parent) = pid_file.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::write(pid_file, format!("{}\n", std::process::id()))?;
+            fs::write(socket, b"")?;
+            Ok(())
+        }
+
+        fn status_snapshot(&self, _socket: &Path) -> Result<Value, io::Error> {
+            if self.status_ok.get() {
+                Ok(json!({ "lock_state": "locked", "agent_version": "test" }))
+            } else {
+                Err(io::Error::other("unreachable"))
+            }
+        }
+    }
+
+    fn temp_context(directory: &TempDir) -> RuntimeContext {
+        RuntimeContext {
+            cwd: directory.path().to_path_buf(),
+            store_path: directory.path().join("store.db"),
+            config_path: directory.path().join("config.toml"),
+            template_dir: directory.path().join(".locket").join("templates"),
+            key_store: Arc::new(KeyringMasterKeyStore),
+            passphrase_store: PassphraseFallbackMasterKeyStore::new(
+                directory.path().join("passphrase-fallback"),
+            ),
+            passphrase_reader: Arc::new(EnvOrPromptPassphraseReader),
+            recovery_code_reader: Arc::new(TtyRecoveryCodeReader),
+            confirmation_reader: Arc::new(StdinConfirmationReader),
+            secret_value_reader: Arc::new(StdinOrPromptSecretValueReader),
+            user_verifier: Arc::new(UnavailableLocalUserVerifier),
+        }
+    }
+
+    #[test]
+    fn on_demand_startup_spawns_once_then_reuses_running_agent()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = temp_context(&directory);
+        let launcher = FakeLauncher::succeeding();
+
+        let first = ensure_agent_running_with_launcher(&context, &launcher)?;
+        assert_eq!(first, AgentStartupReport { started: true, pid: Some(std::process::id()) });
+        assert_eq!(launcher.spawn_calls(), 1);
+
+        let second = ensure_agent_running_with_launcher(&context, &launcher)?;
+        assert_eq!(second, AgentStartupReport { started: false, pid: Some(std::process::id()) });
+        assert_eq!(launcher.spawn_calls(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn on_demand_startup_fails_closed_when_spawned_agent_is_unreachable()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = temp_context(&directory);
+        let launcher = FakeLauncher::status_failing();
+
+        let error = ensure_agent_running_with_launcher(&context, &launcher)
+            .expect_err("unreachable agent must fail closed");
+        assert_eq!(launcher.spawn_calls(), 1);
+        let CliError::Typed { kind, message } = error else {
+            return Err("expected typed AgentUnavailable".into());
+        };
+        assert_eq!(kind, locket_core::LocketError::AgentUnavailable);
+        assert!(message.contains("on-demand startup"));
+        Ok(())
     }
 }

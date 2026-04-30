@@ -10,6 +10,7 @@ use serde_json::json;
 use super::run::{
     RuntimeExecutionRequest, execute_prepared_with_runtime_session, unique_secret_names,
 };
+use crate::commands::agent::ensure_agent_running_for_execution;
 use crate::runtime::RuntimeContext;
 use crate::runtime::error::{
     CliError, child_exit_error, confirmation_failed_error, exec_prepare_error,
@@ -54,6 +55,8 @@ pub fn exec_command(
     if args.all && !args.force {
         confirm_exec_all_scope(context, output, &profile, &args.command, &secret_names)?;
     }
+
+    ensure_agent_running_for_execution(context)?;
 
     let mut resolved_secrets = Vec::with_capacity(args.secrets.len());
     let mut locket_env = locket_exec::EnvMap::new();

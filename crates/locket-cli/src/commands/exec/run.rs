@@ -13,6 +13,7 @@ use locket_platform::{LocalUserVerificationRequest, PlatformError};
 use locket_store::{ProfileRecord, RuntimeSessionRecord, RuntimeSessionSecretNameRetention, Store};
 use serde_json::Value;
 
+use crate::commands::agent::ensure_agent_running_for_execution;
 use crate::commands::config::spec::{config_get_value, read_user_config};
 use crate::commands::secrets::import::{EnvImportEntry, parse_env_import};
 use crate::runtime::RuntimeContext;
@@ -94,6 +95,7 @@ pub fn run_command(
     let mut store = open_store(context)?;
     ensure_trusted_project_root(&store, &resolved)?;
     let profile = default_profile(&store, &resolved.config)?;
+    ensure_agent_running_for_execution(context)?;
     let prepared_policy =
         prepare_policy_execution(context, output, &store, &resolved, &profile, &policy)?;
     let status = execute_prepared_with_runtime_session(
