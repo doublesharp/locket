@@ -18,6 +18,8 @@ Slices that have merged to `main` and verified. Open work tracked in
 - [x] `locket bootstrap` command surface and checklist behavior.
 - [x] `locket import` spec coverage.
 - [x] `locket redact` spec coverage.
+- [x] `locket redact --stdin` streams as bytes; non-UTF-8 segments pass
+  through unchanged with a metadata-only warning and audit flag.
 - [x] `locket context` spec coverage.
 - [x] `locket ai-safe` spec coverage.
 - [x] Direct-CLI `LOCK`/`UNLOCK` audit rows record method

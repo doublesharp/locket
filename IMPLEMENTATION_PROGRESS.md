@@ -280,12 +280,8 @@ the spec already covers. Closed slices land in
   precedence and set tombstone preflight returns typed `SecretDeleted`;
   remaining commands still need the unified resolver
   (`docs/specs/data-model.md`, `docs/specs/runtime.md:188-216`).
-- [~] [bec7ddfc] `locket redact --stdin` streaming mode with non-UTF-8 byte
-  Claim: branch agent-bec7ddfc/redact-stdin-bytes, worktree .worktrees/agent-bec7ddfc-redact-stdin-bytes.
-  segment pass-through (warn metadata-only); pattern-only fallback
-  label `lk_redacted_PATTERN_N` for matches not tied to a known id
-  (`docs/specs/scan-redaction.md:43-49`).
-- [ ] `locket ai-safe --pattern-only` degraded locked-vault mode and
+- [~] [70c448c4] `locket ai-safe --pattern-only` degraded locked-vault mode and
+  Claim: branch agent-70c448c4/ai-safe-pattern-output, worktree .worktrees/agent-70c448c4-ai-safe-pattern-output, scope pattern-only execution, transcript file safety, and partial-line cap.
   `--output <file>` 0600 transcript with refuse-overwrite-without-
   `--force`; partial-line buffer cap with redact-and-warn behavior
   (`docs/specs/scan-redaction.md:72-76`).
@@ -685,9 +681,14 @@ the spec already covers. Closed slices land in
 - [ ] Negative-path decryption tests across wrong key/nonce/AAD/
   project/profile/secret-id/name/version dimensions
   (`docs/specs/crypto.md`).
-- [ ] Secret value encoding: reject NUL bytes / multiline values in
+- [~] [e7389a73] Secret value encoding: reject NUL bytes / multiline values in
   `set`/`import`; treat values as bytes-after-UTF-8 across docker/
   compose/exec/redact/scan paths (`docs/specs/crypto.md`).
+  Claim: branch agent-e7389a73/secret-value-encoding, worktree
+  .worktrees/agent-e7389a73-secret-value-encoding. Scope: tighten
+  `validate_secret_value` and import parser to reject embedded
+  newlines (NUL already rejected); follow-up TODO for the broader
+  bytes-after-UTF-8 sweep across docker/compose/exec/redact/scan.
 
 ### App/UI
 
