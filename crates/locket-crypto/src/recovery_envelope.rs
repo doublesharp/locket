@@ -149,8 +149,8 @@ pub fn open_recovery_entry_v1(
     entry_id: &str,
     nonce: &NonceBytes,
     ciphertext: &[u8],
-) -> CryptoResult<Vec<u8>> {
+) -> CryptoResult<Zeroizing<Vec<u8>>> {
     let entry_key = recovery_entry_key_v1(unwrap_root, entry_kind, entry_id, kdf_profile_id)?;
     let aad = recovery_entry_aad_v1(kdf_profile_id, entry_kind, entry_id)?;
-    aead_decrypt(&entry_key, nonce, ciphertext, &aad)
+    Ok(Zeroizing::new(aead_decrypt(&entry_key, nonce, ciphertext, &aad)?))
 }
