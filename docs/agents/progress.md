@@ -185,8 +185,7 @@ skill set fits a leaf better.
     `team-invite-create`.
   - [ ] **subtask** — team-invite-revoke: `locket team revoke-invite`.
     Pre-req: `team-invite-create`.
-- [ ] Role-based authorization for team-managed state
-  (`docs/specs/team-sync-recovery.md:75-110`).
+- [~] [52c592db] branch agent-52c592db/team-role-authorization, worktree .worktrees/agent-52c592db-team-role-authorization; Role-based authorization for team-managed state (`docs/specs/team-sync-recovery.md:75-110`).
 - [ ] Passkey support. Metadata storage and `list`/`remove` exist.
   Remaining: platform registration and PRF optional key wrapping
   (`docs/specs/crypto.md:192-218`).
