@@ -904,9 +904,8 @@ editing — they drift. Severity: **blocker** (security/correctness),
   - [ ] **subtask** — mock-clipboard: trait mock for the clipboard
     module covering copy success, post-TTL clear, and the
     cannot-clear platform path.
-  - [~] [6e4d05db] **subtask** — mock-docker-compose: process-stub harness that
-    Claim: branch agent-6e4d05db/mock-docker-compose, worktree .worktrees/agent-6e4d05db-mock-docker-compose.
-    lets `docker compose config` tests run without Docker installed.
+  - [x] **subtask** — mock-docker-compose: Compose external env
+    resolution has a process-stub harness that runs without Docker.
   - [ ] **subtask** — mutation-deny-by-default: policy-evaluator
     tests that explicitly inject permissive variants and assert
     deny-by-default still rejects.
