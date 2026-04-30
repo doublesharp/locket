@@ -335,9 +335,7 @@ Re-verify file:line references before editing — they drift. Severity:
   crates. Per-surface subtasks (policy/env/crypto/store/typed/
   source-precedence/scanner/audit-hmac/runtime-sessions) shipped
   (`docs/specs/testing.md:8-72`):
-  - [ ] **subtask** — tests-coverage-ratchet: raise the
-    `make coverage-branch` gate by visible deltas after each
-    `tests-*` subtask lands.
+  - [~] [acda32e4] branch agent-acda32e4/tests-coverage-ratchet, worktree .worktrees/agent-acda32e4-tests-coverage-ratchet; **subtask** — tests-coverage-ratchet: raise the `make coverage-branch` gate by visible deltas after each `tests-*` subtask lands.
 - [ ] End-to-end coverage. `e2e-greenfield-init`,
   `e2e-dotenv-migration`, `e2e-policy-run`, `e2e-docker-compose`,
   `e2e-recovery-roundtrip` shipped. Remaining
