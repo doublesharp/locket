@@ -53,6 +53,7 @@ for my $file (@markdown_files) {
 }
 
 for my $file (@markdown_files) {
+    check_markdown_lint($file);
     open my $fh, '<', $file or die "open $file: $!";
     my $line_number = 0;
     while (my $line = <$fh>) {
@@ -123,6 +124,40 @@ sub check_spec_backlinks {
             push @errors, "$path must start with a backlink to docs/specs/index.md";
         }
     }
+}
+
+sub check_markdown_lint {
+    my ($file) = @_;
+    open my $fh, '<', $file or die "open $file: $!";
+    my $line_number = 0;
+    my $saw_line = 0;
+    my $last_line = '';
+    my $in_fence = 0;
+    my $fence_line = 0;
+    while (my $line = <$fh>) {
+        ++$line_number;
+        $saw_line = 1;
+        $last_line = $line;
+
+        push @errors, "$file:$line_number trailing whitespace" if $line =~ /[ \t]\r?\n?\z/;
+        push @errors, "$file:$line_number tab character" if $line =~ /\t/;
+
+        if ($line =~ /^(```+|~~~+)/) {
+            if ($in_fence) {
+                $in_fence = 0;
+                $fence_line = 0;
+            } else {
+                $in_fence = 1;
+                $fence_line = $line_number;
+            }
+            next;
+        }
+    }
+    close $fh;
+
+    push @errors, "$file is empty" unless $saw_line;
+    push @errors, "$file missing final newline" if $saw_line && $last_line !~ /\n\z/;
+    push @errors, "$file:$fence_line unclosed fenced code block" if $in_fence;
 }
 
 sub dirname {
