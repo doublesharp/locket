@@ -2461,6 +2461,7 @@ name = "locket-agent"
 version = "0.1.0"
 dependencies = [
  "locket-core",
+ "locket-crypto",
  "locket-store",
  "rustix",
  "serde",

@@ -607,7 +607,9 @@ pub async fn dispatch(envelope: &RequestEnvelope, state: &AgentSocketState) -> R
         Ok(AgentMethod::ScanKnownValues) => crate::scan::handle_scan(envelope),
         Ok(AgentMethod::ListRuntimeSessions) => handle_list_runtime_sessions(envelope, state).await,
         Ok(AgentMethod::ListPolicies) => handle_list_policies(envelope, state).await,
-        Ok(AgentMethod::ResolveReference) => crate::resolve::handle_resolve(envelope),
+        Ok(AgentMethod::ResolveReference) => {
+            crate::resolve::handle_resolve(envelope, state, current_unix_nanos()).await
+        }
         Ok(AgentMethod::PrepareExec) => crate::prepare_exec::handle_prepare_exec(envelope),
         Ok(AgentMethod::ListSecrets) => handle_list_secrets(envelope),
         Ok(AgentMethod::ListVersions) => handle_list_versions(envelope),

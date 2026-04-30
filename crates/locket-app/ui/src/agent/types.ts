@@ -90,6 +90,11 @@ export interface ScanResponse {
 
 export interface ResolveRequest {
   reference: string;
+  project_id?: string;
+  profile_id?: string;
+  store_path?: string;
+  grant_id?: string;
+  binding?: GrantBinding;
 }
 
 export interface ResolveResponse {
@@ -101,6 +106,11 @@ export interface ResolveResponse {
 export interface PrepareExecRequest {
   policy_name: string;
   profile_id: string;
+}
+
+export interface GrantBinding {
+  pid: number;
+  process_start_time: string;
 }
 
 export interface PrepareExecResponse {
