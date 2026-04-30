@@ -17,6 +17,7 @@ mod row;
 mod runtime_session;
 mod schema;
 mod secret;
+mod team;
 
 pub use audit::{AuditContext, AuditLogRecord, AuditWrite};
 pub use device::DeviceRecord;
@@ -36,6 +37,7 @@ pub use secret::{
     SecretBlobRecord, SecretCopyTarget, SecretFingerprintRecord, SecretMetadataUpdate,
     SecretRecord, SecretVersionRecord, VersionDeprecation,
 };
+pub use team::{PendingTeamInviteRecord, TeamMemberListRecord, TeamRecord};
 
 /// SQLite-backed Locket store.
 #[derive(Debug)]

@@ -597,6 +597,127 @@ fn device_commands_initialize_describe_add_list_and_revoke_metadata_only()
 }
 
 #[test]
+fn team_members_lists_members_and_pending_invites_metadata_only()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    let mut output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut output,
+    )?;
+    seed_team_members_fixture(&directory, false)?;
+
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let audit_count_before = audit_row_count(&store)?;
+    output.clear();
+    run_with_context(Cli::try_parse_from(["locket", "team", "members"])?, &context, &mut output)?;
+
+    let members_output = String::from_utf8(output)?;
+    assert!(members_output.contains("team: Core Team"));
+    assert!(members_output.contains("team_id: lk_team_cli"));
+    assert!(members_output.contains("display=Alice Owner"));
+    assert!(members_output.contains("role=owner"));
+    assert!(members_output.contains("trusted_devices=1"));
+    assert!(members_output.contains("display=Bob Removed"));
+    assert!(members_output.contains("removed_at=30"));
+    assert!(members_output.contains("pending_invites:"));
+    assert!(members_output.contains("id=lk_invite_pending"));
+    assert!(members_output.contains("status=pending"));
+    assert!(members_output.contains("profiles=dev,staging"));
+    assert!(members_output.contains("recipient_device=recipient-fingerprint"));
+    assert!(members_output.contains("metadata_only: yes"));
+    assert!(!members_output.contains("secret"));
+    assert_eq!(audit_row_count(&store)?, audit_count_before);
+    Ok(())
+}
+
+#[test]
+fn team_members_is_locked_vault_safe() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    let mut output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut output,
+    )?;
+    seed_team_members_fixture(&directory, false)?;
+
+    let locked_context =
+        test_context_with_key_store(&directory, Arc::new(UnavailableMasterKeyStore));
+    output.clear();
+    run_with_context(
+        Cli::try_parse_from(["locket", "team", "members"])?,
+        &locked_context,
+        &mut output,
+    )?;
+
+    let members_output = String::from_utf8(output)?;
+    assert!(members_output.contains("display=Alice Owner"));
+    assert!(members_output.contains("metadata_only: yes"));
+    Ok(())
+}
+
+#[test]
+fn team_members_uses_privacy_aliases() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    let mut output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut output,
+    )?;
+    seed_team_members_fixture(&directory, true)?;
+    output.clear();
+    run_with_context(
+        Cli::try_parse_from(["locket", "config", "set", "privacy.redact_names", "true"])?,
+        &context,
+        &mut output,
+    )?;
+
+    output.clear();
+    run_with_context(Cli::try_parse_from(["locket", "team", "members"])?, &context, &mut output)?;
+
+    let members_output = String::from_utf8(output)?;
+    assert!(members_output.contains("team: team-"));
+    assert!(members_output.contains("team_id: team-"));
+    assert!(members_output.contains("display=member-"));
+    assert!(members_output.contains("id=member-"));
+    assert!(members_output.contains("profiles=profile-"));
+    assert!(members_output.contains("recipient_device=device-"));
+    assert!(!members_output.contains("Core Team"));
+    assert!(!members_output.contains("Alice Owner"));
+    assert!(!members_output.contains("lk_invite_pending"));
+    assert!(!members_output.contains("recipient-fingerprint"));
+    assert!(members_output.contains("metadata_only: yes"));
+    Ok(())
+}
+
+#[test]
+fn team_members_without_team_is_metadata_only() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    let mut output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut output,
+    )?;
+
+    output.clear();
+    run_with_context(Cli::try_parse_from(["locket", "team", "members"])?, &context, &mut output)?;
+
+    assert_eq!(
+        String::from_utf8(output)?,
+        "team: none\nmembers: none\npending_invites: none\nmetadata_only: yes\n"
+    );
+    Ok(())
+}
+
+#[test]
 fn init_writes_recovery_envelope_and_metadata_only_audit() -> Result<(), Box<dyn std::error::Error>>
 {
     let directory = tempdir()?;
@@ -989,6 +1110,94 @@ expected_secrets = ["database-url"]
         store.connection().query_row("SELECT COUNT(*) FROM audit_log", [], |row| row.get(0))?;
     assert_eq!(total, 0, "rejected template must not write any audit row");
     Ok(())
+}
+
+fn seed_team_members_fixture(
+    directory: &tempfile::TempDir,
+    include_expired_invite: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let project_id =
+        crate::read_project_config(&directory.path().join("locket.toml"))?.project_id.into_string();
+    let device = crate::DeviceRecord {
+        id: "lk_dev_team_owner".to_owned(),
+        project_id: project_id.clone(),
+        name: "owner laptop".to_owned(),
+        signing_public_key: vec![3; 32],
+        sealing_public_key: vec![4; 32],
+        fingerprint: crate::device_fingerprint_hex(&[3; 32], &[4; 32]),
+        safety_words: vec!["amber".to_owned(), "basil".to_owned()],
+        local: false,
+        created_at: 5,
+        last_seen_at: Some(6),
+        revoked_at: None,
+    };
+    store.insert_device(&device)?;
+    store.connection().execute(
+        "INSERT INTO teams(id, project_id, name, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        ("lk_team_cli", project_id.as_str(), "Core Team", 7_i64, 8_i64),
+    )?;
+    store.connection().execute(
+        "INSERT INTO team_members(id, team_id, device_id, display_name, role, joined_at, removed_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        (
+            "lk_member_owner",
+            "lk_team_cli",
+            "lk_dev_team_owner",
+            "Alice Owner",
+            "owner",
+            10_i64,
+            Option::<i64>::None,
+        ),
+    )?;
+    store.connection().execute(
+        "INSERT INTO team_members(id, team_id, display_name, role, joined_at, removed_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        ("lk_member_removed", "lk_team_cli", "Bob Removed", "developer", 20_i64, Some(30_i64)),
+    )?;
+    let expires_at = crate::now_unix_nanos()? + 1_000_000_000_000;
+    store.connection().execute(
+        "INSERT INTO team_invites(
+           id, team_id, recipient_device_fingerprint, role, profiles_json, nonce, created_at,
+           expires_at
+         )
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        (
+            "lk_invite_pending",
+            "lk_team_cli",
+            "recipient-fingerprint",
+            "developer",
+            serde_json::to_string(&vec!["dev", "staging"])?,
+            vec![9_u8; 24],
+            40_i64,
+            expires_at,
+        ),
+    )?;
+    if include_expired_invite {
+        store.connection().execute(
+            "INSERT INTO team_invites(
+               id, team_id, recipient_device_fingerprint, role, profiles_json, nonce, created_at,
+               expires_at
+             )
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            (
+                "lk_invite_expired",
+                "lk_team_cli",
+                "expired-fingerprint",
+                "developer",
+                "[]",
+                vec![8_u8; 24],
+                1_i64,
+                2_i64,
+            ),
+        )?;
+    }
+    Ok(())
+}
+
+fn audit_row_count(store: &locket_store::Store) -> Result<i64, Box<dyn std::error::Error>> {
+    Ok(store.connection().query_row("SELECT COUNT(*) FROM audit_log", [], |row| row.get(0))?)
 }
 
 fn assert_metadata_invalid<T>(

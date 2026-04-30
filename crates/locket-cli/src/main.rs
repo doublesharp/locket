@@ -270,6 +270,12 @@ enum Command {
         #[command(subcommand)]
         command: DeviceCommand,
     },
+    /// Manage team metadata.
+    Team {
+        /// Team command.
+        #[command(subcommand)]
+        command: TeamCommand,
+    },
     /// Manage automation clients.
     Client {
         /// Automation-client command.
@@ -794,6 +800,12 @@ enum DeviceCommand {
     Remove(DeviceRemoveArgs),
 }
 
+#[derive(Clone, Copy, Debug, Subcommand)]
+enum TeamCommand {
+    /// List team members and pending invites.
+    Members,
+}
+
 #[derive(Debug, Args)]
 struct DeviceInitArgs {
     /// Replace the active local device descriptor.
@@ -1086,6 +1098,7 @@ fn run_with_context(
         Command::Config { command } => config::config_command(context, output, command)?,
         Command::Passkey { command } => vault::passkey::passkey_command(context, output, command)?,
         Command::Device { command } => team::device::device_command(context, output, command)?,
+        Command::Team { command } => team::members::team_command(context, output, command)?,
         Command::Client { command } => team::client::client_command(context, output, command)?,
         Command::Export(args) => team::bundle::export_bundle_command(context, output, &args)?,
         Command::ImportBundle(args) => team::bundle::import_bundle_command(context, output, &args)?,
