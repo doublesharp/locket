@@ -289,11 +289,12 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
     records `confirmation_source = "interactive"` (`7dda131`). A
     `RUN/DENIED` denial-row pass remains a follow-up under
     audit-coverage.
-  - [~] [723116e9] **subtask** — run-user-verification-gate: implement
-    `require_user_verification = true` gate via
-    `crates/locket-platform/src/user_verification.rs`. Audit: `RUN` records
-    `user_verification = { required, satisfied, method }`. Errors:
-    `UserVerificationFailed` (74).
+  - [x] **subtask** — run-user-verification-gate: `require_user_verification`
+    policies route through `RuntimeContext::user_verifier`; failure or
+    unavailable verifier returns `UserVerificationFailed` (74) and writes
+    no audit row, success records
+    `user_verification = { required, satisfied, method }` on `RUN_POLICY`
+    (`577010e`).
   - [ ] **subtask** — run-ttl-grant: enforce policy-declared `ttl = "Xs"`
     grants with `(pid, process_start_time)` binding. Reuses the
     process-start-time helper landed in
