@@ -744,9 +744,10 @@ the spec already covers. Closed slices land in
 - [ ] VS Code gated reveal webview with short-lived data and no
   plaintext persistence (separate from the generic Reveal/copy UI
   gates) (`docs/specs/integrations.md:50-51`).
-- [ ] `locket allow` requires the current root hash to be trusted;
+- [~] [7138f228] `locket allow` requires the current root hash to be trusted;
   fails `ProjectRootUntrusted` before any grant
   (`docs/specs/integrations.md:25`).
+  Claim: branch agent-7138f228/allow-requires-trust, worktree .worktrees/agent-7138f228-allow-requires-trust. Scope: behavior is already in `allow_command` — this slice adds the missing regression test (untrusted root → exit 71, no `ALLOW_DIRECTORY` row written).
 - [ ] Profile-scoped grant invalidation on `locket use <profile>`;
   hook re-prompts `GrantRequired` when no `directory_grants` row
   exists for the now-active profile (`docs/specs/integrations.md:26`).
