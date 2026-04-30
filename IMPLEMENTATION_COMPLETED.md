@@ -90,6 +90,13 @@ Slices that have merged to `main` and verified. Open work tracked in
   mode with `LC_*` matching; `policy doctor` surfaces it.
 - [x] `locket diff --since` resolves git revisions via direct
   `git log -1 --format=%ct <rev>` (no shell construction).
+- [x] `inherit_env` extends (not replaces) the active `env_mode`
+  allowlist via `merge_environment` in `crates/locket-core/src/env.rs`.
+- [x] `lk://` parser rejects `?source=imported` with typed
+  `InvalidReferenceUri::ImportedSource`; regression covers it.
+- [x] `get --reveal` requires a TTY unless `--force` is passed;
+  noninteractive denials write a `REVEAL/DENIED` audit row and
+  successful reveals echo `force=true` in metadata.
 
 ## Full Spec Coverage TODO — Security/Recovery/Team
 

@@ -331,13 +331,6 @@ the spec already covers. Closed slices land in
   unless `allow_remote_docker = true` and a typed confirmation passes.
 - [ ] `compose run` flag plumbing: `--project-directory`,
   `--profile`, and post-`--` passthrough.
-- [x] `inherit_env` extends (not replaces) the active `env_mode`
-  allowlist via `merge_environment` in `crates/locket-core/src/env.rs`.
-- [x] `lk://` parser rejects `?source=imported` with typed
-  `InvalidReferenceUri::ImportedSource`; regression covers it.
-- [x] `get --reveal` requires a TTY unless `--force` is passed;
-  noninteractive denials write a `REVEAL/DENIED` audit row and
-  successful reveals echo `force=true` in metadata.
 - [ ] VS Code extension backed by the local agent
   (`docs/specs/integrations.md:39-65`). Extension never writes audit
   directly; everything goes through agent RPCs. Decomposed below;
