@@ -1044,6 +1044,68 @@ fn device_init_force_replaces_active_local_device() -> Result<(), Box<dyn std::e
     let active_devices = store.list_devices(&project_id, false)?;
     assert_eq!(active_devices.len(), 1);
     assert_ne!(active_devices[0].id, local_device_id);
+    let verified_force_rows: i64 = store.connection().query_row(
+        "SELECT COUNT(*) FROM audit_log
+         WHERE action IN ('DEVICE_ADD', 'DEVICE_REVOKE')
+           AND metadata_json LIKE '%\"user_verification\"%'
+           AND metadata_json LIKE '%\"method\":\"test\"%'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(verified_force_rows, 2);
+    Ok(())
+}
+
+#[test]
+fn device_init_force_requires_local_user_verification_before_rekey()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+
+    let mut init_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "device", "init"])?,
+        &context,
+        &mut init_output,
+    )?;
+    let init_output = String::from_utf8(init_output)?;
+    let local_device_id = init_output
+        .lines()
+        .find_map(|line| line.strip_prefix("device_id: "))
+        .ok_or("missing device id")?
+        .to_owned();
+
+    let rejecting_context =
+        context_with_user_verifier(&context, Arc::new(MemoryLocalUserVerifier::denying()));
+    let mut output = Vec::new();
+    let result = run_with_context(
+        Cli::try_parse_from(["locket", "device", "init", "--force"])?,
+        &rejecting_context,
+        &mut output,
+    );
+    let Err(error) = result else {
+        return Err("device init --force must fail when verification is denied".into());
+    };
+    assert_eq!(error.exit_code(), locket_core::LocketError::UserVerificationFailed.exit_code());
+    assert!(output.is_empty());
+
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let project_id: String =
+        store.connection().query_row("SELECT id FROM projects LIMIT 1", [], |row| row.get(0))?;
+    let active_devices = store.list_devices(&project_id, false)?;
+    assert_eq!(active_devices.len(), 1);
+    assert_eq!(active_devices[0].id, local_device_id);
+    let revoke_rows: i64 = store.connection().query_row(
+        "SELECT COUNT(*) FROM audit_log WHERE action = 'DEVICE_REVOKE'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(revoke_rows, 0);
     Ok(())
 }
 
