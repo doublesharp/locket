@@ -10,6 +10,8 @@ Slices that have merged to `main` and verified. Open work tracked in
   recovery files, and newly created master-key material.
 - [x] High-entropy scanning supports project thresholds, public-id exclusions,
   and `policy doctor` warnings for non-default settings.
+- [x] Duration grammar regressions cover core parsing plus policy TTL,
+  config, runtime-session retention, and rotate grace-TTL readers.
 - [x] `locket status` spec coverage.
 - [x] `locket emit-example` spec coverage.
 - [x] `locket completion <shell>`.

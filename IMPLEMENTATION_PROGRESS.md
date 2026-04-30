@@ -209,12 +209,6 @@ the spec already covers. Closed slices land in
   `--output <file>` 0600 transcript with refuse-overwrite-without-
   `--force`; partial-line buffer cap with redact-and-warn behavior
   (`docs/specs/scan-redaction.md:72-76`).
-- [~] [cb2437f7] `Duration` grammar parser/normalizer
-  (`^[1-9][0-9]*(s|m|h|d|w)$`, reject compound/fractional/zero/
-  negative/uppercase/whitespace) used everywhere durations are read
-  (`docs/specs/data-model.md:27`).
-  Claim: branch agent-cb2437f7/duration-grammar, worktree .worktrees/agent-cb2437f7-duration-grammar, scope parser usage and CLI/config regressions.
-
 ### Runtime/DX
 
 - [ ] Local agent daemon (`docs/specs/agent.md`): socket/pipe server,
