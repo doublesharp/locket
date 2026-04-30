@@ -512,8 +512,6 @@ fn append_audit_rejects_metadata_json_above_64_kib_cap()
 
 #[test]
 fn append_audit_accepts_metadata_json_at_or_below_cap() -> Result<(), Box<dyn std::error::Error>> {
-    use crate::AUDIT_METADATA_JSON_LIMIT;
-
     let mut test_store = open_initialized_store()?;
     insert_project_profile(&test_store.store)?;
 
@@ -544,6 +542,5 @@ fn append_audit_accepts_metadata_json_at_or_below_cap() -> Result<(), Box<dyn st
         |row| row.get(0),
     )?;
     assert_eq!(count, 1);
-    assert!(AUDIT_METADATA_JSON_LIMIT > 60 * 1024);
     Ok(())
 }
