@@ -221,6 +221,8 @@ Slices that have merged to `main` and verified. Open work tracked in
 - [x] Tray notification policy: no secret values, no secret names by default
   (use generic "secret"/"policy"/"project" labels until the user opens the app).
   - Spec: `docs/specs/desktop.md:94-96`.
+- [x] desktop-tray-notifications: tray notification kinds now route
+  through passive notifications without leaking names or values.
 - [x] Accessibility baseline descriptors cover keyboard navigation, focus,
   labels, contrast, reduced motion, and post-TTL metadata scrubbing.
 - [x] Secret version history descriptors cover current/deprecated/purged
