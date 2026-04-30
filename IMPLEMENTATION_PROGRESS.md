@@ -404,8 +404,9 @@ the spec already covers. Closed slices land in
   Claim: branch agent-9f2c8a1e/exec-single-secret, worktree .worktrees/agent-9f2c8a1e-exec-single-secret, scope explicit secret selection, source metadata, and focused CLI regressions.
 - [ ] On-demand agent startup: `locket exec`/`run` start the agent
   when missing; `AgentUnavailable` only after on-demand startup fails.
-- [ ] Docker active-context detection refuses remote/TCP/SSH contexts
+- [~] [7138f228] Docker active-context detection refuses remote/TCP/SSH contexts
   unless `allow_remote_docker = true` and a typed confirmation passes.
+  Claim: branch agent-7138f228/docker-remote-confirmation, worktree .worktrees/agent-7138f228-docker-remote-confirmation. Scope: add typed-string confirmation gate for remote Docker endpoints when `allow_remote_docker = true`; preserve existing default-deny path; typed `ConfirmationFailed` (68) on mismatch with audit denial.
 - [ ] `compose run` flag plumbing: `--project-directory`,
   `--profile`, and post-`--` passthrough.
 - [ ] VS Code extension backed by the local agent
