@@ -258,6 +258,8 @@ Slices that have merged to `main` and verified. Open work tracked in
   untrusted root exits 71, no `ALLOW_DIRECTORY` row written.
 - [x] `mlockall(MCL_CURRENT|MCL_FUTURE)` at CLI startup; `Degraded`
   on low `RLIMIT_MEMLOCK`, `Unsupported` on macOS/Windows.
+- [x] Markdown lint integrated into `make docs-check`: trailing
+  whitespace, tabs, empty files, missing newlines, unclosed fences.
 
 ## Spec-by-Spec Completion Gates
 
