@@ -532,3 +532,158 @@ required_secrets = ["API_KEY"]
         assert_eq!(result, Err(PolicyParseError::CommandsMustBeTable));
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::panic)]
+#[allow(clippy::unwrap_used)]
+mod proptest_policy {
+    use proptest::prelude::*;
+
+    use super::{PolicyDocument, PolicyParseError};
+
+    fn valid_command_name_strategy() -> impl Strategy<Value = String> {
+        prop::string::string_regex("[a-z][a-z0-9_-]{0,15}").expect("valid regex")
+    }
+
+    fn valid_secret_name_strategy() -> impl Strategy<Value = String> {
+        let first = prop::char::ranges(std::borrow::Cow::Borrowed(&['A'..='Z', '_'..='_']));
+        let rest = prop::collection::vec(
+            prop::char::ranges(std::borrow::Cow::Borrowed(&[
+                'A'..='Z',
+                '0'..='9',
+                '_'..='_',
+            ])),
+            0..12,
+        );
+        (first, rest).prop_map(|(f, r)| {
+            let mut s = String::new();
+            s.push(f);
+            s.extend(r);
+            s
+        })
+    }
+
+    proptest! {
+        #[test]
+        fn single_argv_command_round_trips_name_and_command(
+            cmd_name in valid_command_name_strategy(),
+        ) {
+            let toml = format!(
+                "[commands.{cmd_name}]\nargv = [\"ls\", \"-la\"]\n"
+            );
+            let doc = PolicyDocument::from_toml_str(&toml);
+            prop_assert!(doc.is_ok(), "valid policy should parse: {doc:?}");
+            let doc = doc.unwrap();
+            prop_assert!(doc.commands.contains_key(&cmd_name), "command key preserved");
+        }
+
+        #[test]
+        fn required_secrets_are_preserved_in_allowed_secrets(
+            cmd_name in valid_command_name_strategy(),
+            secret in valid_secret_name_strategy(),
+        ) {
+            let toml = format!(
+                "[commands.{cmd_name}]\nargv = [\"run\"]\nrequired_secrets = [\"{secret}\"]\n"
+            );
+            let result = PolicyDocument::from_toml_str(&toml);
+            prop_assert!(result.is_ok(), "valid required_secrets should parse: {result:?}");
+            let doc = result.unwrap();
+            let policy = doc.commands.get(&cmd_name).unwrap();
+            let req_names: Vec<&str> = policy.required_secrets.iter().map(|s| s.as_str()).collect();
+            prop_assert!(req_names.contains(&secret.as_str()), "required secret preserved");
+            let allowed_names: Vec<&str> =
+                policy.allowed_secrets.iter().map(|s| s.as_str()).collect();
+            prop_assert!(allowed_names.contains(&secret.as_str()), "required in allowed_secrets");
+        }
+
+        #[test]
+        fn optional_secrets_appear_in_allowed_secrets(
+            cmd_name in valid_command_name_strategy(),
+            secret in valid_secret_name_strategy(),
+        ) {
+            let toml = format!(
+                "[commands.{cmd_name}]\nargv = [\"run\"]\noptional_secrets = [\"{secret}\"]\n"
+            );
+            let result = PolicyDocument::from_toml_str(&toml);
+            prop_assert!(result.is_ok(), "optional_secrets should parse: {result:?}");
+            let doc = result.unwrap();
+            let policy = doc.commands.get(&cmd_name).unwrap();
+            let allowed_names: Vec<&str> =
+                policy.allowed_secrets.iter().map(|s| s.as_str()).collect();
+            prop_assert!(allowed_names.contains(&secret.as_str()), "optional in allowed_secrets");
+        }
+
+        #[test]
+        fn document_with_no_commands_parses_empty(
+            extra_key in "[a-z]{3,10}",
+            extra_val in "[a-z]{3,10}",
+        ) {
+            let toml = format!("{extra_key} = \"{extra_val}\"\n");
+            let result = PolicyDocument::from_toml_str(&toml);
+            prop_assert!(result.is_ok(), "non-commands top-level keys are ignored: {result:?}");
+            prop_assert_eq!(result.unwrap().commands.len(), 0);
+        }
+
+        #[test]
+        fn name_field_in_command_is_always_rejected(cmd_name in valid_command_name_strategy()) {
+            let toml = format!(
+                "[commands.{cmd_name}]\nargv = [\"run\"]\nname = \"forbidden\"\n"
+            );
+            let result = PolicyDocument::from_toml_str(&toml);
+            prop_assert!(
+                matches!(result, Err(PolicyParseError::NameFieldUnsupported { .. })),
+                "name field must be rejected: {result:?}"
+            );
+        }
+
+        #[test]
+        fn secrets_field_in_command_is_always_rejected(cmd_name in valid_command_name_strategy()) {
+            let toml = format!(
+                "[commands.{cmd_name}]\nargv = [\"run\"]\nsecrets = [\"DATABASE_URL\"]\n"
+            );
+            let result = PolicyDocument::from_toml_str(&toml);
+            prop_assert!(
+                matches!(result, Err(PolicyParseError::SecretsFieldUnsupported { .. })),
+                "secrets field must be rejected: {result:?}"
+            );
+        }
+
+        #[test]
+        fn shell_command_spec_is_accepted(
+            cmd_name in valid_command_name_strategy(),
+            shell_cmd in "[a-z ]{5,30}",
+        ) {
+            let toml =
+                format!("[commands.{cmd_name}]\nshell = \"{shell_cmd}\"\n");
+            let result = PolicyDocument::from_toml_str(&toml);
+            prop_assert!(result.is_ok(), "shell command spec should parse: {result:?}");
+        }
+
+        #[test]
+        fn commands_value_that_is_not_table_always_errors(scalar in 1i64..100) {
+            let toml = format!("commands = {scalar}\n");
+            let result = PolicyDocument::from_toml_str(&toml);
+            prop_assert_eq!(result, Err(PolicyParseError::CommandsMustBeTable));
+        }
+
+        #[test]
+        fn allowed_secrets_length_is_at_least_required_plus_optional(
+            cmd_name in valid_command_name_strategy(),
+            required in valid_secret_name_strategy(),
+            optional in valid_secret_name_strategy(),
+        ) {
+            prop_assume!(required != optional);
+            let toml = format!(
+                "[commands.{cmd_name}]\nargv = [\"run\"]\nrequired_secrets = [\"{required}\"]\noptional_secrets = [\"{optional}\"]\n"
+            );
+            let result = PolicyDocument::from_toml_str(&toml);
+            prop_assert!(result.is_ok(), "distinct required+optional should parse: {result:?}");
+            let doc = result.unwrap();
+            let policy = doc.commands.get(&cmd_name).unwrap();
+            prop_assert!(
+                policy.allowed_secrets.len() >= policy.required_secrets.len() + policy.optional_secrets.len(),
+                "allowed must be superset of required+optional"
+            );
+        }
+    }
+}
