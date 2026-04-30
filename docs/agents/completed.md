@@ -74,6 +74,8 @@ Slices that have merged to `main` and verified. Open work tracked in
   value-access paths.
 - [x] source-precedence-purge: Added regression coverage for ambiguous purge source
   selection.
+- [x] policy-delete-confirmation: Required typed policy-name confirmation before policy
+  deletion.
 
 ## Full Spec Coverage TODO — Runtime/DX
 
