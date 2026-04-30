@@ -201,16 +201,19 @@ fn prepare_parent_directory(parent: &Path) -> Result<(), SocketServerError> {
 /// State shared across every accepted connection.
 #[derive(Clone)]
 pub struct AgentSocketState {
-    /// Source of `Status` responses for this slice's stub handlers.
-    pub status_source: Arc<Mutex<StubStatusSource>>,
+    /// Agent version string reported on `Status` responses.
+    pub agent_version: String,
     /// UID of the running daemon process, used to validate peer
     /// credentials on every accept.
     pub daemon_uid: u32,
+    /// Per-project unlock-key cache populated by `Unlock` and cleared
+    /// by `Lock`. Status responses derive `lock_state` and
+    /// `unlock_ttl_seconds` from the live entries here.
+    pub unlock_cache: Arc<Mutex<crate::unlock_cache::UnlockCache>>,
 }
 
 impl AgentSocketState {
-    /// Builds an initial state with a locked status payload. Future
-    /// slices replace this with a real key-cache-backed source.
+    /// Builds an initial state with an empty unlock cache.
     ///
     /// The daemon UID is captured from the live process when the
     /// state is constructed, which matches how `locket agent start`
@@ -226,37 +229,65 @@ impl AgentSocketState {
     #[must_use]
     pub fn with_daemon_uid(agent_version: impl Into<String>, daemon_uid: u32) -> Self {
         Self {
-            status_source: Arc::new(Mutex::new(StubStatusSource::new(StatusPayload::locked(
-                agent_version,
-            )))),
+            agent_version: agent_version.into(),
             daemon_uid,
+            unlock_cache: Arc::new(Mutex::new(crate::unlock_cache::UnlockCache::default())),
+        }
+    }
+
+    /// Test-only constructor that lets tests inject a shared unlock
+    /// cache so they can pre-populate entries before driving the
+    /// dispatcher.
+    #[cfg(test)]
+    pub fn for_tests(
+        agent_version: impl Into<String>,
+        daemon_uid: u32,
+        cache: Arc<Mutex<crate::unlock_cache::UnlockCache>>,
+    ) -> Self {
+        Self { agent_version: agent_version.into(), daemon_uid, unlock_cache: cache }
+    }
+
+    /// Builds the metadata-only `Status` payload from the current
+    /// unlock-cache state. The reported `unlock_ttl_seconds` is the
+    /// longest remaining TTL across live entries; the agent reports
+    /// `Locked` whenever no live entry remains.
+    pub async fn status_snapshot(&self, now_unix_nanos: i128) -> StatusPayload {
+        let summary = collect_live_summary(&self.unlock_cache, now_unix_nanos).await;
+        StatusPayload {
+            lock_state: if summary.any_live { LockState::Unlocked } else { LockState::Locked },
+            project_id: None,
+            profile_name: None,
+            live_grant_count: 0,
+            agent_version: self.agent_version.clone(),
+            unlock_ttl_seconds: summary.max_remaining_seconds,
         }
     }
 }
 
-/// Provides metadata-only `Status` payloads. Stubbed for this slice;
-/// later slices replace it with the unlock-cache-driven view.
-pub struct StubStatusSource {
-    current: StatusPayload,
+/// Snapshot of live unlock-cache state used to fill a `StatusPayload`.
+struct LiveCacheSummary {
+    any_live: bool,
+    max_remaining_seconds: Option<u64>,
 }
 
-impl StubStatusSource {
-    /// Creates a status source that reports the supplied payload.
-    #[must_use]
-    pub const fn new(initial: StatusPayload) -> Self {
-        Self { current: initial }
-    }
-
-    /// Returns the current status snapshot.
-    #[must_use]
-    pub fn snapshot(&self) -> StatusPayload {
-        self.current.clone()
-    }
-
-    /// Replaces the current snapshot.
-    pub const fn set_lock_state(&mut self, lock_state: LockState) {
-        self.current.lock_state = lock_state;
-    }
+async fn collect_live_summary(
+    unlock_cache: &Arc<Mutex<crate::unlock_cache::UnlockCache>>,
+    now_unix_nanos: i128,
+) -> LiveCacheSummary {
+    let live_expiries: Vec<i128> = {
+        let cache = unlock_cache.lock().await;
+        cache
+            .entries_for_status()
+            .filter(|entry| !entry.is_expired(now_unix_nanos))
+            .map(crate::unlock_cache::UnlockEntry::expires_at_unix_nanos)
+            .collect()
+    };
+    let any_live = !live_expiries.is_empty();
+    let max_remaining_seconds = live_expiries
+        .into_iter()
+        .map(|expires_at| u64::try_from((expires_at - now_unix_nanos) / 1_000_000_000).unwrap_or(0))
+        .max();
+    LiveCacheSummary { any_live, max_remaining_seconds }
 }
 
 /// Handles a single accepted connection.
@@ -311,12 +342,68 @@ async fn read_one_frame(
     }
 }
 
-async fn dispatch(envelope: &RequestEnvelope, state: &AgentSocketState) -> ResponseEnvelope {
+/// Wire payload for the `Unlock` RPC. The `key` field is bytes-as-array
+/// per the v1 spec; `serde_bytes` lets serde accept JSON byte arrays
+/// without forcing the client to base64-encode the unwrapped key.
+#[derive(serde::Deserialize)]
+struct UnlockPayload {
+    project_id: String,
+    #[serde(with = "serde_bytes")]
+    key: Vec<u8>,
+    ttl_seconds: u64,
+    method: crate::unlock_cache::UnlockMethod,
+}
+
+/// Returns the current Unix wall-clock time in nanoseconds, clamped to
+/// the positive `i64` range so downstream arithmetic stays in `i128`.
+pub fn current_unix_nanos() -> i128 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| {
+            let max = u128::from(u64::try_from(i64::MAX).unwrap_or(0));
+            let clamped = d.as_nanos().min(max);
+            i128::from(i64::try_from(clamped).unwrap_or(0))
+        })
+        .unwrap_or(0)
+}
+
+fn error_response(envelope: &RequestEnvelope, error: &str, message: &str) -> ResponseEnvelope {
+    ResponseEnvelope::Error(ErrorEnvelope::new(envelope.id.clone(), error, message, false))
+}
+
+pub async fn dispatch(envelope: &RequestEnvelope, state: &AgentSocketState) -> ResponseEnvelope {
     match envelope.method() {
         Ok(AgentMethod::Status) => {
-            let snapshot = state.status_source.lock().await.snapshot();
+            let snapshot = state.status_snapshot(current_unix_nanos()).await;
             let payload = serde_json::to_value(snapshot).unwrap_or(serde_json::Value::Null);
             ResponseEnvelope::Success(SuccessEnvelope::new(envelope.id.clone(), payload))
+        }
+        Ok(AgentMethod::Unlock) => {
+            let payload: UnlockPayload = match serde_json::from_value(envelope.payload.clone()) {
+                Ok(payload) => payload,
+                Err(_) => {
+                    return error_response(envelope, "ProtocolError", "invalid Unlock payload");
+                }
+            };
+            let entry = crate::unlock_cache::UnlockEntry::new(
+                payload.key,
+                current_unix_nanos(),
+                std::time::Duration::from_secs(payload.ttl_seconds),
+                payload.method,
+            );
+            state.unlock_cache.lock().await.insert(payload.project_id, entry);
+            ResponseEnvelope::Success(SuccessEnvelope::new(
+                envelope.id.clone(),
+                serde_json::Value::Null,
+            ))
+        }
+        Ok(AgentMethod::Lock) => {
+            state.unlock_cache.lock().await.clear();
+            ResponseEnvelope::Success(SuccessEnvelope::new(
+                envelope.id.clone(),
+                serde_json::Value::Null,
+            ))
         }
         Ok(AgentMethod::Reveal) => crate::reveal::handle_reveal(envelope),
         Ok(AgentMethod::Copy) => crate::reveal::handle_copy(envelope),
@@ -352,4 +439,38 @@ async fn write_response(stream: &mut UnixStream, response: &ResponseEnvelope) ->
 #[must_use]
 pub fn socket_permission_mode(path: &Path) -> Option<u32> {
     std::fs::metadata(path).ok().map(|metadata| metadata.permissions().mode() & 0o777)
+}
+
+#[cfg(test)]
+mod cache_status_tests {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use super::*;
+    use crate::unlock_cache::{UnlockCache, UnlockEntry, UnlockMethod};
+    use tokio::sync::Mutex;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn status_reports_unlocked_when_cache_has_live_entry() {
+        let cache = Arc::new(Mutex::new(UnlockCache::default()));
+        cache.lock().await.insert(
+            "proj-1".to_owned(),
+            UnlockEntry::new(
+                b"k".to_vec(),
+                1_000_000_000,
+                Duration::from_secs(60),
+                UnlockMethod::Passphrase,
+            ),
+        );
+        let state = AgentSocketState::for_tests(
+            "test-version",
+            crate::peer_cred::current_process_uid(),
+            cache.clone(),
+        );
+
+        let snapshot = state.status_snapshot(1_500_000_000).await;
+
+        assert_eq!(snapshot.lock_state, LockState::Unlocked);
+        assert_eq!(snapshot.unlock_ttl_seconds, Some(59));
+    }
 }

@@ -30,6 +30,9 @@ pub struct StatusPayload {
     pub live_grant_count: u32,
     /// Agent version string.
     pub agent_version: String,
+    /// Remaining unlock TTL, in whole seconds, when an unlock cache
+    /// entry is live. `None` when the agent is locked.
+    pub unlock_ttl_seconds: Option<u64>,
 }
 
 impl StatusPayload {
@@ -42,6 +45,7 @@ impl StatusPayload {
             profile_name: None,
             live_grant_count: 0,
             agent_version: agent_version.into(),
+            unlock_ttl_seconds: None,
         }
     }
 }

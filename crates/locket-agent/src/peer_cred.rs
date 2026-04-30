@@ -73,11 +73,13 @@ mod tests {
     #[test]
     fn validate_peer_uid_rejects_cross_user_connections() {
         let result = validate_peer_uid(1001, 1000);
-        let Err(SocketServerError::PeerCredentialDenied { peer_uid, daemon_uid }) = result else {
-            panic!("expected PeerCredentialDenied, got {result:?}");
-        };
-        assert_eq!(peer_uid, 1001);
-        assert_eq!(daemon_uid, 1000);
+        assert!(
+            matches!(
+                result,
+                Err(SocketServerError::PeerCredentialDenied { peer_uid: 1001, daemon_uid: 1000 })
+            ),
+            "expected PeerCredentialDenied(1001, 1000), got {result:?}",
+        );
     }
 
     #[test]

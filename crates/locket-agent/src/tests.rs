@@ -211,7 +211,8 @@ fn heartbeat_status_event_uses_spec_wire_shape() -> Result<(), serde_json::Error
             "project_id": null,
             "profile_name": null,
             "live_grant_count": 0,
-            "agent_version": "0.1.0"
+            "agent_version": "0.1.0",
+            "unlock_ttl_seconds": null
         })
     );
     Ok(())
@@ -249,6 +250,37 @@ fn status_event_success_envelope_decodes_for_stream_clients() -> Result<(), Prot
     assert_eq!(decoded_event.sequence, 9);
     assert_eq!(decoded_event.status.lock_state, LockState::Locked);
     Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn unlock_then_lock_round_trip() {
+    use crate::envelope::{RequestEnvelope, ResponseEnvelope};
+    use crate::method::AgentMethod;
+    use crate::server::{AgentSocketState, dispatch};
+    use serde_json::json;
+
+    let state = AgentSocketState::locked("test-version");
+
+    let unlock = RequestEnvelope::new(
+        "req-1",
+        AgentMethod::Unlock,
+        json!({
+            "project_id": "p-1",
+            "key": [9, 9, 9, 9],
+            "ttl_seconds": 30,
+            "method": "Passphrase"
+        }),
+    );
+    let response = dispatch(&unlock, &state).await;
+    assert!(matches!(response, ResponseEnvelope::Success(_)));
+    let populated = !state.unlock_cache.lock().await.is_empty();
+    assert!(populated, "Unlock should populate the cache");
+
+    let lock = RequestEnvelope::new("req-2", AgentMethod::Lock, json!({}));
+    let response = dispatch(&lock, &state).await;
+    assert!(matches!(response, ResponseEnvelope::Success(_)));
+    let cleared = state.unlock_cache.lock().await.is_empty();
+    assert!(cleared, "Lock must clear every cache entry");
 }
 
 #[cfg(unix)]
@@ -486,8 +518,11 @@ mod server_tests {
 
         let server_state = state.clone();
         let server = tokio::spawn(async move {
-            let (stream, _) = listener.accept().await.expect("accept");
-            handle_connection(stream, server_state).await
+            let (stream, _) = match listener.accept().await {
+                Ok(pair) => pair,
+                Err(error) => return Err(error),
+            };
+            Ok(handle_connection(stream, server_state).await)
         });
 
         let mut client = UnixStream::connect(&socket_path).await?;
@@ -512,7 +547,7 @@ mod server_tests {
             "rejected peer must not receive any response bytes, got {buffer:?}"
         );
 
-        let outcome = server.await?;
+        let outcome = server.await??;
         assert!(
             matches!(
                 &outcome,
@@ -539,8 +574,11 @@ mod server_tests {
 
         let server_state = state.clone();
         let server = tokio::spawn(async move {
-            let (stream, _) = listener.accept().await.expect("accept");
-            handle_connection(stream, server_state).await
+            let (stream, _) = match listener.accept().await {
+                Ok(pair) => pair,
+                Err(error) => return Err(error),
+            };
+            Ok(handle_connection(stream, server_state).await)
         });
 
         let mut client = UnixStream::connect(&socket_path).await?;
@@ -567,7 +605,7 @@ mod server_tests {
         assert_eq!(success.id, "req-1");
 
         drop(client);
-        let outcome = server.await?;
+        let outcome = server.await??;
         assert_eq!(outcome, ConnectionOutcome::PeerClosed);
         Ok(())
     }

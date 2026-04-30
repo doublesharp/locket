@@ -14,6 +14,7 @@ mod scan;
 #[cfg(unix)]
 mod server;
 mod status;
+mod unlock_cache;
 
 pub use envelope::{ErrorEnvelope, RequestEnvelope, ResponseEnvelope, SuccessEnvelope};
 pub use error::ProtocolError;
@@ -28,13 +29,14 @@ pub use reveal::{CopyRequest, CopyResponse, RevealRequest, RevealResponse};
 pub use scan::{ScanFinding, ScanRequest, ScanResponse};
 #[cfg(unix)]
 pub use server::{
-    AgentSocketConfig, AgentSocketState, ConnectionOutcome, SocketServerError, StubStatusSource,
+    AgentSocketConfig, AgentSocketState, ConnectionOutcome, SocketServerError,
     bind_socket_listener, handle_connection, socket_permission_mode,
 };
 pub use status::{
     LockState, STATUS_HEARTBEAT_INTERVAL_SECS, StatusEvent, StatusEventKind, StatusEventSequence,
     StatusPayload,
 };
+pub use unlock_cache::{UnlockCache, UnlockEntry, UnlockMethod};
 
 /// Maximum v1 protocol message size in bytes.
 pub const DEFAULT_MAX_MESSAGE_SIZE: usize = 1024 * 1024;
