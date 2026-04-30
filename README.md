@@ -247,6 +247,7 @@ make fuzz-nightly STRICT=1
 
 Quality gate scripts live in `scripts/` and are intentionally metadata-only:
 they must not print, snapshot, or persist secret values. Generated reports are
-written under `target/quality/` or `coverage/` and are ignored by Git.
+written under `target/quality/` or `coverage/` and are ignored by Git. RustSec
+advisory policy output is written to `target/quality/rustsec-policy.md`.
 
 Full design specs live in [`docs/specs/index.md`](docs/specs/index.md).

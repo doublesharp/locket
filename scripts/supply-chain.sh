@@ -49,8 +49,10 @@ audit_local() {
     return 0
   fi
 
+  metadata
+
   if ${cargo_audit} --help 2>/dev/null | grep -q -- '--no-fetch'; then
-    ${cargo_audit} --no-fetch --stale
+    audit_with_policy --no-fetch --stale --json
     return 0
   fi
 
@@ -64,8 +66,35 @@ audit_local() {
 
 audit_strict() {
   if require_tool "cargo-audit" "${cargo_audit}"; then
-    ${cargo_audit}
+    metadata
+    audit_with_policy --json
   fi
+}
+
+audit_with_policy() {
+  local audit_json="${quality_dir}/rustsec-audit.json"
+  local report="${quality_dir}/rustsec-policy.md"
+  local status
+
+  set +e
+  ${cargo_audit} "$@" > "${audit_json}"
+  status=$?
+  set -e
+
+  if [[ ! -s "${audit_json}" ]]; then
+    echo "cargo-audit did not write a JSON report" >&2
+    exit "${status:-1}"
+  fi
+
+  if [[ "${status}" -gt 1 ]]; then
+    echo "cargo-audit failed before policy evaluation; see ${audit_json}" >&2
+    exit "${status}"
+  fi
+
+  scripts/rustsec-policy.pl \
+    "${audit_json}" \
+    "${quality_dir}/cargo-metadata.json" \
+    "${report}"
 }
 
 unsafe_inventory() {
