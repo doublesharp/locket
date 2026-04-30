@@ -634,9 +634,10 @@ the spec already covers. Closed slices land in
   records the override in the `RECOVER` audit row.
 - [ ] Typed `metadata_json` shape validator per audit action family
   (required fields, no unknown fields without a schema bump).
-- [ ] Audit-tx atomicity: append + data change share one SQLite
+- [~] [2b8d143a] Audit-tx atomicity: append + data change share one SQLite
   transaction; sequence assigned at commit; rollback leaves no gap
   or phantom row (`docs/specs/audit.md`).
+  Claim: branch agent-2b8d143a/audit-tx-atomicity, worktree .worktrees/agent-2b8d143a-audit-tx-atomicity. Scope: regression tests that lock in the existing in-tx invariant — append_audit inside a rolled-back tx leaves audit_log empty and the next successful append still uses sequence 1.
 - [~] [7138f228] `metadata_json` ≤64 KiB per-row cap enforced at write time;
   large `secret_names`/`redacted_secret_names` collections summarize
   to stay under the cap (`docs/specs/audit.md`,
