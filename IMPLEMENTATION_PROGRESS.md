@@ -363,6 +363,20 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
 - [~] `locket exec --all` typed-confirmation flow and `EXEC` audit
   shipped. Remaining: `locket env inspect` enhancements and env-layering /
   override-mode docs.
+- [ ] `locket exec --secret KEY` single-key injection (distinct from
+  `--all`); writes `EXEC` row.
+- [ ] On-demand agent startup: `locket exec`/`run` start the agent
+  when missing; `AgentUnavailable` only after on-demand startup fails.
+- [ ] Docker active-context detection refuses remote/TCP/SSH contexts
+  unless `allow_remote_docker = true` and a typed confirmation passes.
+- [ ] `compose run` flag plumbing: `--project-directory`,
+  `--profile`, and post-`--` passthrough.
+- [ ] `inherit_env` extends the active `env_mode` allowlist rather
+  than replacing it (`docs/specs/runtime.md`).
+- [ ] `lk://` parser rejects `?source=imported` (provenance lives on
+  the secret, not the reference).
+- [ ] `get --reveal` requires a TTY unless `--force` is passed; the
+  `REVEAL` row records `force=true`.
 - [ ] VS Code extension backed by the local agent
   (`docs/specs/integrations.md:39-65`). Extension never writes audit
   directly; everything goes through agent RPCs. Decomposed below;
