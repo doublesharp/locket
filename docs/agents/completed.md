@@ -286,6 +286,9 @@ Slices that have merged to `main` and verified. Open work tracked in
 - [x] desktop-execution-data: Desktop execution monitor now loads metadata-only runtime
   sessions from the agent. The view refreshes state, aliases, stale rows, and safe
   audit/session fields.
+- [x] agent-list-policies: The agent protocol now exposes a metadata-only ListPolicies
+  RPC with privacy aliases. Saved policy rows can be filtered by project without
+  returning secret values.
 
 ## Full Spec Coverage TODO — Code Health and Bug Fixes
 
