@@ -434,9 +434,10 @@ the spec already covers. Closed slices land in
   - [x] **subtask** — policy-shell-vs-argv: parser distinguishes
     `argv = [...]` vs `shell = "..."`; evaluator dispatches on
     `CommandSpec`.
-- [ ] Ephemeral env-file fallback for children that can't accept an env
+- [~] [bec7ddfc] Ephemeral env-file fallback for children that can't accept an env
   map: 0700 parent / 0600 file outside project tree, post-spawn delete,
   audited delivery mode, secure-erase warning when unsupported.
+  Claim: branch agent-bec7ddfc/ephemeral-env-file, worktree .worktrees/agent-bec7ddfc-ephemeral-env-file. Scope: locket-exec helper that writes the locket env layer to a 0600 temp file under a 0700 parent dir outside the project root, returns a guard that deletes the file on drop, and reports the delivery mode for audit metadata. Integration into a docker delivery mode is left as a follow-up.
 - [~] Clipboard clear-after-TTL only if clipboard still contains the
   value. Wayland-aware pre-copy warning and `COPY` audit
   `unsupported_reason` shipped; background TTL clearing remains.
@@ -444,7 +445,7 @@ the spec already covers. Closed slices land in
 
 - [ ] Sealed bundle. Decomposed below; later subtasks depend on
   `bundle-container-format` (`docs/specs/team-sync-recovery.md:111-224`).
-  - [~] [e7389a73] **subtask** — bundle-container-format: implement the versioned
+  - [x] [e7389a73] **subtask** — bundle-container-format: implement the versioned
     container (magic header, schema version, plaintext-minimal
     manifest, encrypted-payload section) plus a writer/reader pair.
     Manifest minimization is enforced in code (no profile/secret/
@@ -452,7 +453,6 @@ the spec already covers. Closed slices land in
     (110). Tests: round-trip a synthetic container; rejects unknown
     schema, oversized manifest, and disallowed manifest fields.
     Pre-req for all other bundle subtasks.
-    Claim: branch agent-e7389a73/bundle-container-format, worktree .worktrees/agent-e7389a73-bundle-container-format.
   - [ ] **subtask** — bundle-age-encryption: integrate `age`/`rage`
     library for the encrypted payload with multi-recipient support.
     Errors: `BundleVerificationFailed` (110) on AAD/auth-tag failure.
@@ -568,9 +568,8 @@ the spec already covers. Closed slices land in
     ids; reject second use with `ReplayDetected` (113). Pre-req:
     `invite-codec`.
     Claim: branch agent-e7389a73/invite-replay-protect, worktree .worktrees/agent-e7389a73-invite-replay-protect. Scope: Store::mark_invite_accepted helper that flips team_invites.accepted_at and returns InviteReplayDetected on second use; pure-store, no consumer wiring (consumers land in team-invite-accept).
-  - [~] [7138f228] **subtask** — invite-clock-skew: 5-minute clock-skew tolerance
+  - [x] [7138f228] **subtask** — invite-clock-skew: 5-minute clock-skew tolerance
     on expiry; outside → `InviteExpired`. Pre-req: `invite-codec`.
-    Claim: branch agent-7138f228/invite-clock-skew, worktree .worktrees/agent-7138f228-invite-clock-skew. Scope: `SignedInvite::check_expiry(now_unix_seconds)` helper that accepts up to 5 min past `expires_at`; pure-core, no consumer wiring (consumers land in `invite-accept-display`/`team-invite-accept`).
   - [ ] **subtask** — invite-fail-closed: expired/revoked/
     fingerprint-mismatched/signature-invalid invites fail closed with
     typed errors and audit denial rows.
@@ -593,9 +592,8 @@ the spec already covers. Closed slices land in
     (`SO_PEERCRED`/`LOCAL_PEERCRED`/named-pipe SID) on the agent
     socket. Pre-req: `agent-socket-server`.
     Claim: branch agent-7138f228/harden-peer-cred, worktree .worktrees/agent-7138f228-harden-peer-cred. Scope: validate the connecting peer's uid matches the daemon's uid via rustix `getsockopt_peercred` (Linux) / `getpeereid` (macOS) inside `handle_connection`; reject mismatched peers with the typed `AccessDenied` ProtocolError envelope before any RPC dispatch. Windows named-pipe SID stays a follow-up.
-  - [~] [e7389a73] **subtask** — harden-socket-perms: 0600/equivalent socket and
+  - [x] [e7389a73] **subtask** — harden-socket-perms: 0600/equivalent socket and
     pipe permissions; refuse to start if the bind path is wider.
-    Claim: branch agent-e7389a73/harden-socket-perms, worktree .worktrees/agent-e7389a73-harden-socket-perms. Scope: refuse to bind when an existing parent dir or socket path is wider than 0o700/0o600.
   - [x] **subtask** — harden-memory-lock: `mlockall` at CLI startup;
     graceful `Degraded` on `RLIMIT_MEMLOCK` limit; `Unsupported` on macOS/Windows.
   - [x] **subtask** — harden-zeroize: `Zeroizing` wrappers at all key/value owner sites; recovery envelope return value wrapped.
@@ -603,9 +601,8 @@ the spec already covers. Closed slices land in
     screen lock, and user-session switch; emit `LOCK` audit row.
   - [x] **subtask** — harden-doctor-degraded: doctor reports
     `core_dumps` hardening status; future features added as they ship.
-- [~] [7138f228] Member/device revocation produces a rotation checklist for every
+- [x] [7138f228] Member/device revocation produces a rotation checklist for every
   profile/secret the revoked principal could access.
-  Claim: branch agent-7138f228/revocation-rotation-checklist, worktree .worktrees/agent-7138f228-revocation-rotation-checklist. Scope: emit a profile-by-profile rotation checklist (count of active secrets per profile in the project) at the end of `team remove` and `team revoke-device`; metadata-only, no values. Member-to-profile scoping is approximated as "all project profiles" until invite-issued profile lists are persisted.
 - [ ] `imported_audit_chains` structural verifier (monotonic sequence,
   prev-HMAC linkage, checkpoint HMAC match) used by
   `import-bundle`/`team accept` and surfaced via `audit verify`.
@@ -635,7 +632,7 @@ the spec already covers. Closed slices land in
 - [x] `locket bundle verify` writes a `BUNDLE_VERIFY` audit row when
   the bundle's project matches the cwd; unknown-project invocations
   stay metadata-only.
-- [~] [aa40a4ce] Solo-developer authorization: treat the local user as Owner
+- [x] [aa40a4ce] Solo-developer authorization: treat the local user as Owner
   when no `Team` record exists, while still enforcing typed
   confirmations / verification / audit / source-selection rules
   (`docs/specs/team-sync-recovery.md`).
@@ -806,11 +803,10 @@ editing — they drift. Severity: **blocker** (security/correctness),
   - [x] **subtask** — tests-store-migrations: schema migration paths, `SCHEMA_MIGRATE` audit on every step, rollback on failure.
   - [x] **subtask** — tests-typed-errors: per-variant exit-code
     regression for all `LocketError` variants.
-  - [~] [aa40a4ce] **subtask** — tests-source-precedence: cover the unified
+  - [x] [aa40a4ce] **subtask** — tests-source-precedence: cover the unified
     resolver across `set`, `get`, `list`, `rotate`, `rm`, `purge`,
     `history`, `diff`, `copy`, reveal/copy, and execution. Pairs with
     the source-precedence item under `Near-Term CLI/Core`.
-    Claim: branch agent-aa40a4ce/tests-source-precedence, worktree .worktrees/agent-aa40a4ce-tests-source-precedence.
   - [x] **subtask** — tests-scanner-rules: cover `crates/locket-scan/`
     rule matching, severity overrides, suppression markers, and the
     `--require-known` pre-commit mode.
@@ -836,15 +832,13 @@ editing — they drift. Severity: **blocker** (security/correctness),
   - [ ] **subtask** — e2e-agent-rpc: drive the agent socket through
     `Status`, `Lock`, `Unlock`, `RequestGrant`, `RevokeGrant`,
     `SubscribeStatus`. Depends on the daemon subtasks.
-  - [~] [aa40a4ce] **subtask** — e2e-policy-run: write a policy, `policy doctor`,
+  - [x] [aa40a4ce] **subtask** — e2e-policy-run: write a policy, `policy doctor`,
     `locket run` argv path with required/optional secrets, deny path,
     confirm gate, user-verification gate. Pairs with the `locket run`
     subtask tree.
-    Claim: branch agent-aa40a4ce/e2e-policy-run, worktree .worktrees/agent-aa40a4ce-e2e-policy-run.
-  - [~] [7138f228] **subtask** — e2e-docker-compose: `locket exec` and
+  - [x] [7138f228] **subtask** — e2e-docker-compose: `locket exec` and
     `locket run` against a stub `docker compose`, names-only audit,
     refusal of remote contexts.
-    Claim: branch agent-7138f228/e2e-docker-compose, worktree .worktrees/agent-7138f228-e2e-docker-compose. Scope: end-to-end test that drives `prepare_docker_policy_execution` and `prepare_compose_policy_execution` through a docker-policy + compose-policy run with a `docker` argv0 (no real docker), asserts names-only `RUN` audit metadata, and a remote-DOCKER_HOST refusal.
   - [x] **subtask** — e2e-recovery-roundtrip: `init` → `recover` → `recovery rotate`; refusal-when-keychain-valid and `--force` audit override.
   - [ ] **subtask** — e2e-team-invite-accept: `team init` →
     `team invite` → `team accept` (signature + safety-words display)
@@ -921,9 +915,8 @@ editing — they drift. Severity: **blocker** (security/correctness),
   - [~] [aa40a4ce] **subtask** — mutation-expired-versions: pinned `lk://...@vN`
     past `grace_until` returns typed `SecretVersionExpired`.
     Claim: branch agent-aa40a4ce/mutation-expired-versions, worktree .worktrees/agent-aa40a4ce-mutation-expired-versions.
-  - [~] [aa40a4ce] **subtask** — mutation-dangerous-profile: dangerous-profile
+  - [x] [aa40a4ce] **subtask** — mutation-dangerous-profile: dangerous-profile
     reads emit the documented denial audit and refuse value access.
-    Claim: branch agent-aa40a4ce/mutation-dangerous-profile, worktree .worktrees/agent-aa40a4ce-mutation-dangerous-profile.
 - [ ] Bench fixtures: metadata, runtime, reference-resolution,
   staged-scan, full-scan, and Argon2 fixtures used by `make bench`
   (`docs/specs/performance.md`).
