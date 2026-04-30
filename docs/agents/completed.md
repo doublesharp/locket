@@ -191,6 +191,8 @@ Slices that have merged to `main` and verified. Open work tracked in
 - [x] recovery-user-verification: Forced recovery override now requires fresh user
   verification before overwriting intact keychain state.
 - [x] team-invite-revoke: Added local-first team invite revocation.
+- [x] passkey-remove-user-verification: Required local verification before passkey
+  removal.
 
 ## Full Spec Coverage TODO — App/UI
 

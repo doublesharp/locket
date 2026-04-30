@@ -164,7 +164,6 @@ skill set fits a leaf better.
   shipped. Remaining:
   - [~] [acda32e4] branch agent-acda32e4/team-invite-accept, worktree .worktrees/agent-acda32e4-team-invite-accept; **subtask** — team-invite-accept: verify signature, fingerprint, expiry, replay, safety-words display. Pre-req: `team-invite-create`.
 - [~] [52c592db] branch agent-52c592db/team-role-authorization, worktree .worktrees/agent-52c592db-team-role-authorization; Role-based authorization for team-managed state (`docs/specs/team-sync-recovery.md:75-110`).
-- [~] [acda32e4] branch agent-acda32e4/passkey-remove-user-verification, worktree .worktrees/agent-acda32e4-passkey-remove-user-verification; **subtask** - passkey-remove-user-verification: fresh local verification before passkey removal.
 - [ ] Passkey support remaining: platform registration and PRF
   optional key wrapping (`docs/specs/crypto.md:192-218`).
 - [ ] Device descriptors (`lkdev1_` base64url JSON), v1 fingerprint
