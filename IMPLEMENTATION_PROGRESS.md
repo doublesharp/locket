@@ -563,9 +563,10 @@ the spec already covers. Closed slices land in
     sites that haven't been migrated.
   - [ ] **subtask** — harden-session-lock: lock on system sleep,
     screen lock, and user-session switch; emit `LOCK` audit row.
-  - [ ] **subtask** — harden-doctor-degraded: doctor reports each
+  - [~] [7138f228] **subtask** — harden-doctor-degraded: doctor reports each
     hardening feature's status (`active`/`degraded`/`unsupported`)
     so users can see fall-backs.
+    Claim: branch agent-7138f228/harden-doctor-degraded, worktree .worktrees/agent-7138f228-harden-doctor-degraded. Scope: surface `core_dumps` hardening in doctor; other hardening features get added to the same check as they ship.
 - [ ] Member/device revocation produces a rotation checklist for every
   profile/secret the revoked principal could access.
 - [ ] `imported_audit_chains` structural verifier (monotonic sequence,
