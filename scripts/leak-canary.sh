@@ -11,4 +11,5 @@ if [[ "${offline}" == "1" ]]; then
 fi
 
 "${cargo_bin}" test -p locket-scan --test leak_canary "${offline_args[@]}" -j "${jobs}"
+"${cargo_bin}" test -p locket-cli cli_canary "${offline_args[@]}" -j "${jobs}"
 echo "leak canary passed"

@@ -412,6 +412,7 @@ mod exec;
 mod grants_agent_diag;
 mod history_purge_import;
 mod init_template_device;
+mod leak_canary;
 mod mutation_expired_versions;
 mod parsers;
 mod passphrase_recovery_hooks;
