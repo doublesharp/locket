@@ -19,7 +19,7 @@ mod schema;
 mod secret;
 mod team;
 
-pub use audit::{AuditContext, AuditLogRecord, AuditWrite};
+pub use audit::{AUDIT_METADATA_JSON_LIMIT, AuditContext, AuditLogRecord, AuditWrite};
 pub use device::DeviceRecord;
 pub use error::StoreError;
 pub use grants::DirectoryGrantRecord;

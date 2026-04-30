@@ -11,6 +11,13 @@ use sha2::Sha256;
 use crate::Store;
 use crate::error::StoreError;
 
+/// Maximum serialized `metadata_json` byte length per audit row.
+///
+/// `docs/specs/audit.md` and `docs/specs/data-model.md` cap each
+/// row's metadata at 64 KiB. The append path enforces this before
+/// writing so the chain never contains an unbounded row.
+pub const AUDIT_METADATA_JSON_LIMIT: usize = 64 * 1024;
+
 /// HMAC-covered audit row to append.
 #[derive(Debug)]
 pub struct AuditWrite<'a> {
@@ -167,6 +174,14 @@ pub fn append_audit(
     audit_key: &[u8],
     audit: &AuditWrite<'_>,
 ) -> Result<(), StoreError> {
+    let metadata_json = canonical_json_string(Some(audit.metadata_json));
+    if metadata_json.len() > AUDIT_METADATA_JSON_LIMIT {
+        return Err(StoreError::AuditMetadataTooLarge {
+            action: audit.action.to_owned(),
+            actual: metadata_json.len(),
+            limit: AUDIT_METADATA_JSON_LIMIT,
+        });
+    }
     let previous = transaction
         .query_row(
             "SELECT sequence, hmac
@@ -204,7 +219,6 @@ pub fn append_audit(
         .map_err(|_| StoreError::InvalidAuditKeyLength { actual: audit_key.len() })?;
     mac.update(&canonical);
     let hmac = mac.finalize().into_bytes();
-    let metadata_json = canonical_json_string(Some(audit.metadata_json));
 
     transaction.execute(
         "INSERT INTO audit_log(

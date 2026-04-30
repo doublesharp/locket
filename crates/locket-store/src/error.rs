@@ -56,6 +56,19 @@ pub enum StoreError {
         reason: String,
     },
 
+    /// Serialized `metadata_json` exceeded the per-row spec cap.
+    #[error(
+        "audit metadata_json is {actual} bytes; the per-row cap is {limit} bytes (action {action})"
+    )]
+    AuditMetadataTooLarge {
+        /// Action name from the rejected `AuditWrite`.
+        action: String,
+        /// Serialized JSON byte length the writer attempted to insert.
+        actual: usize,
+        /// Spec-defined per-row cap (64 KiB).
+        limit: usize,
+    },
+
     /// The database schema is newer than this binary can read.
     #[error(
         "database schema version {found} is newer than supported schema version {supported}; upgrade Locket"
@@ -79,6 +92,7 @@ impl StoreError {
             | Self::InvalidAuditHmacLength { .. }
             | Self::InvalidAuditKeyLength { .. }
             | Self::AuditCanonicalization(_) => LocketError::AuditIntegrityFailed,
+            Self::AuditMetadataTooLarge { .. } => LocketError::MetadataInvalid,
             Self::Json(_) => LocketError::CorruptDb,
         }
     }

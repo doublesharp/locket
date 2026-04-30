@@ -452,3 +452,98 @@ fn data_change_failure_inside_audit_tx_drops_audit_row_atomically() -> Result<()
 
     Ok(())
 }
+
+#[test]
+fn append_audit_rejects_metadata_json_above_64_kib_cap()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::AUDIT_METADATA_JSON_LIMIT;
+
+    let mut test_store = open_initialized_store()?;
+    insert_project_profile(&test_store.store)?;
+
+    // Build a metadata payload whose canonical JSON crosses the cap. The
+    // outer structure stays small; one filler string carries the bulk.
+    let oversized: String = "x".repeat(AUDIT_METADATA_JSON_LIMIT + 256);
+    let metadata = json!({
+        "schema_version": 1,
+        "action": "SCAN",
+        "status": "SUCCESS",
+        "filler": oversized,
+    });
+    let audit = AuditWrite {
+        project_id: "lk_proj_test",
+        profile_id: None,
+        action: "SCAN",
+        status: "SUCCESS",
+        secret_name: None,
+        command: Some("scan"),
+        metadata_json: &metadata,
+        timestamp: 100,
+    };
+    let result = test_store.store.append_audit(&[42; 32], &audit);
+    let Err(error) = result else {
+        return Err("oversized metadata must be rejected".into());
+    };
+    let StoreError::AuditMetadataTooLarge { action, actual, limit } = error else {
+        return Err(format!("expected AuditMetadataTooLarge, got {error:?}").into());
+    };
+    assert_eq!(action, "SCAN");
+    assert_eq!(limit, AUDIT_METADATA_JSON_LIMIT);
+    assert!(actual > AUDIT_METADATA_JSON_LIMIT);
+
+    let count: i64 = test_store.store.connection().query_row(
+        "SELECT COUNT(*) FROM audit_log WHERE project_id = 'lk_proj_test'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(count, 0, "rejected rows must not be persisted");
+
+    let exit_code = StoreError::AuditMetadataTooLarge {
+        action: "SCAN".to_owned(),
+        actual: AUDIT_METADATA_JSON_LIMIT + 1,
+        limit: AUDIT_METADATA_JSON_LIMIT,
+    }
+    .locket_error()
+    .exit_code();
+    assert_eq!(exit_code, locket_core::LocketError::MetadataInvalid.exit_code());
+
+    Ok(())
+}
+
+#[test]
+fn append_audit_accepts_metadata_json_at_or_below_cap() -> Result<(), Box<dyn std::error::Error>> {
+    use crate::AUDIT_METADATA_JSON_LIMIT;
+
+    let mut test_store = open_initialized_store()?;
+    insert_project_profile(&test_store.store)?;
+
+    // Aim for a payload whose canonical JSON stays under the cap. Outer
+    // structure adds a few hundred bytes; a 60-KiB filler comfortably
+    // lands inside 64 KiB.
+    let comfortable: String = "y".repeat(60 * 1024);
+    let metadata = json!({
+        "schema_version": 1,
+        "action": "SCAN",
+        "status": "SUCCESS",
+        "filler": comfortable,
+    });
+    let audit = AuditWrite {
+        project_id: "lk_proj_test",
+        profile_id: None,
+        action: "SCAN",
+        status: "SUCCESS",
+        secret_name: None,
+        command: Some("scan"),
+        metadata_json: &metadata,
+        timestamp: 200,
+    };
+    test_store.store.append_audit(&[42; 32], &audit)?;
+    let count: i64 = test_store.store.connection().query_row(
+        "SELECT COUNT(*) FROM audit_log WHERE project_id = 'lk_proj_test'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(count, 1);
+    assert!(AUDIT_METADATA_JSON_LIMIT > 60 * 1024);
+    Ok(())
+}
