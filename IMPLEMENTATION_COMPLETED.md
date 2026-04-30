@@ -183,6 +183,9 @@ Slices that have merged to `main` and verified. Open work tracked in
   covers allow, deny, platform-unsupported, and user-cancelled paths.
 - [x] **subtask** — mock-docker-compose: Compose external env
   resolution has a process-stub harness that runs without Docker.
+- [x] **subtask** — mock-clipboard: clipboard tests use a memory
+  backend for copy success, matching-value clear, changed value, and
+  unsupported clear.
 
 ## Spec-by-Spec Completion Gates
 

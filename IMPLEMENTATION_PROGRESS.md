@@ -898,10 +898,6 @@ editing — they drift. Severity: **blocker** (security/correctness),
     that returns spoofable peer creds so the agent's peer-validation
     logic can be tested without root. Pre-req:
     `agent-peer-validation` subtask under Local agent daemon.
-  - [~] [6e4d05db] **subtask** — mock-clipboard: trait mock for the clipboard
-    Claim: branch agent-6e4d05db/mock-clipboard, worktree .worktrees/agent-6e4d05db-mock-clipboard.
-    module covering copy success, post-TTL clear, and the
-    cannot-clear platform path.
   - [ ] **subtask** — mutation-deny-by-default: policy-evaluator
     tests that explicitly inject permissive variants and assert
     deny-by-default still rejects.
