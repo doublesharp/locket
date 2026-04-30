@@ -13,7 +13,7 @@ mod process;
 mod recovery;
 mod user_verification;
 
-pub use core_dumps::{CoreDumpHardening, disable_core_dumps};
+pub use core_dumps::{CoreDumpHardening, core_dump_hardening_state, disable_core_dumps};
 pub use error::PlatformError;
 pub use master_key::{
     KeyringMasterKeyStore, MasterKeyStore, MemoryMasterKeyStore, MockMasterKeyStore,

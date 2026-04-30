@@ -51,9 +51,27 @@ pub fn disable_core_dumps() -> CoreDumpHardening {
     }
 }
 
+/// Returns the current core-dump hardening state without changing it.
+///
+/// This is what `locket doctor` reports — `disable_core_dumps()` is
+/// already called once at process startup, so this just inspects
+/// `RLIMIT_CORE` (and `PR_GET_DUMPABLE` on Linux) and reports whether
+/// the mitigations stuck.
+#[must_use]
+pub fn core_dump_hardening_state() -> CoreDumpHardening {
+    #[cfg(unix)]
+    {
+        unix::core_dump_hardening_state()
+    }
+    #[cfg(not(unix))]
+    {
+        CoreDumpHardening::Unsupported
+    }
+}
+
 #[cfg(unix)]
 mod unix {
-    use rustix::process::{Resource, Rlimit, setrlimit};
+    use rustix::process::{Resource, Rlimit, getrlimit, setrlimit};
 
     use super::CoreDumpHardening;
 
@@ -61,6 +79,19 @@ mod unix {
         let core_ok = set_core_rlimit_zero();
         let dumpable_ok = clear_dumpable_flag();
         if core_ok && dumpable_ok { CoreDumpHardening::Active } else { CoreDumpHardening::Degraded }
+    }
+
+    pub fn core_dump_hardening_state() -> CoreDumpHardening {
+        let core_zeroed = matches!(
+            getrlimit(Resource::Core),
+            Rlimit { current: Some(0), maximum: Some(0) }
+        );
+        let dumpable_cleared = dumpable_flag_cleared();
+        if core_zeroed && dumpable_cleared {
+            CoreDumpHardening::Active
+        } else {
+            CoreDumpHardening::Degraded
+        }
     }
 
     fn set_core_rlimit_zero() -> bool {
@@ -78,6 +109,21 @@ mod unix {
         // No equivalent on macOS/BSD: `RLIMIT_CORE = 0` is the supported
         // mitigation. Treat as success so the caller doesn't see a
         // false `Degraded`.
+        true
+    }
+
+    #[cfg(target_os = "linux")]
+    fn dumpable_flag_cleared() -> bool {
+        matches!(
+            rustix::process::dumpable_behavior(),
+            Ok(rustix::process::DumpableBehavior::NotDumpable)
+        )
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    const fn dumpable_flag_cleared() -> bool {
+        // Mirrors `clear_dumpable_flag`: there's nothing to query off
+        // Linux, so treat as the success state.
         true
     }
 }

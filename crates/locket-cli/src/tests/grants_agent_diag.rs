@@ -583,6 +583,15 @@ fn doctor_reports_locked_safe_diagnostics_and_exit_codes() -> Result<(), Box<dyn
     assert!(doctor_output.contains("pass sqlite_integrity"));
     assert!(doctor_output.contains("pass trusted_roots"));
     assert!(doctor_output.contains("skip audit_hmac_verification"));
+    // The hardening check must surface the core_dumps state. Tests run as a
+    // child of cargo, so the helper has been called at process startup; the
+    // line is `pass hardening: core_dumps=active` on Unix and a warn on
+    // Windows.
+    let hardening_line = doctor_output
+        .lines()
+        .find(|line| line.contains(" hardening:"))
+        .expect("doctor must include a hardening check");
+    assert!(hardening_line.contains("core_dumps="));
     assert!(doctor_output.contains("summary:"));
 
     let store = locket_store::Store::open(directory.path().join("store.db"))?;

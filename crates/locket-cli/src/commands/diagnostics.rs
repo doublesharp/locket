@@ -425,6 +425,7 @@ fn collect_diagnostics(
     }
 
     checks.push(check_agent_placeholder(context));
+    checks.push(check_hardening());
     for check in SKIPPED_LOCKED_CHECKS {
         checks.push(DiagnosticCheck::skip(check, "locked-safe metadata-only invocation"));
     }
@@ -636,6 +637,18 @@ fn check_agent_placeholder(context: &RuntimeContext) -> DiagnosticCheck {
         "unavailable last_known_pid=no"
     };
     DiagnosticCheck::pass("agent_placeholder", status)
+}
+
+fn check_hardening() -> DiagnosticCheck {
+    let core_dumps = locket_platform::core_dump_hardening_state();
+    let detail = format!("core_dumps={core_dumps}");
+    match core_dumps {
+        locket_platform::CoreDumpHardening::Active => DiagnosticCheck::pass("hardening", detail),
+        locket_platform::CoreDumpHardening::Unsupported => {
+            DiagnosticCheck::warn("hardening", detail)
+        }
+        locket_platform::CoreDumpHardening::Degraded => DiagnosticCheck::warn("hardening", detail),
+    }
 }
 
 fn write_doctor_audit_if_available(
