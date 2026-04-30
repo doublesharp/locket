@@ -269,9 +269,7 @@ Slices 1+2 shipped (agent client, tray binding, 6 view scaffolds,
   - [~] [90b9f58a] branch agent-90b9f58a/agent-list-secrets, worktree .worktrees/agent-90b9f58a-agent-list-secrets; **subtask** — agent-list-secrets: metadata-only active-profile secret rows with source-precedence ordering.
   - [ ] **subtask** — desktop-secrets-data: wire `agent-list-secrets`
     into `SecretMetadataList.vue` + last-refreshed timestamp. Slice 4.
-  - [ ] **subtask** — agent-list-versions: RPC returning current /
-    deprecated / purged metadata + rotation summary. Pre-req:
-    `agent-unlock-cache`.
+  - [~] [90b9f58a] branch agent-90b9f58a/agent-list-versions, worktree .worktrees/agent-90b9f58a-agent-list-versions; **subtask** — agent-list-versions: current/deprecated/purged metadata plus rotation summary.
   - [ ] **subtask** — desktop-versions-data: wire into
     `SecretVersionHistory.vue`. Slice 5.
   - [~] [acda32e4] branch agent-acda32e4/agent-list-runtime-sessions, worktree .worktrees/agent-acda32e4-agent-list-runtime-sessions; **subtask** — agent-list-runtime-sessions: RPC scoped to active profile, with privacy aliases applied.
