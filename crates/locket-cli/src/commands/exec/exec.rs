@@ -103,8 +103,10 @@ pub fn exec_command(
                 secret_names: &unique_names,
                 prepared: &prepared,
                 current_dir: None,
+                run_policy_grant: None,
             },
         )?
+        .status
     };
     let exit_code = status.code();
 

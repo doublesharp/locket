@@ -196,6 +196,32 @@ fn agent_status_command(context: &RuntimeContext, output: &mut impl Write) -> Re
     }
 }
 
+#[cfg(all(unix, not(test)))]
+pub(crate) fn request_agent_once(
+    context: &RuntimeContext,
+    method: locket_agent::AgentMethod,
+    payload: Value,
+) -> Result<Value, CliError> {
+    request_agent_socket(&agent_socket_path(context), method, payload).map_err(|error| {
+        typed_cli_error(
+            locket_core::LocketError::AgentUnavailable,
+            format!("agent request {} failed: {error}", method.as_str()),
+        )
+    })
+}
+
+#[cfg(all(not(unix), not(test)))]
+pub(crate) fn request_agent_once(
+    _context: &RuntimeContext,
+    _method: (),
+    _payload: Value,
+) -> Result<Value, CliError> {
+    Err(typed_cli_error(
+        locket_core::LocketError::AgentUnavailable,
+        "agent daemon is only supported on Unix targets",
+    ))
+}
+
 fn agent_stop_command(context: &RuntimeContext, output: &mut impl Write) -> Result<(), CliError> {
     let pid_path = agent_pid_path(context);
     let socket_path = agent_socket_path(context);
@@ -374,9 +400,18 @@ fn send_sigterm(_pid: u32) -> Result<(), CliError> {
 /// response payload.
 #[cfg(unix)]
 fn request_status_snapshot(socket_path: &Path) -> Result<Value, io::Error> {
+    request_agent_socket(socket_path, locket_agent::AgentMethod::Status, serde_json::Value::Null)
+}
+
+#[cfg(unix)]
+fn request_agent_socket(
+    socket_path: &Path,
+    method: locket_agent::AgentMethod,
+    payload: Value,
+) -> Result<Value, io::Error> {
     use locket_agent::{
-        AgentMethod, DEFAULT_MAX_MESSAGE_SIZE, RequestEnvelope, ResponseEnvelope,
-        decode_response_frame, encode_frame,
+        DEFAULT_MAX_MESSAGE_SIZE, RequestEnvelope, ResponseEnvelope, decode_response_frame,
+        encode_frame,
     };
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::UnixStream;
@@ -384,8 +419,7 @@ fn request_status_snapshot(socket_path: &Path) -> Result<Value, io::Error> {
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
     runtime.block_on(async move {
         let mut stream = UnixStream::connect(socket_path).await?;
-        let request =
-            RequestEnvelope::new("status-1", AgentMethod::Status, serde_json::Value::Null);
+        let request = RequestEnvelope::new("cli-request-1", method, payload);
         let frame = encode_frame(&request, DEFAULT_MAX_MESSAGE_SIZE)
             .map_err(|error| io::Error::other(error.to_string()))?;
         stream.write_all(&frame).await?;

@@ -19,6 +19,8 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 use crate::commands::agent::ensure_agent_running_for_execution;
+#[cfg(all(unix, not(test)))]
+use crate::commands::agent::request_agent_once;
 use crate::commands::config::spec::{config_get_value, read_user_config};
 use crate::commands::secrets::import::{EnvImportEntry, parse_env_import};
 use crate::runtime::RuntimeContext;
@@ -52,6 +54,40 @@ pub struct RuntimeExecutionRequest<'a> {
     pub prepared: &'a locket_exec::PreparedExecution,
     /// Optional working directory to apply when spawning.
     pub current_dir: Option<&'a Path>,
+    /// Optional live grant request for policy-driven `locket run`.
+    pub run_policy_grant: Option<RunPolicyGrantRequest>,
+}
+
+/// Policy-grant data needed before spawning a runtime child.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RunPolicyGrantRequest {
+    /// Live grant TTL from the command policy.
+    pub ttl_seconds: u64,
+}
+
+/// Metadata-only grant fields included in the runtime audit row.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RunPolicyGrantMetadata {
+    /// Live grant TTL from the command policy.
+    pub ttl_seconds: u64,
+    /// Child process id bound to the grant.
+    pub process_id: u32,
+    /// Platform process-start token bound to the grant.
+    pub process_start_time: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct RunPolicyGrant {
+    grant_id: String,
+    metadata: RunPolicyGrantMetadata,
+}
+
+/// Result of a runtime child execution.
+pub struct RuntimeExecutionOutcome {
+    /// Child exit status.
+    pub status: ExitStatus,
+    /// Metadata-only grant fields when a policy run issued a live grant.
+    pub run_policy_grant: Option<RunPolicyGrantMetadata>,
 }
 
 struct PreparedPolicyExecution {
@@ -113,7 +149,7 @@ pub fn run_command(
     ensure_agent_running_for_execution(context)?;
     let prepared_policy =
         prepare_policy_execution(context, output, &store, &resolved, &profile, &policy)?;
-    let status = execute_prepared_with_runtime_session(
+    let outcome = execute_prepared_with_runtime_session(
         context,
         &RuntimeExecutionRequest {
             store: &store,
@@ -123,8 +159,10 @@ pub fn run_command(
             secret_names: &prepared_policy.secret_names,
             prepared: &prepared_policy.prepared,
             current_dir: Some(&context.cwd),
+            run_policy_grant: Some(RunPolicyGrantRequest { ttl_seconds: policy.ttl.as_secs() }),
         },
     )?;
+    let status = outcome.status;
     let audit_status = if status.success() { "SUCCESS" } else { "FAILED" };
     write_runtime_policy_audit_if_available(
         context,
@@ -137,6 +175,7 @@ pub fn run_command(
         status.code(),
         confirmation_source,
         user_verification.as_ref(),
+        outcome.run_policy_grant.as_ref(),
     )?;
     if status.success() {
         return Ok(());
@@ -817,7 +856,7 @@ fn shell_argv(script: &str) -> Vec<String> {
 pub fn execute_prepared_with_runtime_session(
     context: &RuntimeContext,
     request: &RuntimeExecutionRequest<'_>,
-) -> Result<ExitStatus, CliError> {
+) -> Result<RuntimeExecutionOutcome, CliError> {
     let started_at = now_unix_nanos()?;
     let mut command = request.prepared.command();
     if let Some(current_dir) = request.current_dir {
@@ -825,6 +864,26 @@ pub fn execute_prepared_with_runtime_session(
     }
     let mut child = command.spawn()?;
     let process_id = child.id();
+    let run_policy_grant = match request.run_policy_grant {
+        Some(grant_request) => {
+            let grant = match request_run_policy_grant(
+                context,
+                request.resolved.config.project_id.as_str(),
+                &request.profile.id,
+                process_id,
+                grant_request.ttl_seconds,
+            ) {
+                Ok(grant) => grant,
+                Err(error) => {
+                    let _ignored = child.kill();
+                    let _ignored = child.wait();
+                    return Err(error);
+                }
+            };
+            Some(grant)
+        }
+        None => None,
+    };
     let session = RuntimeSessionRecord {
         id: SessionId::generate()
             .map_err(|_| corrupt_db_error("runtime session id generation failed"))?
@@ -844,20 +903,122 @@ pub fn execute_prepared_with_runtime_session(
     };
 
     if let Err(error) = request.store.insert_runtime_session(&session) {
+        revoke_run_policy_grant(context, run_policy_grant.as_ref());
         let _ignored = child.kill();
         let _ignored = child.wait();
         return Err(error.into());
     }
 
     let status = child.wait()?;
+    revoke_run_policy_grant(context, run_policy_grant.as_ref());
     request.store.mark_runtime_session_completed(
         &session.id,
         now_unix_nanos()?,
         status.code(),
         None,
     )?;
-    Ok(status)
+    Ok(RuntimeExecutionOutcome {
+        status,
+        run_policy_grant: run_policy_grant.map(|grant| grant.metadata),
+    })
 }
+
+fn request_run_policy_grant(
+    context: &RuntimeContext,
+    project_id: &str,
+    profile_id: &str,
+    process_id: u32,
+    ttl_seconds: u64,
+) -> Result<RunPolicyGrant, CliError> {
+    let binding = locket_platform::process_binding_for_pid(process_id)?;
+    request_run_policy_grant_with_binding(context, project_id, profile_id, binding, ttl_seconds)
+}
+
+#[cfg(all(unix, not(test)))]
+fn request_run_policy_grant_with_binding(
+    context: &RuntimeContext,
+    project_id: &str,
+    profile_id: &str,
+    binding: locket_platform::ProcessBinding,
+    ttl_seconds: u64,
+) -> Result<RunPolicyGrant, CliError> {
+    let payload = locket_agent::RequestGrantPayload {
+        project_id: project_id.to_owned(),
+        profile_id: profile_id.to_owned(),
+        action: locket_agent::GrantAction::RunPolicy,
+        ttl_seconds,
+        binding: locket_agent::GrantBinding::new(binding.pid, binding.process_start_time.clone()),
+    };
+    let response = request_agent_once(
+        context,
+        locket_agent::AgentMethod::RequestGrant,
+        serde_json::to_value(payload)?,
+    )?;
+    let grant_id = response
+        .get("grant_id")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| corrupt_db_error("agent RequestGrant response omitted grant_id"))?
+        .to_owned();
+    Ok(RunPolicyGrant {
+        grant_id,
+        metadata: RunPolicyGrantMetadata {
+            ttl_seconds,
+            process_id: binding.pid,
+            process_start_time: binding.process_start_time,
+        },
+    })
+}
+
+#[cfg(all(not(unix), not(test)))]
+fn request_run_policy_grant_with_binding(
+    _context: &RuntimeContext,
+    _project_id: &str,
+    _profile_id: &str,
+    _binding: locket_platform::ProcessBinding,
+    _ttl_seconds: u64,
+) -> Result<RunPolicyGrant, CliError> {
+    Err(crate::runtime::error::typed_cli_error(
+        locket_core::LocketError::AgentUnavailable,
+        "agent daemon is only supported on Unix targets",
+    ))
+}
+
+#[cfg(test)]
+fn request_run_policy_grant_with_binding(
+    _context: &RuntimeContext,
+    _project_id: &str,
+    _profile_id: &str,
+    binding: locket_platform::ProcessBinding,
+    ttl_seconds: u64,
+) -> Result<RunPolicyGrant, CliError> {
+    Ok(RunPolicyGrant {
+        grant_id: "lk_grant_test".to_owned(),
+        metadata: RunPolicyGrantMetadata {
+            ttl_seconds,
+            process_id: binding.pid,
+            process_start_time: binding.process_start_time,
+        },
+    })
+}
+
+fn revoke_run_policy_grant(context: &RuntimeContext, grant: Option<&RunPolicyGrant>) {
+    let Some(grant) = grant else {
+        return;
+    };
+    revoke_run_policy_grant_id(context, &grant.grant_id);
+}
+
+#[cfg(all(unix, not(test)))]
+fn revoke_run_policy_grant_id(context: &RuntimeContext, grant_id: &str) {
+    let _ignored = request_agent_once(
+        context,
+        locket_agent::AgentMethod::RevokeGrant,
+        serde_json::json!({ "grant_id": grant_id }),
+    );
+}
+
+#[cfg(any(not(unix), test))]
+fn revoke_run_policy_grant_id(_context: &RuntimeContext, _grant_id: &str) {}
 
 fn runtime_session_retention(
     context: &RuntimeContext,

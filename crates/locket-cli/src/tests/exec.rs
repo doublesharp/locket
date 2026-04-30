@@ -347,6 +347,7 @@ argv = ["/bin/sh", "-c", "test \"$DATABASE_URL\" = \"machine-precedence-value\""
 required_secrets = ["DATABASE_URL"]
 env_mode = "strict"
 inherit_env = ["PATH"]
+ttl = "30s"
 "#,
         )?;
 
@@ -373,6 +374,10 @@ inherit_env = ["PATH"]
     assert_eq!(metadata_json["confirmation_source"], json!(null));
     assert_eq!(metadata_json["child_exit"], json!(0));
     assert_eq!(metadata_json["override_explicit"], json!(false));
+    assert_eq!(metadata_json["grant_actions"], json!(["RunPolicy"]));
+    assert_eq!(metadata_json["ttl_seconds"], json!(30));
+    assert!(metadata_json["process_id"].as_u64().is_some_and(|pid| pid > 0));
+    assert!(metadata_json["process_start_time"].as_str().is_some_and(|start| !start.is_empty()));
     assert_eq!(
         metadata_json["secrets"],
         json!([{

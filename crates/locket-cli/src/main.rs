@@ -2401,6 +2401,7 @@ pub(crate) fn write_runtime_policy_audit_if_available(
     child_exit: Option<i32>,
     confirmation_source: Option<&str>,
     user_verification: Option<&locket_platform::LocalUserVerification>,
+    run_policy_grant: Option<&commands::exec::run::RunPolicyGrantMetadata>,
 ) -> Result<(), CliError> {
     if store.get_project(resolved.config.project_id.as_str())?.is_none() {
         return Ok(());
@@ -2427,7 +2428,7 @@ pub(crate) fn write_runtime_policy_audit_if_available(
         "satisfied": user_verification.is_some(),
         "method": user_verification.map(|verified| serde_json::to_value(verified.method).unwrap_or(Value::Null)),
     });
-    let metadata = json!({
+    let mut metadata = json!({
         "schema_version": 1,
         "action": "RUN_POLICY",
         "status": status,
@@ -2448,6 +2449,14 @@ pub(crate) fn write_runtime_policy_audit_if_available(
         "user_verification": user_verification_metadata,
         "child_exit": child_exit,
     });
+    if let Some(grant) = run_policy_grant
+        && let Some(metadata) = metadata.as_object_mut()
+    {
+        metadata.insert("grant_actions".to_owned(), json!(["RunPolicy"]));
+        metadata.insert("ttl_seconds".to_owned(), json!(grant.ttl_seconds));
+        metadata.insert("process_id".to_owned(), json!(grant.process_id));
+        metadata.insert("process_start_time".to_owned(), json!(grant.process_start_time.as_str()));
+    }
     let audit = AuditWrite {
         project_id: resolved.config.project_id.as_str(),
         profile_id: Some(&profile.id),
