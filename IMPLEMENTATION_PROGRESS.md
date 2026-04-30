@@ -208,11 +208,10 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
 - [x] `.env.example` Locket-managed block markers
   (`# --- BEGIN/END LOCKET MANAGED ---`); rewrite only between markers;
   tombstoned secrets excluded from the cross-profile union.
-- [~] `example.auto_refresh` config key (default `true`, project-override-wins)
-  is wired through the shared `refresh_example_for_project_if_enabled` gate at
-  the `set`/`rotate`/`rm`/`purge`/`copy`/`import` command call sites with
-  user-config and project-override regression coverage. `team accept` remains
-  pending under the team-commands item.
+- [x] `example.auto_refresh` config key wired through
+  `refresh_example_for_project_if_enabled` at all current call sites
+  (`set`/`rotate`/`rm`/`purge`/`copy`/`import`); `team accept` will hook
+  in when that command lands.
 - [x] Pre-commit hook block markers
   (`# --- BEGIN/END LOCKET PRE-COMMIT ---`), idempotent rewrite, typed
   confirmation when prepending to a non-Locket hook, and `HOOK_INSTALL`
@@ -283,28 +282,21 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
     spawn path in `commands/exec/run.rs`. Errors: `InvalidPolicy` (65). Audit:
     extend `RUN` metadata with `shape: "argv" | "shell"`. Tests cover argv
     success, shell success, mixed/invalid policy rejection.
-  - [x] **subtask** — run-confirm-gate: `confirm = true` policies now
-    require a typed `run <policy-name>` confirmation; mismatch returns
-    `ConfirmationFailed` (68) and writes no `RUN_POLICY` row, success
-    records `confirmation_source = "interactive"` (`7dda131`). A
-    `RUN/DENIED` denial-row pass remains a follow-up under
-    audit-coverage.
+  - [x] **subtask** — run-confirm-gate: `confirm = true` policies now require
+    a typed `run <policy-name>` confirmation; success records
+    `confirmation_source` on the audit row. `RUN/DENIED` rows remain a
+    follow-up under audit-coverage.
   - [x] **subtask** — run-user-verification-gate: `require_user_verification`
-    policies route through `RuntimeContext::user_verifier`; failure or
-    unavailable verifier returns `UserVerificationFailed` (74) and writes
-    no audit row, success records
-    `user_verification = { required, satisfied, method }` on `RUN_POLICY`
-    (`577010e`).
+    policies route through the user verifier; success records
+    `user_verification = { required, satisfied, method }` on `RUN_POLICY`.
   - [ ] **subtask** — run-ttl-grant: enforce policy-declared `ttl = "Xs"`
     grants with `(pid, process_start_time)` binding. Reuses the
     process-start-time helper landed in
     `agent-4efea70d/process-grant-binding`. Errors: `GrantRequired` (73).
     Audit: `RUN` records `grant_id`, `grant_ttl_seconds`.
-  - [x] **subtask** — run-audit-metadata: `RUN_POLICY` audit row now
-    carries `policy_id`, `allowed_secret_names`, `required_secret_names`,
-    `external_sources`, `confirmation_source` (null pending confirm-gate),
-    and `child_exit` from `ExitStatus::code()` in `711c1c4`. Tests assert
-    `child_exit=0` on success and the documented exit code on failure.
+  - [x] **subtask** — run-audit-metadata: `RUN_POLICY` audit row carries
+    `policy_id`, `allowed_secret_names`, `required_secret_names`,
+    `external_sources`, `confirmation_source`, and `child_exit`.
   - [ ] **subtask** — run-agent-backed: route `locket run` through the
     local agent's `ResolveReference`/grant RPCs once the daemon ships.
     Depends on the `Local agent daemon` item below. Surface
@@ -388,10 +380,8 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
   below; later subtasks depend on `team-store-schema`
   (`docs/specs/team-sync-recovery.md:5-110`).
   - [x] **subtask** — team-store-schema: `teams`, `team_members`,
-    `team_invites` tables already live in `crates/locket-store/src/schema.rs`
-    with the spec-required column constraints (role check, profiles_json,
-    nonce length, expires_at>created_at, accepted_at/revoked_at integrity).
-    No migration bump needed for this slice.
+    `team_invites` tables and constraints are in place; no migration bump
+    needed.
   - [ ] **subtask** — team-init-command: implement `locket team init` with a
     `TEAM_INIT` audit row and golden-path coverage. Errors: `TeamRoleDenied`
     on a re-init attempt without role. Depends on `team-store-schema`.
@@ -555,10 +545,8 @@ editing — they drift. Severity: **blocker** (security/correctness),
   `e6e2447`, `52c14ce`, `49bb397`, `7a17462`. Highest-frequency callsites and
   ISO-date / config-key migrations are done. Remaining sweep is decomposed
   below; pick any open subtask:
-  - [x] **subtask** — typed-recovery-format: 8 recovery `format!`-ed
-    callsites in `commands/vault/recovery.rs` migrated to
-    `metadata_invalid_error(...)` (exit 64) in `8013f25`. Regression covers
-    a corrupted `recovery/kdf.toml` exiting 64.
+  - [x] **subtask** — typed-recovery-format: recovery file `format!`-ed
+    Config errors migrated to `MetadataInvalid`.
   - [x] **subtask** — typed-policy-not-found @ 4671015:
     `PolicyNotFound` (exit 64) added and wired for command-policy misses in
     `main.rs` / `commands/policy.rs` plus automation-client revoke misses;
@@ -651,15 +639,12 @@ editing — they drift. Severity: **blocker** (security/correctness),
   unsafe inventory, SBOM, auditable builds, provenance, signing.
 - [~] Leak canary harness. Scanner/redactor tests and `make leak-canary`
   exist. Remaining: broader CLI/agent/UI artifact scanning.
-- [~] [b67f47d6] ready: agent-b67f47d6/update-manifest-verifier @ ed8dfde — offline signed update-manifest verifier and typed `UpdateManifestInvalid` landed; package builders/signing workflows remain.
-  Signed distribution packaging and opt-in update-check verification
-  (Homebrew, signed macOS package, signed Windows MSI, Linux package, signed
-  VS Code extension).
-  - Spec: `docs/specs/operations.md:27-53`.
-  - Errors: `UpdateManifestInvalid` (89) for opt-in update verification.
-  - Audit actions: none (release tooling is out-of-process).
-  - Files: `scripts/release/`, signing config in `Cargo.toml` workspace
-    metadata once tooling is chosen.
+- [~] Signed distribution packaging and update-check verification.
+  Offline signed update-manifest verifier and typed
+  `UpdateManifestInvalid` shipped. Remaining: package builders and
+  signing workflows for Homebrew / signed macOS pkg / Windows MSI /
+  Linux package / VS Code extension
+  (`docs/specs/operations.md:27-53`).
 - [x] Markdown/spec link checks via `make docs-check`.
 - [~] [bec7ddfc] `agent logs` retention: JSON Lines, 1 MiB rotation, 5 files,
   default 200 lines, `--lines` cap 10000, RFC 3339 / Unix `--since`,
