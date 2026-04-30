@@ -117,6 +117,11 @@ pub fn secret_version_overflow_error(message: impl Into<String>) -> CliError {
     typed_cli_error(LocketError::SecretVersionOverflow, message)
 }
 
+#[allow(dead_code)]
+pub fn secret_version_expired_error(message: impl Into<String>) -> CliError {
+    typed_cli_error(LocketError::SecretVersionExpired, message)
+}
+
 pub fn profile_not_found_error(message: impl Into<String>) -> CliError {
     typed_cli_error(LocketError::ProfileNotFound, message)
 }

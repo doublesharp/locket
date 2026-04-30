@@ -10,7 +10,7 @@ use locket_crypto::{
     EncryptedSecretValue, KeyPurpose, KeyWrapAad, KeyWrapPurpose, decrypt_secret_value_v1,
     encrypt_secret_value_v1, key_wrap_aad_v1, secret_blob_aad_v1, secret_fingerprint_v1,
 };
-use locket_store::{AuditWrite, ProfileRecord, SecretRecord, Store};
+use locket_store::{AuditWrite, ProfileRecord, SecretRecord, SecretVersionRecord, Store};
 use serde_json::{Value, json};
 
 use crate::commands::config::spec::{config_get_value, read_user_config};
@@ -18,7 +18,7 @@ use crate::runtime::RuntimeContext;
 use crate::runtime::error::{
     CliError, corrupt_db_error, invalid_profile_name_error, invalid_reference_error,
     invalid_secret_name_error, metadata_invalid_error, profile_not_found_error,
-    secret_deleted_error, secret_not_found_error,
+    secret_deleted_error, secret_not_found_error, secret_version_expired_error,
 };
 use crate::runtime::key_access::{default_profile, load_profile_key, load_project_key};
 use crate::runtime::user_verification::UserVerificationAudit;
@@ -186,6 +186,49 @@ pub fn resolve_active_secret_for_source(
         return Err(secret_deleted_error("secret source is deleted"));
     }
     Ok(resolved)
+}
+
+/// Resolves a pinned `lk://...@vN` secret version for value access.
+///
+/// Returns `Ok(())` when the requested version is the secret's current
+/// version, or a deprecated version with `grace_until` still in the future.
+///
+/// Returns typed `SecretVersionExpired` (exit 75) when the version exists but
+/// is deprecated past its grace window, ungraced, or purged. Returns
+/// `SecretDeleted` when the secret's source is deleted.
+///
+/// # Errors
+///
+/// Returns [`CliError::Typed`] tagged with [`locket_core::LocketError::SecretVersionExpired`]
+/// when the version is past grace; [`locket_core::LocketError::SecretDeleted`] when the
+/// secret source is deleted.
+#[allow(dead_code)]
+pub fn resolve_pinned_version(
+    secret: &SecretRecord,
+    version: &SecretVersionRecord,
+    timestamp: i64,
+) -> Result<(), CliError> {
+    if secret.state == "deleted" {
+        return Err(secret_deleted_error(format!("secret source is deleted: {}", secret.name)));
+    }
+    match version.state.as_str() {
+        "current" => Ok(()),
+        "deprecated" => match version.grace_until {
+            Some(grace_until) if grace_until > timestamp => Ok(()),
+            _ => Err(secret_version_expired_error(format!(
+                "pinned version {}@v{} is past its grace window",
+                secret.name, version.version
+            ))),
+        },
+        "purged" => Err(secret_version_expired_error(format!(
+            "pinned version {}@v{} is purged",
+            secret.name, version.version
+        ))),
+        _ => Err(secret_not_found_error(format!(
+            "version not found: {}@v{}",
+            secret.name, version.version
+        ))),
+    }
 }
 
 pub fn resolve_secret_for_source(

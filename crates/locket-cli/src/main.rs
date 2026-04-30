@@ -32,6 +32,8 @@ pub(crate) use support::project_files::{
     config_bool_value, ensure_gitignore, refresh_example_for_project_if_enabled,
     write_example_block, write_example_block_for_emit, write_example_emit_audit,
 };
+#[cfg(test)]
+pub(crate) use support::secret_helpers::resolve_pinned_version;
 use support::secret_helpers::{
     PolicySecretSelection, ResolvedSecret, SecretEncryptRequest, decrypt_secret_version,
     encrypt_secret_version, resolve_active_secret_for_source, resolve_secret_for_source,
