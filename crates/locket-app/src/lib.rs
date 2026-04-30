@@ -114,6 +114,13 @@ pub struct TrayNotification {
     pub body: String,
 }
 
+/// User-controlled notification preferences for passive tray routing.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct TrayNotificationPreferences {
+    /// Suppress passive tray notifications while enabled.
+    pub do_not_disturb: bool,
+}
+
 /// Distinct denial reasons surfaced by desktop error views.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DenialReason {
@@ -570,6 +577,31 @@ impl TrayNotificationKind {
     }
 }
 
+/// Return all passive tray notification kinds in desktop spec order.
+#[must_use]
+pub const fn tray_notification_kinds() -> &'static [TrayNotificationKind] {
+    &[
+        TrayNotificationKind::RevealOrCopy,
+        TrayNotificationKind::DeniedAccess,
+        TrayNotificationKind::ScanFinding,
+        TrayNotificationKind::ExecutionFailure,
+    ]
+}
+
+/// Route a passive tray notification through the generic privacy-safe
+/// renderer, honoring the user's notification quiet mode.
+#[must_use]
+pub fn route_tray_notification(
+    kind: TrayNotificationKind,
+    context: &TrayNotificationContext<'_>,
+    preferences: TrayNotificationPreferences,
+) -> Option<TrayNotification> {
+    if preferences.do_not_disturb {
+        return None;
+    }
+    Some(kind.passive_notification(context))
+}
+
 impl TrayIconState {
     /// Return the metadata-only icon descriptor for this state.
     #[must_use]
@@ -833,14 +865,15 @@ mod tests {
     use super::{
         AccessibilityRequirement, CapabilityAccess, DenialReason, EmptyState,
         ExecutionMonitorField, ReleaseWebviewPolicy, TrayIconAssetStyle, TrayIconState,
-        TrayNotificationContext, TrayNotificationKind, VersionHistoryField, VersionHistoryState,
-        accessibility_descriptors, accessibility_requirements, denial_reasons,
-        denial_ux_descriptors, empty_state_descriptors, empty_states,
+        TrayNotificationContext, TrayNotificationKind, TrayNotificationPreferences,
+        VersionHistoryField, VersionHistoryState, accessibility_descriptors,
+        accessibility_requirements, denial_reasons, denial_ux_descriptors,
+        empty_state_descriptors, empty_states,
         execution_monitor_field_descriptors, execution_monitor_fields,
         execution_monitor_state_descriptors, execution_monitor_states, primary_views,
-        tray_icon_asset_styles_for_os, tray_icon_descriptors, tray_icon_states,
-        version_history_field_descriptors, version_history_fields,
-        version_history_state_descriptors, version_history_states,
+        route_tray_notification, tray_icon_asset_styles_for_os, tray_icon_descriptors,
+        tray_icon_states, tray_notification_kinds, version_history_field_descriptors,
+        version_history_fields, version_history_state_descriptors, version_history_states,
     };
 
     #[test]
@@ -917,6 +950,46 @@ mod tests {
                     || rendered.contains("Scan")
                     || rendered.contains("scan")
             );
+        }
+    }
+
+    #[test]
+    fn tray_notification_router_covers_all_passive_kinds() {
+        let context = TrayNotificationContext {
+            secret_name: Some("DATABASE_URL"),
+            policy_name: Some("deploy-prod"),
+            project_name: Some("payments-api"),
+            secret_value: Some("postgres://user:pass@example.invalid/db"),
+            finding_count: Some(2),
+        };
+        let preferences = TrayNotificationPreferences { do_not_disturb: false };
+
+        let notifications = tray_notification_kinds()
+            .iter()
+            .map(|kind| route_tray_notification(*kind, &context, preferences))
+            .collect::<Vec<_>>();
+
+        assert_eq!(notifications.len(), 4);
+        assert!(notifications.iter().all(Option::is_some));
+        for notification in notifications.into_iter().flatten() {
+            let rendered = format!("{} {}", notification.title, notification.body);
+            assert!(!rendered.contains("DATABASE_URL"));
+            assert!(!rendered.contains("deploy-prod"));
+            assert!(!rendered.contains("payments-api"));
+            assert!(!rendered.contains("postgres://"));
+        }
+    }
+
+    #[test]
+    fn tray_notification_router_honors_do_not_disturb() {
+        let context = TrayNotificationContext {
+            finding_count: Some(4),
+            ..TrayNotificationContext::default()
+        };
+        let preferences = TrayNotificationPreferences { do_not_disturb: true };
+
+        for kind in tray_notification_kinds() {
+            assert_eq!(route_tray_notification(*kind, &context, preferences), None);
         }
     }
 
