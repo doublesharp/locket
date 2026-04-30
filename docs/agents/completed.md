@@ -508,6 +508,8 @@ Slices that have merged to `main` and verified. Open work tracked in
   artifact and release digest output.
 - [x] **subtask** — lk-resolve-policy-auth: ResolveReference now
   checks the caller policy before returning values.
+- [x] vscode-status: VS Code now shows a metadata-only Locket status
+  bar driven by SubscribeStatus; the agent stream path has coverage.
 
 ## Spec-by-Spec Completion Gates
 
