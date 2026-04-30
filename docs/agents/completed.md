@@ -174,6 +174,8 @@ Slices that have merged to `main` and verified. Open work tracked in
   local device private keys land.
 - [x] passkey-rp-id-policy: Passkey credentials now persist and display their WebAuthn
   relying party metadata.
+- [x] device-force-user-verification: Forced local device rekey now requires fresh user
+  verification before it can proceed.
 
 ## Full Spec Coverage TODO — App/UI
 
