@@ -180,7 +180,6 @@ skill set fits a leaf better.
 - [~] Team command surfaces (`docs/specs/team-sync-recovery.md:5-110`).
   `team-store-schema`, `team-init-command`, `team-members-list`
   shipped. Remaining:
-  - [~] [acda32e4] branch agent-acda32e4/team-invite-create, worktree .worktrees/agent-acda32e4-team-invite-create; **subtask** — team-invite-create: signed invite with issuer keys, recipient fingerprint, expiry, nonce, role, profiles. Pre-req: invite codec under the trust-ceremony item. **Critical path.**
   - [ ] **subtask** — team-invite-accept: verify signature,
     fingerprint, expiry, replay, safety-words display. Pre-req:
     `team-invite-create`.
