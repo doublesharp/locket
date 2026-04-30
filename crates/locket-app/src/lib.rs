@@ -176,6 +176,36 @@ pub struct EmptyStateDescriptor {
     pub secondary_command: Option<&'static str>,
 }
 
+/// Desktop accessibility baseline requirements from the UX spec.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AccessibilityRequirement {
+    /// Every workflow is reachable without a pointer device.
+    KeyboardNavigation,
+    /// Focus is visible and high-contrast on interactive controls.
+    VisibleFocus,
+    /// Icon-only and dynamic controls expose non-secret assistive labels.
+    ScreenReaderLabels,
+    /// Text, controls, warnings, and focus treatments meet contrast budgets.
+    SufficientContrast,
+    /// Motion and transitions respect reduced-motion preferences.
+    ReducedMotion,
+    /// Reveal/copy flows never leave secret values in accessibility metadata after TTL expiry.
+    PostTtlMetadataScrub,
+}
+
+/// Metadata-only checklist entry for desktop accessibility implementation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AccessibilityDescriptor {
+    /// Requirement represented by this descriptor.
+    pub requirement: AccessibilityRequirement,
+    /// Stable implementation key for UI tests and component mapping.
+    pub key: &'static str,
+    /// Safe assistive copy or validation guidance.
+    pub guidance: &'static str,
+    /// Whether the requirement applies to short-lived plaintext flows.
+    pub plaintext_ttl_sensitive: bool,
+}
+
 impl DenialReason {
     /// Return the desktop denial view descriptor for this reason.
     #[must_use]
@@ -201,6 +231,46 @@ impl DenialReason {
             }
         };
         DenialUxDescriptor { reason: self, title, next_action, affordance }
+    }
+}
+
+impl AccessibilityRequirement {
+    /// Return the metadata-only descriptor for this accessibility requirement.
+    #[must_use]
+    pub const fn descriptor(self) -> AccessibilityDescriptor {
+        let (key, guidance, plaintext_ttl_sensitive) = match self {
+            Self::KeyboardNavigation => (
+                "keyboard-navigation",
+                "Expose every primary action through tab order and shortcuts.",
+                false,
+            ),
+            Self::VisibleFocus => (
+                "visible-focus",
+                "Render a persistent focus treatment for every interactive control.",
+                false,
+            ),
+            Self::ScreenReaderLabels => (
+                "screen-reader-labels",
+                "Use labels that describe metadata-only actions and state.",
+                false,
+            ),
+            Self::SufficientContrast => (
+                "sufficient-contrast",
+                "Keep text, status, warning, and focus colors above contrast thresholds.",
+                false,
+            ),
+            Self::ReducedMotion => (
+                "reduced-motion",
+                "Disable nonessential animation when reduced motion is requested.",
+                false,
+            ),
+            Self::PostTtlMetadataScrub => (
+                "post-ttl-metadata-scrub",
+                "Clear reveal and copy accessibility metadata when plaintext TTL expires.",
+                true,
+            ),
+        };
+        AccessibilityDescriptor { requirement: self, key, guidance, plaintext_ttl_sensitive }
     }
 }
 
@@ -421,6 +491,25 @@ pub fn empty_state_descriptors() -> Vec<EmptyStateDescriptor> {
     empty_states().iter().map(|state| state.descriptor()).collect()
 }
 
+/// All desktop accessibility requirements in spec order.
+#[must_use]
+pub const fn accessibility_requirements() -> &'static [AccessibilityRequirement] {
+    &[
+        AccessibilityRequirement::KeyboardNavigation,
+        AccessibilityRequirement::VisibleFocus,
+        AccessibilityRequirement::ScreenReaderLabels,
+        AccessibilityRequirement::SufficientContrast,
+        AccessibilityRequirement::ReducedMotion,
+        AccessibilityRequirement::PostTtlMetadataScrub,
+    ]
+}
+
+/// Return all desktop accessibility descriptors in spec order.
+#[must_use]
+pub fn accessibility_descriptors() -> Vec<AccessibilityDescriptor> {
+    accessibility_requirements().iter().map(|requirement| requirement.descriptor()).collect()
+}
+
 fn scan_notification_body(finding_count: Option<u32>) -> String {
     match finding_count {
         Some(1) => "1 scan warning needs attention.".to_owned(),
@@ -432,8 +521,9 @@ fn scan_notification_body(finding_count: Option<u32>) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        CapabilityAccess, DenialReason, EmptyState, ReleaseWebviewPolicy, TrayIconAssetStyle,
-        TrayIconState, TrayNotificationContext, TrayNotificationKind, denial_reasons,
+        AccessibilityRequirement, CapabilityAccess, DenialReason, EmptyState, ReleaseWebviewPolicy,
+        TrayIconAssetStyle, TrayIconState, TrayNotificationContext, TrayNotificationKind,
+        accessibility_descriptors, accessibility_requirements, denial_reasons,
         denial_ux_descriptors, empty_state_descriptors, empty_states, primary_views,
         tray_icon_asset_styles_for_os, tray_icon_descriptors, tray_icon_states,
     };
@@ -611,6 +701,50 @@ mod tests {
             assert!(!rendered.contains("payments-api"));
             assert!(!rendered.contains("postgres://"));
         }
+    }
+
+    #[test]
+    fn accessibility_requirements_match_desktop_spec_baseline() {
+        assert_eq!(
+            accessibility_requirements(),
+            &[
+                AccessibilityRequirement::KeyboardNavigation,
+                AccessibilityRequirement::VisibleFocus,
+                AccessibilityRequirement::ScreenReaderLabels,
+                AccessibilityRequirement::SufficientContrast,
+                AccessibilityRequirement::ReducedMotion,
+                AccessibilityRequirement::PostTtlMetadataScrub,
+            ]
+        );
+    }
+
+    #[test]
+    fn accessibility_descriptors_are_metadata_only_and_cover_ttl_scrub() {
+        let descriptors = accessibility_descriptors();
+
+        assert_eq!(descriptors.len(), accessibility_requirements().len());
+        assert_eq!(descriptors[0].key, "keyboard-navigation");
+        assert_eq!(descriptors[1].key, "visible-focus");
+        assert_eq!(descriptors[2].key, "screen-reader-labels");
+        assert_eq!(descriptors[3].key, "sufficient-contrast");
+        assert_eq!(descriptors[4].key, "reduced-motion");
+        assert_eq!(descriptors[5].key, "post-ttl-metadata-scrub");
+
+        for descriptor in descriptors {
+            assert_eq!(descriptor, descriptor.requirement.descriptor());
+            let rendered = format!("{} {}", descriptor.key, descriptor.guidance);
+            assert!(!rendered.contains("DATABASE_URL"));
+            assert!(!rendered.contains("postgres://"));
+            assert!(!rendered.contains("recovery code"));
+            assert!(!rendered.contains("grant token"));
+        }
+
+        let ttl_sensitive = accessibility_descriptors()
+            .into_iter()
+            .filter(|descriptor| descriptor.plaintext_ttl_sensitive)
+            .collect::<Vec<_>>();
+        assert_eq!(ttl_sensitive.len(), 1);
+        assert_eq!(ttl_sensitive[0].requirement, AccessibilityRequirement::PostTtlMetadataScrub);
     }
 
     #[test]
