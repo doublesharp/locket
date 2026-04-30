@@ -209,7 +209,8 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
 - [x] Secret-name (`^[A-Z_][A-Z0-9_]*$`) and profile-name
   (`^[a-z][a-z0-9_-]{0,63}$`) regex validation plus `_default` reserved
   name; reject at every editor before write.
-- [ ] `locket init` atomic rollback and resumable-partial-state when
+- [~] [70c448c4] `locket init` atomic rollback and resumable-partial-state when
+  Claim: branch agent-70c448c4/init-rollback-resume, worktree .worktrees/agent-70c448c4-init-rollback-resume, scope init rollback/resume failures.
   store/keychain/recovery-envelope creation fails mid-flight.
 - [x] Dotenv import: name-level parity check (never run user app) and
   explicit post-import confirmation to delete `.env`.
@@ -377,8 +378,8 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
 - [x] Runtime session storage/retention primitives and runtime execution
   recording for `exec`/`run` (doctor process-liveness classification is a
   follow-up under doctor enhancements).
-- [~] [70c448c4] ready: agent-70c448c4/env-layering-modes @ aef0a15 — policy parsing tracks explicit `override`, `policy doctor` warns on implicit defaults, `locket run` warns metadata-only before implicit Locket overrides, and `RUN_POLICY` audit records `override_explicit`.
-  Claim: branch agent-70c448c4/env-layering-modes, worktree .worktrees/agent-70c448c4-env-layering-modes.
+- [x] Env layering modes distinguish `merge`/`passthrough`; explicit
+  `override` tracking drives doctor/run warnings and audit metadata.
 - [x] Conservative env allowlist
   (`PATH HOME USER SHELL TMPDIR LANG LC_* TERM CI`) applied in `minimal`
   mode with `LC_*` matching; `policy doctor` surfaces it.
@@ -601,8 +602,8 @@ editing — they drift. Severity: **blocker** (security/correctness),
     `main.rs` / `commands/policy.rs` plus automation-client revoke misses;
     docs/spec error tables and focused CLI/core regressions updated. Verified:
     fmt, clippy, workspace tests, and leak-canary pass.
-  - [~] [70c448c4] ready: agent-70c448c4/typed-project-not-found @ a2d9a1e — `ProjectNotFound` (exit 64) added and wired for project resolution misses in `require_project` and `ai-safe`; focused CLI/core regressions added. Verified after merge to `main`: fmt, clippy, workspace tests, and leak-canary pass.
-    Claim: branch agent-70c448c4/typed-project-not-found, worktree .worktrees/agent-70c448c4-typed-project-not-found.
+  - [x] **subtask** — typed-project-not-found: `ProjectNotFound` exits 64
+    for project resolution misses in `require_project` and `ai-safe`.
   - [x] **subtask** — typed-secret-overflow: migrate `secret version overflow`
     (3 sites) to a new `LocketError::SecretVersionOverflow` variant (input or
     integrity band, per spec). Regression covers a stubbed overflow path.
