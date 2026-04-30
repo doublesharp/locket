@@ -237,7 +237,7 @@ skill set fits a leaf better.
 - [ ] `device init` first-run-on-machine bootstrap: master key,
   recovery envelope, and recovery code on a teammate clone
   (`docs/specs/team-sync-recovery.md`).
-- [~] [52c592db] branch agent-52c592db/local-user-verification-macos, worktree .worktrees/agent-52c592db-local-user-verification-macos; LocalUserVerifier macOS LocalAuthentication backend.
+- [~] [52c592db] blocked: LocalUserVerifier macOS LocalAuthentication backend requires a safe LocalAuthentication wrapper; available objc2 binding exposes unsafe calls while locket-platform forbids unsafe_code.
 - [ ] LocalUserVerifier Windows Hello backend.
 - [ ] LocalUserVerifier Linux Secret Service / hardware-key-presence
   backend.
