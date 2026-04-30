@@ -1,4 +1,7 @@
 //! Unit tests for the locket-agent protocol surface.
+#![allow(clippy::expect_used)]
+#![allow(clippy::unwrap_used)]
+#![allow(clippy::panic)]
 
 use super::{
     AgentMethod, DEFAULT_MAX_MESSAGE_SIZE, ErrorEnvelope, LockState, PROTOCOL_VERSION,
@@ -465,8 +468,7 @@ mod server_tests {
     }
 
     #[tokio::test]
-    async fn handle_connection_rejects_cross_user_peer()
-    -> Result<(), Box<dyn std::error::Error>> {
+    async fn handle_connection_rejects_cross_user_peer() -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempdir()?;
         tighten_directory(directory.path())?;
         let socket_path = directory.path().join("agent.sock");

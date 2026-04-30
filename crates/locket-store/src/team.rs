@@ -230,7 +230,7 @@ impl Store {
     /// Marks a team invite as accepted, returning [`StoreError::InviteReplayDetected`]
     /// when the invite has already been accepted or revoked.
     ///
-    /// The check-and-set runs in a single SQLite UPDATE statement so two
+    /// The check-and-set runs in a single `SQLite` UPDATE statement so two
     /// concurrent acceptances cannot both succeed: the second one finds
     /// `accepted_at IS NOT NULL` and the conditional UPDATE affects zero
     /// rows.

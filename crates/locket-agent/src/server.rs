@@ -259,10 +259,11 @@ impl StubStatusSource {
     }
 }
 
-/// Handles a single accepted connection: validate peer credentials,
-/// read framed requests one at a time, dispatch the stub handler, and
-/// write framed responses until the peer closes or a read error
-/// occurs.
+/// Handles a single accepted connection.
+///
+/// Validates peer credentials, reads framed requests, dispatches the
+/// stub handler, and writes framed responses until the peer closes or
+/// a read error occurs.
 ///
 /// A peer whose effective UID does not match the daemon's UID is
 /// dropped immediately without any response, so the existence and

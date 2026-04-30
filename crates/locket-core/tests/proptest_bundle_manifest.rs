@@ -1,4 +1,15 @@
 //! Property tests for [`locket_core::bundle::BundleContainer`].
+#![allow(
+    unused_crate_dependencies,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::redundant_clone,
+    clippy::cast_possible_truncation,
+    clippy::checked_conversions,
+    clippy::assertions_on_constants,
+    clippy::absurd_extreme_comparisons
+)]
 //!
 //! Asserts the documented invariants from
 //! `docs/specs/team-sync-recovery.md:111-224` and the slice TODO:
@@ -12,8 +23,6 @@
 //!   member/device names can leak through the plaintext header.
 //! - **Cap enforcement.** Payloads or manifest-length headers above
 //!   the documented caps are rejected without allocating.
-
-#![allow(clippy::panic, clippy::unwrap_used)]
 
 use locket_core::bundle::{
     BUNDLE_MAGIC, BUNDLE_MANIFEST_ALLOWED_FIELDS, BUNDLE_MAX_MANIFEST_LEN, BUNDLE_MAX_PAYLOAD_LEN,
@@ -52,16 +61,18 @@ fn manifest_strategy() -> impl Strategy<Value = BundleManifest> {
         any::<u32>(),
         fingerprint_strategy(),
     )
-        .prop_map(|(recipient_fingerprints, project_id, created_at, profile_count, payload_digest)| {
-            BundleManifest {
-                recipient_fingerprints,
-                project_id,
-                schema_version: BUNDLE_SCHEMA_V1,
-                created_at,
-                profile_count,
-                payload_digest,
-            }
-        })
+        .prop_map(
+            |(recipient_fingerprints, project_id, created_at, profile_count, payload_digest)| {
+                BundleManifest {
+                    recipient_fingerprints,
+                    project_id,
+                    schema_version: BUNDLE_SCHEMA_V1,
+                    created_at,
+                    profile_count,
+                    payload_digest,
+                }
+            },
+        )
 }
 
 fn payload_strategy() -> impl Strategy<Value = Vec<u8>> {

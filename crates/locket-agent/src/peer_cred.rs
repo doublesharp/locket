@@ -37,10 +37,7 @@ pub fn current_process_uid() -> u32 {
 /// for this connection (typically only on platforms where peer-cred
 /// retrieval is unsupported, in which case the agent must fail closed).
 #[cfg(unix)]
-pub fn validate_peer_stream(
-    stream: &UnixStream,
-    daemon_uid: u32,
-) -> Result<(), SocketServerError> {
+pub fn validate_peer_stream(stream: &UnixStream, daemon_uid: u32) -> Result<(), SocketServerError> {
     let cred = stream.peer_cred()?;
     validate_peer_uid(cred.uid(), daemon_uid)
 }
@@ -53,10 +50,7 @@ pub fn validate_peer_stream(
 ///
 /// Returns [`SocketServerError::PeerCredentialDenied`] when the two
 /// UIDs differ.
-pub const fn validate_peer_uid(
-    peer_uid: u32,
-    daemon_uid: u32,
-) -> Result<(), SocketServerError> {
+pub const fn validate_peer_uid(peer_uid: u32, daemon_uid: u32) -> Result<(), SocketServerError> {
     if peer_uid == daemon_uid {
         Ok(())
     } else {
@@ -65,6 +59,8 @@ pub const fn validate_peer_uid(
 }
 
 #[cfg(test)]
+#[allow(clippy::panic)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 

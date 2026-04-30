@@ -194,9 +194,12 @@ impl BundleContainer {
             return Err(BundleContainerError::UnsupportedSchema(schema_version));
         }
         let manifest_len_bytes = read_slice(&mut cursor, data, 4)?;
-        let manifest_len = u32::from_le_bytes(
-            [manifest_len_bytes[0], manifest_len_bytes[1], manifest_len_bytes[2], manifest_len_bytes[3]],
-        ) as usize;
+        let manifest_len = u32::from_le_bytes([
+            manifest_len_bytes[0],
+            manifest_len_bytes[1],
+            manifest_len_bytes[2],
+            manifest_len_bytes[3],
+        ]) as usize;
         if manifest_len > BUNDLE_MAX_MANIFEST_LEN {
             return Err(BundleContainerError::ManifestTooLarge(
                 manifest_len,

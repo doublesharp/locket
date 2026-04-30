@@ -109,10 +109,11 @@ impl StoreError {
             | Self::InvalidAuditHmacLength { .. }
             | Self::InvalidAuditKeyLength { .. }
             | Self::AuditCanonicalization(_) => LocketError::AuditIntegrityFailed,
-            Self::AuditMetadataTooLarge { .. } => LocketError::MetadataInvalid,
+            Self::AuditMetadataTooLarge { .. } | Self::InviteNotFound { .. } => {
+                LocketError::MetadataInvalid
+            }
             Self::Json(_) => LocketError::CorruptDb,
             Self::InviteReplayDetected { .. } => LocketError::ReplayDetected,
-            Self::InviteNotFound { .. } => LocketError::MetadataInvalid,
         }
     }
 }
