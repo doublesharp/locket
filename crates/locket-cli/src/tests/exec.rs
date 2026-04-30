@@ -970,18 +970,24 @@ inherit_env = ["PATH"]
 "#,
         )?;
 
-    let denying_context =
-        context_with_user_verifier(&context, Arc::new(MemoryLocalUserVerifier::denying()));
-    let result = run_with_context(
-        Cli::try_parse_from(["locket", "run", "sensitive"])?,
-        &denying_context,
-        &mut Vec::new(),
-    );
-    let Err(error) = result else {
-        return Err("policy with require_user_verification must reject denying verifier".into());
-    };
-    assert_eq!(error.exit_code(), 74);
-    assert!(error.to_string().contains("local user verification"));
+    let cases: [(&str, Arc<dyn LocalUserVerifier + Send + Sync>); 3] = [
+        ("denied", Arc::new(MemoryLocalUserVerifier::denying())),
+        ("cancelled", Arc::new(MemoryLocalUserVerifier::cancelled())),
+        ("unavailable", Arc::new(MemoryLocalUserVerifier::unavailable())),
+    ];
+    for (label, verifier) in cases {
+        let rejecting_context = context_with_user_verifier(&context, verifier);
+        let result = run_with_context(
+            Cli::try_parse_from(["locket", "run", "sensitive"])?,
+            &rejecting_context,
+            &mut Vec::new(),
+        );
+        let Err(error) = result else {
+            return Err(format!("policy must reject {label} user verification").into());
+        };
+        assert_eq!(error.exit_code(), 74);
+        assert!(error.to_string().contains("local user verification"));
+    }
 
     let store = locket_store::Store::open(directory.path().join("store.db"))?;
     let count: i64 = store.connection().query_row(
