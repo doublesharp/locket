@@ -24,6 +24,7 @@ import type {
   VersionHistoryRow,
 } from './types/views';
 import type { AgentClientError, ListRuntimeSessionsRequest, ScanFinding } from './agent/types';
+import { privacyAlias, privacyLabel } from './utils/privacy';
 
 type ViewKey =
   | 'dashboard'
@@ -70,8 +71,15 @@ const lockLabel = computed<string>(() => {
   }
 });
 
-const projectLabel = computed<string>(() => status.value?.project_id ?? '—');
-const profileLabel = computed<string>(() => status.value?.profile_name ?? '—');
+const projectAlias = ref<string | null>(null);
+const profileAlias = ref<string | null>(null);
+
+const projectLabel = computed<string>(() =>
+  privacyLabel('project', status.value?.project_id, settings.value.privacyRedactNames, projectAlias.value),
+);
+const profileLabel = computed<string>(() =>
+  privacyLabel('profile', status.value?.profile_name, settings.value.privacyRedactNames, profileAlias.value),
+);
 
 // Slice 4-5/9-11 land the remaining real data sources. The execution
 // monitor is populated from the agent's metadata-only session RPC.
@@ -97,6 +105,41 @@ const settings = ref<SettingsState>({
   dangerousProfileFlag: false,
   agentVersion: status.value?.agent_version ?? 'unknown',
 });
+
+watch(
+  [status, () => settings.value.privacyRedactNames],
+  ([nextStatus, redactNames]) => {
+    const projectId = nextStatus?.project_id ?? null;
+    const profileName = nextStatus?.profile_name ?? null;
+
+    projectAlias.value = null;
+    profileAlias.value = null;
+
+    if (!redactNames) {
+      return;
+    }
+
+    if (projectId !== null && projectId.length > 0) {
+      void privacyAlias('project', projectId)
+        .then((alias) => {
+          if (settings.value.privacyRedactNames && status.value?.project_id === projectId) {
+            projectAlias.value = alias;
+          }
+        })
+        .catch(() => {});
+    }
+    if (profileName !== null && profileName.length > 0) {
+      void privacyAlias('profile', profileName)
+        .then((alias) => {
+          if (settings.value.privacyRedactNames && status.value?.profile_name === profileName) {
+            profileAlias.value = alias;
+          }
+        })
+        .catch(() => {});
+    }
+  },
+  { immediate: true },
+);
 
 function applySettingsPatch(patch: Partial<SettingsState>): void {
   settings.value = { ...settings.value, ...patch };
