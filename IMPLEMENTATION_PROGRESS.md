@@ -768,9 +768,6 @@ the spec already covers. Closed slices land in
 - [ ] Profile-scoped grant invalidation on `locket use <profile>`;
   hook re-prompts `GrantRequired` when no `directory_grants` row
   exists for the now-active profile (`docs/specs/integrations.md:26`).
-- [~] [9f2c8a1e] `locket deny --all` revokes every directory grant for the
-  project across all profiles (`docs/specs/integrations.md:27`).
-  Claim: branch agent-9f2c8a1e/deny-all-grants, worktree .worktrees/agent-9f2c8a1e-deny-all-grants, scope deny-all grant revocation behavior and focused CLI regression.
 
 ### Code Health and Bug Fixes
 

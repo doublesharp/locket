@@ -151,6 +151,8 @@ Slices that have merged to `main` and verified. Open work tracked in
   - Files: `crates/locket-app/ui/` error views.
 - [x] Execution monitor descriptors backed by `runtime_sessions`, covering
   running/completed/failed/stale states and metadata-only field labels.
+- [x] `locket deny --all` revokes directory grants across all profiles
+  for the project; `DENY_DIRECTORY` audit metadata echoes the deny command.
 
 ## Full Spec Coverage TODO — Code Health and Bug Fixes
 
