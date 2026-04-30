@@ -125,6 +125,8 @@ Slices that have merged to `main` and verified. Open work tracked in
   mismatch returns `ConfirmationFailed` (68) before any bundle is written.
 - [x] `locket bundle verify` writes a `BUNDLE_VERIFY` audit row when
   the bundle's project matches the cwd; unknown-project stays metadata-only.
+- [x] supply-chain-exception-ledger: Supply-chain exceptions now have a checked ledger
+  and fail the gate when missing or expired.
 
 ## Full Spec Coverage TODO — Security/Recovery/Team
 
