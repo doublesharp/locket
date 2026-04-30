@@ -506,6 +506,8 @@ Slices that have merged to `main` and verified. Open work tracked in
 - [x] **subtask** — proptest-dotenv: `.env` parser round-trip and rejection invariants in `crates/locket-cli/src/tests/proptest_dotenv.rs`.
 - [x] vscode-vsix-package: VS Code extension packaging now builds a VSIX
   artifact and release digest output.
+- [x] **subtask** — lk-resolve-policy-auth: ResolveReference now
+  checks the caller policy before returning values.
 
 ## Spec-by-Spec Completion Gates
 
