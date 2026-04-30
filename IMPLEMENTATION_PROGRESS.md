@@ -276,14 +276,12 @@ the spec already covers. Closed slices land in
     `AgentUnavailable` (80) when the daemon is down and the policy declares
     `require_agent = true`.
 - [~] External env source resolution
-  (`docs/specs/runtime.md:117-118`). `::Parent` and `::File` shipped.
+  (`docs/specs/runtime.md:117-118`). `::Parent`, `::File`, and
+  `::Compose` shipped.
   Remaining subtasks:
-  - [~] [bec7ddfc] **subtask** — env-source-compose: shell out to
-    `docker compose config --format json`, parse the env block, write a
-    names-only `external_sources: ["compose"]` field on `RUN`/`EXEC`.
-    Errors: `ExternalSourceUnavailable` (89) when compose isn't on
-    PATH or returns non-zero.
-    Claim: branch agent-bec7ddfc/env-source-compose, worktree .worktrees/agent-bec7ddfc-env-source-compose.
+  - [x] **subtask** — env-source-compose: `locket run` resolves Compose
+    env names via `docker compose config --format json` with typed
+    provider failures and metadata-only audit labels.
   - [ ] **subtask** — env-source-ide: consume the VS Code terminal
     `LOCKET_IDE_ENV_SESSION` map over the agent socket; names-only
     audit on `RUN`/`EXEC`; never persist values. Depends on the
