@@ -829,9 +829,10 @@ editing — they drift. Severity: **blocker** (security/correctness),
     envelope parsing, and device descriptor parsing in
     `crates/locket-crypto/`.
     Claim: branch agent-e7389a73/tests-crypto-aad, worktree .worktrees/agent-e7389a73-tests-crypto-aad.
-  - [ ] **subtask** — tests-store-migrations: cover schema migration
+  - [~] [e7389a73] **subtask** — tests-store-migrations: cover schema migration
     paths, `SCHEMA_MIGRATE` audit on every step, and rollback on
     failure in `crates/locket-store/`.
+    Claim: branch agent-e7389a73/tests-store-migrations, worktree .worktrees/agent-e7389a73-tests-store-migrations.
   - [~] [bec7ddfc] **subtask** — tests-typed-errors: a per-variant exit-code
     regression covering at least one callsite per `LocketError`
     variant in `crates/locket-core/src/error.rs`.
