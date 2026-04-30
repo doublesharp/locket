@@ -5,7 +5,7 @@ use std::path::Path;
 use std::process::{Command as ProcessCommand, Stdio};
 
 use crate::runtime::RuntimeContext;
-use crate::runtime::error::CliError;
+use crate::runtime::error::{CliError, external_source_unavailable_error};
 use crate::runtime::user_verification::{UserVerificationAudit, require_user_verification};
 use crate::support::secret_helpers::{
     ResolvedSecret, ValueAccessAudit, decrypt_current_secret, resolve_active_secret,
@@ -118,7 +118,7 @@ fn get_copy_command(
         denial_reason: None,
         user_verification,
     })?;
-    result.map_err(CliError::Config)?;
+    result.map_err(external_source_unavailable_error)?;
     writeln!(
         output,
         "copied {} source={} version={} ttl_seconds={} clipboard_clear_supported=no metadata_only=yes",

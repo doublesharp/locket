@@ -446,7 +446,15 @@ fn get_copy_unavailable_audits_unsupported_state_without_value_leakage()
         &copy_args,
         |_value| Err("clipboard command unavailable".to_owned()),
     );
-    assert_error_contains(result, "clipboard command unavailable");
+    let Err(error) = result else {
+        return Err("clipboard failure must return an error".into());
+    };
+    assert_eq!(error.exit_code(), locket_core::LocketError::ExternalSourceUnavailable.exit_code());
+    let crate::CliError::Typed { kind, message } = error else {
+        return Err("clipboard failure should return a typed error".into());
+    };
+    assert_eq!(kind, locket_core::LocketError::ExternalSourceUnavailable);
+    assert_eq!(message, "clipboard command unavailable");
     let copy_output = String::from_utf8(copy_output)?;
     let copy_stderr = String::from_utf8(copy_stderr)?;
     assert!(copy_stderr.contains("clipboard TTL clearing is unsupported"));

@@ -9,7 +9,6 @@ use locket_store::StoreError;
 
 #[derive(Debug)]
 pub enum CliError {
-    Config(String),
     Typed { kind: LocketError, message: String },
     ChildExit(u8),
     Io(io::Error),
@@ -25,7 +24,7 @@ pub enum CliError {
 impl CliError {
     pub fn exit_code(&self) -> u8 {
         match self {
-            Self::Config(_) | Self::Json(_) | Self::TomlDe(_) | Self::TomlSer(_) => {
+            Self::Json(_) | Self::TomlDe(_) | Self::TomlSer(_) => {
                 LocketError::InvalidReference.exit_code()
             }
             Self::Typed { kind, .. } => kind.exit_code(),
@@ -206,7 +205,7 @@ pub fn child_exit_error(status: std::process::ExitStatus) -> CliError {
 impl Display for CliError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Config(message) | Self::Typed { message, .. } => formatter.write_str(message),
+            Self::Typed { message, .. } => formatter.write_str(message),
             Self::ChildExit(code) => write!(formatter, "child process exited with code {code}"),
             Self::Io(error) => error.fmt(formatter),
             Self::Store(error) => error.fmt(formatter),
