@@ -651,10 +651,11 @@ the spec already covers. Closed slices land in
 - [ ] Build the Tauri desktop app (`docs/specs/desktop.md:5-65`).
   Pre-req: `locket-app` workspace crate (already `[x]`).
   Decomposed below; later subtasks depend on `tauri-shell`.
-  - [ ] **subtask** — tauri-agent-client: connect the desktop app to
+  - [~] [4e842280] **subtask** — tauri-agent-client: connect the desktop app to
     the local agent over its socket; surface a typed
     `AgentUnavailable` banner when the daemon isn't running. Pre-req:
     `agent-socket-server`.
+    Claim: branch agent-4e842280/tauri-agent-client, worktree .worktrees/agent-4e842280-tauri-agent-client. Slice 1 of the desktop UI campaign (docs/superpowers/specs/2026-04-29-desktop-ui-campaign.md). Scope: TS client speaking the v1 length-prefixed JSON protocol, useAgent() composable, Tauri commands for connect/disconnect, AgentUnavailable banner; no views ship yet.
 - [ ] Build the tray/status panel (`docs/specs/desktop.md:65-108`).
   Pre-req: `tauri-shell`.
   - [ ] **subtask** — tray-bind-platform: register the tray icon and
