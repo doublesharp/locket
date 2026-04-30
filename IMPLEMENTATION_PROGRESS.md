@@ -1056,6 +1056,41 @@ editing — they drift. Severity: **blocker** (security/correctness),
   ≥8 cumulative CPU-hours/target since prior release; deterministic
   per-target resource limits and codified finding workflow
   (`docs/specs/fuzzing.md`).
+- [ ] Bench fixtures: metadata, runtime, reference-resolution,
+  staged-scan, full-scan, and Argon2 fixtures used by `make bench`
+  (`docs/specs/performance.md`).
+- [ ] PR vs release tolerance gate for benches: 10% PR / 20%
+  tracked-regression / no-tolerance release
+  (`docs/specs/performance.md`).
+- [ ] `make coverage-html` and `make test` Make targets exposed
+  alongside `coverage-branch`/`mutation` (`docs/specs/testing.md`).
+- [ ] `cargo geiger` (or equivalent) unsafe inventory before public
+  release and after any crypto/IPC/platform/storage dep change
+  (`docs/specs/engineering.md`).
+- [ ] RustSec advisory severity policy: high/critical block,
+  medium runtime block, dev-only exception, low triage
+  (`docs/specs/engineering.md`).
+- [ ] Markdown lint alongside `make docs-check`
+  (`docs/specs/engineering.md`).
+- [ ] Supply-chain exception ledger (package, version, reason,
+  compensating controls, owner, expiration) enforced by CI;
+  no-expiration entries are invalid (`docs/specs/engineering.md`).
+- [ ] SLSA v1.2 provenance verification (artifact digest, builder
+  identity, source repo, build params) and Build L3 hosted-runner
+  targeting (`docs/specs/operations.md`).
+- [ ] SQLite pragma posture: `foreign_keys = ON`, WAL mode, 5000 ms
+  busy timeout default; `locket doctor` runs an integrity check
+  (`docs/specs/storage.md`).
+- [ ] Pre-migration backup of `store.db` and recovery files
+  (user-only perms) before schema-mutating migrations; `locket doctor`
+  reports backup-skipped migrations and last backup path
+  (`docs/specs/storage.md`).
+- [ ] `automation_client_nonces` opportunistic pruning during client
+  auth and via `locket doctor` (`docs/specs/storage.md`).
+- [ ] `runtime.session_secret_name_retention` enforcement: doctor
+  reports past-retention rows and prunes only `secret_names`; `off`
+  disables storing the field for new rows
+  (`docs/specs/storage.md:139`).
 
 ## Spec-by-Spec Completion Gates
 
