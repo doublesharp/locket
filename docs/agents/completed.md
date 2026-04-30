@@ -137,6 +137,8 @@ Slices that have merged to `main` and verified. Open work tracked in
   status when agent-backed reference validation is unavailable.
 - [x] leak-canary-cli-artifacts: Leak canary coverage now includes CLI outputs and
   generated project/debug artifacts.
+- [x] mutation-critical-packages: The mutation smoke gate now covers the
+  security-critical package set when cargo-mutants is available.
 
 ## Full Spec Coverage TODO — Security/Recovery/Team
 

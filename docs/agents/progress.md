@@ -372,9 +372,6 @@ Re-verify file:line references before editing — they drift. Severity:
   scaffolding exists. Remaining: full spec fixtures, hard
   p95/throughput budgets, `make bench` / `bench-ci` / `bench-report`
   PR-vs-release modes (`docs/specs/performance.md`).
-- [~] [4ab55ee9] branch agent-4ab55ee9/mutation-critical-packages, worktree .worktrees/agent-4ab55ee9-mutation-critical-packages; widen mutation gate package scope for security-critical crates.
-  Branch coverage and mutation gates (`make coverage-branch`,
-  `make mutation`). Local fallbacks exist; line coverage still <90%.
 - [~] [4ab55ee9] branch agent-4ab55ee9/cargo-vet-gate, worktree .worktrees/agent-4ab55ee9-cargo-vet-gate; cargo-vet strict supply-chain gate.
   Offline-safe local commands and
   strict-mode hooks exist. Remaining: enforced `cargo deny`/`audit`,
