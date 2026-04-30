@@ -691,8 +691,7 @@ editing — they drift. Severity: **blocker** (security/correctness),
 - [x] Update-manifest fetch keyed only by channel/platform/arch/version
   (no project/device/host/user/install ids); release-key rotation
   requires a dual-signed manifest (`docs/specs/operations.md`).
-- [~] [6e4d05db] Performance reference-runner spec, required report fields, and
-  Claim: branch agent-6e4d05db/perf-reference-runner, worktree .worktrees/agent-6e4d05db-perf-reference-runner.
+- [x] Performance reference-runner spec, required report fields, and
   sampling rules (warmup, sample counts, p95 index, throughput formula)
   (`docs/specs/performance.md`).
 - [ ] Cold-start budgets: passphrase fallback unlock <300 ms,
