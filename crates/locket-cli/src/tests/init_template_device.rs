@@ -816,6 +816,130 @@ fn team_revoke_device_sets_revoked_at_and_writes_device_revoke_audit()
 }
 
 #[test]
+fn maintainer_can_remove_developer_team_member() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    seed_team_role_authorization_fixture(&directory, "maintainer")?;
+
+    let remove_context = context_with_confirmation(&context, "Dev User\n");
+    let mut output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "team", "remove", "Dev User"])?,
+        &remove_context,
+        &mut output,
+    )?;
+
+    let output = String::from_utf8(output)?;
+    assert!(output.contains("team_remove: success"));
+    assert!(output.contains("metadata_only: yes"));
+    Ok(())
+}
+
+#[test]
+fn maintainer_cannot_remove_owner_team_member() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    seed_team_role_authorization_fixture(&directory, "maintainer")?;
+
+    let result = run_with_context(
+        Cli::try_parse_from(["locket", "team", "remove", "Owner User"])?,
+        &context,
+        &mut Vec::new(),
+    );
+
+    let Err(error) = result else {
+        return Err("maintainer removing owner must fail".into());
+    };
+    assert_eq!(error.exit_code(), 70);
+    assert!(error.to_string().contains("maintainers can remove only"));
+    Ok(())
+}
+
+#[test]
+fn developer_cannot_remove_team_member() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    seed_team_role_authorization_fixture(&directory, "developer")?;
+
+    let result = run_with_context(
+        Cli::try_parse_from(["locket", "team", "remove", "Dev User"])?,
+        &context,
+        &mut Vec::new(),
+    );
+
+    let Err(error) = result else {
+        return Err("developer removing member must fail".into());
+    };
+    assert_eq!(error.exit_code(), 70);
+    assert!(error.to_string().contains("cannot remove members"));
+    Ok(())
+}
+
+#[test]
+fn maintainer_can_revoke_developer_team_device() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    seed_team_role_authorization_fixture(&directory, "maintainer")?;
+
+    let mut output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "team", "revoke-device", "lk_dev_target_developer"])?,
+        &context,
+        &mut output,
+    )?;
+
+    let output = String::from_utf8(output)?;
+    assert!(output.contains("device: revoked"));
+    assert!(output.contains("device_id: lk_dev_target_developer"));
+    Ok(())
+}
+
+#[test]
+fn maintainer_cannot_revoke_owner_team_device() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    seed_team_role_authorization_fixture(&directory, "maintainer")?;
+
+    let result = run_with_context(
+        Cli::try_parse_from(["locket", "team", "revoke-device", "lk_dev_target_owner"])?,
+        &context,
+        &mut Vec::new(),
+    );
+
+    let Err(error) = result else {
+        return Err("maintainer revoking owner device must fail".into());
+    };
+    assert_eq!(error.exit_code(), 70);
+    assert!(error.to_string().contains("cannot revoke owner"));
+    Ok(())
+}
+
+#[test]
 fn team_remove_last_owner_is_rejected_with_team_role_denied()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempdir()?;
@@ -903,15 +1027,26 @@ fn team_revoke_device_already_revoked_is_idempotent() -> Result<(), Box<dyn std:
         &mut Vec::new(),
     )?;
     seed_team_members_fixture(&directory, false)?;
-    // Pre-revoke the device directly.
     let store = locket_store::Store::open(directory.path().join("store.db"))?;
     let project_id =
         crate::read_project_config(&directory.path().join("locket.toml"))?.project_id.into_string();
-    store.revoke_device(&project_id, "lk_dev_team_owner", 1_i64)?;
+    store.insert_device(&crate::DeviceRecord {
+        id: "lk_dev_revoked_remote".to_owned(),
+        project_id: project_id.clone(),
+        name: "revoked remote".to_owned(),
+        signing_public_key: vec![11; 32],
+        sealing_public_key: vec![12; 32],
+        fingerprint: crate::device_fingerprint_hex(&[11; 32], &[12; 32]),
+        safety_words: vec!["cedar".to_owned(), "delta".to_owned()],
+        local: false,
+        created_at: 50,
+        last_seen_at: Some(51),
+        revoked_at: Some(52),
+    })?;
 
     let mut output = Vec::new();
     run_with_context(
-        Cli::try_parse_from(["locket", "team", "revoke-device", "lk_dev_team_owner"])?,
+        Cli::try_parse_from(["locket", "team", "revoke-device", "lk_dev_revoked_remote"])?,
         &context,
         &mut output,
     )?;
@@ -956,19 +1091,90 @@ fn seed_team_members_with_two_owners(
     let project_id =
         crate::read_project_config(&directory.path().join("locket.toml"))?.project_id.into_string();
     store.connection().execute(
+        "INSERT INTO devices(
+           id, project_id, name, signing_public_key, sealing_public_key, fingerprint,
+           safety_words_json, local, created_at, last_seen_at, revoked_at
+         )
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        (
+            "lk_dev_owner_one",
+            project_id.as_str(),
+            "owner one laptop",
+            vec![21_u8; 32],
+            vec![22_u8; 32],
+            crate::device_fingerprint_hex(&[21; 32], &[22; 32]),
+            serde_json::to_string(&vec!["owner".to_owned(), "one".to_owned()])?,
+            true,
+            3_i64,
+            Some(4_i64),
+            Option::<i64>::None,
+        ),
+    )?;
+    store.connection().execute(
         "INSERT INTO teams(id, project_id, name, created_at, updated_at)
          VALUES (?1, ?2, ?3, ?4, ?5)",
         ("lk_team_two", project_id.as_str(), "Two Owners", 1_i64, 2_i64),
     )?;
     store.connection().execute(
-        "INSERT INTO team_members(id, team_id, display_name, role, joined_at)
-         VALUES (?1, ?2, ?3, ?4, ?5)",
-        ("lk_member_owner", "lk_team_two", "Alice Owner", "owner", 10_i64),
+        "INSERT INTO team_members(id, team_id, device_id, display_name, role, joined_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        ("lk_member_owner", "lk_team_two", "lk_dev_owner_one", "Alice Owner", "owner", 10_i64),
     )?;
     store.connection().execute(
         "INSERT INTO team_members(id, team_id, display_name, role, joined_at)
          VALUES (?1, ?2, ?3, ?4, ?5)",
         ("lk_member_owner2", "lk_team_two", "Bob Owner", "owner", 20_i64),
+    )?;
+    Ok(())
+}
+
+fn seed_team_role_authorization_fixture(
+    directory: &tempfile::TempDir,
+    caller_role: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let project_id =
+        crate::read_project_config(&directory.path().join("locket.toml"))?.project_id.into_string();
+    store.connection().execute(
+        "INSERT INTO devices(
+           id, project_id, name, signing_public_key, sealing_public_key, fingerprint,
+           safety_words_json, local, created_at, last_seen_at, revoked_at
+         )
+         VALUES
+           (?1, ?2, 'caller laptop', ?3, ?4, ?5, ?6, 1, 10, 11, NULL),
+           (?7, ?2, 'developer laptop', ?8, ?9, ?10, ?11, 0, 12, 13, NULL),
+           (?12, ?2, 'owner laptop', ?13, ?14, ?15, ?16, 0, 14, 15, NULL)",
+        (
+            "lk_dev_caller",
+            project_id.as_str(),
+            vec![31_u8; 32],
+            vec![32_u8; 32],
+            crate::device_fingerprint_hex(&[31; 32], &[32; 32]),
+            serde_json::to_string(&vec!["caller".to_owned()])?,
+            "lk_dev_target_developer",
+            vec![33_u8; 32],
+            vec![34_u8; 32],
+            crate::device_fingerprint_hex(&[33; 32], &[34; 32]),
+            serde_json::to_string(&vec!["developer".to_owned()])?,
+            "lk_dev_target_owner",
+            vec![35_u8; 32],
+            vec![36_u8; 32],
+            crate::device_fingerprint_hex(&[35; 32], &[36; 32]),
+            serde_json::to_string(&vec!["owner".to_owned()])?,
+        ),
+    )?;
+    store.connection().execute(
+        "INSERT INTO teams(id, project_id, name, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        ("lk_team_roles", project_id.as_str(), "Role Team", 20_i64, 21_i64),
+    )?;
+    store.connection().execute(
+        "INSERT INTO team_members(id, team_id, device_id, display_name, role, joined_at)
+         VALUES
+           ('lk_member_caller', 'lk_team_roles', 'lk_dev_caller', 'Caller User', ?1, 30),
+           ('lk_member_developer', 'lk_team_roles', 'lk_dev_target_developer', 'Dev User', 'developer', 31),
+           ('lk_member_owner', 'lk_team_roles', 'lk_dev_target_owner', 'Owner User', 'owner', 32)",
+        [caller_role],
     )?;
     Ok(())
 }
@@ -1493,7 +1699,7 @@ fn seed_team_members_fixture(
         sealing_public_key: vec![4; 32],
         fingerprint: crate::device_fingerprint_hex(&[3; 32], &[4; 32]),
         safety_words: vec!["amber".to_owned(), "basil".to_owned()],
-        local: false,
+        local: true,
         created_at: 5,
         last_seen_at: Some(6),
         revoked_at: None,

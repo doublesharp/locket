@@ -263,6 +263,7 @@ fn team_remove_command(
     let Some(member) = store.get_team_member(&team.id, &args.member)? else {
         return Err(secret_not_found_error(format!("team member not found: {}", args.member)));
     };
+    let caller = current_team_member_role(&store, project_id, &team.id)?;
 
     if member.removed_at.is_some() {
         return Err(secret_not_found_error(format!(
@@ -270,6 +271,8 @@ fn team_remove_command(
             member.display_name
         )));
     }
+
+    authorize_team_remove(caller, &member)?;
 
     // Last-owner guard: cannot remove the last remaining owner.
     if member.role == "owner" {
@@ -332,13 +335,16 @@ fn team_revoke_device_command(
     let project_id = resolved.config.project_id.as_str();
     ensure_project_exists(&store, project_id)?;
 
-    if store.get_team_by_project(project_id)?.is_none() {
+    let Some(team) = store.get_team_by_project(project_id)? else {
         return Err(team_role_denied_error("no team initialized for this project"));
-    }
+    };
 
     let device = store
         .find_device(project_id, &args.device)?
         .ok_or_else(|| invalid_reference_error("device not found"))?;
+    let caller = current_team_member_role(&store, project_id, &team.id)?;
+    let target_member = store.get_active_team_member_by_device(&team.id, &device.id)?;
+    authorize_team_device_revoke(caller, target_member.as_ref())?;
 
     if device.revoked_at.is_some() {
         writeln!(output, "device: already revoked")?;
@@ -873,6 +879,79 @@ fn invite_profiles_label(invite: &PendingTeamInviteRecord, redact_names: bool) -
 
 fn optional_timestamp_label(value: Option<i64>) -> String {
     value.map_or_else(|| "-".to_owned(), |timestamp| timestamp.to_string())
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TeamRole {
+    Owner,
+    Maintainer,
+    Developer,
+    ReadOnly,
+}
+
+impl TeamRole {
+    fn from_label(label: &str) -> Option<Self> {
+        match label {
+            "owner" => Some(Self::Owner),
+            "maintainer" => Some(Self::Maintainer),
+            "developer" => Some(Self::Developer),
+            "read-only" => Some(Self::ReadOnly),
+            _ => None,
+        }
+    }
+}
+
+fn current_team_member_role(
+    store: &locket_store::Store,
+    project_id: &str,
+    team_id: &str,
+) -> Result<TeamRole, CliError> {
+    let Some(local_device) = store.get_active_local_device(project_id)? else {
+        return Err(team_role_denied_error("team action requires an active local team device"));
+    };
+    let Some(member) = store.get_active_team_member_by_device(team_id, &local_device.id)? else {
+        return Err(team_role_denied_error("local device is not an active team member"));
+    };
+    TeamRole::from_label(&member.role)
+        .ok_or_else(|| team_role_denied_error("local team member has an unknown role"))
+}
+
+fn authorize_team_remove(caller: TeamRole, target: &TeamMemberListRecord) -> Result<(), CliError> {
+    match caller {
+        TeamRole::Owner => Ok(()),
+        TeamRole::Maintainer if matches!(target.role.as_str(), "developer" | "read-only") => Ok(()),
+        TeamRole::Maintainer => Err(team_role_denied_error(
+            "maintainers can remove only developer and read-only members",
+        )),
+        TeamRole::Developer | TeamRole::ReadOnly => {
+            Err(team_role_denied_error("team role cannot remove members"))
+        }
+    }
+}
+
+fn authorize_team_device_revoke(
+    caller: TeamRole,
+    target_member: Option<&TeamMemberListRecord>,
+) -> Result<(), CliError> {
+    match caller {
+        TeamRole::Owner => Ok(()),
+        TeamRole::Maintainer => {
+            let Some(member) = target_member else {
+                return Err(team_role_denied_error(
+                    "maintainers can revoke only non-owner member devices",
+                ));
+            };
+            if member.role == "owner" {
+                return Err(team_role_denied_error(
+                    "maintainers cannot revoke owner member devices",
+                ));
+            }
+            Ok(())
+        }
+        TeamRole::Developer | TeamRole::ReadOnly => {
+            Err(team_role_denied_error("team role cannot revoke team devices"))
+        }
+    }
 }
 
 /// Emits a metadata-only rotation checklist for every profile in the

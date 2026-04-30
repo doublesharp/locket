@@ -6,7 +6,7 @@ use std::error::Error;
 
 use crate::error::StoreError;
 
-use super::{insert_project_profile, open_initialized_store};
+use super::{insert_project_profile, open_initialized_store, test_device};
 
 fn insert_team_with_pending_invite(
     store: &crate::Store,
@@ -156,5 +156,39 @@ fn invite_replay_detected_maps_to_locket_replay_detected() -> Result<(), Box<dyn
         panic!("expected error, got Ok");
     };
     assert_eq!(error.locket_error(), locket_core::LocketError::ReplayDetected);
+    Ok(())
+}
+
+#[test]
+fn active_team_member_can_be_found_by_device_id() -> Result<(), Box<dyn Error>> {
+    let test = open_initialized_store()?;
+    insert_project_profile(&test.store)?;
+    let device = test_device();
+    test.store.insert_device(&device)?;
+    test.store.connection().execute(
+        "INSERT INTO teams(id, project_id, name, created_at, updated_at)
+         VALUES ('lk_team_lookup', 'lk_proj_test', 'lookup-team', 1, 1)",
+        [],
+    )?;
+    test.store.connection().execute(
+        "INSERT INTO team_members(id, team_id, device_id, display_name, role, joined_at)
+         VALUES ('lk_member_lookup', 'lk_team_lookup', 'lk_dev_test', 'Alice', 'maintainer', 2)",
+        [],
+    )?;
+
+    let member = test
+        .store
+        .get_active_team_member_by_device("lk_team_lookup", "lk_dev_test")?
+        .ok_or("member missing")?;
+    assert_eq!(member.id, "lk_member_lookup");
+    assert_eq!(member.role, "maintainer");
+    assert_eq!(member.trusted_device_count, 1);
+
+    test.store
+        .connection()
+        .execute("UPDATE team_members SET removed_at = 3 WHERE id = 'lk_member_lookup'", [])?;
+    assert!(
+        test.store.get_active_team_member_by_device("lk_team_lookup", "lk_dev_test")?.is_none()
+    );
     Ok(())
 }

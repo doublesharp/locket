@@ -268,6 +268,38 @@ impl Store {
             .map_err(StoreError::from)
     }
 
+    /// Returns the active team member currently bound to a device.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Sqlite`] when `SQLite` cannot query the member row.
+    pub fn get_active_team_member_by_device(
+        &self,
+        team_id: &str,
+        device_id: &str,
+    ) -> Result<Option<TeamMemberListRecord>, StoreError> {
+        let mut statement = self.connection.prepare(
+            "SELECT
+               m.id,
+               m.display_name,
+               m.role,
+               COUNT(d.id) AS trusted_device_count,
+               m.joined_at,
+               m.removed_at
+             FROM team_members m
+             LEFT JOIN devices d ON d.id = m.device_id AND d.revoked_at IS NULL
+             WHERE m.team_id = ?1
+               AND m.device_id = ?2
+               AND m.removed_at IS NULL
+             GROUP BY m.id, m.display_name, m.role, m.joined_at, m.removed_at
+             LIMIT 1",
+        )?;
+        statement
+            .query_row(params![team_id, device_id], team_member_list_record_from_row)
+            .optional()
+            .map_err(StoreError::from)
+    }
+
     /// Returns the count of active (non-removed) owners for a team.
     ///
     /// # Errors
