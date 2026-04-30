@@ -382,8 +382,7 @@ Slices 1+2 shipped (agent client, tray binding, 6 view scaffolds,
   profile; pinned `lk://...@vN` near/past `grace_until`
   (`docs/specs/integrations.md:48-49`).
 - [~] [52c592db] branch agent-52c592db/vscode-reference-completion, worktree .worktrees/agent-52c592db-vscode-reference-completion; VS Code reference completion for `lk://` in `.env.example`, JSON, TOML, YAML, shell, source files (`docs/specs/integrations.md:48`).
-- [ ] VS Code gated reveal webview with short-lived data, no
-  plaintext persistence (`docs/specs/integrations.md:50-51`).
+- [~] [90b9f58a] branch agent-90b9f58a/vscode-reveal-webview, worktree .worktrees/agent-90b9f58a-vscode-reveal-webview; VS Code gated reveal webview with short-lived data (`docs/specs/integrations.md:50-51`).
 - [ ] Profile-scoped grant invalidation on `locket use <profile>`;
   hook re-prompts `GrantRequired` when no `directory_grants` row
   for the now-active profile (`docs/specs/integrations.md:26`).
