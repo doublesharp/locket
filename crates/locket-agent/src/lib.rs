@@ -20,12 +20,12 @@ pub use error::ProtocolError;
 pub use framing::{decode_request_frame, decode_response_frame, encode_frame};
 pub use grant::{GrantBinding, GrantRecord, GrantTable, GrantValidation};
 pub use method::{AgentMethod, UnknownMethod};
+#[cfg(unix)]
+pub use peer_cred::{current_process_uid, validate_peer_stream, validate_peer_uid};
 pub use prepare_exec::{PrepareExecRequest, PrepareExecResponse};
 pub use resolve::{ResolveRequest, ResolveResponse};
 pub use reveal::{CopyRequest, CopyResponse, RevealRequest, RevealResponse};
 pub use scan::{ScanFinding, ScanRequest, ScanResponse};
-#[cfg(unix)]
-pub use peer_cred::{current_process_uid, validate_peer_stream, validate_peer_uid};
 #[cfg(unix)]
 pub use server::{
     AgentSocketConfig, AgentSocketState, ConnectionOutcome, SocketServerError, StubStatusSource,

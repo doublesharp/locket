@@ -46,3 +46,60 @@ export function isRejected(
 ): error is Extract<AgentClientError, { kind: 'rejected' }> {
   return error.kind === 'rejected';
 }
+
+// RPC payloads. Mirrors the wire shapes in locket-agent/src/{reveal,scan,resolve,prepare_exec}.rs.
+// Names use snake_case to match the agent's serde defaults.
+
+export interface RevealRequest {
+  secret_name: string;
+  profile_id: string;
+}
+
+export interface RevealResponse {
+  value: string;
+  ttl_seconds: number;
+}
+
+export type CopyRequest = RevealRequest;
+export type CopyResponse = RevealResponse;
+
+export interface ScanRequest {
+  paths: string[];
+  require_known: boolean;
+}
+
+export interface ScanFinding {
+  rule: string;
+  path: string;
+  line: number;
+  column: number;
+  severity: string;
+  redacted_summary: string;
+  suppressed_by: string | null;
+}
+
+export interface ScanResponse {
+  findings: ScanFinding[];
+  locked: boolean;
+}
+
+export interface ResolveRequest {
+  reference: string;
+}
+
+export interface ResolveResponse {
+  value: string;
+  version: number;
+  profile_id: string;
+}
+
+export interface PrepareExecRequest {
+  policy_name: string;
+  profile_id: string;
+}
+
+export interface PrepareExecResponse {
+  allowed_env_names: string[];
+  command_kind: string;
+  ttl_seconds: number;
+}

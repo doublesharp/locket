@@ -15,9 +15,7 @@ const emit = defineEmits<{
   (e: 'rescan'): void;
 }>();
 
-const isEmpty = computed<boolean>(
-  () => !props.scanning && props.findings.length === 0,
-);
+const isEmpty = computed<boolean>(() => !props.scanning && props.findings.length === 0);
 
 function severityLabel(severity: ScanFindingRow['severity']): string {
   return severity;

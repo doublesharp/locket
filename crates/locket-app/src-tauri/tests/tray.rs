@@ -50,10 +50,7 @@ fn every_tray_icon_state_returns_a_non_empty_metadata_only_tooltip() {
         // labels the lib crate vends are stable strings, so we pin the
         // negative cases here as a tripwire.
         for forbidden in ["DATABASE_URL", "postgres://", "deploy-prod", "payments-api"] {
-            assert!(
-                !tip.contains(forbidden),
-                "tooltip for {state:?} leaked {forbidden}",
-            );
+            assert!(!tip.contains(forbidden), "tooltip for {state:?} leaked {forbidden}",);
         }
     }
 }
@@ -62,10 +59,7 @@ fn every_tray_icon_state_returns_a_non_empty_metadata_only_tooltip() {
 fn tooltip_strings_are_distinct_per_state() {
     let mut tips = tray_icon_states().iter().map(|state| tooltip_for(*state)).collect::<Vec<_>>();
     tips.sort_unstable();
-    let unique = tips
-        .iter()
-        .copied()
-        .collect::<std::collections::BTreeSet<_>>();
+    let unique = tips.iter().copied().collect::<std::collections::BTreeSet<_>>();
     assert_eq!(
         unique.len(),
         tray_icon_states().len(),

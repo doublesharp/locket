@@ -76,10 +76,7 @@ function auditLabel(row: RuntimeSessionRow): string {
         <tr v-for="row in rows" :key="row.sessionId">
           <td>
             <span class="view__state">
-              <span
-                :class="['view__dot', `view__dot--${row.state}`]"
-                aria-hidden="true"
-              ></span>
+              <span :class="['view__dot', `view__dot--${row.state}`]" aria-hidden="true"></span>
               <span class="view__state-label">{{ stateLabel(row.state) }}</span>
             </span>
           </td>

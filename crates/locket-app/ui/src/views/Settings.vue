@@ -39,9 +39,7 @@ function dangerousProfileLabel(value: boolean): string {
 
     <section class="view__section" aria-labelledby="settings-privacy-heading">
       <h3 id="settings-privacy-heading" class="view__section-heading">Privacy</h3>
-      <p class="view__paragraph">
-        Names are replaced with aliases when redaction is enabled.
-      </p>
+      <p class="view__paragraph">Names are replaced with aliases when redaction is enabled.</p>
 
       <label class="view__field">
         <input

@@ -91,20 +91,12 @@ function stateLabel(state: VersionHistoryRow['state']): string {
               >
                 ✓
               </span>
-              <span
-                v-else
-                class="view__cross"
-                aria-label="pinned references not eligible"
-              >
+              <span v-else class="view__cross" aria-label="pinned references not eligible">
                 ✗
               </span>
             </td>
             <td>
-              <span
-                v-if="row.scanInclusion"
-                class="view__check"
-                aria-label="included in scans"
-              >
+              <span v-if="row.scanInclusion" class="view__check" aria-label="included in scans">
                 ✓
               </span>
               <span v-else class="view__cross" aria-label="not included in scans">✗</span>

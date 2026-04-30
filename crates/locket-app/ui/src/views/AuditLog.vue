@@ -72,12 +72,7 @@ function onVerify(): void {
   <section class="view" aria-labelledby="audit-log-heading">
     <header class="view__header">
       <h2 id="audit-log-heading">Audit log</h2>
-      <button
-        type="button"
-        class="view__action"
-        aria-label="Verify audit chain"
-        @click="onVerify"
-      >
+      <button type="button" class="view__action" aria-label="Verify audit chain" @click="onVerify">
         Verify chain
       </button>
     </header>

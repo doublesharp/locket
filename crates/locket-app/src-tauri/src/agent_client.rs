@@ -12,8 +12,7 @@ use locket_agent::{
     AgentMethod, DEFAULT_MAX_MESSAGE_SIZE, ProtocolError, RequestEnvelope, ResponseEnvelope,
     StatusPayload, decode_response_frame, encode_frame,
 };
-use serde::Serialize;
-use serde_json::Value;
+use serde::{Serialize, de::DeserializeOwned};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
 
@@ -112,10 +111,31 @@ fn home_dir() -> Option<PathBuf> {
 /// request times out, the wire protocol fails, or the agent replies
 /// with an error envelope.
 pub async fn fetch_status(socket_path: &Path) -> Result<StatusPayload, AgentClientError> {
+    invoke_method::<(), StatusPayload>(socket_path, AgentMethod::Status, &()).await
+}
+
+/// Invoke any agent RPC end-to-end.
+///
+/// Serializes `payload` to JSON, exchanges a single request frame, and
+/// deserializes the success payload as `R`. Error envelopes flow back
+/// as [`AgentClientError::Rejected`].
+///
+/// # Errors
+///
+/// Returns [`AgentClientError`] for unreachable sockets, timeouts,
+/// framing/JSON faults, and agent-side rejections.
+pub async fn invoke_method<P: Serialize, R: DeserializeOwned>(
+    socket_path: &Path,
+    method: AgentMethod,
+    payload: &P,
+) -> Result<R, AgentClientError> {
+    let payload_value = serde_json::to_value(payload).map_err(|error| {
+        AgentClientError::Protocol { reason: format!("payload serialization failed: {error}") }
+    })?;
     let stream = connect(socket_path).await?;
-    let request = RequestEnvelope::new(new_request_id(), AgentMethod::Status, Value::Null);
+    let request = RequestEnvelope::new(new_request_id(), method, payload_value);
     let response = round_trip(stream, &request).await?;
-    payload_from_response(response)
+    decode_payload(response)
 }
 
 async fn connect(socket_path: &Path) -> Result<UnixStream, AgentClientError> {
@@ -183,11 +203,13 @@ async fn read_response_frame(
     }
 }
 
-fn payload_from_response(response: ResponseEnvelope) -> Result<StatusPayload, AgentClientError> {
+fn decode_payload<R: DeserializeOwned>(response: ResponseEnvelope) -> Result<R, AgentClientError> {
     match response {
         ResponseEnvelope::Success(success) => {
-            serde_json::from_value::<StatusPayload>(success.payload).map_err(|error| {
-                AgentClientError::Protocol { reason: format!("malformed status payload: {error}") }
+            serde_json::from_value::<R>(success.payload).map_err(|error| {
+                AgentClientError::Protocol {
+                    reason: format!("malformed response payload: {error}"),
+                }
             })
         }
         ResponseEnvelope::Error(error) => Err(AgentClientError::Rejected {

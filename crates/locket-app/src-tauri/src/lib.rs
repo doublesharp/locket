@@ -14,7 +14,7 @@ use tempfile as _;
 mod agent_client;
 mod tray;
 
-pub use agent_client::{AgentClientError, fetch_status, resolve_socket_path};
+pub use agent_client::{AgentClientError, fetch_status, invoke_method, resolve_socket_path};
 pub use tray::{
     LOCKET_TRAY_ID, TrayState, icon_bytes_for, setup_tray, tooltip_for, update_tray_state,
 };
@@ -30,6 +30,56 @@ async fn agent_status() -> Result<locket_agent::StatusPayload, AgentClientError>
     agent_client::fetch_status(&path).await
 }
 
+/// Tauri command exposing the agent's `Reveal` RPC to the webview.
+///
+/// Today the agent stub returns `UnlockRequired`; the webview's reveal
+/// modal renders that as a typed denial without ever holding plaintext.
+/// Real value-returning behavior lands once the agent unlock cache and
+/// grant table ship.
+#[tauri::command]
+async fn agent_reveal(
+    request: locket_agent::RevealRequest,
+) -> Result<locket_agent::RevealResponse, AgentClientError> {
+    let path = agent_client::resolve_socket_path();
+    agent_client::invoke_method(&path, locket_agent::AgentMethod::Reveal, &request).await
+}
+
+/// Tauri command exposing the agent's `Copy` RPC to the webview.
+#[tauri::command]
+async fn agent_copy(
+    request: locket_agent::CopyRequest,
+) -> Result<locket_agent::CopyResponse, AgentClientError> {
+    let path = agent_client::resolve_socket_path();
+    agent_client::invoke_method(&path, locket_agent::AgentMethod::Copy, &request).await
+}
+
+/// Tauri command exposing the agent's `ScanKnownValues` RPC.
+#[tauri::command]
+async fn agent_scan(
+    request: locket_agent::ScanRequest,
+) -> Result<locket_agent::ScanResponse, AgentClientError> {
+    let path = agent_client::resolve_socket_path();
+    agent_client::invoke_method(&path, locket_agent::AgentMethod::ScanKnownValues, &request).await
+}
+
+/// Tauri command exposing the agent's `ResolveReference` RPC.
+#[tauri::command]
+async fn agent_resolve(
+    request: locket_agent::ResolveRequest,
+) -> Result<locket_agent::ResolveResponse, AgentClientError> {
+    let path = agent_client::resolve_socket_path();
+    agent_client::invoke_method(&path, locket_agent::AgentMethod::ResolveReference, &request).await
+}
+
+/// Tauri command exposing the agent's `PrepareExec` RPC.
+#[tauri::command]
+async fn agent_prepare_exec(
+    request: locket_agent::PrepareExecRequest,
+) -> Result<locket_agent::PrepareExecResponse, AgentClientError> {
+    let path = agent_client::resolve_socket_path();
+    agent_client::invoke_method(&path, locket_agent::AgentMethod::PrepareExec, &request).await
+}
+
 /// Tauri command pushing a new tray icon state from the webview.
 ///
 /// The frontend's `useTray` composable derives the desired
@@ -38,10 +88,7 @@ async fn agent_status() -> Result<locket_agent::StatusPayload, AgentClientError>
 /// typed [`AgentClientError`] because tray failures are local rendering
 /// faults, not agent protocol faults.
 #[tauri::command]
-async fn tray_set_state(
-    app: tauri::AppHandle,
-    state: TrayState,
-) -> Result<(), String> {
+async fn tray_set_state(app: tauri::AppHandle, state: TrayState) -> Result<(), String> {
     tray::update_tray_state(&app, state.into()).map_err(|error| error.to_string())
 }
 
@@ -59,7 +106,15 @@ async fn tray_set_state(
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() -> tauri::Result<()> {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![agent_status, tray_set_state])
+        .invoke_handler(tauri::generate_handler![
+            agent_status,
+            agent_reveal,
+            agent_copy,
+            agent_scan,
+            agent_resolve,
+            agent_prepare_exec,
+            tray_set_state,
+        ])
         .setup(|app| {
             #[cfg(debug_assertions)]
             {
