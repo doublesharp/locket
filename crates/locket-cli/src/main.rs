@@ -153,7 +153,7 @@ enum Command {
     /// Generate shell completions.
     Completion(CompletionArgs),
     /// Run locked-safe local diagnostics.
-    Doctor,
+    Doctor(DoctorArgs),
     /// Create metadata-only debug artifacts.
     Debug {
         /// Debug command.
@@ -304,6 +304,13 @@ enum Command {
         #[command(subcommand)]
         command: RecoveryCommand,
     },
+}
+
+#[derive(Debug, Args)]
+struct DoctorArgs {
+    /// Prune expired runtime-session secret-name metadata after reporting it.
+    #[arg(long)]
+    prune_runtime_session_secret_names: bool,
 }
 
 #[derive(Debug, Args)]
@@ -1063,7 +1070,13 @@ fn run_with_context(
         Command::New(args) => new_command(context, output, &args)?,
         Command::Bootstrap => project::bootstrap::bootstrap_command(context, output)?,
         Command::Completion(args) => completion_command(output, args.shell)?,
-        Command::Doctor => return diagnostics::doctor_command(context, output),
+        Command::Doctor(args) => {
+            return diagnostics::doctor_command(
+                context,
+                output,
+                args.prune_runtime_session_secret_names,
+            );
+        }
         Command::Debug { command } => debug::debug_command(context, output, command)?,
         Command::Init(args) => project::init::init(context, output, args)?,
         Command::Set(args) => secrets::set::set_command(context, output, &args)?,

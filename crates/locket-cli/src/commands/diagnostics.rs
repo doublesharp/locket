@@ -3,15 +3,16 @@ use std::io::{self, Write};
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 
 use flate2::Compression;
 use flate2::write::GzEncoder;
 use locket_core::PROJECT_CONFIG_SCHEMA_VERSION;
 use locket_crypto::KeyPurpose;
-use locket_store::{AuditWrite, SCHEMA_VERSION};
+use locket_store::{AuditWrite, RuntimeSessionSecretNameRetention, SCHEMA_VERSION};
 use serde_json::{Value, json};
 
-use crate::commands::config::spec::{CONFIG_KEY_SPECS, read_user_config};
+use crate::commands::config::spec::{CONFIG_KEY_SPECS, config_get_value, read_user_config};
 use crate::runtime::error::corrupt_db_error;
 use crate::{
     CliError, GITIGNORE_ENTRIES, GITIGNORE_FILE, HOOK_BEGIN, LOCKET_TOML, RuntimeContext,
@@ -152,8 +153,12 @@ impl DiagnosticReport {
     }
 }
 
-pub fn doctor_command(context: &RuntimeContext, output: &mut impl Write) -> Result<u8, CliError> {
-    let report = collect_diagnostics(context);
+pub fn doctor_command(
+    context: &RuntimeContext,
+    output: &mut impl Write,
+    prune_runtime_session_secret_names: bool,
+) -> Result<u8, CliError> {
+    let report = collect_diagnostics(context, prune_runtime_session_secret_names);
     write_doctor_audit_if_available(context, &report)?;
     write_doctor_report(output, &report)?;
     Ok(report.exit_code())
@@ -171,7 +176,7 @@ pub fn debug_bundle_command(
         ));
     }
 
-    let diagnostics = collect_diagnostics(context);
+    let diagnostics = collect_diagnostics(context, false);
     let project = resolve_project(&context.cwd)?;
     let redact_names = privacy_redact_names_enabled(context, false)?;
     let alias_replacements =
@@ -306,7 +311,10 @@ fn redact_debug_bundle_value(mut value: Value, replacements: &[(String, String)]
 }
 
 #[allow(clippy::too_many_lines)]
-fn collect_diagnostics(context: &RuntimeContext) -> DiagnosticReport {
+fn collect_diagnostics(
+    context: &RuntimeContext,
+    prune_runtime_session_secret_names: bool,
+) -> DiagnosticReport {
     let mut checks = Vec::new();
 
     match resolve_project(&context.cwd) {
@@ -356,6 +364,12 @@ fn collect_diagnostics(context: &RuntimeContext) -> DiagnosticReport {
                         &store,
                         &project.root,
                         project.config.project_id.as_str(),
+                    ));
+                    checks.push(check_runtime_session_secret_name_retention(
+                        context,
+                        &store,
+                        project.config.project_id.as_str(),
+                        prune_runtime_session_secret_names,
                     ));
                     checks.push(
                         match store.get_profile_by_name(
@@ -455,6 +469,98 @@ fn check_trusted_roots(
             format!("current_root_trusted=no root_hash={}", format_hex(&hash)),
         ),
         Err(error) => DiagnosticCheck::fail("trusted_roots", true, error.to_string()),
+    }
+}
+
+fn check_runtime_session_secret_name_retention(
+    context: &RuntimeContext,
+    store: &locket_store::Store,
+    project_id: &str,
+    prune_runtime_session_secret_names: bool,
+) -> DiagnosticCheck {
+    let retention = match runtime_session_secret_name_retention(context) {
+        Ok(retention) => retention,
+        Err(detail) => {
+            return DiagnosticCheck::fail("runtime_session_secret_name_retention", false, detail);
+        }
+    };
+    let (cutoff, retention_label) = match runtime_session_secret_name_cutoff(retention) {
+        Ok(cutoff) => cutoff,
+        Err(detail) => {
+            return DiagnosticCheck::fail("runtime_session_secret_name_retention", false, detail);
+        }
+    };
+
+    let expired_count =
+        match store.list_runtime_sessions_with_expired_secret_names(project_id, cutoff) {
+            Ok(rows) => rows.len(),
+            Err(error) => {
+                return DiagnosticCheck::fail(
+                    "runtime_session_secret_name_retention",
+                    false,
+                    error.to_string(),
+                );
+            }
+        };
+
+    if expired_count == 0 {
+        return DiagnosticCheck::pass(
+            "runtime_session_secret_name_retention",
+            format!("expired_secret_name_rows=0 retention={retention_label}"),
+        );
+    }
+
+    if !prune_runtime_session_secret_names {
+        return DiagnosticCheck::warn(
+            "runtime_session_secret_name_retention",
+            format!(
+                "expired_secret_name_rows={expired_count} retention={retention_label} prune_with=locket doctor --prune-runtime-session-secret-names"
+            ),
+        );
+    }
+
+    match store.prune_runtime_session_secret_names(project_id, cutoff) {
+        Ok(pruned_count) => DiagnosticCheck::pass(
+            "runtime_session_secret_name_retention",
+            format!(
+                "expired_secret_name_rows={expired_count} pruned_secret_name_rows={pruned_count} retention={retention_label}"
+            ),
+        ),
+        Err(error) => {
+            DiagnosticCheck::fail("runtime_session_secret_name_retention", false, error.to_string())
+        }
+    }
+}
+
+fn runtime_session_secret_name_retention(
+    context: &RuntimeContext,
+) -> Result<RuntimeSessionSecretNameRetention, String> {
+    let config = read_user_config(context).map_err(|error| error.to_string())?;
+    let Some(value) = config_get_value(&config, "runtime.session_secret_name_retention") else {
+        return Ok(RuntimeSessionSecretNameRetention::default());
+    };
+    let Some(value) = value.as_str() else {
+        return Err("runtime.session_secret_name_retention must be a duration or off".to_owned());
+    };
+    RuntimeSessionSecretNameRetention::from_str(value).map_err(|error| error.to_string())
+}
+
+fn runtime_session_secret_name_cutoff(
+    retention: RuntimeSessionSecretNameRetention,
+) -> Result<(i64, String), String> {
+    match retention {
+        RuntimeSessionSecretNameRetention::Off => Ok((i64::MAX, "off".to_owned())),
+        RuntimeSessionSecretNameRetention::RetainFor(duration) => {
+            let now = now_unix_nanos().map_err(|error| error.to_string())?;
+            let retention_nanos = duration
+                .as_secs()
+                .checked_mul(1_000_000_000)
+                .and_then(|nanos| i64::try_from(nanos).ok())
+                .ok_or_else(|| {
+                    "runtime.session_secret_name_retention duration is too large".to_owned()
+                })?;
+            Ok((now.saturating_sub(retention_nanos), duration.to_string()))
+        }
     }
 }
 

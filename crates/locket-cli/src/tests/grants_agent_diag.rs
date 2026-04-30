@@ -597,6 +597,160 @@ fn doctor_reports_locked_safe_diagnostics_and_exit_codes() -> Result<(), Box<dyn
     Ok(())
 }
 
+fn insert_expired_runtime_session_for_doctor(
+    context: &RuntimeContext,
+    root: &Path,
+) -> Result<locket_store::Store, Box<dyn std::error::Error>> {
+    let resolved = crate::resolve_project(&context.cwd)?.ok_or("project should resolve")?;
+    let store = locket_store::Store::open(root.join("store.db"))?;
+    let profile = store
+        .get_profile_by_name(resolved.config.project_id.as_str(), "dev")?
+        .ok_or("default profile should exist")?;
+    store.insert_runtime_session(&locket_store::RuntimeSessionRecord {
+        id: "lk_sess_expired_cli".to_owned(),
+        project_id: resolved.config.project_id.to_string(),
+        profile_id: profile.id,
+        policy_name: Some("env_check".to_owned()),
+        process_id: 42,
+        process_start_time: 90,
+        started_at: 1_000,
+        ended_at: Some(2_000),
+        exit_status: Some(0),
+        secret_names: vec!["DATABASE_URL".to_owned()],
+        spawn_audit_sequence: Some(1),
+        completion_audit_sequence: Some(2),
+    })?;
+    Ok(store)
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct ExpiredRuntimeSessionFields {
+    policy_name: String,
+    process_id: u32,
+    process_start_time: i64,
+    started_at: i64,
+    ended_at: i64,
+    exit_status: i32,
+    secret_names_json: String,
+    spawn_audit_sequence: u64,
+    completion_audit_sequence: u64,
+}
+
+fn expired_runtime_session_preserved_fields(
+    store: &locket_store::Store,
+) -> Result<ExpiredRuntimeSessionFields, Box<dyn std::error::Error>> {
+    Ok(store.connection().query_row(
+        "SELECT policy_name, process_id, process_start_time, started_at, ended_at, exit_status,
+                secret_names_json, spawn_audit_sequence, completion_audit_sequence
+         FROM runtime_sessions
+         WHERE id = 'lk_sess_expired_cli'",
+        [],
+        |row| {
+            Ok(ExpiredRuntimeSessionFields {
+                policy_name: row.get(0)?,
+                process_id: row.get(1)?,
+                process_start_time: row.get(2)?,
+                started_at: row.get(3)?,
+                ended_at: row.get(4)?,
+                exit_status: row.get(5)?,
+                secret_names_json: row.get(6)?,
+                spawn_audit_sequence: row.get(7)?,
+                completion_audit_sequence: row.get(8)?,
+            })
+        },
+    )?)
+}
+
+#[test]
+fn doctor_reports_and_prunes_expired_runtime_session_secret_names()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    run_with_context(
+        Cli::try_parse_from([
+            "locket",
+            "config",
+            "set",
+            "runtime.session_secret_name_retention",
+            "1s",
+        ])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    let store = insert_expired_runtime_session_for_doctor(&context, directory.path())?;
+
+    let mut report_output = Vec::new();
+    let report_code =
+        run_with_context(Cli::try_parse_from(["locket", "doctor"])?, &context, &mut report_output)?;
+    assert_eq!(report_code, 0);
+    let report_output = String::from_utf8(report_output)?;
+    assert!(
+        report_output
+            .contains("warn runtime_session_secret_name_retention: expired_secret_name_rows=1"),
+        "{report_output}"
+    );
+    assert!(
+        report_output.contains("prune_with=locket doctor --prune-runtime-session-secret-names")
+    );
+    assert!(!report_output.contains("DATABASE_URL"));
+
+    let retained: String = store.connection().query_row(
+        "SELECT secret_names_json FROM runtime_sessions WHERE id = 'lk_sess_expired_cli'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(retained, r#"["DATABASE_URL"]"#);
+
+    let mut prune_output = Vec::new();
+    let prune_code = run_with_context(
+        Cli::try_parse_from(["locket", "doctor", "--prune-runtime-session-secret-names"])?,
+        &context,
+        &mut prune_output,
+    )?;
+    assert_eq!(prune_code, 0);
+    let prune_output = String::from_utf8(prune_output)?;
+    assert!(
+        prune_output.contains(
+            "pass runtime_session_secret_name_retention: expired_secret_name_rows=1 pruned_secret_name_rows=1"
+        ),
+        "{prune_output}"
+    );
+    assert!(!prune_output.contains("DATABASE_URL"));
+
+    let preserved = expired_runtime_session_preserved_fields(&store)?;
+    assert_eq!(
+        preserved,
+        ExpiredRuntimeSessionFields {
+            policy_name: "env_check".to_owned(),
+            process_id: 42,
+            process_start_time: 90,
+            started_at: 1_000,
+            ended_at: 2_000,
+            exit_status: 0,
+            secret_names_json: "[]".to_owned(),
+            spawn_audit_sequence: 1,
+            completion_audit_sequence: 2,
+        }
+    );
+
+    let doctor_metadata = store.connection().query_row(
+        "SELECT metadata_json FROM audit_log WHERE action = 'DOCTOR' ORDER BY sequence DESC LIMIT 1",
+        [],
+        |row| row.get::<_, String>(0),
+    )?;
+    let doctor_metadata: serde_json::Value = serde_json::from_str(&doctor_metadata)?;
+    assert!(doctor_metadata["check_names"].as_array().is_some_and(|names| {
+        names.iter().any(|name| name == "runtime_session_secret_name_retention")
+    }));
+    assert!(!doctor_metadata.to_string().contains("DATABASE_URL"));
+    Ok(())
+}
+
 #[test]
 fn debug_bundle_redacted_writes_metadata_only_summary() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempdir()?;
