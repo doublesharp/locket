@@ -644,8 +644,9 @@ the spec already covers. Closed slices land in
   Claim: branch agent-aa40a4ce/caller-side-summarization, worktree .worktrees/agent-aa40a4ce-caller-side-summarization. Scope: summarize_secret_names helper, applied to all 4 audit sites (exec, docker, run, redact).
 - [x] `recovery rotate` prints the scrollback warning after revealing
   the new code (matches `init` behavior).
-- [ ] Optional screen-clear after one-time recovery code display on
+- [~] [aa40a4ce] Optional screen-clear after one-time recovery code display on
   `init` and `recovery rotate`.
+  Claim: branch agent-aa40a4ce/recovery-screen-clear, worktree .worktrees/agent-aa40a4ce-recovery-screen-clear. Scope: emit ANSI clear to stdout when TTY after init confirmation and after rotate code display.
 - [ ] `device init` first-run-on-machine bootstrap: creates master
   key, recovery envelope, and recovery code on a teammate clone
   (`docs/specs/team-sync-recovery.md`).
