@@ -445,48 +445,17 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
   confirmation; replay protection and 5-minute clock-skew tolerance;
   expired/revoked/mismatched invites fail closed
   (`docs/specs/team-sync-recovery.md:56-69`).
-- [~] [bec7ddfc] ready: agent-bec7ddfc/audit-coverage-denials @ 1e2b5c7 — first
-  reveal/copy denial slice landed (`get --reveal` now writes a `REVEAL` audit
-  row with `status = DENIED` and `denial_reason = "noninteractive_terminal"`
-  when stdout is not a TTY and `--force` is not passed; `command` echo added
-  to `write_value_access_audit_if_available` per DoD #4). Remaining sweep:
-  dangerous-profile reads, locked-vault refusals (need a degraded-audit
-  mechanism since the audit key is locked too), role denials, grant denials.
-  - Spec: `docs/specs/audit.md`, plus action references throughout other specs.
-  - Errors: any new `LocketError` variants needed for denied paths; existing
-    typed errors when behavior changes class.
-  - Audit actions: see Reference Quick-Index for the canonical action set;
-    backfill missing denial rows around dangerous-profile reads, locked-vault
-    refusals, role denials, grant denials, and reveal/copy denials.
-  - Files: `crates/locket-store/src/audit.rs` (helper writers); per-command
-    call sites.
-- [~] [bec7ddfc] ready: agent-bec7ddfc/user-verification-gates @ d21fced — first
-  slice landed: `LocalUserVerifier` is on `RuntimeContext`, `require_user_verification`
-  helper lives in `crates/locket-cli/src/runtime/user_verification.rs`, and
-  `get --reveal/--copy --verify-user` calls it before decrypt/copy. Denials
-  return typed `UserVerificationFailed` (exit 74) and write `REVEAL`/`COPY`
-  rows with `status: DENIED, denial_reason: user_verification_failed,
-  user_verification.required: true, satisfied: false`. Successful
-  verifications echo `user_verification.method` in metadata. Item stays
-  `[~]` for the broader sweep across `unlock`, `recovery`, team/device, and
-  dangerous-profile actions.
-  - Spec: `docs/specs/crypto.md:192-218`.
-  - Errors: `UserVerificationFailed` (76), `PasskeyUnsupported` (102).
-  - Audit actions: extend `UNLOCK`, `REVEAL`, `COPY`, `TEAM_*`, `RECOVER*`
-    rows with `user_verification = { required, satisfied, method }`.
-  - Files: `crates/locket-platform/src/user_verification.rs` (already mockable);
-    add `require_user_verification(...)` helper used by every gated command.
-- [~] [bec7ddfc] Privacy-mode rendering across status, context, redaction labels, debug
-  Claim: branch agent-bec7ddfc/privacy-rendering, worktree .worktrees/agent-bec7ddfc-privacy-rendering.
-  bundles, tray, UI, and editor surfaces. Redaction aliases exist only for
-  known-value redaction.
-  - Spec: `docs/specs/storage.md:179-182`, `docs/specs/desktop.md:37`.
-  - Errors: none.
-  - Audit actions: privacy mode itself does not write audit; ensure rows still
-    contain exact names internally even when output uses aliases.
-  - Files: extend the `*_label` helpers in `crates/locket-cli/src/main.rs` to
-    cover redact label output, debug-bundle renderer in
-    `crates/locket-cli/src/diagnostics.rs`, future tray/desktop renderers.
+- [~] Audit coverage for denials: reveal/copy denial rows shipped
+  (`status = DENIED`, `denial_reason`). Remaining sweep:
+  dangerous-profile reads, locked-vault refusals (needs degraded-audit
+  mechanism), role denials, grant denials.
+- [~] Local user verification gates: `LocalUserVerifier` and
+  `require_user_verification` shipped; `get --reveal/--copy --verify-user`
+  enforces and writes typed denial rows. Remaining sweep: `unlock`,
+  `recovery`, team/device, and dangerous-profile actions.
+- [~] Privacy-mode rendering across status, context, redaction labels,
+  and debug bundles via `privacy_alias`/`privacy_redact_names_enabled`;
+  tray/desktop/editor renderers pending until those crates exist.
 - [ ] Agent/process hardening: peer credential validation, narrow
   socket/pipe permissions, core-dump suppression, memory locking,
   zeroization, sleep/session-switch locking, degraded-hardening
