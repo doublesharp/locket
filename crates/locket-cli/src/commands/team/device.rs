@@ -318,7 +318,7 @@ pub fn device_fingerprint_hex(
     format_hex(&hasher.finalize())
 }
 
-fn safety_words_from_fingerprint(fingerprint: &str) -> Vec<String> {
+pub(super) fn safety_words_from_fingerprint(fingerprint: &str) -> Vec<String> {
     const WORDS: [&str; 16] = [
         "amber", "basil", "cedar", "delta", "ember", "frost", "glade", "harbor", "indigo",
         "juniper", "kelp", "linen", "maple", "north", "onyx", "prairie",

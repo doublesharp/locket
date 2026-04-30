@@ -859,6 +859,8 @@ pub(crate) enum TeamCommand {
     /// Revoke a pending team invite.
     #[command(name = "revoke-invite")]
     RevokeInvite(TeamRevokeInviteArgs),
+    /// Accept a signed team invite.
+    Accept(TeamAcceptArgs),
     /// List team members and pending invites.
     Members,
     /// Remove a member from the team.
@@ -896,6 +898,12 @@ pub(crate) struct TeamInviteArgs {
 pub(crate) struct TeamRevokeInviteArgs {
     /// Invite id to revoke.
     pub invite_id: String,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct TeamAcceptArgs {
+    /// Invite file to accept.
+    pub invite: PathBuf,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]

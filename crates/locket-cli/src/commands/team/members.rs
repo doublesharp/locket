@@ -5,7 +5,10 @@ use std::path::{Path, PathBuf};
 
 use data_encoding::BASE64URL_NOPAD;
 use ed25519_dalek::SigningKey;
-use locket_core::{InviteId, InvitePayload, MemberId, ProjectId, SignedInvite, TeamId, TeamRole};
+use locket_core::{
+    InviteId, InvitePayload, MemberId, ProjectId, SignedInvite, TeamId, TeamRole,
+    device_fingerprint_v1, fingerprint_hex,
+};
 use locket_crypto::{KeyPurpose, generate_key};
 use locket_store::{
     AuditContext, AuditWrite, DeviceRecord, PendingTeamInviteRecord, StoredTeamInviteRecord,
@@ -16,8 +19,9 @@ use serde_json::json;
 use super::device;
 use crate::support::time::NANOS_PER_SECOND;
 use crate::{
-    CliError, RuntimeContext, TeamCommand, TeamInitArgs, TeamInviteArgs, TeamRemoveArgs,
-    TeamRevokeDeviceArgs, TeamRevokeInviteArgs, TeamRoleArg, confirmation_failed_error,
+    CliError, RuntimeContext, TeamAcceptArgs, TeamCommand, TeamInitArgs, TeamInviteArgs,
+    TeamRemoveArgs, TeamRevokeDeviceArgs, TeamRevokeInviteArgs, TeamRoleArg,
+    confirmation_failed_error,
     ensure_project_exists, invalid_reference_error, load_project_key, metadata_invalid_error,
     now_unix_nanos, open_store, privacy_alias, privacy_redact_names_enabled,
     profile_not_found_error, require_project, secret_already_exists_error, secret_not_found_error,
@@ -36,6 +40,7 @@ pub fn team_command(
         TeamCommand::Init(args) => team_init_command(context, output, &args),
         TeamCommand::Invite(args) => team_invite_command(context, output, &args),
         TeamCommand::RevokeInvite(args) => team_revoke_invite_command(context, output, &args),
+        TeamCommand::Accept(args) => team_accept_command(context, output, &args),
         TeamCommand::Members => team_members_command(context, output),
         TeamCommand::Remove(args) => team_remove_command(context, output, &args),
         TeamCommand::RevokeDevice(args) => team_revoke_device_command(context, output, &args),
@@ -242,6 +247,92 @@ fn team_revoke_invite_command(
         "recipient_fingerprint: {}",
         device_fingerprint_label(&invite.recipient_device_fingerprint, redact_names)
     )?;
+    writeln!(output, "metadata_only: yes")?;
+    Ok(())
+}
+
+fn team_accept_command(
+    context: &RuntimeContext,
+    output: &mut impl Write,
+    args: &TeamAcceptArgs,
+) -> Result<(), CliError> {
+    let invite_text = fs::read_to_string(&args.invite)?;
+    let invite = SignedInvite::decode(invite_text.trim())
+        .map_err(|error| metadata_invalid_error(format!("invite decode failed: {error}")))?;
+    invite
+        .verify()
+        .map_err(|error| metadata_invalid_error(format!("invite verification failed: {error}")))?;
+    let now = now_unix_nanos()?;
+    invite
+        .check_expiry(now / NANOS_PER_SECOND)
+        .map_err(|error| metadata_invalid_error(error.to_string()))?;
+    validate_invite_fingerprint_claims(&invite)?;
+
+    let resolved = require_project(context)?;
+    let mut store = open_store(context)?;
+    let project_id = resolved.config.project_id.as_str();
+    ensure_project_exists(&store, project_id)?;
+    if invite.payload.project_id.as_str() != project_id {
+        return Err(metadata_invalid_error("invite project does not match current project"));
+    }
+    let local_device = store
+        .get_active_local_device(project_id)?
+        .ok_or_else(|| invalid_reference_error("local device is not initialized"))?;
+    if local_device.fingerprint != invite.payload.recipient_device_fingerprint {
+        return Err(metadata_invalid_error(
+            "invite recipient fingerprint does not match local device",
+        ));
+    }
+    let recipient_sealing_key =
+        decode_invite_key(&invite.payload.recipient_sealing_public_key, "recipient sealing key")?;
+    if local_device.sealing_public_key.as_slice() != recipient_sealing_key.as_slice() {
+        return Err(metadata_invalid_error(
+            "invite recipient sealing key does not match local device",
+        ));
+    }
+
+    write_accept_summary(output, &invite)?;
+    let confirmation = context.confirmation_reader.read_confirmation("team accept")?;
+    if confirmation.trim_end_matches(['\r', '\n']) != invite.payload.issuer_device_fingerprint {
+        return Err(confirmation_failed_error("confirmation did not match issuer fingerprint"));
+    }
+
+    let audit_key = load_project_key(context, &store, project_id, KeyPurpose::Audit)?;
+    let accepted_at = now_unix_nanos()?;
+    let invite_id = invite.payload.invite_id.as_str();
+    let metadata = json!({
+        "schema_version": 1,
+        "action": "TEAM_ACCEPT",
+        "status": "SUCCESS",
+        "command": "team accept",
+        "project_id": project_id,
+        "invite_id": invite_id,
+        "issuer_member_id": invite.payload.issuer_member_id.as_str(),
+        "issuer_device_fingerprint": &invite.payload.issuer_device_fingerprint,
+        "recipient_device_id": &local_device.id,
+        "recipient_device_fingerprint": &local_device.fingerprint,
+        "role": role_label_from_payload(invite.payload.role),
+        "profiles": &invite.payload.profiles,
+        "expires_at": invite.payload.expires_at,
+        "accepted_at": accepted_at,
+    });
+    let audit = AuditWrite {
+        project_id,
+        profile_id: None,
+        action: "TEAM_ACCEPT",
+        status: "SUCCESS",
+        secret_name: None,
+        command: Some("team accept"),
+        metadata_json: &metadata,
+        timestamp: accepted_at,
+    };
+    store.accept_team_invite(
+        invite_id,
+        accepted_at,
+        Some(AuditContext { key: audit_key.as_ref(), write: &audit }),
+    )?;
+
+    writeln!(output, "team_accept: accepted")?;
     writeln!(output, "metadata_only: yes")?;
     Ok(())
 }
@@ -672,6 +763,46 @@ fn validate_invite_profiles(
     Ok(unique.into_iter().collect())
 }
 
+fn validate_invite_fingerprint_claims(invite: &SignedInvite) -> Result<(), CliError> {
+    let issuer_signing_key =
+        decode_invite_key(&invite.payload.issuer_signing_public_key, "issuer signing key")?;
+    let issuer_sealing_key =
+        decode_invite_key(&invite.payload.issuer_sealing_public_key, "issuer sealing key")?;
+    let fingerprint =
+        fingerprint_hex(&device_fingerprint_v1(&issuer_signing_key, &issuer_sealing_key));
+    if fingerprint != invite.payload.issuer_device_fingerprint {
+        return Err(metadata_invalid_error("invite issuer fingerprint does not match issuer keys"));
+    }
+    Ok(())
+}
+
+fn decode_invite_key(value: &str, label: &str) -> Result<[u8; 32], CliError> {
+    let bytes = BASE64URL_NOPAD
+        .decode(value.as_bytes())
+        .map_err(|_| metadata_invalid_error(format!("invite {label} is not valid base64url")))?;
+    bytes.try_into().map_err(|bytes: Vec<u8>| {
+        metadata_invalid_error(format!("invite {label} must be 32 bytes, got {}", bytes.len()))
+    })
+}
+
+fn write_accept_summary(output: &mut impl Write, invite: &SignedInvite) -> Result<(), CliError> {
+    let issuer_safety_words =
+        device::safety_words_from_fingerprint(&invite.payload.issuer_device_fingerprint);
+    writeln!(output, "team_accept: pending")?;
+    writeln!(output, "invite_id: {}", invite.payload.invite_id.as_str())?;
+    writeln!(output, "project_id: {}", invite.payload.project_id.as_str())?;
+    writeln!(output, "issuer_member_id: {}", invite.payload.issuer_member_id.as_str())?;
+    writeln!(output, "issuer_fingerprint: {}", invite.payload.issuer_device_fingerprint)?;
+    writeln!(output, "issuer_safety_words: {}", issuer_safety_words.join(" "))?;
+    writeln!(output, "recipient_fingerprint: {}", invite.payload.recipient_device_fingerprint)?;
+    writeln!(output, "role: {}", role_label_from_payload(invite.payload.role))?;
+    writeln!(output, "profiles: {}", profiles_label(&invite.payload.profiles, false))?;
+    writeln!(output, "expires_at: {}", invite.payload.expires_at)?;
+    writeln!(output, "metadata_only: yes")?;
+    writeln!(output, "type '{}' to confirm team accept", invite.payload.issuer_device_fingerprint)?;
+    Ok(())
+}
+
 fn confirm_dangerous_profiles(
     context: &RuntimeContext,
     output: &mut impl Write,
@@ -725,6 +856,15 @@ const fn role_label(role: TeamRoleArg) -> &'static str {
         TeamRoleArg::Maintainer => "maintainer",
         TeamRoleArg::Developer => "developer",
         TeamRoleArg::ReadOnly => "read-only",
+    }
+}
+
+const fn role_label_from_payload(role: TeamRole) -> &'static str {
+    match role {
+        TeamRole::Owner => "owner",
+        TeamRole::Maintainer => "maintainer",
+        TeamRole::Developer => "developer",
+        TeamRole::ReadOnly => "read-only",
     }
 }
 

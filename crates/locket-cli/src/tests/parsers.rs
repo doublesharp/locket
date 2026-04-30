@@ -390,6 +390,7 @@ fn parses_profile_project_and_agent_commands() {
         &["locket", "policy", "delete", "dev"],
         &["locket", "policy", "doctor"],
         &["locket", "team", "revoke-invite", "lk_invite_test"],
+        &["locket", "team", "accept", "invite.locket-invite"],
     ] {
         assert!(Cli::try_parse_from(args).is_ok(), "{args:?}");
     }

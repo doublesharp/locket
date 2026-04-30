@@ -145,6 +145,24 @@ fn revoke_team_invite_second_call_returns_replay_detected() -> Result<(), Box<dy
 }
 
 #[test]
+fn accept_team_invite_first_call_sets_accepted_at() -> Result<(), Box<dyn Error>> {
+    let test = open_initialized_store()?;
+    insert_project_profile(&test.store)?;
+    insert_team_with_pending_invite(&test.store, "lk_invite_accept_tx")?;
+
+    let mut store = test.store;
+    store.accept_team_invite("lk_invite_accept_tx", 700, None)?;
+
+    let accepted_at: Option<i64> = store.connection().query_row(
+        "SELECT accepted_at FROM team_invites WHERE id = 'lk_invite_accept_tx'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(accepted_at, Some(700));
+    Ok(())
+}
+
+#[test]
 fn invite_replay_detected_maps_to_locket_replay_detected() -> Result<(), Box<dyn Error>> {
     let test = open_initialized_store()?;
     insert_project_profile(&test.store)?;

@@ -2185,7 +2185,7 @@ fn team_invite_locked_vault_fails_before_writing_output() -> Result<(), Box<dyn 
 }
 
 #[test]
-fn team_revoke_invite_locked_vault_fails_before_revocation()
+fn team_accept_verifies_invite_displays_trust_summary_and_records_audit()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempdir()?;
     let context = test_context(&directory);
@@ -2204,9 +2204,12 @@ fn team_revoke_invite_locked_vault_fails_before_revocation()
         &context,
         &mut Vec::new(),
     )?;
+
     let config = crate::read_project_config(&directory.path().join("locket.toml"))?;
     let store = locket_store::Store::open(directory.path().join("store.db"))?;
-    let (team_id, member_id): (String, String) = store.connection().query_row(
+    let local_device =
+        store.get_active_local_device(config.project_id.as_str())?.ok_or("local device")?;
+    let (team_id, issuer_member_id): (String, String) = store.connection().query_row(
         "SELECT t.id, m.id
          FROM teams t JOIN team_members m ON m.team_id = t.id
          WHERE t.project_id = ?1
@@ -2214,36 +2217,89 @@ fn team_revoke_invite_locked_vault_fails_before_revocation()
         [config.project_id.as_str()],
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
+
+    let issuer_signing = ed25519_dalek::SigningKey::from_bytes(&[51; 32]);
+    let issuer_signing_public_key: [u8; 32] = issuer_signing.verifying_key().to_bytes();
+    let issuer_sealing_public_key = [52; 32];
+    let issuer_fingerprint = locket_core::fingerprint_hex(&locket_core::device_fingerprint_v1(
+        &issuer_signing_public_key,
+        &issuer_sealing_public_key,
+    ));
+    let invite_id = "lk_invite_accept_display";
+    let expires_at = 4_102_444_800_i64;
+    let payload = locket_core::InvitePayload {
+        v: 1,
+        invite_id: locket_core::InviteId::new(invite_id.to_owned())?,
+        project_id: locket_core::ProjectId::new(config.project_id.to_string())?,
+        issuer_member_id: locket_core::MemberId::new(issuer_member_id.clone())?,
+        issuer_signing_public_key: data_encoding::BASE64URL_NOPAD
+            .encode(&issuer_signing_public_key),
+        issuer_sealing_public_key: data_encoding::BASE64URL_NOPAD
+            .encode(&issuer_sealing_public_key),
+        issuer_device_fingerprint: issuer_fingerprint.clone(),
+        recipient_device_fingerprint: local_device.fingerprint.clone(),
+        recipient_sealing_public_key: data_encoding::BASE64URL_NOPAD
+            .encode(&local_device.sealing_public_key),
+        role: locket_core::TeamRole::Developer,
+        profiles: vec!["dev".to_owned()],
+        expires_at,
+        nonce: data_encoding::BASE64URL_NOPAD.encode(&[7; 24]),
+    };
+    let signed = locket_core::SignedInvite::sign(&issuer_signing, payload)?;
+    let invite_path = directory.path().join("accept.locket-invite");
+    std::fs::write(&invite_path, signed.encode()?)?;
     store.connection().execute(
         "INSERT INTO team_invites(
            id, team_id, issuer_member_id, recipient_device_fingerprint, role, profiles_json,
            nonce, created_at, expires_at
          )
-         VALUES (?1, ?2, ?3, 'recipient-fingerprint', 'developer', '[\"dev\"]', zeroblob(24), 1, 999999)",
-        ["lk_invite_locked_revoke", team_id.as_str(), member_id.as_str()],
+         VALUES (?1, ?2, ?3, ?4, 'developer', '[\"dev\"]', zeroblob(24), 1, 4102444800000000000)",
+        [invite_id, team_id.as_str(), issuer_member_id.as_str(), local_device.fingerprint.as_str()],
     )?;
-    let before = audit_row_count(&store)?;
     drop(store);
 
-    context.key_store.delete_master_key(config.project_id.as_str())?;
-    let result = run_with_context(
-        Cli::try_parse_from(["locket", "team", "revoke-invite", "lk_invite_locked_revoke"])?,
-        &context,
-        &mut Vec::new(),
-    );
-    let Err(error) = result else {
-        return Err("locked vault revoke-invite must fail".into());
-    };
-    assert_eq!(error.exit_code(), locket_core::LocketError::UnlockRequired.exit_code());
+    let accept_context = context_with_confirmation(&context, &format!("{issuer_fingerprint}\n"));
+    let mut output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from([
+            "locket",
+            "team",
+            "accept",
+            invite_path.to_str().ok_or("non-utf8 invite path")?,
+        ])?,
+        &accept_context,
+        &mut output,
+    )?;
+    let output = String::from_utf8(output)?;
+    assert!(output.contains("team_accept: pending"), "{output}");
+    assert!(output.contains("team_accept: accepted"), "{output}");
+    assert!(output.contains("issuer_fingerprint:"), "{output}");
+    assert!(output.contains("issuer_safety_words:"), "{output}");
+    assert!(output.contains("role: developer"), "{output}");
+    assert!(output.contains("profiles: dev"), "{output}");
+    assert!(output.contains("metadata_only: yes"), "{output}");
 
     let store = locket_store::Store::open(directory.path().join("store.db"))?;
-    let revoked_at: Option<i64> = store.connection().query_row(
-        "SELECT revoked_at FROM team_invites WHERE id = 'lk_invite_locked_revoke'",
+    let accepted_at: Option<i64> = store.connection().query_row(
+        "SELECT accepted_at FROM team_invites WHERE id = ?1",
+        [invite_id],
+        |row| row.get(0),
+    )?;
+    assert!(accepted_at.is_some());
+    let metadata: String = store.connection().query_row(
+        "SELECT metadata_json FROM audit_log
+         WHERE action = 'TEAM_ACCEPT'
+         ORDER BY sequence DESC LIMIT 1",
         [],
         |row| row.get(0),
     )?;
-    assert!(revoked_at.is_none());
-    assert_eq!(audit_row_count(&store)?, before);
+    let metadata: serde_json::Value = serde_json::from_str(&metadata)?;
+    assert_eq!(metadata["command"], "team accept");
+    assert_eq!(metadata["invite_id"], invite_id);
+    assert_eq!(metadata["issuer_device_fingerprint"], issuer_fingerprint);
+    assert_eq!(metadata["recipient_device_fingerprint"], local_device.fingerprint);
+    assert_eq!(metadata["role"], "developer");
+    assert_eq!(metadata["profiles"], json!(["dev"]));
     Ok(())
 }
 

@@ -502,6 +502,52 @@ impl Store {
             .map_err(StoreError::from)
     }
 
+    /// Marks a team invite as accepted and appends an optional audit row in the
+    /// same transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::InviteReplayDetected`] when the invite is already
+    /// accepted or revoked, [`StoreError::InviteNotFound`] when no row matches
+    /// `invite_id`, or [`StoreError`] when `SQLite` or audit append fails.
+    pub fn accept_team_invite(
+        &mut self,
+        invite_id: &str,
+        accepted_at: i64,
+        audit: Option<AuditContext<'_>>,
+    ) -> Result<(), StoreError> {
+        let exists: Option<(Option<i64>, Option<i64>)> = self
+            .connection
+            .query_row(
+                "SELECT accepted_at, revoked_at FROM team_invites WHERE id = ?1",
+                [invite_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let Some((existing_accepted_at, revoked_at)) = exists else {
+            return Err(StoreError::InviteNotFound { invite_id: invite_id.to_owned() });
+        };
+        if existing_accepted_at.is_some() || revoked_at.is_some() {
+            return Err(StoreError::InviteReplayDetected { invite_id: invite_id.to_owned() });
+        }
+
+        let transaction = self.connection.transaction()?;
+        let updated = transaction.execute(
+            "UPDATE team_invites
+                SET accepted_at = ?1
+              WHERE id = ?2
+                AND accepted_at IS NULL
+                AND revoked_at IS NULL",
+            params![accepted_at, invite_id],
+        )?;
+        if updated == 0 {
+            return Err(StoreError::InviteReplayDetected { invite_id: invite_id.to_owned() });
+        }
+        append_optional_audit(&transaction, audit)?;
+        transaction.commit()?;
+        Ok(())
+    }
+
     /// Marks a team invite as revoked and appends an optional audit row in the
     /// same transaction.
     ///
