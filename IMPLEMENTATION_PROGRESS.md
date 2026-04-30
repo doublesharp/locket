@@ -844,9 +844,10 @@ editing — they drift. Severity: **blocker** (security/correctness),
   - [ ] **subtask** — tests-store-migrations: cover schema migration
     paths, `SCHEMA_MIGRATE` audit on every step, and rollback on
     failure in `crates/locket-store/`.
-  - [ ] **subtask** — tests-typed-errors: a per-variant exit-code
+  - [~] [bec7ddfc] **subtask** — tests-typed-errors: a per-variant exit-code
     regression covering at least one callsite per `LocketError`
     variant in `crates/locket-core/src/error.rs`.
+    Claim: branch agent-bec7ddfc/tests-typed-errors, worktree .worktrees/agent-bec7ddfc-tests-typed-errors. Scope: add direct exit-code asserts for the variants missing dedicated coverage in `tests/cli_errors.rs`.
   - [ ] **subtask** — tests-source-precedence: cover the unified
     resolver across `set`, `get`, `list`, `rotate`, `rm`, `purge`,
     `history`, `diff`, `copy`, reveal/copy, and execution. Pairs with
@@ -993,9 +994,9 @@ editing — they drift. Severity: **blocker** (security/correctness),
   (user-only perms) before schema-mutating migrations; `locket doctor`
   reports backup-skipped migrations and last backup path
   (`docs/specs/storage.md`).
-- [~] [2b8d143a] `automation_client_nonces` opportunistic pruning during client
-  auth and via `locket doctor` (`docs/specs/storage.md`).
-  Claim: branch agent-2b8d143a/automation-nonce-pruning, worktree .worktrees/agent-2b8d143a-automation-nonce-pruning. Scope: doctor-side prune (client-auth half deferred until challenge-response auth lands).
+- [ ] Prune expired `automation_client_nonces` during automation
+  client authentication (pairs with the doctor-side prune; lands
+  with challenge-response auth in the Automation-client flows item).
 ## Spec-by-Spec Completion Gates
 
 Do this after all the other tasks are completed.
