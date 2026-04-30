@@ -82,9 +82,7 @@ skill set fits a leaf better.
 - [ ] Local agent daemon (`docs/specs/agent.md`). `agent-socket-server`
   shipped; remaining subtasks below. Later subtasks depend on
   `agent-unlock-cache` / `agent-grant-table` — note deps on your claim.
-  - [ ] **subtask** — agent-unlock-cache: in-memory unlock-key cache
-    keyed by project_id with TTL eviction; `Lock`/`Unlock`/`Status`
-    handlers. **Critical path.**
+  - [~] [acda32e4] branch agent-acda32e4/agent-unlock-cache, worktree .worktrees/agent-acda32e4-agent-unlock-cache; **subtask** — agent-unlock-cache: in-memory unlock-key cache keyed by project_id with TTL eviction; `Lock`/`Unlock`/`Status` handlers. **Critical path.**
   - [ ] **subtask** — agent-grant-table: SQLite-backed grant table
     with `(pid, process_start_time)` binding (helper landed in
     `agent-4efea70d/process-grant-binding`);
