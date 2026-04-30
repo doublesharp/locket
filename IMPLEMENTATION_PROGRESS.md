@@ -926,7 +926,7 @@ editing — they drift. Severity: **blocker** (security/correctness),
   (`docs/specs/testing.md:14`).
   - [x] [bec7ddfc] **subtask** — proptest-dotenv: `.env` parser round-trip and
     rejection invariants.
-  - [~] [bec7ddfc] **subtask** — proptest-policy-toml: policy TOML parse →
+  - [x] [bec7ddfc] **subtask** — proptest-policy-toml: policy TOML parse →
     normalize → re-serialize round-trip; rejection of disallowed
     fields.
   - [ ] **subtask** — proptest-lk-uri: `lk://` parser round-trip,
