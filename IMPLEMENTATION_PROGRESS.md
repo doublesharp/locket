@@ -917,8 +917,9 @@ editing — they drift. Severity: **blocker** (security/correctness),
     `IntegrityFailure`/`ReplayDetected` paths.
   - [x] **subtask** — mutation-locked-vault-scan: locked vault scan
     stays metadata-only, no secret leakage, no SCAN row, `--require-known` exits `UnlockRequired`.
-  - [ ] **subtask** — mutation-expired-versions: pinned `lk://...@vN`
+  - [~] [aa40a4ce] **subtask** — mutation-expired-versions: pinned `lk://...@vN`
     past `grace_until` returns typed `SecretVersionExpired`.
+    Claim: branch agent-aa40a4ce/mutation-expired-versions, worktree .worktrees/agent-aa40a4ce-mutation-expired-versions.
   - [~] [aa40a4ce] **subtask** — mutation-dangerous-profile: dangerous-profile
     reads emit the documented denial audit and refuse value access.
     Claim: branch agent-aa40a4ce/mutation-dangerous-profile, worktree .worktrees/agent-aa40a4ce-mutation-dangerous-profile.
