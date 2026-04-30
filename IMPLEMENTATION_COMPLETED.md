@@ -271,6 +271,8 @@ Slices that have merged to `main` and verified. Open work tracked in
   whitespace, tabs, empty files, missing newlines, unclosed fences.
 - [x] `locket ai-safe --pattern-only` degraded locked-vault mode, `--output <file>` 0600 transcript with refuse-overwrite-without-`--force`, and partial-line buffer cap.
 - [x] **subtask** — team-remove-member: `locket team remove` with `TEAM_REMOVE` audit and `TeamRoleDenied` typed error.
+- [x] **subtask** — team-revoke-device: `locket team revoke-device` with `DEVICE_REVOKE` audit, `TeamRoleDenied`, idempotent for already-revoked.
+- [x] Optional screen-clear after one-time recovery code display on `init` and `recovery rotate`; ANSI clear only when stdout is a TTY.
 - [x] **subtask** — e2e-recovery-roundtrip: `init` → `recover` → `recovery rotate`; refusal-when-keychain-valid and `--force` path covered.
 - [x] Caller-side summarization: `summarize_names` applied to exec/docker/run/redact audit sites to stay under 64 KiB cap.
 - [x] Bytes-after-UTF-8 sweep: non-ASCII UTF-8 values pass byte-for-byte through exec, docker, run, redact, and scan paths.
@@ -278,6 +280,11 @@ Slices that have merged to `main` and verified. Open work tracked in
 - [x] **subtask** — tests-store-migrations: schema migration paths, `SCHEMA_MIGRATE` audit on every step, rollback on failure.
 - [x] **subtask** — invite-codec: `SignedInvite` encode/decode/verify with ed25519 in `crates/locket-core/src/invite.rs`.
 - [x] **subtask** — harden-zeroize: `Zeroizing` wrappers at all key/value owner sites; recovery envelope open return wrapped.
+- [x] **subtask** — agent-socket-server: Unix domain socket daemon with 0600/0700 perms, tokio accept loop, Status/Heartbeat stubs, `AgentSocketInUse` on collision.
+- [x] **subtask** — proptest-policy-toml: policy TOML parse → normalize → re-serialize round-trip; rejection of disallowed fields.
+- [x] **subtask** — proptest-lk-uri: `lk://` parser round-trip, fragment/query rejection, pinned-version normalization.
+- [x] **subtask** — proptest-canonical-json: canonical JSON encoder is total-ordered, idempotent, stable across permutations.
+- [x] **subtask** — proptest-device-descriptor: descriptor codec round-trip; rejects malformed `lkdev1_` payloads.
 
 ## Spec-by-Spec Completion Gates
 
