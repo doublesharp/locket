@@ -26,6 +26,10 @@ use crate::method::AgentMethod;
 use crate::status::{LockState, StatusPayload};
 use crate::status_stream::StatusHub;
 
+#[cfg(test)]
+type PeerCredentialValidator =
+    dyn Fn(&UnixStream, u32) -> Result<(), SocketServerError> + Send + Sync;
+
 /// Permissions for a freshly bound agent socket — owner-only.
 const SOCKET_PERMISSIONS_MODE: u32 = 0o600;
 /// Permissions for the parent directory that holds the socket — also
@@ -226,8 +230,7 @@ pub struct AgentSocketState {
     /// Test hook that lets socket tests inject spoofed peer UIDs
     /// without requiring root or a second local user.
     #[cfg(test)]
-    peer_credential_validator:
-        Arc<dyn Fn(&UnixStream, u32) -> Result<(), SocketServerError> + Send + Sync>,
+    peer_credential_validator: Arc<PeerCredentialValidator>,
 }
 
 impl AgentSocketState {
