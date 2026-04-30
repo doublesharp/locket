@@ -286,6 +286,10 @@ impl AgentSocketState {
     /// longest remaining TTL across live entries; the agent reports
     /// `Locked` whenever no live entry remains.
     pub async fn status_snapshot(&self, now_unix_nanos: i128) -> StatusPayload {
+        {
+            let mut cache = self.unlock_cache.lock().await;
+            cache.evict_expired(now_unix_nanos);
+        }
         let summary = collect_live_summary(&self.unlock_cache, now_unix_nanos).await;
         let grant_count = {
             let grants = self.grants.lock().await;
@@ -299,6 +303,12 @@ impl AgentSocketState {
             agent_version: self.agent_version.clone(),
             unlock_ttl_seconds: summary.max_remaining_seconds,
         }
+    }
+
+    async fn publish_status_snapshot(&self, now_unix_nanos: i128) -> StatusPayload {
+        let snapshot = self.status_snapshot(now_unix_nanos).await;
+        self.status_hub.publish(snapshot.clone()).await;
+        snapshot
     }
 }
 
@@ -497,6 +507,7 @@ pub async fn dispatch(envelope: &RequestEnvelope, state: &AgentSocketState) -> R
         // the wire payload changes from `key` to e.g. `passphrase` /
         // `keychain_token` and this arm performs the unwrap.
         Ok(AgentMethod::Unlock) => {
+            let now = current_unix_nanos();
             let payload: UnlockPayload = match serde_json::from_value(envelope.payload.clone()) {
                 Ok(payload) => payload,
                 Err(_) => {
@@ -505,11 +516,12 @@ pub async fn dispatch(envelope: &RequestEnvelope, state: &AgentSocketState) -> R
             };
             let entry = crate::unlock_cache::UnlockEntry::new(
                 payload.key,
-                current_unix_nanos(),
+                now,
                 std::time::Duration::from_secs(payload.ttl_seconds),
                 payload.method,
             );
             state.unlock_cache.lock().await.insert(payload.project_id, entry);
+            state.publish_status_snapshot(now).await;
             ResponseEnvelope::Success(SuccessEnvelope::new(
                 envelope.id.clone(),
                 serde_json::Value::Null,
@@ -517,6 +529,8 @@ pub async fn dispatch(envelope: &RequestEnvelope, state: &AgentSocketState) -> R
         }
         Ok(AgentMethod::Lock) => {
             state.unlock_cache.lock().await.clear();
+            state.grants.lock().await.clear();
+            state.publish_status_snapshot(current_unix_nanos()).await;
             ResponseEnvelope::Success(SuccessEnvelope::new(
                 envelope.id.clone(),
                 serde_json::Value::Null,

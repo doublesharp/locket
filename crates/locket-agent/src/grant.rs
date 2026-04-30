@@ -74,6 +74,11 @@ impl GrantTable {
         self.grants.remove(grant_id)
     }
 
+    /// Remove every live grant record.
+    pub fn clear(&mut self) {
+        self.grants.clear();
+    }
+
     /// Count live grant records without exposing grant ids.
     #[must_use]
     pub fn len(&self) -> usize {

@@ -255,11 +255,17 @@ fn status_event_success_envelope_decodes_for_stream_clients() -> Result<(), Prot
 #[tokio::test(flavor = "current_thread")]
 async fn unlock_then_lock_round_trip() {
     use crate::envelope::{RequestEnvelope, ResponseEnvelope};
+    use crate::grant::{GrantBinding, GrantRecord};
     use crate::method::AgentMethod;
     use crate::server::{AgentSocketState, dispatch};
     use serde_json::json;
 
     let state = AgentSocketState::locked("test-version");
+    state.grants.lock().await.insert(GrantRecord::new(
+        "g-live",
+        GrantBinding::new(std::process::id(), "0"),
+        i128::MAX,
+    ));
 
     let unlock = RequestEnvelope::new(
         "req-1",
@@ -281,6 +287,89 @@ async fn unlock_then_lock_round_trip() {
     assert!(matches!(response, ResponseEnvelope::Success(_)));
     let cleared = state.unlock_cache.lock().await.is_empty();
     assert!(cleared, "Lock must clear every cache entry");
+    assert!(state.grants.lock().await.is_empty(), "Lock must clear live grants");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn unlock_and_lock_publish_status_changes() {
+    use crate::envelope::{RequestEnvelope, ResponseEnvelope};
+    use crate::method::AgentMethod;
+    use crate::server::{AgentSocketState, dispatch};
+    use serde_json::json;
+
+    let state = AgentSocketState::locked("test-version");
+    let mut subscriber = state.status_hub.subscribe().await;
+    let initial = subscriber.next_event().await.expect("initial status event");
+    assert_eq!(initial.status.lock_state, LockState::Locked);
+
+    let unlock = RequestEnvelope::new(
+        "req-1",
+        AgentMethod::Unlock,
+        json!({
+            "project_id": "p-1",
+            "key": [1, 2, 3, 4],
+            "ttl_seconds": 30,
+            "method": "Passphrase"
+        }),
+    );
+    assert!(matches!(dispatch(&unlock, &state).await, ResponseEnvelope::Success(_)));
+
+    let unlocked = subscriber.next_event().await.expect("unlock status event");
+    assert!(unlocked.is_state_change());
+    assert_eq!(unlocked.status.lock_state, LockState::Unlocked);
+    assert_eq!(unlocked.status.unlock_ttl_seconds, Some(30));
+
+    let lock = RequestEnvelope::new("req-2", AgentMethod::Lock, json!({}));
+    assert!(matches!(dispatch(&lock, &state).await, ResponseEnvelope::Success(_)));
+
+    let locked = subscriber.next_event().await.expect("lock status event");
+    assert!(locked.is_state_change());
+    assert_eq!(locked.status.lock_state, LockState::Locked);
+    assert_eq!(locked.status.unlock_ttl_seconds, None);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn malformed_unlock_payload_returns_protocol_error() {
+    use crate::envelope::{RequestEnvelope, ResponseEnvelope};
+    use crate::method::AgentMethod;
+    use crate::server::{AgentSocketState, dispatch};
+    use serde_json::json;
+
+    let state = AgentSocketState::locked("test-version");
+    let unlock = RequestEnvelope::new(
+        "req-1",
+        AgentMethod::Unlock,
+        json!({
+            "project_id": "p-1",
+            "ttl_seconds": 30,
+            "method": "Passphrase"
+        }),
+    );
+
+    let ResponseEnvelope::Error(error) = dispatch(&unlock, &state).await else {
+        unreachable!("malformed Unlock payload must fail");
+    };
+    assert_eq!(error.error, "ProtocolError");
+    assert!(state.unlock_cache.lock().await.is_empty());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn status_lazily_evicts_expired_unlock_entries() {
+    use crate::server::AgentSocketState;
+    use crate::unlock_cache::{UnlockEntry, UnlockMethod};
+    use std::time::Duration;
+
+    let state = AgentSocketState::locked("test-version");
+    state.unlock_cache.lock().await.insert(
+        "p-1".to_owned(),
+        UnlockEntry::new(b"k".to_vec(), 0, Duration::from_secs(1), UnlockMethod::Passphrase),
+    );
+
+    let snapshot = state.status_snapshot(2_000_000_000).await;
+
+    assert_eq!(snapshot.lock_state, LockState::Locked);
+    assert_eq!(snapshot.unlock_ttl_seconds, None);
+    assert!(state.unlock_cache.lock().await.is_empty());
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -529,9 +618,9 @@ mod server_tests {
         });
 
         let mut client = UnixStream::connect(&socket_path).await?;
-        // `Unlock` is one of the methods that still has no dispatch
+        // `RegisterClient` is one of the methods that still has no dispatch
         // arm, so it exercises the catch-all `ProtocolError` branch.
-        let request = RequestEnvelope::new("req-2", AgentMethod::Unlock, Value::Null);
+        let request = RequestEnvelope::new("req-2", AgentMethod::RegisterClient, Value::Null);
         let frame = encode_frame(&request, DEFAULT_MAX_MESSAGE_SIZE)?;
         client.write_all(&frame).await?;
         client.flush().await?;
@@ -553,7 +642,7 @@ mod server_tests {
         };
         assert_eq!(error.id, "req-2");
         assert_eq!(error.error, "ProtocolError");
-        assert!(error.message.contains("Unlock"));
+        assert!(error.message.contains("RegisterClient"));
         assert!(!error.retryable);
 
         drop(client);
