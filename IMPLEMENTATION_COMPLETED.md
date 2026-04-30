@@ -190,6 +190,8 @@ Slices that have merged to `main` and verified. Open work tracked in
 - [x] **subtask** — mock-clipboard: clipboard tests use a memory
   backend for copy success, matching-value clear, changed value, and
   unsupported clear.
+- [x] **subtask** — mock-os-keychain: `MockMasterKeyStore` covers
+  get/set/delete success and injected error paths in platform and CLI tests.
 
 ## Spec-by-Spec Completion Gates
 
