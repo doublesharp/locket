@@ -12,7 +12,7 @@
 
 use std::path::Path;
 
-use locket_core::{LkReferenceUri, LocketError};
+use locket_core::{LkReferenceUri, LocketError, SecretVersion};
 use locket_crypto::{
     EncryptedSecretValue, HkdfWrapInfo, KeyPurpose, KeyWrapAad, KeyWrapPurpose, WrappedKeyMaterial,
     decrypt_secret_value_v1, derive_wrapping_key_v1, key_wrap_aad_v1, secret_blob_aad_v1,
@@ -83,9 +83,8 @@ pub async fn handle_resolve(
     state: &crate::server::AgentSocketState,
     now_unix_nanos: i128,
 ) -> ResponseEnvelope {
-    let typed = match serde_json::from_value::<ResolveRequest>(request.payload.clone()) {
-        Ok(typed) => typed,
-        Err(_) => return protocol_error(request, "invalid ResolveReference payload"),
+    let Ok(typed) = serde_json::from_value::<ResolveRequest>(request.payload.clone()) else {
+        return protocol_error(request, "invalid ResolveReference payload");
     };
     if LkReferenceUri::parse(&typed.reference).is_err() {
         return typed_error(
@@ -125,15 +124,15 @@ pub async fn handle_resolve(
 
     let master_key = {
         let cache = state.unlock_cache.lock().await;
-        let Some(entry) = cache.lookup(project_id, now_unix_nanos) else {
-            return typed_error(
-                request,
-                ERROR_UNLOCK_REQUIRED,
-                UNLOCK_REQUIRED_MESSAGE,
-                LocketError::UnlockRequired,
-            );
-        };
-        entry.key_bytes().to_vec()
+        cache.lookup(project_id, now_unix_nanos).map(|entry| entry.key_bytes().to_vec())
+    };
+    let Some(master_key) = master_key else {
+        return typed_error(
+            request,
+            ERROR_UNLOCK_REQUIRED,
+            UNLOCK_REQUIRED_MESSAGE,
+            LocketError::UnlockRequired,
+        );
     };
 
     match resolve_reference(
@@ -211,7 +210,7 @@ fn resolve_reference(
             )
         })?;
     let secret = select_secret(&store, project_id, &profile.id, &parsed)?;
-    let version_number = parsed.version().map_or(secret.current_version, |version| version.get());
+    let version_number = parsed.version().map_or(secret.current_version, SecretVersion::get);
     let version = store
         .get_secret_version(&secret.id, version_number)
         .map_err(|_| corrupt_db())?
@@ -274,17 +273,15 @@ fn select_secret(
                 LocketError::SecretNotFound,
             )
         })?;
-    active
-        .into_iter()
-        .filter(|secret| source_precedence(&secret.source) == highest)
-        .next()
-        .ok_or_else(|| {
+    active.into_iter().find(|secret| source_precedence(&secret.source) == highest).ok_or_else(
+        || {
             ResolveFailure::new(
                 ERROR_SECRET_NOT_FOUND,
                 "secret not found",
                 LocketError::SecretNotFound,
             )
-        })
+        },
+    )
 }
 
 fn validate_version(
@@ -306,10 +303,11 @@ fn validate_version(
     if pinned && version.state == "current" {
         return Ok(());
     }
-    if pinned && version.state == "deprecated" {
-        if version.grace_until.is_some_and(|grace_until| i128::from(grace_until) > now_unix_nanos) {
-            return Ok(());
-        }
+    if pinned
+        && version.state == "deprecated"
+        && version.grace_until.is_some_and(|grace_until| i128::from(grace_until) > now_unix_nanos)
+    {
+        return Ok(());
     }
     Err(ResolveFailure::new(
         ERROR_SECRET_VERSION_EXPIRED,
