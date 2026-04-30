@@ -252,6 +252,9 @@ Slices that have merged to `main` and verified. Open work tracked in
   Filtering honors privacy aliases and never inspects secret values.
 - [x] search-audit: Adds metadata-only search to the desktop audit log view. Filtering
   avoids raw metadata_json and respects privacy aliases.
+- [x] vscode-diagnostics: The VS Code extension now plans and publishes metadata-only
+  diagnostics for missing active-profile env references and pinned reference grace
+  windows.
 
 ## Full Spec Coverage TODO — Code Health and Bug Fixes
 
