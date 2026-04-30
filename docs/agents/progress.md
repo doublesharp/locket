@@ -410,7 +410,7 @@ Re-verify file:line references before editing — they drift. Severity:
 - [ ] Cold-start budgets (`docs/specs/performance.md`). Each subtask
   adds one bench plus a regression that fails the budget:
   - [~] [4ab55ee9] branch agent-4ab55ee9/perf-passphrase-unlock, worktree .worktrees/agent-4ab55ee9-perf-passphrase-unlock; **subtask** — perf-passphrase-unlock: ≤300 ms cold.
-  - [ ] **subtask** — perf-recovery-envelope-unlock: ≤2 s cold.
+  - [~] [4ab55ee9] branch agent-4ab55ee9/perf-recovery-envelope-unlock, worktree .worktrees/agent-4ab55ee9-perf-recovery-envelope-unlock; **subtask** — perf-recovery-envelope-unlock: ≤2 s cold.
   - [ ] **subtask** — perf-agent-idle-memory: ≤50 MB RSS after
     documented warmup. Pre-req: agent daemon subtasks.
 - [~] [4ab55ee9] branch agent-4ab55ee9/dependency-hygiene-gates, worktree .worktrees/agent-4ab55ee9-dependency-hygiene-gates; dependency-hygiene-gates: local `cargo machete`/`udeps` gate.
