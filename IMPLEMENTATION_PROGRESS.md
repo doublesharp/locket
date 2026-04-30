@@ -844,10 +844,11 @@ editing — they drift. Severity: **blocker** (security/correctness),
   - [ ] **subtask** — e2e-agent-rpc: drive the agent socket through
     `Status`, `Lock`, `Unlock`, `RequestGrant`, `RevokeGrant`,
     `SubscribeStatus`. Depends on the daemon subtasks.
-  - [ ] **subtask** — e2e-policy-run: write a policy, `policy doctor`,
+  - [~] [aa40a4ce] **subtask** — e2e-policy-run: write a policy, `policy doctor`,
     `locket run` argv path with required/optional secrets, deny path,
     confirm gate, user-verification gate. Pairs with the `locket run`
     subtask tree.
+    Claim: branch agent-aa40a4ce/e2e-policy-run, worktree .worktrees/agent-aa40a4ce-e2e-policy-run.
   - [ ] **subtask** — e2e-docker-compose: `locket exec` and
     `locket run` against a stub `docker compose`, names-only audit,
     refusal of remote contexts.
