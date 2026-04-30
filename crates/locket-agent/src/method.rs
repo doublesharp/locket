@@ -45,6 +45,8 @@ pub enum AgentMethod {
     ClientHello,
     /// Return metadata-only active-profile secret rows.
     ListSecrets,
+    /// Return metadata-only secret version rows.
+    ListVersions,
 }
 
 impl AgentMethod {
@@ -71,6 +73,7 @@ impl AgentMethod {
             Self::CancelSubscription => "CancelSubscription",
             Self::ClientHello => "ClientHello",
             Self::ListSecrets => "ListSecrets",
+            Self::ListVersions => "ListVersions",
         }
     }
 }
@@ -99,6 +102,7 @@ impl FromStr for AgentMethod {
             "CancelSubscription" => Ok(Self::CancelSubscription),
             "ClientHello" => Ok(Self::ClientHello),
             "ListSecrets" => Ok(Self::ListSecrets),
+            "ListVersions" => Ok(Self::ListVersions),
             other => Err(UnknownMethod { method: other.to_owned() }),
         }
     }

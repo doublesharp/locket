@@ -610,6 +610,7 @@ pub async fn dispatch(envelope: &RequestEnvelope, state: &AgentSocketState) -> R
         Ok(AgentMethod::ResolveReference) => crate::resolve::handle_resolve(envelope),
         Ok(AgentMethod::PrepareExec) => crate::prepare_exec::handle_prepare_exec(envelope),
         Ok(AgentMethod::ListSecrets) => handle_list_secrets(envelope),
+        Ok(AgentMethod::ListVersions) => handle_list_versions(envelope),
         Ok(method) => ResponseEnvelope::Error(ErrorEnvelope::new(
             envelope.id.clone(),
             "ProtocolError",
@@ -655,6 +656,56 @@ async fn handle_list_runtime_sessions(
         crate::runtime_sessions::list_runtime_sessions_response(&request, &sessions)
     };
     crate::runtime_sessions::success_response(envelope, response)
+}
+
+fn handle_list_secrets(envelope: &RequestEnvelope) -> ResponseEnvelope {
+    let payload: crate::secrets::ListSecretsRequest =
+        match serde_json::from_value(envelope.payload.clone()) {
+            Ok(payload) => payload,
+            Err(_) => {
+                return error_response(envelope, "ProtocolError", "invalid ListSecrets payload");
+            }
+        };
+    match crate::secrets::list_secrets(&payload) {
+        Ok(response) => {
+            let payload = serde_json::to_value(response).unwrap_or(serde_json::Value::Null);
+            ResponseEnvelope::Success(SuccessEnvelope::new(envelope.id.clone(), payload))
+        }
+        Err(error) => {
+            let locket_error = error.locket_error();
+            ResponseEnvelope::Error(ErrorEnvelope::new(
+                envelope.id.clone(),
+                format!("{locket_error:?}"),
+                error.to_string(),
+                false,
+            ))
+        }
+    }
+}
+
+fn handle_list_versions(envelope: &RequestEnvelope) -> ResponseEnvelope {
+    let payload: crate::versions::ListVersionsRequest =
+        match serde_json::from_value(envelope.payload.clone()) {
+            Ok(payload) => payload,
+            Err(_) => {
+                return error_response(envelope, "ProtocolError", "invalid ListVersions payload");
+            }
+        };
+    match crate::versions::list_versions(&payload) {
+        Ok(response) => {
+            let payload = serde_json::to_value(response).unwrap_or(serde_json::Value::Null);
+            ResponseEnvelope::Success(SuccessEnvelope::new(envelope.id.clone(), payload))
+        }
+        Err(error) => {
+            let locket_error = error.locket_error();
+            ResponseEnvelope::Error(ErrorEnvelope::new(
+                envelope.id.clone(),
+                format!("{locket_error:?}"),
+                error.to_string(),
+                false,
+            ))
+        }
+    }
 }
 
 async fn handle_request_grant(

@@ -5,8 +5,9 @@ use rusqlite::{OptionalExtension, params};
 use crate::Store;
 use crate::error::StoreError;
 use crate::secret::{
-    SecretBlobRecord, SecretMetadataRecord, SecretRecord, SecretVersionRecord,
-    secret_blob_record_from_row, secret_metadata_record_from_row, secret_record_from_row,
+    SecretBlobRecord, SecretMetadataRecord, SecretRecord, SecretVersionMetadataRecord,
+    SecretVersionRecord, secret_blob_record_from_row, secret_metadata_record_from_row,
+    secret_record_from_row, secret_version_metadata_record_from_row,
     secret_version_record_from_row,
 };
 

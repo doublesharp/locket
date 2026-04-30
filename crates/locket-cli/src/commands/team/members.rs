@@ -916,10 +916,15 @@ fn current_team_member_role(
         .ok_or_else(|| team_role_denied_error("local team member has an unknown role"))
 }
 
-fn authorize_team_remove(caller: TeamMemberRole, target: &TeamMemberListRecord) -> Result<(), CliError> {
+fn authorize_team_remove(
+    caller: TeamMemberRole,
+    target: &TeamMemberListRecord,
+) -> Result<(), CliError> {
     match caller {
         TeamMemberRole::Owner => Ok(()),
-        TeamMemberRole::Maintainer if matches!(target.role.as_str(), "developer" | "read-only") => Ok(()),
+        TeamMemberRole::Maintainer if matches!(target.role.as_str(), "developer" | "read-only") => {
+            Ok(())
+        }
         TeamMemberRole::Maintainer => Err(team_role_denied_error(
             "maintainers can remove only developer and read-only members",
         )),

@@ -308,6 +308,10 @@ Slices that have merged to `main` and verified. Open work tracked in
 - [x] search-scan-findings: Scan findings can now be filtered by metadata in the desktop
   view. The filter searches only existing redacted finding summaries and safe row
   fields.
+- [x] agent-list-secrets: The agent protocol now returns metadata-only active-profile
+  secret rows ordered by source precedence.
+- [x] agent-list-versions: The agent protocol now returns metadata-only current,
+  deprecated, and purged version rows with rotation metadata.
 
 ## Full Spec Coverage TODO — Code Health and Bug Fixes
 
