@@ -32,6 +32,8 @@ const ERROR_PROFILE_NOT_FOUND: &str = "ProfileNotFound";
 const ERROR_SECRET_NOT_FOUND: &str = "SecretNotFound";
 const ERROR_SECRET_DELETED: &str = "SecretDeleted";
 const ERROR_SECRET_VERSION_EXPIRED: &str = "SecretVersionExpired";
+const ERROR_POLICY_NOT_FOUND: &str = "PolicyNotFound";
+const ERROR_ACCESS_DENIED: &str = "AccessDenied";
 const ERROR_CORRUPT_DB: &str = "CorruptDb";
 
 /// Redacted denial message returned to clients.
@@ -52,6 +54,9 @@ pub struct ResolveRequest {
     /// Profile id authorized by the live grant.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profile_id: Option<String>,
+    /// Command policy whose allow-list authorizes this reference.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy_name: Option<String>,
     /// Path to the user-scoped `store.db`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub store_path: Option<String>,
@@ -100,6 +105,9 @@ pub async fn handle_resolve(
     let Some(profile_id) = typed.profile_id.as_deref() else {
         return protocol_error(request, "ResolveReference requires profile_id");
     };
+    let Some(policy_name) = typed.policy_name.as_deref() else {
+        return protocol_error(request, "ResolveReference requires policy_name");
+    };
     let Some(store_path) = typed.store_path.as_deref() else {
         return protocol_error(request, "ResolveReference requires store_path");
     };
@@ -138,6 +146,7 @@ pub async fn handle_resolve(
     match resolve_reference(
         &typed.reference,
         project_id,
+        policy_name,
         Path::new(store_path),
         &master_key,
         now_unix_nanos,
@@ -186,6 +195,7 @@ impl ResolveFailure {
 fn resolve_reference(
     reference: &str,
     project_id: &str,
+    policy_name: &str,
     store_path: &Path,
     master_key: &[u8],
     now_unix_nanos: i128,
@@ -199,6 +209,7 @@ fn resolve_reference(
     })?;
     let master_key = key_array(master_key).ok_or_else(corrupt_db)?;
     let store = Store::open(store_path).map_err(|_| corrupt_db())?;
+    authorize_policy_reference(&store, project_id, policy_name, parsed.key().as_str())?;
     let profile = store
         .get_profile_by_name(project_id, parsed.profile().as_str())
         .map_err(|_| corrupt_db())?
@@ -230,6 +241,41 @@ fn resolve_reference(
         version: version.version,
         profile_id: profile.id,
     })
+}
+
+fn authorize_policy_reference(
+    store: &Store,
+    project_id: &str,
+    policy_name: &str,
+    secret_name: &str,
+) -> Result<(), ResolveFailure> {
+    let Some(policy) =
+        store.get_command_policy_index(project_id, policy_name).map_err(|_| corrupt_db())?
+    else {
+        return Err(ResolveFailure::new(
+            ERROR_POLICY_NOT_FOUND,
+            "command policy not found",
+            LocketError::PolicyNotFound,
+        ));
+    };
+    let Some(allowed_secrets) =
+        policy.normalized_json.get("allowed_secrets").and_then(serde_json::Value::as_array)
+    else {
+        return Err(corrupt_db());
+    };
+    let authorized = allowed_secrets
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .any(|allowed| allowed == secret_name);
+    if authorized {
+        Ok(())
+    } else {
+        Err(ResolveFailure::new(
+            ERROR_ACCESS_DENIED,
+            "command policy does not authorize the reference",
+            LocketError::AccessDenied,
+        ))
+    }
 }
 
 fn select_secret(
@@ -433,6 +479,7 @@ mod tests {
     const SECRET_ID: &str = "lk_sec_resolve";
     const SECRET_NAME: &str = "DATABASE_URL";
     const GRANT_ID: &str = "lk_grant_resolve";
+    const POLICY_NAME: &str = "deploy";
 
     struct ResolveFixture {
         _directory: TempDir,
@@ -448,6 +495,7 @@ mod tests {
             reference: format!("lk://{PROFILE_NAME}/{SECRET_NAME}"),
             project_id: Some(PROJECT_ID.to_owned()),
             profile_id: Some(PROFILE_ID.to_owned()),
+            policy_name: Some(POLICY_NAME.to_owned()),
             store_path: Some(fixture.store_path.display().to_string()),
             grant_id: Some(GRANT_ID.to_owned()),
             binding: Some(GrantBinding::new(std::process::id(), "0")),
@@ -474,6 +522,7 @@ mod tests {
         store.initialize_schema()?;
         store.insert_project_if_absent(PROJECT_ID, "resolve-test", 1)?;
         store.insert_profile_if_absent(PROFILE_ID, PROJECT_ID, PROFILE_NAME, false, 1)?;
+        insert_policy_index(&mut store, POLICY_NAME, &[SECRET_NAME])?;
 
         let master_key = [7_u8; 32];
         let profile_secret_key = [8_u8; 32];
@@ -510,6 +559,26 @@ mod tests {
             profile_fingerprint_key,
             expected_value,
         })
+    }
+
+    fn insert_policy_index(
+        store: &mut Store,
+        policy_name: &str,
+        allowed_secrets: &[&str],
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        store.upsert_command_policy_index(
+            PROJECT_ID,
+            policy_name,
+            &json!({ "argv": ["pnpm", "deploy"] }),
+            &json!({
+                "schema_version": 1,
+                "name": policy_name,
+                "allowed_secrets": allowed_secrets,
+            }),
+            1,
+            None,
+        )?;
+        Ok(())
     }
 
     fn insert_wrapped_profile_key(
@@ -664,6 +733,7 @@ mod tests {
             reference: "lk://dev/DATABASE_URL@v3".to_owned(),
             project_id: Some(PROJECT_ID.to_owned()),
             profile_id: Some(PROFILE_ID.to_owned()),
+            policy_name: Some(POLICY_NAME.to_owned()),
             store_path: Some("/tmp/store.db".to_owned()),
             grant_id: Some(GRANT_ID.to_owned()),
             binding: Some(GrantBinding::new(123, "start")),
@@ -674,6 +744,7 @@ mod tests {
 
         assert_eq!(decoded, request);
         assert_eq!(value["reference"], "lk://dev/DATABASE_URL@v3");
+        assert_eq!(value["policy_name"], POLICY_NAME);
         Ok(())
     }
 
@@ -751,6 +822,62 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn handle_resolve_requires_caller_policy_name() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let fixture = build_fixture()?;
+        let state = unlocked_state(&fixture).await;
+        let mut request = resolve_request(&fixture);
+        request.policy_name = None;
+        let envelope = RequestEnvelope::new(
+            "req-missing-policy-name",
+            AgentMethod::ResolveReference,
+            serde_json::to_value(request)?,
+        );
+
+        let response = handle_resolve(&envelope, &state, 1).await;
+        assert_eq!(error_code(response)?, "ProtocolError");
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn handle_resolve_returns_policy_not_found_for_unknown_policy()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let fixture = build_fixture()?;
+        let state = unlocked_state(&fixture).await;
+        let mut request = resolve_request(&fixture);
+        request.policy_name = Some("missing-policy".to_owned());
+        let envelope = RequestEnvelope::new(
+            "req-missing-policy",
+            AgentMethod::ResolveReference,
+            serde_json::to_value(request)?,
+        );
+
+        let response = handle_resolve(&envelope, &state, 1).await;
+        assert_eq!(error_code(response)?, "PolicyNotFound");
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn handle_resolve_denies_secret_not_allowed_by_policy()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let fixture = build_fixture()?;
+        let mut store = Store::open(&fixture.store_path)?;
+        insert_policy_index(&mut store, "deny-database", &["OTHER_SECRET"])?;
+        let state = unlocked_state(&fixture).await;
+        let mut request = resolve_request(&fixture);
+        request.policy_name = Some("deny-database".to_owned());
+        let envelope = RequestEnvelope::new(
+            "req-policy-denied",
+            AgentMethod::ResolveReference,
+            serde_json::to_value(request)?,
+        );
+
+        let response = handle_resolve(&envelope, &state, 1).await;
+        assert_eq!(error_code(response)?, "AccessDenied");
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn handle_resolve_uses_precedence_unless_source_is_explicit()
     -> Result<(), Box<dyn std::error::Error>> {
         let fixture = build_fixture()?;
@@ -822,8 +949,19 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn handle_resolve_rejects_missing_secret() -> Result<(), Box<dyn std::error::Error>> {
         let fixture = build_fixture()?;
-        let response = resolve_with_fixture(&fixture, "lk://dev/MISSING_KEY", 1).await?;
+        let mut store = Store::open(&fixture.store_path)?;
+        insert_policy_index(&mut store, "allow-missing", &["MISSING_KEY"])?;
+        let state = unlocked_state(&fixture).await;
+        let mut request = resolve_request(&fixture);
+        request.reference = "lk://dev/MISSING_KEY".to_owned();
+        request.policy_name = Some("allow-missing".to_owned());
+        let envelope = RequestEnvelope::new(
+            "req-missing-secret",
+            AgentMethod::ResolveReference,
+            serde_json::to_value(request)?,
+        );
 
+        let response = handle_resolve(&envelope, &state, 1).await;
         assert_eq!(error_code(response)?, "SecretNotFound");
         Ok(())
     }
