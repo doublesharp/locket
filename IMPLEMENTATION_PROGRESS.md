@@ -403,9 +403,10 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
   - [ ] **subtask** — team-invite-revoke: implement `locket team
     revoke-invite`. Audit `TEAM_INVITE` (revocation). Errors:
     `TeamRoleDenied`. Depends on `team-invite-create`.
-  - [ ] **subtask** — team-members-list: implement `locket team members`
+  - [~] [cb2437f7] **subtask** — team-members-list: implement `locket team members`
     metadata-only listing with privacy aliases. Errors: none for the
     listing itself. Depends on `team-store-schema`.
+    Claim: branch agent-cb2437f7/team-members-list, worktree .worktrees/agent-cb2437f7-team-members-list, scope team members metadata listing.
   - [ ] **subtask** — team-remove-member: implement `locket team remove`.
     Audit `TEAM_REMOVE`. Errors: `TeamRoleDenied`. Depends on
     `team-store-schema`.
