@@ -282,3 +282,43 @@ fn ai_safe_transcript_force_repairs_permissions_and_child_exit_is_forwarded()
     }
     Ok(())
 }
+
+#[test]
+fn ai_safe_redacts_non_ascii_utf8_secret_bytes_without_normalization()
+-> Result<(), Box<dyn std::error::Error>> {
+    let secret_value = "caf\u{e9}-secret-\u{1f511}";
+    let directory = tempdir()?;
+    let context = test_context_with_secret_value(&directory, secret_value);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    let args = test_secret_write_args("UNICODE_SECRET");
+    crate::set_secret_value(&context, &args, secret_value, "manual", 1_000)?;
+
+    let mut output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from([
+            "locket",
+            "ai-safe",
+            "--",
+            "/bin/sh",
+            "-c",
+            &format!("printf 'val=%s\\n' '{secret_value}'"),
+        ])?,
+        &context,
+        &mut output,
+    )?;
+
+    let output_str = String::from_utf8(output)?;
+    assert!(
+        output_str.contains("lk_redacted_UNICODE_SECRET"),
+        "non-ASCII secret must be redacted: {output_str:?}"
+    );
+    assert!(
+        !output_str.contains(secret_value),
+        "plaintext must not appear in output: {output_str:?}"
+    );
+    Ok(())
+}

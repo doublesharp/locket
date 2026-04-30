@@ -1406,3 +1406,84 @@ inherit_env = ["PATH"]
     assert_eq!(value, "postgres://shell-mode-secret");
     Ok(())
 }
+
+#[test]
+fn exec_preserves_non_ascii_utf8_secret_bytes_through_injection()
+-> Result<(), Box<dyn std::error::Error>> {
+    let secret_value = "caf\u{e9}-tok\u{e9}n-\u{1f511}";
+    let directory = tempdir()?;
+    let context = test_context_with_secret_value(&directory, secret_value);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    let args = test_secret_write_args("UNICODE_SECRET");
+    crate::set_secret_value(&context, &args, secret_value, "manual", 1_000)?;
+
+    let out_path = directory.path().join("secret_bytes.bin");
+    run_with_context(
+        Cli::try_parse_from([
+            "locket",
+            "exec",
+            "--force",
+            "--secret",
+            "UNICODE_SECRET",
+            "--",
+            "/bin/sh",
+            "-c",
+            &format!("printf '%s' \"$UNICODE_SECRET\" > {}", out_path.display()),
+        ])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+
+    let written = std::fs::read(&out_path)?;
+    assert_eq!(
+        written,
+        secret_value.as_bytes(),
+        "exec must pass non-ASCII UTF-8 bytes through unchanged"
+    );
+    Ok(())
+}
+
+#[test]
+fn run_preserves_non_ascii_utf8_secret_bytes_through_injection()
+-> Result<(), Box<dyn std::error::Error>> {
+    let secret_value = "r\u{e9}sum\u{e9}-value";
+    let directory = tempdir()?;
+    let context = test_context_with_secret_value(&directory, secret_value);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    let args = test_secret_write_args("UNICODE_SECRET");
+    crate::set_secret_value(&context, &args, secret_value, "manual", 1_000)?;
+
+    let out_path = directory.path().join("secret_bytes.bin");
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(directory.path().join("locket.toml"))?
+        .write_all(
+            format!(
+                "\n[commands.check_unicode]\nargv = [\"/bin/sh\", \"-c\", \"printf '%s' \\\"$UNICODE_SECRET\\\" > {path}\"]\nrequired_secrets = [\"UNICODE_SECRET\"]\n",
+                path = out_path.display()
+            )
+            .as_bytes(),
+        )?;
+
+    run_with_context(
+        Cli::try_parse_from(["locket", "run", "check_unicode"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+
+    let written = std::fs::read(&out_path)?;
+    assert_eq!(
+        written,
+        secret_value.as_bytes(),
+        "run must pass non-ASCII UTF-8 bytes through unchanged"
+    );
+    Ok(())
+}
