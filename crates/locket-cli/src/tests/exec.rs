@@ -819,3 +819,135 @@ inherit_env = ["PATH"]
     assert_eq!(metadata_json["policy"], "deploy");
     Ok(())
 }
+
+#[test]
+fn run_policy_user_verification_gate_rejects_when_unsatisfied()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(directory.path().join("locket.toml"))?
+        .write_all(
+            br#"
+[commands.sensitive]
+argv = ["/bin/sh", "-c", "true"]
+require_user_verification = true
+env_mode = "strict"
+inherit_env = ["PATH"]
+"#,
+        )?;
+
+    let denying_context =
+        context_with_user_verifier(&context, Arc::new(MemoryLocalUserVerifier::denying()));
+    let result = run_with_context(
+        Cli::try_parse_from(["locket", "run", "sensitive"])?,
+        &denying_context,
+        &mut Vec::new(),
+    );
+    let Err(error) = result else {
+        return Err("policy with require_user_verification must reject denying verifier".into());
+    };
+    assert_eq!(error.exit_code(), 74);
+    assert!(error.to_string().contains("local user verification"));
+
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let count: i64 = store.connection().query_row(
+        "SELECT COUNT(*) FROM audit_log WHERE action = 'RUN_POLICY'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(count, 0, "rejected verification must not write a RUN_POLICY audit row");
+    Ok(())
+}
+
+#[test]
+fn run_policy_user_verification_gate_records_method_on_success()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(directory.path().join("locket.toml"))?
+        .write_all(
+            br#"
+[commands.sensitive]
+argv = ["/bin/sh", "-c", "true"]
+require_user_verification = true
+env_mode = "strict"
+inherit_env = ["PATH"]
+"#,
+        )?;
+
+    run_with_context(
+        Cli::try_parse_from(["locket", "run", "sensitive"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let metadata: String = store.connection().query_row(
+        "SELECT metadata_json FROM audit_log WHERE action = 'RUN_POLICY'
+         ORDER BY sequence DESC LIMIT 1",
+        [],
+        |row| row.get(0),
+    )?;
+    let metadata_json: serde_json::Value = serde_json::from_str(&metadata)?;
+    assert_eq!(metadata_json["status"], "SUCCESS");
+    assert_eq!(metadata_json["user_verification"]["required"], json!(true));
+    assert_eq!(metadata_json["user_verification"]["satisfied"], json!(true));
+    assert_eq!(metadata_json["user_verification"]["method"], json!("test"));
+    Ok(())
+}
+
+#[test]
+fn run_policy_user_verification_metadata_is_unsatisfied_when_not_required()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(directory.path().join("locket.toml"))?
+        .write_all(
+            br#"
+[commands.unprotected]
+argv = ["/bin/sh", "-c", "true"]
+env_mode = "strict"
+inherit_env = ["PATH"]
+"#,
+        )?;
+
+    run_with_context(
+        Cli::try_parse_from(["locket", "run", "unprotected"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let metadata: String = store.connection().query_row(
+        "SELECT metadata_json FROM audit_log WHERE action = 'RUN_POLICY'
+         ORDER BY sequence DESC LIMIT 1",
+        [],
+        |row| row.get(0),
+    )?;
+    let metadata_json: serde_json::Value = serde_json::from_str(&metadata)?;
+    assert_eq!(metadata_json["user_verification"]["required"], json!(false));
+    assert_eq!(metadata_json["user_verification"]["satisfied"], json!(false));
+    assert_eq!(metadata_json["user_verification"]["method"], json!(null));
+    Ok(())
+}

@@ -129,6 +129,10 @@ pub fn confirmation_failed_error(message: impl Into<String>) -> CliError {
     typed_cli_error(LocketError::ConfirmationFailed, message)
 }
 
+pub fn user_verification_failed_error(message: impl Into<String>) -> CliError {
+    typed_cli_error(LocketError::UserVerificationFailed, message)
+}
+
 pub fn tty_required_error(message: impl Into<String>) -> CliError {
     typed_cli_error(LocketError::TtyRequired, message)
 }

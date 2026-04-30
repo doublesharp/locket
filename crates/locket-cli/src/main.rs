@@ -2143,6 +2143,7 @@ pub(crate) fn write_runtime_policy_audit_if_available(
     selections: &[PolicySecretSelection],
     child_exit: Option<i32>,
     confirmation_source: Option<&str>,
+    user_verification: Option<&locket_platform::LocalUserVerification>,
 ) -> Result<(), CliError> {
     if store.get_project(resolved.config.project_id.as_str())?.is_none() {
         return Ok(());
@@ -2161,6 +2162,11 @@ pub(crate) fn write_runtime_policy_audit_if_available(
         policy.allowed_secrets.iter().map(locket_core::SecretName::as_str).collect::<Vec<_>>();
     let required_secret_names =
         policy.required_secrets.iter().map(locket_core::SecretName::as_str).collect::<Vec<_>>();
+    let user_verification_metadata = json!({
+        "required": policy.require_user_verification,
+        "satisfied": user_verification.is_some(),
+        "method": user_verification.map(|verified| serde_json::to_value(verified.method).unwrap_or(Value::Null)),
+    });
     let metadata = json!({
         "schema_version": 1,
         "action": "RUN_POLICY",
@@ -2178,6 +2184,7 @@ pub(crate) fn write_runtime_policy_audit_if_available(
         "external_env_sources": external_sources,
         "external_sources": external_sources,
         "confirmation_source": confirmation_source,
+        "user_verification": user_verification_metadata,
         "child_exit": child_exit,
     });
     let audit = AuditWrite {

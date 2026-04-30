@@ -8,6 +8,7 @@ use std::process::ExitStatus;
 use std::str::FromStr;
 
 use locket_core::{CommandPolicy, CommandSpec, ExternalEnvSource, SessionId};
+use locket_platform::{LocalUserVerificationRequest, PlatformError};
 use locket_store::{ProfileRecord, RuntimeSessionRecord, RuntimeSessionSecretNameRetention, Store};
 
 use crate::commands::config::spec::{config_get_value, read_user_config};
@@ -15,6 +16,7 @@ use crate::runtime::RuntimeContext;
 use crate::runtime::error::{
     CliError, child_exit_error, confirmation_failed_error, corrupt_db_error, exec_prepare_error,
     metadata_invalid_error, secret_not_found_error, unimplemented_in_build_error,
+    user_verification_failed_error,
 };
 use crate::runtime::key_access::default_profile;
 use crate::support::secret_helpers::{
@@ -68,11 +70,24 @@ pub fn run_command(
     } else {
         None
     };
-    if policy.require_user_verification {
-        return Err(unimplemented_in_build_error(
-            "policy user verification is not wired in this build",
-        ));
-    }
+    let user_verification = if policy.require_user_verification {
+        let request =
+            LocalUserVerificationRequest::new("run", format!("authorize policy {}", policy.name));
+        match context.user_verifier.verify_user(&request) {
+            Ok(verified) => Some(verified),
+            Err(
+                PlatformError::LocalUserVerificationFailed
+                | PlatformError::LocalUserVerificationUnavailable,
+            ) => {
+                return Err(user_verification_failed_error(
+                    "policy requires local user verification",
+                ));
+            }
+            Err(error) => return Err(error.into()),
+        }
+    } else {
+        None
+    };
     let mut store = open_store(context)?;
     ensure_trusted_project_root(&store, &resolved)?;
     let profile = default_profile(&store, &resolved.config)?;
@@ -130,6 +145,7 @@ pub fn run_command(
         &selections,
         status.code(),
         confirmation_source,
+        user_verification.as_ref(),
     )?;
     if status.success() {
         return Ok(());
