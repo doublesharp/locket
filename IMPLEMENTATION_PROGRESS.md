@@ -477,12 +477,27 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
   - Audit actions: `DEVICE_INIT`, `DEVICE_REGISTER`, `DEVICE_REVOKE`.
   - Files: `crates/locket-platform/src/helpers.rs` (descriptor codec),
     `crates/locket-crypto/src/` (fingerprint hash + safety-words derivation).
-- [ ] Invite issuer/recipient trust ceremony: signed invites with
-  issuer/recipient/expiry/nonce/role/profiles/project; `team accept`
-  displays issuer fingerprint + safety words for out-of-band
-  confirmation; replay protection and 5-minute clock-skew tolerance;
-  expired/revoked/mismatched invites fail closed
-  (`docs/specs/team-sync-recovery.md:56-69`).
+- [ ] Invite issuer/recipient trust ceremony
+  (`docs/specs/team-sync-recovery.md:56-69`). Subtasks below; later
+  ones depend on `invite-codec`.
+  - [ ] **subtask** — invite-codec: signed-invite struct (issuer pub
+    keys, recipient fingerprint, expiry, nonce, role, profiles,
+    project) plus encode/decode/verify in
+    `crates/locket-core/src/invite.rs`.
+  - [ ] **subtask** — invite-issue: `team invite` produces a signed
+    invite using the device signing key; emit `TEAM_INVITE` audit.
+    Pre-req: `invite-codec`, team-store-schema.
+  - [ ] **subtask** — invite-accept-display: `team accept` displays
+    issuer fingerprint + PGP safety words and requires typed
+    confirmation before applying. Pre-req: `invite-codec`.
+  - [ ] **subtask** — invite-replay-protect: track accepted invite
+    ids; reject second use with `ReplayDetected` (113). Pre-req:
+    `invite-codec`.
+  - [ ] **subtask** — invite-clock-skew: 5-minute clock-skew tolerance
+    on expiry; outside → `InviteExpired`. Pre-req: `invite-codec`.
+  - [ ] **subtask** — invite-fail-closed: expired/revoked/
+    fingerprint-mismatched/signature-invalid invites fail closed with
+    typed errors and audit denial rows.
 - [~] Audit coverage for denials: reveal/copy denial rows shipped
   (`status = DENIED`, `denial_reason`). Remaining sweep:
   dangerous-profile reads, locked-vault refusals (needs degraded-audit
