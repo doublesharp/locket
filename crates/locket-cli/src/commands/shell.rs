@@ -3,11 +3,13 @@
 use std::io::Write;
 use std::path::Path;
 
+use locket_core::LocketError;
 use locket_crypto::KeyPurpose;
 use locket_store::{AuditWrite, DirectoryGrantRecord};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
+use crate::runtime::error::typed_cli_error;
 use crate::{
     CliError, DenyArgs, HookArgs, RuntimeContext, ShellArg, ShellenvArgs, default_profile,
     ensure_project_exists, format_hex, load_project_key, now_unix_nanos, open_store,
@@ -49,20 +51,64 @@ pub fn shellenv_command(output: &mut impl Write, args: &ShellenvArgs) -> Result<
     write_shellenv_snippet(output, shell)
 }
 
-pub fn hook_command(output: &mut impl Write, args: &HookArgs) -> Result<(), CliError> {
+pub fn hook_command(
+    context: &RuntimeContext,
+    output: &mut impl Write,
+    args: &HookArgs,
+) -> Result<(), CliError> {
     let shell = args.shell.unwrap_or_else(detect_shell);
     if args.install {
-        writeln!(output, "hook install: no-op")?;
-        writeln!(output, "agent: unavailable")?;
-        writeln!(
-            output,
-            "reason: full agent-backed shell grant installation is not available in this build"
-        )?;
-        writeln!(output, "metadata_only: yes")?;
-        return Ok(());
+        return install_hook_grant(context, output);
     }
 
     write_shell_hook_snippet(output, shell)
+}
+
+fn install_hook_grant(context: &RuntimeContext, output: &mut impl Write) -> Result<(), CliError> {
+    let resolved = require_project(context)?;
+    let store = open_store(context)?;
+    ensure_project_exists(&store, resolved.config.project_id.as_str())?;
+    let profile = default_profile(&store, &resolved.config)?;
+    let root_hash = root_hash(&resolved.root)?;
+    if !store.project_root_is_trusted(resolved.config.project_id.as_str(), &root_hash)? {
+        return Err(project_root_untrusted_error());
+    }
+
+    let durable_grant = store.get_directory_grant(
+        resolved.config.project_id.as_str(),
+        &profile.id,
+        &root_hash,
+        &root_hash,
+        DIRECTORY_GRANT_SCOPE_PROJECT_ROOT,
+    )?;
+
+    if durable_grant.is_none() {
+        writeln!(output, "grant_required: yes")?;
+        writeln!(output, "project_id: {}", resolved.config.project_id)?;
+        writeln!(output, "profile_id: {}", profile.id)?;
+        writeln!(output, "grant_scope: {DIRECTORY_GRANT_SCOPE_PROJECT_ROOT}")?;
+        writeln!(output, "root_hash: {}", format_hex(&root_hash))?;
+        writeln!(output, "reason: no directory grant for the active profile; run locket allow")?;
+        writeln!(output, "metadata_only: yes")?;
+        return Err(typed_cli_error(
+            LocketError::GrantRequired,
+            "GrantRequired: no directory grant for the active profile; run locket allow",
+        ));
+    }
+
+    writeln!(output, "hook install: durable directory grant present")?;
+    writeln!(output, "project_id: {}", resolved.config.project_id)?;
+    writeln!(output, "profile_id: {}", profile.id)?;
+    writeln!(output, "grant_scope: {DIRECTORY_GRANT_SCOPE_PROJECT_ROOT}")?;
+    writeln!(output, "root_hash: {}", format_hex(&root_hash))?;
+    writeln!(output, "agent: unavailable")?;
+    writeln!(output, "live_grant: unavailable")?;
+    writeln!(
+        output,
+        "reason: full agent-backed shell grant installation is not available in this build"
+    )?;
+    writeln!(output, "metadata_only: yes")?;
+    Ok(())
 }
 
 pub fn allow_command(context: &RuntimeContext, output: &mut impl Write) -> Result<(), CliError> {

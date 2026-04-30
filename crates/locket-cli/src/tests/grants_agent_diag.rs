@@ -74,6 +74,70 @@ fn allow_and_deny_manage_profile_scoped_directory_grants() -> Result<(), Box<dyn
 }
 
 #[test]
+fn hook_install_requires_active_profile_directory_grant_after_use()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    run_with_context(Cli::try_parse_from(["locket", "allow"])?, &context, &mut Vec::new())?;
+
+    let mut dev_hook_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "hook", "--install"])?,
+        &context,
+        &mut dev_hook_output,
+    )?;
+    let dev_hook_output = String::from_utf8(dev_hook_output)?;
+    assert!(dev_hook_output.contains("hook install: durable directory grant present"));
+    assert!(dev_hook_output.contains("metadata_only: yes"));
+
+    run_with_context(
+        Cli::try_parse_from(["locket", "profile", "create", "staging"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    run_with_context(
+        Cli::try_parse_from(["locket", "use", "staging"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+
+    let mut staging_hook_output = Vec::new();
+    let result = run_with_context(
+        Cli::try_parse_from(["locket", "hook", "--install"])?,
+        &context,
+        &mut staging_hook_output,
+    );
+    let Err(error) = result else {
+        return Err("hook install must require a grant after switching profiles".into());
+    };
+    assert_eq!(error.exit_code(), 73);
+    assert!(error.to_string().contains("GrantRequired"));
+    let staging_hook_output = String::from_utf8(staging_hook_output)?;
+    assert!(staging_hook_output.contains("grant_required: yes"));
+    assert!(staging_hook_output.contains("reason: no directory grant for the active profile"));
+    assert!(staging_hook_output.contains("metadata_only: yes"));
+
+    run_with_context(Cli::try_parse_from(["locket", "allow"])?, &context, &mut Vec::new())?;
+    let mut granted_staging_hook_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "hook", "--install"])?,
+        &context,
+        &mut granted_staging_hook_output,
+    )?;
+    assert!(
+        String::from_utf8(granted_staging_hook_output)?
+            .contains("hook install: durable directory grant present")
+    );
+
+    Ok(())
+}
+
+#[test]
 fn allow_writes_allow_directory_audit_row() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempdir()?;
     let context = test_context(&directory);

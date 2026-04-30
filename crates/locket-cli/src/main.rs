@@ -1154,7 +1154,7 @@ fn run_with_context(
         Command::Policy { command } => policy::command(context, output, command)?,
         Command::Project { command } => trust::project::project_command(context, output, command)?,
         Command::Shellenv(args) => shell::shellenv_command(output, &args)?,
-        Command::Hook(args) => shell::hook_command(output, &args)?,
+        Command::Hook(args) => shell::hook_command(context, output, &args)?,
         Command::Allow => shell::allow_command(context, output)?,
         Command::Deny(args) => shell::deny_command(context, output, &args)?,
         Command::Agent { command } => agent::agent_command(context, output, command)?,

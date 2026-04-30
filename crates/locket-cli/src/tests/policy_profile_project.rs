@@ -810,6 +810,7 @@ fn shell_snippets_are_metadata_only() -> Result<(), Box<dyn std::error::Error>> 
     assert!(!hook_output.contains("grant_id"));
     assert!(!hook_output.contains("token"));
 
+    run_with_context(Cli::try_parse_from(["locket", "allow"])?, &context, &mut Vec::new())?;
     let mut install_output = Vec::new();
     run_with_context(
         Cli::try_parse_from(["locket", "hook", "--install"])?,
@@ -817,7 +818,7 @@ fn shell_snippets_are_metadata_only() -> Result<(), Box<dyn std::error::Error>> 
         &mut install_output,
     )?;
     let install_output = String::from_utf8(install_output)?;
-    assert!(install_output.contains("hook install: no-op"));
+    assert!(install_output.contains("hook install: durable directory grant present"));
     assert!(install_output.contains("metadata_only: yes"));
     assert!(!install_output.contains("postgres://localhost/app"));
     Ok(())
