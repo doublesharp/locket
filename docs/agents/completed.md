@@ -157,6 +157,9 @@ Slices that have merged to `main` and verified. Open work tracked in
   dumpability before CLI secret-bearing work starts.
 - [x] team-invite-create: Team invite creation now writes signed invite files and
   pending invite metadata.
+- [x] bundle-age-encryption: Sealed bundle export now writes an encrypted bundle payload
+  using age recipients. Verification handles the encrypted container structurally until
+  local device private keys land.
 
 ## Full Spec Coverage TODO — App/UI
 
