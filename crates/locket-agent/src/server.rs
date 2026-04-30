@@ -51,6 +51,19 @@ pub enum SocketServerError {
         /// Path the second daemon attempted to bind.
         path: PathBuf,
     },
+    /// An existing path on the bind chain has wider Unix permissions
+    /// than the agent allows. We refuse to silently tighten user
+    /// directories because that could mask hostile creation by another
+    /// principal; the operator has to fix the perms first.
+    #[error("agent socket path {path} has mode {mode:#o}; expected at most {expected:#o}")]
+    SocketPathTooWide {
+        /// Path whose mode bits are too permissive.
+        path: PathBuf,
+        /// Mode bits found on disk (lower 9 bits).
+        mode: u32,
+        /// Maximum allowed mode bits (e.g., `0o700` for parents).
+        expected: u32,
+    },
     /// `bind`/`accept`/permission tweak failed for an OS reason.
     #[error("agent socket I/O error: {0}")]
     Io(#[from] io::Error),
@@ -83,19 +96,21 @@ impl AgentSocketConfig {
 /// can decide what to do. This slice does not yet implement the
 /// stale-socket cleanup; that lives in the upcoming agent CLI work.
 ///
+/// If the parent directory already exists with mode bits wider than
+/// `0o700`, this function refuses to bind with
+/// [`SocketServerError::SocketPathTooWide`] rather than silently
+/// tightening another principal's directory.
+///
 /// # Errors
 ///
 /// Returns [`SocketServerError`] when binding, parent-directory
-/// creation, or permission tightening fails.
+/// creation, or permission tightening fails, or when the parent
+/// directory's existing permissions are wider than the agent allows.
 pub fn bind_socket_listener(config: &AgentSocketConfig) -> Result<UnixListener, SocketServerError> {
     if let Some(parent) = config.path.parent()
         && !parent.as_os_str().is_empty()
     {
-        std::fs::create_dir_all(parent)?;
-        std::fs::set_permissions(
-            parent,
-            std::fs::Permissions::from_mode(SOCKET_PARENT_PERMISSIONS_MODE),
-        )?;
+        prepare_parent_directory(parent)?;
     }
 
     let listener = match UnixListener::bind(&config.path) {
@@ -109,7 +124,46 @@ pub fn bind_socket_listener(config: &AgentSocketConfig) -> Result<UnixListener, 
         &config.path,
         std::fs::Permissions::from_mode(SOCKET_PERMISSIONS_MODE),
     )?;
+    let socket_mode = std::fs::metadata(&config.path)?.permissions().mode() & 0o777;
+    if socket_mode & !SOCKET_PERMISSIONS_MODE != 0 {
+        return Err(SocketServerError::SocketPathTooWide {
+            path: config.path.clone(),
+            mode: socket_mode,
+            expected: SOCKET_PERMISSIONS_MODE,
+        });
+    }
     Ok(listener)
+}
+
+/// Ensures the socket's parent directory exists and is owner-only.
+///
+/// If the directory does not exist, it is created with `0o700`. If it
+/// already exists with mode bits beyond `0o700`, the bind is refused
+/// rather than silently tightened — that prevents an agent start from
+/// quietly clamping down a user-owned directory whose wider mode might
+/// be intentional (or hostile).
+fn prepare_parent_directory(parent: &Path) -> Result<(), SocketServerError> {
+    match std::fs::metadata(parent) {
+        Ok(metadata) => {
+            let mode = metadata.permissions().mode() & 0o777;
+            if mode & !SOCKET_PARENT_PERMISSIONS_MODE != 0 {
+                return Err(SocketServerError::SocketPathTooWide {
+                    path: parent.to_path_buf(),
+                    mode,
+                    expected: SOCKET_PARENT_PERMISSIONS_MODE,
+                });
+            }
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            std::fs::create_dir_all(parent)?;
+            std::fs::set_permissions(
+                parent,
+                std::fs::Permissions::from_mode(SOCKET_PARENT_PERMISSIONS_MODE),
+            )?;
+        }
+        Err(error) => return Err(error.into()),
+    }
+    Ok(())
 }
 
 /// State shared across every accepted connection.

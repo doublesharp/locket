@@ -251,6 +251,7 @@ fn status_event_success_envelope_decodes_for_stream_clients() -> Result<(), Prot
 #[cfg(unix)]
 mod server_tests {
     use std::os::unix::fs::PermissionsExt;
+    use std::path::Path;
 
     use super::*;
     use crate::{
@@ -263,9 +264,18 @@ mod server_tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::UnixStream;
 
+    /// Tempfile's `tempdir()` may inherit `0o755` from the system temp
+    /// root on macOS/Linux. The agent rejects parent directories with
+    /// any group/other bits set, so test setup must explicitly tighten
+    /// the directory to `0o700` before binding.
+    fn tighten_directory(path: &Path) -> std::io::Result<()> {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+    }
+
     #[tokio::test]
     async fn binds_socket_with_owner_only_permissions() -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempdir()?;
+        tighten_directory(directory.path())?;
         let socket_path = directory.path().join("agent.sock");
         let config = AgentSocketConfig::new(socket_path.clone(), "0.0.0-test");
         let _listener = bind_socket_listener(&config)?;
@@ -284,6 +294,7 @@ mod server_tests {
     async fn second_listener_on_same_path_fails_with_socket_in_use()
     -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempdir()?;
+        tighten_directory(directory.path())?;
         let socket_path = directory.path().join("agent.sock");
         let config = AgentSocketConfig::new(socket_path.clone(), "0.0.0-test");
         let _first = bind_socket_listener(&config)?;
@@ -302,6 +313,7 @@ mod server_tests {
     async fn status_request_round_trips_through_handler() -> Result<(), Box<dyn std::error::Error>>
     {
         let directory = tempdir()?;
+        tighten_directory(directory.path())?;
         let socket_path = directory.path().join("agent.sock");
         let config = AgentSocketConfig::new(socket_path.clone(), "0.0.0-test");
         let listener = bind_socket_listener(&config)?;
@@ -353,6 +365,7 @@ mod server_tests {
     async fn unimplemented_methods_return_protocol_error_envelopes()
     -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempdir()?;
+        tighten_directory(directory.path())?;
         let socket_path = directory.path().join("agent.sock");
         let config = AgentSocketConfig::new(socket_path.clone(), "0.0.0-test");
         let listener = bind_socket_listener(&config)?;
@@ -395,6 +408,59 @@ mod server_tests {
 
         drop(client);
         server.await??;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn bind_refuses_when_parent_directory_has_group_or_other_bits()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        // Pre-existing parent with `0o755` — explicitly wider than the
+        // agent allows. The bind must refuse rather than silently
+        // tighten another principal's directory.
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o755))?;
+        let socket_path = directory.path().join("agent.sock");
+        let config = AgentSocketConfig::new(socket_path.clone(), "0.0.0-test");
+
+        let result = bind_socket_listener(&config);
+        let Err(SocketServerError::SocketPathTooWide { path, mode, expected }) = result else {
+            return Err(format!("expected SocketPathTooWide, got {result:?}").into());
+        };
+        assert_eq!(path, directory.path());
+        assert_eq!(mode, 0o755);
+        assert_eq!(expected, 0o700);
+        // Nothing should have been bound.
+        assert!(!socket_path.exists(), "socket must not be created when parent is too wide");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn bind_succeeds_when_parent_already_owner_only()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))?;
+        let socket_path = directory.path().join("agent.sock");
+        let config = AgentSocketConfig::new(socket_path.clone(), "0.0.0-test");
+        let _listener = bind_socket_listener(&config)?;
+
+        let parent_mode = std::fs::metadata(directory.path())?.permissions().mode() & 0o777;
+        assert_eq!(parent_mode, 0o700);
+        assert_eq!(socket_permission_mode(&socket_path), Some(0o600));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn bind_creates_missing_parent_with_owner_only_permissions()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))?;
+        let nested = directory.path().join("agent");
+        let socket_path = nested.join("agent.sock");
+        let config = AgentSocketConfig::new(socket_path.clone(), "0.0.0-test");
+
+        let _listener = bind_socket_listener(&config)?;
+        let nested_mode = std::fs::metadata(&nested)?.permissions().mode() & 0o777;
+        assert_eq!(nested_mode, 0o700, "freshly created parent must be owner-only");
         Ok(())
     }
 }
