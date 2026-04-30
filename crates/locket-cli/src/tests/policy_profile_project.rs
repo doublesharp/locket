@@ -122,11 +122,17 @@ fn policy_doctor_reports_non_default_scanner_thresholds() -> Result<(), Box<dyn 
         .append(true)
         .open(directory.path().join("locket.toml"))?
         .write_all(
-            br"
+            br#"
 [scan.high_entropy]
 min_length = 24
 entropy_threshold = 4.8
-",
+
+[scan.severity]
+provider_token = "blocking"
+
+[scan.env]
+severity = "blocking"
+"#,
         )?;
 
     let mut doctor_output = Vec::new();
@@ -139,6 +145,9 @@ entropy_threshold = 4.8
     let doctor_output = String::from_utf8(doctor_output)?;
     assert!(doctor_output.contains(
         "warning: non-default scanner thresholds high_entropy min_length=24 entropy_threshold=4.8"
+    ));
+    assert!(doctor_output.contains(
+        "warning: non-default scanner severity provider_token=blocking env_file=blocking"
     ));
     assert!(doctor_output.contains("metadata_only: yes"));
     Ok(())

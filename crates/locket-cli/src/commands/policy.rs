@@ -7,7 +7,7 @@ use serde_json::json;
 use std::fs;
 use std::io::Write;
 
-use crate::commands::scan::scanner::read_scan_entropy_rule;
+use crate::commands::scan::scanner::{ScanPolicy, read_scan_policy};
 use crate::{
     CliError, LOCKET_TOML, RuntimeContext, confirmation_failed_error, invalid_reference_error,
     invalid_secret_name_error, load_project_key, metadata_invalid_error, now_unix_nanos,
@@ -159,12 +159,24 @@ fn doctor(context: &RuntimeContext, output: &mut impl Write) -> Result<(), CliEr
     writeln!(output, "policies: {}", document.commands.len())?;
     writeln!(output, "metadata_only: yes")?;
     writeln!(output, "minimal_env_allowlist: {}", locket_exec::DEFAULT_SAFE_ALLOWLIST.join(" "))?;
-    let entropy_rule = read_scan_entropy_rule(&path)?;
+    let scan_policy = read_scan_policy(&path)?;
+    let entropy_rule = scan_policy.entropy_rule;
     if entropy_rule != EntropyRule::default() {
         writeln!(
             output,
             "warning: non-default scanner thresholds high_entropy min_length={} entropy_threshold={}",
             entropy_rule.min_len, entropy_rule.threshold
+        )?;
+    }
+    let default_scan_policy = ScanPolicy::default();
+    if scan_policy.provider_token_severity() != default_scan_policy.provider_token_severity()
+        || scan_policy.env_file_severity() != default_scan_policy.env_file_severity()
+    {
+        writeln!(
+            output,
+            "warning: non-default scanner severity provider_token={} env_file={}",
+            scan_policy.provider_token_severity().as_str(),
+            scan_policy.env_file_severity().as_str()
         )?;
     }
     for policy in document.commands.values().filter(|policy| !policy.override_explicit()) {

@@ -59,9 +59,8 @@ impl FindingKind {
     /// Default severity per `docs/specs/scan-redaction.md:51-56`.
     ///
     /// Known-secret matches are blocking by default; provider-token, high-entropy,
-    /// and `.env` findings are warnings by default. Project policy may upgrade
-    /// provider-token and `.env` findings to blocking; that policy hook is not
-    /// yet wired here.
+    /// and `.env` findings are warnings by default. The CLI scan surface applies
+    /// project policy overrides for provider-token and `.env` findings.
     #[must_use]
     pub const fn default_severity(self) -> Severity {
         match self {

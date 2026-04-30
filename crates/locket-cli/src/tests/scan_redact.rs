@@ -136,6 +136,113 @@ min_length = 0
 }
 
 #[test]
+fn scan_provider_token_severity_override_blocks() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(directory.path().join("locket.toml"))?
+        .write_all(
+            br#"
+[scan.severity]
+provider_token = "blocking"
+"#,
+        )?;
+    let provider_token = "sk_test_policyOverride123";
+    std::fs::write(directory.path().join("sample.txt"), format!("token={provider_token}\n"))?;
+
+    let mut scan_output = Vec::new();
+    let result = run_with_context(
+        Cli::try_parse_from(["locket", "scan", "sample.txt"])?,
+        &context,
+        &mut scan_output,
+    );
+
+    let Err(error) = result else {
+        return Err("provider-token blocking override must fail closed".into());
+    };
+    assert_eq!(error.exit_code(), 69);
+    let scan_output = String::from_utf8(scan_output)?;
+    assert!(scan_output.contains("sample.txt:1:7: [blocking] provider-token-pattern"));
+    assert!(scan_output.contains("scan: 1 finding(s) (blocking=1 warning=0)"));
+    assert!(!scan_output.contains(provider_token));
+    Ok(())
+}
+
+#[test]
+fn scan_env_policy_table_can_block_env_files() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(directory.path().join("locket.toml"))?
+        .write_all(
+            br#"
+[scan.env]
+severity = "blocking"
+"#,
+        )?;
+    std::fs::write(directory.path().join(".env"), "DATABASE_URL=placeholder\n")?;
+
+    let mut scan_output = Vec::new();
+    let result = run_with_context(
+        Cli::try_parse_from(["locket", "scan", ".env"])?,
+        &context,
+        &mut scan_output,
+    );
+
+    let Err(error) = result else {
+        return Err(".env blocking policy must fail closed".into());
+    };
+    assert_eq!(error.exit_code(), 69);
+    let scan_output = String::from_utf8(scan_output)?;
+    assert!(scan_output.contains(".env:1:1: [blocking] env-file"));
+    assert!(scan_output.contains("scan: 1 finding(s) (blocking=1 warning=0)"));
+    assert!(!scan_output.contains("placeholder"));
+    Ok(())
+}
+
+#[test]
+fn scan_rejects_invalid_severity_policy() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(directory.path().join("locket.toml"))?
+        .write_all(
+            br#"
+[scan.env]
+severity = "deny"
+"#,
+        )?;
+
+    let result =
+        run_with_context(Cli::try_parse_from(["locket", "scan"])?, &context, &mut Vec::new());
+
+    let Err(error) = result else {
+        return Err("invalid scan severity policy must fail closed".into());
+    };
+    assert_eq!(error.exit_code(), 64);
+    assert!(error.to_string().contains("scan.env.severity"));
+    Ok(())
+}
+
+#[test]
 fn scan_inline_suppression_drops_high_entropy_finding_and_writes_audit_row()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempdir()?;
@@ -179,6 +286,60 @@ fn scan_inline_suppression_drops_high_entropy_finding_and_writes_audit_row()
     assert!(metadata.contains("\"rule_id\":\"high-entropy\""));
     assert!(metadata.contains("\"reason\":\"known fixture\""));
     assert!(metadata.contains("notes.txt"));
+    assert!(!metadata.contains(entropy_token));
+    Ok(())
+}
+
+#[test]
+fn scan_suppression_audit_uses_project_severity_policy() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(directory.path().join("locket.toml"))?
+        .write_all(
+            br#"
+[scan.env]
+severity = "blocking"
+"#,
+        )?;
+
+    let entropy_token = "Z9a$kLmN2pQx7R!sT4vW8yB3cD6eF";
+    std::fs::write(
+        directory.path().join(".env"),
+        format!("TOKEN={entropy_token} # locket-allow: fixture\n"),
+    )?;
+
+    let mut scan_output = Vec::new();
+    let result = run_with_context(
+        Cli::try_parse_from(["locket", "scan", ".env"])?,
+        &context,
+        &mut scan_output,
+    );
+
+    let Err(error) = result else {
+        return Err(".env blocking policy must fail closed".into());
+    };
+    assert_eq!(error.exit_code(), 69);
+    let scan_output = String::from_utf8(scan_output)?;
+    assert!(scan_output.contains(".env:1:1: [blocking] env-file"));
+    assert!(scan_output.contains("scan: 1 suppressed finding(s)"));
+    assert!(!scan_output.contains(entropy_token));
+
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let metadata: String = store.connection().query_row(
+        "SELECT metadata_json FROM audit_log WHERE action = 'SCAN' AND status = 'SUPPRESSED'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert!(metadata.contains("\"kept_blocking_count\":1"));
+    assert!(metadata.contains("\"kept_warning_count\":0"));
+    assert!(metadata.contains("\"severity\":\"warning\""));
     assert!(!metadata.contains(entropy_token));
     Ok(())
 }

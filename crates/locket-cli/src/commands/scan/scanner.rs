@@ -40,9 +40,9 @@ pub fn scan_command(
     if args.no_gitignore {
         writeln!(output, "scan: gitignore rules disabled")?;
     }
-    let entropy_rule = project
+    let scan_policy = project
         .as_ref()
-        .map(|project| read_scan_entropy_rule(&project.root.join(crate::LOCKET_TOML)))
+        .map(|project| read_scan_policy(&project.root.join(crate::LOCKET_TOML)))
         .transpose()?
         .unwrap_or_default();
 
@@ -60,24 +60,30 @@ pub fn scan_command(
     let mut findings = Vec::new();
     let mut suppressed = Vec::new();
     if let Some(git_root) = git_root {
-        scan_staged_path(&git_root, &known_values, entropy_rule, &mut findings, &mut suppressed)?;
+        scan_staged_path(
+            &git_root,
+            &known_values,
+            scan_policy.entropy_rule,
+            &mut findings,
+            &mut suppressed,
+        )?;
     } else {
         scan_path(
             &scan_root,
             &scan_root,
             &known_values,
-            entropy_rule,
+            scan_policy.entropy_rule,
             !args.no_gitignore,
             &mut findings,
             &mut suppressed,
         )?;
     }
     for finding in &findings {
-        writeln!(output, "{}", format_finding(finding))?;
+        writeln!(output, "{}", format_finding_with_policy(finding, scan_policy))?;
     }
 
-    let warning_count = severity_count(&findings, Severity::Warning);
-    let blocking_count = severity_count(&findings, Severity::Blocking);
+    let warning_count = severity_count(&findings, scan_policy, Severity::Warning);
+    let blocking_count = severity_count(&findings, scan_policy, Severity::Blocking);
     if findings.is_empty() {
         writeln!(output, "scan: no findings")?;
     } else {
@@ -102,7 +108,14 @@ pub fn scan_command(
     if !suppressed.is_empty()
         && let Some(project) = project.as_ref()
     {
-        write_scan_suppression_audit(context, project, &suppressed, &findings, args.staged)?;
+        write_scan_suppression_audit(
+            context,
+            project,
+            &suppressed,
+            &findings,
+            args.staged,
+            scan_policy,
+        )?;
     }
 
     if blocking_count > 0 {
@@ -114,8 +127,43 @@ pub fn scan_command(
     Ok(())
 }
 
-fn severity_count(findings: &[ScanFinding], severity: Severity) -> usize {
-    findings.iter().filter(|finding| finding.kind.default_severity() == severity).count()
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ScanPolicy {
+    pub entropy_rule: EntropyRule,
+    provider_token_severity: Severity,
+    env_file_severity: Severity,
+}
+
+impl Default for ScanPolicy {
+    fn default() -> Self {
+        Self {
+            entropy_rule: EntropyRule::default(),
+            provider_token_severity: FindingKind::ProviderTokenPattern.default_severity(),
+            env_file_severity: FindingKind::EnvFileMarker.default_severity(),
+        }
+    }
+}
+
+impl ScanPolicy {
+    const fn severity_for(self, kind: FindingKind) -> Severity {
+        match kind {
+            FindingKind::ProviderTokenPattern => self.provider_token_severity,
+            FindingKind::EnvFileMarker => self.env_file_severity,
+            FindingKind::HighEntropy | FindingKind::KnownSecretValue => kind.default_severity(),
+        }
+    }
+
+    pub const fn provider_token_severity(self) -> Severity {
+        self.provider_token_severity
+    }
+
+    pub const fn env_file_severity(self) -> Severity {
+        self.env_file_severity
+    }
+}
+
+fn severity_count(findings: &[ScanFinding], policy: ScanPolicy, severity: Severity) -> usize {
+    findings.iter().filter(|finding| policy.severity_for(finding.kind) == severity).count()
 }
 
 fn format_suppressed_finding(finding: &SuppressedFinding) -> String {
@@ -138,6 +186,7 @@ fn write_scan_suppression_audit(
     suppressed: &[SuppressedFinding],
     kept: &[ScanFinding],
     staged: bool,
+    policy: ScanPolicy,
 ) -> Result<(), CliError> {
     let mut store = open_store(context)?;
     if store.get_project(project.config.project_id.as_str())?.is_none() {
@@ -168,8 +217,8 @@ fn write_scan_suppression_audit(
         "scope": if staged { "staged" } else { "tree" },
         "suppressed_count": suppressed.len(),
         "suppressions": entries,
-        "kept_blocking_count": severity_count(kept, Severity::Blocking),
-        "kept_warning_count": severity_count(kept, Severity::Warning),
+        "kept_blocking_count": severity_count(kept, policy, Severity::Blocking),
+        "kept_warning_count": severity_count(kept, policy, Severity::Warning),
     });
     let audit = AuditWrite {
         project_id: project.config.project_id.as_str(),
@@ -293,26 +342,45 @@ fn scan_staged_path(
 }
 
 pub fn read_scan_entropy_rule(path: &Path) -> Result<EntropyRule, CliError> {
+    read_scan_policy(path).map(|policy| policy.entropy_rule)
+}
+
+pub fn read_scan_policy(path: &Path) -> Result<ScanPolicy, CliError> {
     let content = fs::read_to_string(path)?;
     let document = toml::from_str::<toml::Value>(&content)?;
     let Some(scan) = document.get("scan") else {
-        return Ok(EntropyRule::default());
+        return Ok(ScanPolicy::default());
     };
     let scan = scan.as_table().ok_or_else(|| metadata_invalid_error("scan must be a table"))?;
-    let Some(high_entropy) = scan.get("high_entropy") else {
-        return Ok(EntropyRule::default());
-    };
-    let high_entropy = high_entropy
-        .as_table()
-        .ok_or_else(|| metadata_invalid_error("scan.high_entropy must be a table"))?;
-    let mut rule = EntropyRule::default();
-    if let Some(value) = high_entropy.get("min_length") {
-        rule.min_len = parse_entropy_min_length(value)?;
+    let mut policy = ScanPolicy::default();
+    if let Some(high_entropy) = scan.get("high_entropy") {
+        let high_entropy = high_entropy
+            .as_table()
+            .ok_or_else(|| metadata_invalid_error("scan.high_entropy must be a table"))?;
+        if let Some(value) = high_entropy.get("min_length") {
+            policy.entropy_rule.min_len = parse_entropy_min_length(value)?;
+        }
+        if let Some(value) = high_entropy.get("entropy_threshold") {
+            policy.entropy_rule.threshold = parse_entropy_threshold(value)?;
+        }
     }
-    if let Some(value) = high_entropy.get("entropy_threshold") {
-        rule.threshold = parse_entropy_threshold(value)?;
+    if let Some(severity) = scan.get("severity") {
+        let severity = severity
+            .as_table()
+            .ok_or_else(|| metadata_invalid_error("scan.severity must be a table"))?;
+        if let Some(value) = severity.get("provider_token") {
+            policy.provider_token_severity =
+                parse_scan_severity(value, "scan.severity.provider_token")?;
+        }
     }
-    Ok(rule)
+    if let Some(env) = scan.get("env") {
+        let env =
+            env.as_table().ok_or_else(|| metadata_invalid_error("scan.env must be a table"))?;
+        if let Some(value) = env.get("severity") {
+            policy.env_file_severity = parse_scan_severity(value, "scan.env.severity")?;
+        }
+    }
+    Ok(policy)
 }
 
 fn parse_entropy_min_length(value: &toml::Value) -> Result<usize, CliError> {
@@ -337,6 +405,14 @@ fn parse_entropy_threshold(value: &toml::Value) -> Result<f64, CliError> {
         Err(metadata_invalid_error(
             "scan.high_entropy.entropy_threshold must be finite and non-negative",
         ))
+    }
+}
+
+fn parse_scan_severity(value: &toml::Value, path: &str) -> Result<Severity, CliError> {
+    match value.as_str() {
+        Some("warning") => Ok(Severity::Warning),
+        Some("blocking") => Ok(Severity::Blocking),
+        _ => Err(metadata_invalid_error(format!("{path} must be \"warning\" or \"blocking\""))),
     }
 }
 
@@ -410,13 +486,13 @@ fn path_label(root: &Path, path: &Path) -> String {
         .into_owned()
 }
 
-pub fn format_finding(finding: &ScanFinding) -> String {
+fn format_finding_with_policy(finding: &ScanFinding, policy: ScanPolicy) -> String {
     format!(
         "{}:{}:{}: [{}] {} token_length={}",
         finding.path_label,
         finding.line,
         finding.column,
-        finding.kind.default_severity().as_str(),
+        policy.severity_for(finding.kind).as_str(),
         finding_kind_label(finding.kind),
         finding.token_length
     )
