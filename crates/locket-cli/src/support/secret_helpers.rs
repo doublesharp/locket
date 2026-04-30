@@ -445,6 +445,7 @@ pub fn policy_secret_selection(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::{SECRET_NAMES_INLINE_LIMIT, summarize_names};
 

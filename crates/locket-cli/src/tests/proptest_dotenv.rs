@@ -1,5 +1,6 @@
 #![allow(clippy::panic)]
 #![allow(clippy::unwrap_used)]
+#![allow(clippy::format_push_string)]
 #[allow(unused_imports)]
 use super::*;
 

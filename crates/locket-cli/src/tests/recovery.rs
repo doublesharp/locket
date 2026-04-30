@@ -269,14 +269,14 @@ fn e2e_recovery_roundtrip_init_recover_and_rotate() -> Result<(), Box<dyn std::e
     assert_ne!(new_code, initial_code, "rotate must produce a fresh code");
 
     context.key_store.delete_master_key(&project_id)?;
-    let recover2_context = context_with_recovery_code(&context, &format!("{new_code}\n"));
-    let mut recover2_output = Vec::new();
+    let new_code_context = context_with_recovery_code(&context, &format!("{new_code}\n"));
+    let mut new_code_output = Vec::new();
     run_with_context(
         Cli::try_parse_from(["locket", "recover"])?,
-        &recover2_context,
-        &mut recover2_output,
+        &new_code_context,
+        &mut new_code_output,
     )?;
-    assert!(String::from_utf8(recover2_output)?.contains("recovered: master_key"));
+    assert!(String::from_utf8(new_code_output)?.contains("recovered: master_key"));
     assert_eq!(*context.key_store.load_master_key(&project_id)?, master_key);
     Ok(())
 }

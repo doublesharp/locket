@@ -671,7 +671,7 @@ fn recovery_entry_seal_open_round_trips() -> Result<(), CryptoError> {
         &ciphertext,
     )?;
 
-    assert_eq!(recovered, plaintext);
+    assert_eq!(&*recovered, plaintext);
     Ok(())
 }
 
