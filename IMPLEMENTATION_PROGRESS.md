@@ -373,10 +373,8 @@ the spec already covers. Closed slices land in
   (`docs/specs/agent.md:62-79`).
 - [ ] Policy TOML parsing/normalization (`docs/specs/policy.md`).
   Decomposed below; later subtasks depend on `policy-parser`.
-  - [~] [bec7ddfc] **subtask** — policy-parser: parse `locket.toml`
-    `[commands.<name>]` blocks into a typed `CommandPolicy` with
-    structural validation. Errors: `InvalidPolicy` (65).
-    Claim: branch agent-bec7ddfc/policy-parser-typed, worktree .worktrees/agent-bec7ddfc-policy-parser-typed.
+  - [x] **subtask** — policy-parser: typed `CommandPolicy` with
+    structural validation; parse errors map to `InvalidPolicy` (65).
   - [ ] **subtask** — policy-deny-default: evaluator denies by
     default; only explicit allow/require entries pass. Pre-req:
     `policy-parser`.
