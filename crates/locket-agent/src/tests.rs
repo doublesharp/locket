@@ -247,3 +247,154 @@ fn status_event_success_envelope_decodes_for_stream_clients() -> Result<(), Prot
     assert_eq!(decoded_event.status.lock_state, LockState::Locked);
     Ok(())
 }
+
+#[cfg(unix)]
+mod server_tests {
+    use std::os::unix::fs::PermissionsExt;
+
+    use super::*;
+    use crate::{
+        AgentMethod, AgentSocketConfig, AgentSocketState, ConnectionOutcome, RequestEnvelope,
+        ResponseEnvelope, SocketServerError, bind_socket_listener, decode_response_frame,
+        encode_frame, handle_connection, socket_permission_mode,
+    };
+    use serde_json::Value;
+    use tempfile::tempdir;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::UnixStream;
+
+    #[tokio::test]
+    async fn binds_socket_with_owner_only_permissions() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let socket_path = directory.path().join("agent.sock");
+        let config = AgentSocketConfig::new(socket_path.clone(), "0.0.0-test");
+        let _listener = bind_socket_listener(&config)?;
+
+        let Some(mode) = socket_permission_mode(&socket_path) else {
+            return Err("agent socket must exist after bind".into());
+        };
+        assert_eq!(mode, 0o600, "agent socket must be user-only");
+
+        let parent_mode = std::fs::metadata(directory.path())?.permissions().mode() & 0o777;
+        assert_eq!(parent_mode, 0o700, "agent socket parent must be user-only");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn second_listener_on_same_path_fails_with_socket_in_use()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let socket_path = directory.path().join("agent.sock");
+        let config = AgentSocketConfig::new(socket_path.clone(), "0.0.0-test");
+        let _first = bind_socket_listener(&config)?;
+
+        let second = bind_socket_listener(&config);
+        let Err(SocketServerError::AgentSocketInUse { path }) = second else {
+            return Err(
+                format!("second bind should fail with AgentSocketInUse, got {second:?}").into()
+            );
+        };
+        assert_eq!(path, socket_path);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn status_request_round_trips_through_handler() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let directory = tempdir()?;
+        let socket_path = directory.path().join("agent.sock");
+        let config = AgentSocketConfig::new(socket_path.clone(), "0.0.0-test");
+        let listener = bind_socket_listener(&config)?;
+        let state = AgentSocketState::locked(config.agent_version.clone());
+
+        let server_state = state.clone();
+        let server = tokio::spawn(async move {
+            let (stream, _) = match listener.accept().await {
+                Ok(pair) => pair,
+                Err(error) => return Err(error),
+            };
+            Ok(handle_connection(stream, server_state).await)
+        });
+
+        let mut client = UnixStream::connect(&socket_path).await?;
+        let request = RequestEnvelope::new("req-1", AgentMethod::Status, Value::Null);
+        let frame = encode_frame(&request, DEFAULT_MAX_MESSAGE_SIZE)?;
+        client.write_all(&frame).await?;
+        client.flush().await?;
+
+        let mut buffer = Vec::new();
+        let mut chunk = [0_u8; 1024];
+        let response = loop {
+            let read = client.read(&mut chunk).await?;
+            buffer.extend_from_slice(&chunk[..read]);
+            if let Ok((response, _)) = decode_response_frame(&buffer, DEFAULT_MAX_MESSAGE_SIZE) {
+                break response;
+            }
+            if read == 0 {
+                return Err("server closed before sending a response".into());
+            }
+        };
+        let ResponseEnvelope::Success(success) = response else {
+            return Err(format!("expected Status success, got {response:?}").into());
+        };
+        assert_eq!(success.id, "req-1");
+        assert_eq!(success.payload["lock_state"], "locked");
+        assert_eq!(success.payload["agent_version"], "0.0.0-test");
+
+        // Closing the client lets the connection loop return and the
+        // server task finish cleanly.
+        drop(client);
+        let outcome = server.await??;
+        assert_eq!(outcome, ConnectionOutcome::PeerClosed);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn unimplemented_methods_return_protocol_error_envelopes()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let socket_path = directory.path().join("agent.sock");
+        let config = AgentSocketConfig::new(socket_path.clone(), "0.0.0-test");
+        let listener = bind_socket_listener(&config)?;
+        let state = AgentSocketState::locked(config.agent_version.clone());
+
+        let server_state = state.clone();
+        let server = tokio::spawn(async move {
+            let (stream, _) = match listener.accept().await {
+                Ok(pair) => pair,
+                Err(error) => return Err(error),
+            };
+            Ok(handle_connection(stream, server_state).await)
+        });
+
+        let mut client = UnixStream::connect(&socket_path).await?;
+        let request = RequestEnvelope::new("req-2", AgentMethod::PrepareExec, Value::Null);
+        let frame = encode_frame(&request, DEFAULT_MAX_MESSAGE_SIZE)?;
+        client.write_all(&frame).await?;
+        client.flush().await?;
+
+        let mut buffer = Vec::new();
+        let mut chunk = [0_u8; 1024];
+        let response = loop {
+            let read = client.read(&mut chunk).await?;
+            buffer.extend_from_slice(&chunk[..read]);
+            if let Ok((response, _)) = decode_response_frame(&buffer, DEFAULT_MAX_MESSAGE_SIZE) {
+                break response;
+            }
+            if read == 0 {
+                return Err("server closed before sending a response".into());
+            }
+        };
+        let ResponseEnvelope::Error(error) = response else {
+            return Err(format!("expected ProtocolError envelope, got {response:?}").into());
+        };
+        assert_eq!(error.id, "req-2");
+        assert_eq!(error.error, "ProtocolError");
+        assert!(error.message.contains("PrepareExec"));
+        assert!(!error.retryable);
+
+        drop(client);
+        server.await??;
+        Ok(())
+    }
+}

@@ -1,0 +1,236 @@
+//! Unix-domain-socket server for the Locket agent.
+//!
+//! This is the foundation slice (`agent-socket-server`) — it binds the
+//! per-user agent socket, accepts connections in a loop, decodes the
+//! v1 length-prefixed framing, and dispatches a stub handler that
+//! answers `Status` and rejects every other RPC with a redacted
+//! `ProtocolError`-shaped error response. Later slices add peer
+//! validation, the unlock cache, the grant table, and
+//! `SubscribeStatus`.
+//!
+//! Windows named-pipe support stays a separate `[ ]` follow-up.
+
+use std::io;
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{UnixListener, UnixStream};
+use tokio::sync::Mutex;
+
+use crate::DEFAULT_MAX_MESSAGE_SIZE;
+use crate::envelope::{ErrorEnvelope, RequestEnvelope, ResponseEnvelope, SuccessEnvelope};
+use crate::framing::{decode_request_frame, encode_frame};
+use crate::method::AgentMethod;
+use crate::status::{LockState, StatusPayload};
+
+/// Permissions for a freshly bound agent socket — owner-only.
+const SOCKET_PERMISSIONS_MODE: u32 = 0o600;
+/// Permissions for the parent directory that holds the socket — also
+/// owner-only so peers can't list/probe it.
+const SOCKET_PARENT_PERMISSIONS_MODE: u32 = 0o700;
+
+/// Outcome of a single accepted connection's handle loop.
+#[derive(Debug, Eq, PartialEq)]
+pub enum ConnectionOutcome {
+    /// Client closed the stream cleanly.
+    PeerClosed,
+    /// We answered one or more requests, then hit an error reading.
+    Errored,
+}
+
+/// Errors returned by the agent socket server.
+#[derive(Debug, thiserror::Error)]
+pub enum SocketServerError {
+    /// The configured socket path is already in use by a live owner.
+    /// Maps to `LocketError::AgentSocketInUse` (exit 81) at the CLI
+    /// boundary.
+    #[error("agent socket already bound: {path}")]
+    AgentSocketInUse {
+        /// Path the second daemon attempted to bind.
+        path: PathBuf,
+    },
+    /// `bind`/`accept`/permission tweak failed for an OS reason.
+    #[error("agent socket I/O error: {0}")]
+    Io(#[from] io::Error),
+}
+
+/// Configuration for [`bind_socket_listener`].
+#[derive(Clone, Debug)]
+pub struct AgentSocketConfig {
+    /// Filesystem path the listener should bind. Parent directory is
+    /// created with `0o700` if missing.
+    pub path: PathBuf,
+    /// Agent version reported on `Status` responses.
+    pub agent_version: String,
+}
+
+impl AgentSocketConfig {
+    /// Convenience constructor for tests and direct callers.
+    #[must_use]
+    pub fn new(path: PathBuf, agent_version: impl Into<String>) -> Self {
+        Self { path, agent_version: agent_version.into() }
+    }
+}
+
+/// Binds the agent's Unix domain socket and tightens permissions.
+///
+/// Returns [`SocketServerError::AgentSocketInUse`] when a previous
+/// listener still owns the path. The caller (the spec-described
+/// `locket agent start`) reaps stale sockets and retries; the bare
+/// helper here treats `EADDRINUSE` as an in-use error so the caller
+/// can decide what to do. This slice does not yet implement the
+/// stale-socket cleanup; that lives in the upcoming agent CLI work.
+///
+/// # Errors
+///
+/// Returns [`SocketServerError`] when binding, parent-directory
+/// creation, or permission tightening fails.
+pub fn bind_socket_listener(config: &AgentSocketConfig) -> Result<UnixListener, SocketServerError> {
+    if let Some(parent) = config.path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)?;
+        std::fs::set_permissions(
+            parent,
+            std::fs::Permissions::from_mode(SOCKET_PARENT_PERMISSIONS_MODE),
+        )?;
+    }
+
+    let listener = match UnixListener::bind(&config.path) {
+        Ok(listener) => listener,
+        Err(error) if error.kind() == io::ErrorKind::AddrInUse => {
+            return Err(SocketServerError::AgentSocketInUse { path: config.path.clone() });
+        }
+        Err(error) => return Err(error.into()),
+    };
+    std::fs::set_permissions(
+        &config.path,
+        std::fs::Permissions::from_mode(SOCKET_PERMISSIONS_MODE),
+    )?;
+    Ok(listener)
+}
+
+/// State shared across every accepted connection.
+#[derive(Clone)]
+pub struct AgentSocketState {
+    /// Source of `Status` responses for this slice's stub handlers.
+    pub status_source: Arc<Mutex<StubStatusSource>>,
+}
+
+impl AgentSocketState {
+    /// Builds an initial state with a locked status payload. Future
+    /// slices replace this with a real key-cache-backed source.
+    #[must_use]
+    pub fn locked(agent_version: impl Into<String>) -> Self {
+        Self {
+            status_source: Arc::new(Mutex::new(StubStatusSource::new(StatusPayload::locked(
+                agent_version,
+            )))),
+        }
+    }
+}
+
+/// Provides metadata-only `Status` payloads. Stubbed for this slice;
+/// later slices replace it with the unlock-cache-driven view.
+pub struct StubStatusSource {
+    current: StatusPayload,
+}
+
+impl StubStatusSource {
+    /// Creates a status source that reports the supplied payload.
+    #[must_use]
+    pub const fn new(initial: StatusPayload) -> Self {
+        Self { current: initial }
+    }
+
+    /// Returns the current status snapshot.
+    #[must_use]
+    pub fn snapshot(&self) -> StatusPayload {
+        self.current.clone()
+    }
+
+    /// Replaces the current snapshot.
+    pub const fn set_lock_state(&mut self, lock_state: LockState) {
+        self.current.lock_state = lock_state;
+    }
+}
+
+/// Handles a single accepted connection: read framed requests one at a
+/// time, dispatch the stub handler, and write framed responses until
+/// the peer closes or a read error occurs.
+pub async fn handle_connection(
+    mut stream: UnixStream,
+    state: AgentSocketState,
+) -> ConnectionOutcome {
+    let mut buffer = Vec::with_capacity(4 * 1024);
+    loop {
+        match read_one_frame(&mut stream, &mut buffer).await {
+            Ok(None) => return ConnectionOutcome::PeerClosed,
+            Ok(Some(envelope)) => {
+                let response = dispatch(&envelope, &state).await;
+                if !write_response(&mut stream, &response).await {
+                    return ConnectionOutcome::Errored;
+                }
+            }
+            Err(_) => return ConnectionOutcome::Errored,
+        }
+    }
+}
+
+async fn read_one_frame(
+    stream: &mut UnixStream,
+    buffer: &mut Vec<u8>,
+) -> Result<Option<RequestEnvelope>, io::Error> {
+    loop {
+        if let Ok((envelope, consumed)) = decode_request_frame(buffer, DEFAULT_MAX_MESSAGE_SIZE) {
+            buffer.drain(..consumed);
+            return Ok(Some(envelope));
+        }
+        let mut chunk = [0_u8; 1024];
+        let read = stream.read(&mut chunk).await?;
+        if read == 0 {
+            return Ok(None);
+        }
+        buffer.extend_from_slice(&chunk[..read]);
+    }
+}
+
+async fn dispatch(envelope: &RequestEnvelope, state: &AgentSocketState) -> ResponseEnvelope {
+    match envelope.method() {
+        Ok(AgentMethod::Status) => {
+            let snapshot = state.status_source.lock().await.snapshot();
+            let payload = serde_json::to_value(snapshot).unwrap_or(serde_json::Value::Null);
+            ResponseEnvelope::Success(SuccessEnvelope::new(envelope.id.clone(), payload))
+        }
+        Ok(method) => ResponseEnvelope::Error(ErrorEnvelope::new(
+            envelope.id.clone(),
+            "ProtocolError",
+            format!("method {} is not implemented in this build", method.as_str()),
+            false,
+        )),
+        Err(_) => ResponseEnvelope::Error(ErrorEnvelope::new(
+            envelope.id.clone(),
+            "ProtocolError",
+            "unknown agent method",
+            false,
+        )),
+    }
+}
+
+async fn write_response(stream: &mut UnixStream, response: &ResponseEnvelope) -> bool {
+    let Ok(frame) = encode_frame(response, DEFAULT_MAX_MESSAGE_SIZE) else {
+        return false;
+    };
+    stream.write_all(&frame).await.is_ok() && stream.flush().await.is_ok()
+}
+
+/// Returns the bound socket's filesystem permission bits.
+///
+/// Returns `None` when the path does not exist or `metadata` fails.
+/// Surfaced as a public helper for tests and `locket doctor`.
+#[must_use]
+pub fn socket_permission_mode(path: &Path) -> Option<u32> {
+    std::fs::metadata(path).ok().map(|metadata| metadata.permissions().mode() & 0o777)
+}
