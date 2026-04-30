@@ -109,11 +109,12 @@ skill set fits a leaf better.
     `LOCKET_IDE_ENV_SESSION` map over the agent socket; names-only
     audit; never persist values. Pre-req: agent socket server (shipped)
     and the IDE-side producer.
-- [ ] Policy command surface: `policy add`, `policy allow`,
+- [~] Policy command surface: `policy add`, `policy allow`,
   `policy require`, `policy edit`, `policy delete`, `policy doctor`
-  (`docs/specs/policy.md:5-35`). Files:
-  `crates/locket-cli/src/policy_authoring.rs` (currently a stub),
-  `crates/locket-core/src/policy/`.
+  (`docs/specs/policy.md:5-35`). Remaining:
+  - [~] [acda32e4] branch agent-acda32e4/policy-index-refresh, worktree .worktrees/agent-acda32e4-policy-index-refresh; **subtask** — policy-index-refresh: refresh SQLite command policy index after authoring mutations.
+  - [ ] **subtask** — policy-edit-command: open configured editor or UI editor and validate saved TOML.
+  - [ ] **subtask** — policy-doctor-agent-validation: command/profile/dangerous-profile and `lk://` validation with distinct agent-unavailable status.
 - [ ] Resolve `lk://` references through the agent
   (`docs/specs/runtime.md:123-155`). All subtasks depend on
   `lk-resolve-rpc`.
