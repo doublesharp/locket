@@ -21,6 +21,7 @@ mod roots;
 mod runtime_sessions;
 mod schema;
 mod secrets;
+mod team;
 
 pub(super) struct TestStore {
     pub(super) _directory: TempDir,

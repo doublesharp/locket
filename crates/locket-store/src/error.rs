@@ -79,6 +79,23 @@ pub enum StoreError {
         /// Maximum schema version this binary supports.
         supported: u32,
     },
+
+    /// A team-invite acceptance was attempted for an invite that has
+    /// already been accepted or revoked. Maps to
+    /// [`LocketError::ReplayDetected`] (exit 113) at the CLI boundary.
+    #[error("invite {invite_id} already accepted or revoked; refusing replay")]
+    InviteReplayDetected {
+        /// Invite identifier the caller tried to mark accepted.
+        invite_id: String,
+    },
+
+    /// A team-invite acceptance was attempted for an invite that does
+    /// not exist in the local store.
+    #[error("invite {invite_id} not found in local team_invites store")]
+    InviteNotFound {
+        /// Invite identifier the caller tried to mark accepted.
+        invite_id: String,
+    },
 }
 
 impl StoreError {
@@ -94,6 +111,8 @@ impl StoreError {
             | Self::AuditCanonicalization(_) => LocketError::AuditIntegrityFailed,
             Self::AuditMetadataTooLarge { .. } => LocketError::MetadataInvalid,
             Self::Json(_) => LocketError::CorruptDb,
+            Self::InviteReplayDetected { .. } => LocketError::ReplayDetected,
+            Self::InviteNotFound { .. } => LocketError::MetadataInvalid,
         }
     }
 }
