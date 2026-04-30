@@ -114,7 +114,7 @@ skill set fits a leaf better.
   (`docs/specs/policy.md:5-35`). Remaining:
   - [~] [acda32e4] branch agent-acda32e4/policy-index-refresh, worktree .worktrees/agent-acda32e4-policy-index-refresh; **subtask** — policy-index-refresh: refresh SQLite command policy index after authoring mutations.
   - [~] [90b9f58a] branch agent-90b9f58a/policy-edit-command, worktree .worktrees/agent-90b9f58a-policy-edit-command; **subtask** — policy-edit-command: editor-backed policy edit with saved TOML validation.
-  - [ ] **subtask** — policy-doctor-agent-validation: command/profile/dangerous-profile and `lk://` validation with distinct agent-unavailable status.
+  - [~] [4ab55ee9] branch agent-4ab55ee9/policy-doctor-agent-validation, worktree .worktrees/agent-4ab55ee9-policy-doctor-agent-validation; **subtask** — policy-doctor-agent-validation: command/profile/dangerous-profile and `lk://` validation with distinct agent-unavailable status.
 - [ ] Resolve `lk://` references through the agent
   (`docs/specs/runtime.md:123-155`). All subtasks depend on
   `lk-resolve-rpc`.
