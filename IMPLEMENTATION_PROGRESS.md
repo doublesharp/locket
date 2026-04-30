@@ -292,13 +292,14 @@ the spec already covers. Closed slices land in
   streaming. Decomposed below; later subtasks depend on
   `agent-socket-server` — note the dependency on the claim line if you
   take a downstream task.
-  - [ ] **subtask** — agent-socket-server: bind a per-user Unix domain
+  - [~] [7138f228] **subtask** — agent-socket-server: bind a per-user Unix domain
     socket on Linux/macOS (and a named pipe on Windows) with 0600/equivalent
     permissions, accept connections in a loop, decode the existing
     length-prefixed framing, dispatch to a stub RPC handler covering
     `Status` and `Heartbeat`. Errors: `AgentSocketInUse` (81). Tests: socket
     is created with the right permissions, a second daemon fails closed,
     framing round-trips. Pre-req for the other agent subtasks.
+    Claim: branch agent-7138f228/agent-socket-server, worktree .worktrees/agent-7138f228-agent-socket-server. Scope: Unix-only bind on Linux/macOS via tokio, 0600 socket + 0700 parent dir, in-process Status/Heartbeat stub handlers, second-daemon collision returns AgentSocketInUse, framing round-trip via existing locket_agent::encode_frame/decode helpers; Windows named-pipe support stays a separate `[ ]` follow-up.
   - [ ] **subtask** — agent-peer-validation: validate the connecting peer
     against the daemon's uid (`SO_PEERCRED` on Linux, `LOCAL_PEERPID` +
     `LOCAL_PEEREPID` on macOS, named-pipe peer SID on Windows). Reject
