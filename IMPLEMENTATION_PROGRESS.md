@@ -853,7 +853,7 @@ editing — they drift. Severity: **blocker** (security/correctness),
   subtask is one E2E harness that drives the CLI/agent/UI through a
   golden path plus the documented failure paths
   (`docs/specs/testing.md:38`). Subtasks are independent.
-  - [ ] **subtask** — e2e-greenfield-init: `locket init` →
+  - [~] [bec7ddfc] **subtask** — e2e-greenfield-init: `locket init` →
     `device init` → `profile create dev` → `set` → `get`. Asserts
     audit chain integrity and 0600 file modes.
   - [ ] **subtask** — e2e-dotenv-migration: `import` from `.env` →
