@@ -213,7 +213,7 @@ skill set fits a leaf better.
   --verify-user` enforces. Remaining:
   - [~] [acda32e4] branch agent-acda32e4/device-force-user-verification, worktree .worktrees/agent-acda32e4-device-force-user-verification; **subtask** — device-force-user-verification: require local user verification before forced local device rekey.
   - [~] [acda32e4] branch agent-acda32e4/recovery-user-verification, worktree .worktrees/agent-acda32e4-recovery-user-verification; **subtask** — recovery-user-verification: fresh local user verification for recovery override flows.
-  - [ ] **subtask** — team-dangerous-user-verification: verification sweep for team/device dangerous-profile actions.
+  - [~] [acda32e4] branch agent-acda32e4/team-dangerous-user-verification, worktree .worktrees/agent-acda32e4-team-dangerous-user-verification; **subtask** — team-dangerous-user-verification: verification sweep for team/device dangerous-profile actions.
 - [ ] Privacy-mode rendering across status, context, redaction
   labels, debug bundles via `privacy_alias` /
   `privacy_redact_names_enabled`; tray/desktop/editor renderers
