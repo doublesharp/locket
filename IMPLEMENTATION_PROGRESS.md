@@ -375,11 +375,30 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
 - [x] Device command surfaces (`device init`, `pubkey`, `add`, `list`,
   `remove`); local private-key persistence/recovery tracked under device
   descriptors and sealed-bundle/team work.
-- [ ] Sealed bundle: age-compatible encryption, profile key payloads,
-  decrypted `import-bundle` state application, conflict resolution
-  (`--accept-incoming`/`--accept-local`), decryptability checks in
-  `bundle verify`, audit import
-  (`docs/specs/team-sync-recovery.md:111-224`).
+- [ ] Sealed bundle (`docs/specs/team-sync-recovery.md:111-224`).
+  Decomposed below; later subtasks depend on `bundle-age-encryption`.
+  - [ ] **subtask** — bundle-age-encryption: age-compatible recipient
+    encryption for the bundle payload in
+    `crates/locket-crypto/src/`. Tests: round-trip encrypt/decrypt
+    against fixture recipients; tampering fails closed with
+    `BundleAuthFailed`.
+  - [ ] **subtask** — bundle-profile-keys: include profile key
+    payloads in the encrypted manifest so `import-bundle` can write
+    them on apply. Depends on `bundle-age-encryption`.
+  - [ ] **subtask** — bundle-import-apply: decrypt and apply
+    `import-bundle` state to the local store (insert profiles,
+    secret_versions, blobs, fingerprints). Depends on
+    `bundle-age-encryption`.
+  - [ ] **subtask** — bundle-conflict-resolution: `--accept-incoming`
+    / `--accept-local` for divergent versions during apply, with
+    typed `BundleConflict` when neither flag is passed and versions
+    differ. Depends on `bundle-import-apply`.
+  - [ ] **subtask** — bundle-verify-decryptability: `bundle verify`
+    runs a decryptability probe against a recipient and reports
+    success/failure metadata-only (no plaintext logged).
+  - [ ] **subtask** — bundle-audit-import: import remote audit chains
+    into `imported_audit_chains` and surface chain status on
+    `BACKUP_IMPORT`. Depends on `bundle-import-apply`.
 - [~] Team command surfaces (`team init`, `invite`, `accept`,
   `revoke-invite`, `members`, `remove`, `revoke-device`). Decomposed
   below; later subtasks depend on `team-store-schema`
