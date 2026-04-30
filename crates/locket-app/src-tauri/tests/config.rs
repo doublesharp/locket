@@ -25,7 +25,7 @@ use tokio as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use locket_app::ReleaseWebviewPolicy;
+use locket_app::{CapabilityAccess, ReleaseWebviewPolicy};
 use serde_json::Value;
 
 fn crate_root() -> PathBuf {
@@ -128,6 +128,10 @@ fn toml_string_array(raw: &str, key: &str) -> Vec<String> {
         .collect()
 }
 
+fn csp_has_directive(csp: &str, expected: &str) -> bool {
+    csp.split(';').map(str::trim).any(|directive| directive == expected)
+}
+
 #[test]
 fn release_csp_matches_release_webview_policy_default() {
     let conf = read_json("tauri.conf.json");
@@ -143,6 +147,39 @@ fn release_csp_matches_release_webview_policy_default() {
         csp, expected,
         "tauri.conf.json release CSP must equal ReleaseWebviewPolicy::default().content_security_policy"
     );
+}
+
+#[test]
+fn release_csp_blocks_frames_objects_remote_fonts_and_inline_script() {
+    let policy = ReleaseWebviewPolicy::default();
+    let csp = policy.content_security_policy;
+
+    assert!(csp_has_directive(csp, "default-src 'self'"));
+    assert!(csp_has_directive(csp, "base-uri 'self'"));
+    assert!(csp_has_directive(csp, "object-src 'none'"));
+    assert!(csp_has_directive(csp, "frame-src 'none'"));
+    assert!(csp_has_directive(csp, "font-src 'self'"));
+    assert!(!csp.contains("'unsafe-inline'"));
+    assert!(!csp.contains("https:"));
+    assert!(!csp.contains("http:"));
+}
+
+#[test]
+fn release_policy_denies_every_spec_broad_capability() {
+    let policy = ReleaseWebviewPolicy::default();
+
+    assert_eq!(policy.remote_content, CapabilityAccess::Denied);
+    assert_eq!(policy.remote_fonts, CapabilityAccess::Denied);
+    assert_eq!(policy.analytics, CapabilityAccess::Denied);
+    assert_eq!(policy.third_party_iframes, CapabilityAccess::Denied);
+    assert_eq!(policy.release_devtools, CapabilityAccess::Denied);
+    assert_eq!(policy.broad_filesystem_access, CapabilityAccess::Denied);
+    assert_eq!(policy.broad_shell_access, CapabilityAccess::Denied);
+    assert_eq!(policy.broad_network_access, CapabilityAccess::Denied);
+    assert_eq!(policy.broad_updater_access, CapabilityAccess::Denied);
+    assert_eq!(policy.broad_clipboard_access, CapabilityAccess::Denied);
+    assert_eq!(policy.broad_dialog_access, CapabilityAccess::Denied);
+    assert_eq!(policy.broad_notification_access, CapabilityAccess::Denied);
 }
 
 #[test]
@@ -164,6 +201,8 @@ fn dev_csp_only_relaxes_localhost_hmr() {
     assert!(!dev_csp.contains("https:"), "dev CSP must not allow remote https");
     assert!(!dev_csp.contains("http://*"), "dev CSP must not wildcard hosts");
     assert!(!dev_csp.contains("data: ws:"), "dev CSP must not allow arbitrary ws: connect-src",);
+    assert!(csp_has_directive(dev_csp, "frame-src 'none'"));
+    assert!(csp_has_directive(dev_csp, "object-src 'none'"));
 }
 
 #[test]
@@ -225,6 +264,10 @@ fn desktop_command_permission_matches_registered_handlers() {
         allowed, registered,
         "permissions/desktop-commands.toml commands.allow must match the registered handlers",
     );
+    assert!(
+        allowed.iter().all(|command| command.starts_with("agent_") || command.starts_with("tray_")),
+        "desktop command permission must expose only agent/tray scoped handlers",
+    );
 }
 
 #[test]
@@ -236,6 +279,25 @@ fn lib_opens_devtools_in_debug_only() {
         assert!(
             source.contains("cfg(debug_assertions)") || source.contains("debug_assertions"),
             "open_devtools must be gated behind cfg(debug_assertions)",
+        );
+    }
+}
+
+#[test]
+fn tauri_crate_does_not_enable_broad_access_plugins() {
+    let manifest = read_text("Cargo.toml");
+    for forbidden in [
+        "tauri-plugin-fs",
+        "tauri-plugin-shell",
+        "tauri-plugin-http",
+        "tauri-plugin-updater",
+        "tauri-plugin-clipboard-manager",
+        "tauri-plugin-dialog",
+        "tauri-plugin-notification",
+    ] {
+        assert!(
+            !manifest.contains(forbidden),
+            "desktop crate must not depend on broad access plugin {forbidden}",
         );
     }
 }

@@ -603,14 +603,24 @@ pub struct ReleaseWebviewPolicy {
     pub remote_fonts: CapabilityAccess,
     /// Release builds must not include analytics.
     pub analytics: CapabilityAccess,
+    /// Release builds must not embed third-party iframes.
+    pub third_party_iframes: CapabilityAccess,
+    /// Release builds must not open webview devtools.
+    pub release_devtools: CapabilityAccess,
     /// Release builds must not expose broad filesystem access.
     pub broad_filesystem_access: CapabilityAccess,
     /// Release builds must not expose broad shell access.
     pub broad_shell_access: CapabilityAccess,
     /// Release builds must not expose broad network access.
     pub broad_network_access: CapabilityAccess,
+    /// Release builds must not expose broad updater access.
+    pub broad_updater_access: CapabilityAccess,
     /// Release builds must not expose broad clipboard access.
     pub broad_clipboard_access: CapabilityAccess,
+    /// Release builds must not expose broad dialog access.
+    pub broad_dialog_access: CapabilityAccess,
+    /// Release builds must not expose broad notification access.
+    pub broad_notification_access: CapabilityAccess,
     /// Content Security Policy applied to packaged webviews.
     pub content_security_policy: &'static str,
 }
@@ -621,11 +631,16 @@ impl Default for ReleaseWebviewPolicy {
             remote_content: CapabilityAccess::Denied,
             remote_fonts: CapabilityAccess::Denied,
             analytics: CapabilityAccess::Denied,
+            third_party_iframes: CapabilityAccess::Denied,
+            release_devtools: CapabilityAccess::Denied,
             broad_filesystem_access: CapabilityAccess::Denied,
             broad_shell_access: CapabilityAccess::Denied,
             broad_network_access: CapabilityAccess::Denied,
+            broad_updater_access: CapabilityAccess::Denied,
             broad_clipboard_access: CapabilityAccess::Denied,
-            content_security_policy: "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'",
+            broad_dialog_access: CapabilityAccess::Denied,
+            broad_notification_access: CapabilityAccess::Denied,
+            content_security_policy: "default-src 'self'; base-uri 'self'; object-src 'none'; frame-src 'none'; img-src 'self' data:; style-src 'self'; font-src 'self'; script-src 'self'; connect-src 'self'",
         }
     }
 }
@@ -1181,11 +1196,18 @@ mod tests {
         assert_eq!(policy.remote_content, CapabilityAccess::Denied);
         assert_eq!(policy.remote_fonts, CapabilityAccess::Denied);
         assert_eq!(policy.analytics, CapabilityAccess::Denied);
+        assert_eq!(policy.third_party_iframes, CapabilityAccess::Denied);
+        assert_eq!(policy.release_devtools, CapabilityAccess::Denied);
         assert_eq!(policy.broad_filesystem_access, CapabilityAccess::Denied);
         assert_eq!(policy.broad_shell_access, CapabilityAccess::Denied);
         assert_eq!(policy.broad_network_access, CapabilityAccess::Denied);
+        assert_eq!(policy.broad_updater_access, CapabilityAccess::Denied);
         assert_eq!(policy.broad_clipboard_access, CapabilityAccess::Denied);
+        assert_eq!(policy.broad_dialog_access, CapabilityAccess::Denied);
+        assert_eq!(policy.broad_notification_access, CapabilityAccess::Denied);
         assert!(!policy.content_security_policy.contains("https:"));
         assert!(!policy.content_security_policy.contains("http:"));
+        assert!(policy.content_security_policy.contains("frame-src 'none'"));
+        assert!(policy.content_security_policy.contains("object-src 'none'"));
     }
 }
