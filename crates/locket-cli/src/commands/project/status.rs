@@ -108,7 +108,8 @@ const fn status_lock_state(
 fn status_scan_warning_count(root: &Path) -> Result<usize, CliError> {
     let mut findings = Vec::new();
     let mut suppressed = Vec::new();
-    scanner::scan_path(root, root, &[], true, &mut findings, &mut suppressed)?;
+    let entropy_rule = scanner::read_scan_entropy_rule(&root.join(LOCKET_TOML))?;
+    scanner::scan_path(root, root, &[], entropy_rule, true, &mut findings, &mut suppressed)?;
     findings.retain(|finding| !matches!(finding.path_label.as_str(), LOCKET_TOML | EXAMPLE_FILE));
     Ok(findings.len())
 }

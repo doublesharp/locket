@@ -67,6 +67,75 @@ fn scan_respects_locketignore_for_project_scan() -> Result<(), Box<dyn std::erro
 }
 
 #[test]
+fn scan_uses_project_high_entropy_thresholds() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    std::fs::write(
+        directory.path().join("notes.txt"),
+        "short-token=aB3$dE5&gH7*\npublic=lk_proj_0123456789abcdef\n",
+    )?;
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(directory.path().join("locket.toml"))?
+        .write_all(
+            br"
+[scan.high_entropy]
+min_length = 12
+entropy_threshold = 3.0
+",
+        )?;
+
+    let mut scan_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "scan", "notes.txt"])?,
+        &context,
+        &mut scan_output,
+    )?;
+
+    let scan_output = String::from_utf8(scan_output)?;
+    assert!(scan_output.contains("notes.txt:1:13: [warning] high-entropy"));
+    assert!(scan_output.contains("scan: 1 finding(s)"));
+    assert!(!scan_output.contains("aB3$dE5&gH7*"));
+    assert!(!scan_output.contains("lk_proj_0123456789abcdef"));
+    Ok(())
+}
+
+#[test]
+fn scan_rejects_invalid_high_entropy_thresholds() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(directory.path().join("locket.toml"))?
+        .write_all(
+            br"
+[scan.high_entropy]
+min_length = 0
+",
+        )?;
+
+    let result =
+        run_with_context(Cli::try_parse_from(["locket", "scan"])?, &context, &mut Vec::new());
+
+    let Err(error) = result else {
+        return Err("invalid scan entropy config must fail closed".into());
+    };
+    assert_eq!(error.exit_code(), 64);
+    assert!(error.to_string().contains("scan.high_entropy.min_length"));
+    Ok(())
+}
+
+#[test]
 fn scan_inline_suppression_drops_high_entropy_finding_and_writes_audit_row()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempdir()?;

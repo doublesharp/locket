@@ -9,7 +9,8 @@ use std::process::Command as ProcessCommand;
 use ignore::{WalkBuilder, gitignore::GitignoreBuilder};
 use locket_crypto::KeyPurpose;
 use locket_scan::{
-    FindingKind, ScanFinding, Severity, SuppressedFinding, partition_inline_suppressions, scan_text,
+    EntropyRule, FindingKind, ScanFinding, Severity, SuppressedFinding,
+    partition_inline_suppressions, scan_text_with_entropy_rule,
 };
 use locket_store::AuditWrite;
 use serde_json::{Value, json};
@@ -39,6 +40,11 @@ pub fn scan_command(
     if args.no_gitignore {
         writeln!(output, "scan: gitignore rules disabled")?;
     }
+    let entropy_rule = project
+        .as_ref()
+        .map(|project| read_scan_entropy_rule(&project.root.join(crate::LOCKET_TOML)))
+        .transpose()?
+        .unwrap_or_default();
 
     let scan_root = args.path.as_deref().map_or_else(
         || project.as_ref().map_or_else(|| context.cwd.clone(), |project| project.root.clone()),
@@ -54,12 +60,13 @@ pub fn scan_command(
     let mut findings = Vec::new();
     let mut suppressed = Vec::new();
     if let Some(git_root) = git_root {
-        scan_staged_path(&git_root, &known_values, &mut findings, &mut suppressed)?;
+        scan_staged_path(&git_root, &known_values, entropy_rule, &mut findings, &mut suppressed)?;
     } else {
         scan_path(
             &scan_root,
             &scan_root,
             &known_values,
+            entropy_rule,
             !args.no_gitignore,
             &mut findings,
             &mut suppressed,
@@ -182,6 +189,7 @@ pub fn scan_path(
     root: &Path,
     path: &Path,
     known_values: &[zeroize::Zeroizing<String>],
+    entropy_rule: EntropyRule,
     use_gitignore: bool,
     findings: &mut Vec<ScanFinding>,
     suppressed: &mut Vec<SuppressedFinding>,
@@ -201,18 +209,19 @@ pub fn scan_path(
             if child == path || !child.is_file() {
                 continue;
             }
-            scan_file(root, child, known_values, findings, suppressed)?;
+            scan_file(root, child, known_values, entropy_rule, findings, suppressed)?;
         }
         return Ok(());
     }
 
-    scan_file(root, path, known_values, findings, suppressed)
+    scan_file(root, path, known_values, entropy_rule, findings, suppressed)
 }
 
 fn scan_file(
     root: &Path,
     path: &Path,
     known_values: &[zeroize::Zeroizing<String>],
+    entropy_rule: EntropyRule,
     findings: &mut Vec<ScanFinding>,
     suppressed: &mut Vec<SuppressedFinding>,
 ) -> Result<(), CliError> {
@@ -223,14 +232,14 @@ fn scan_file(
     let label = path_label(root, path);
     match fs::read_to_string(path) {
         Ok(text) => {
-            let mut file_findings = scan_text(&label, &text);
+            let mut file_findings = scan_text_with_entropy_rule(&label, &text, entropy_rule);
             file_findings.extend(scan_known_values(&label, &text, known_values));
             let result = partition_inline_suppressions(&text, file_findings);
             findings.extend(result.kept);
             suppressed.extend(result.suppressed);
         }
         Err(error) if error.kind() == io::ErrorKind::InvalidData => {
-            findings.extend(scan_text(&label, ""));
+            findings.extend(scan_text_with_entropy_rule(&label, "", entropy_rule));
         }
         Err(error) => return Err(error.into()),
     }
@@ -241,6 +250,7 @@ fn scan_file(
 fn scan_staged_path(
     git_root: &Path,
     known_values: &[zeroize::Zeroizing<String>],
+    entropy_rule: EntropyRule,
     findings: &mut Vec<ScanFinding>,
     suppressed: &mut Vec<SuppressedFinding>,
 ) -> Result<(), CliError> {
@@ -269,17 +279,65 @@ fn scan_staged_path(
         let contents = git_output(git_root, ["cat-file", "-p", &spec])?;
         match String::from_utf8(contents) {
             Ok(text) => {
-                let mut file_findings = scan_text(&path, &text);
+                let mut file_findings = scan_text_with_entropy_rule(&path, &text, entropy_rule);
                 file_findings.extend(scan_known_values(&path, &text, known_values));
                 let result = partition_inline_suppressions(&text, file_findings);
                 findings.extend(result.kept);
                 suppressed.extend(result.suppressed);
             }
-            Err(_) => findings.extend(scan_text(&path, "")),
+            Err(_) => findings.extend(scan_text_with_entropy_rule(&path, "", entropy_rule)),
         }
     }
 
     Ok(())
+}
+
+pub fn read_scan_entropy_rule(path: &Path) -> Result<EntropyRule, CliError> {
+    let content = fs::read_to_string(path)?;
+    let document = toml::from_str::<toml::Value>(&content)?;
+    let Some(scan) = document.get("scan") else {
+        return Ok(EntropyRule::default());
+    };
+    let scan = scan.as_table().ok_or_else(|| metadata_invalid_error("scan must be a table"))?;
+    let Some(high_entropy) = scan.get("high_entropy") else {
+        return Ok(EntropyRule::default());
+    };
+    let high_entropy = high_entropy
+        .as_table()
+        .ok_or_else(|| metadata_invalid_error("scan.high_entropy must be a table"))?;
+    let mut rule = EntropyRule::default();
+    if let Some(value) = high_entropy.get("min_length") {
+        rule.min_len = parse_entropy_min_length(value)?;
+    }
+    if let Some(value) = high_entropy.get("entropy_threshold") {
+        rule.threshold = parse_entropy_threshold(value)?;
+    }
+    Ok(rule)
+}
+
+fn parse_entropy_min_length(value: &toml::Value) -> Result<usize, CliError> {
+    let Some(raw) = value.as_integer() else {
+        return Err(metadata_invalid_error("scan.high_entropy.min_length must be an integer"));
+    };
+    usize::try_from(raw)
+        .ok()
+        .filter(|value| *value > 0)
+        .ok_or_else(|| metadata_invalid_error("scan.high_entropy.min_length must be positive"))
+}
+
+#[allow(clippy::cast_precision_loss)]
+fn parse_entropy_threshold(value: &toml::Value) -> Result<f64, CliError> {
+    let threshold =
+        value.as_float().or_else(|| value.as_integer().map(|integer| integer as f64)).ok_or_else(
+            || metadata_invalid_error("scan.high_entropy.entropy_threshold must be a number"),
+        )?;
+    if threshold.is_finite() && threshold >= 0.0 {
+        Ok(threshold)
+    } else {
+        Err(metadata_invalid_error(
+            "scan.high_entropy.entropy_threshold must be finite and non-negative",
+        ))
+    }
 }
 
 fn locket_ignore(git_root: &Path) -> Result<ignore::gitignore::Gitignore, CliError> {

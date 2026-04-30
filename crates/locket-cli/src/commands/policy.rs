@@ -1,11 +1,13 @@
 use clap::{Args, Subcommand};
 use locket_core::{PolicyDocument, SecretName};
 use locket_crypto::KeyPurpose;
+use locket_scan::EntropyRule;
 use locket_store::AuditWrite;
 use serde_json::json;
 use std::fs;
 use std::io::Write;
 
+use crate::commands::scan::scanner::read_scan_entropy_rule;
 use crate::{
     CliError, LOCKET_TOML, RuntimeContext, confirmation_failed_error, invalid_reference_error,
     invalid_secret_name_error, load_project_key, metadata_invalid_error, now_unix_nanos,
@@ -157,6 +159,14 @@ fn doctor(context: &RuntimeContext, output: &mut impl Write) -> Result<(), CliEr
     writeln!(output, "policies: {}", document.commands.len())?;
     writeln!(output, "metadata_only: yes")?;
     writeln!(output, "minimal_env_allowlist: {}", locket_exec::DEFAULT_SAFE_ALLOWLIST.join(" "))?;
+    let entropy_rule = read_scan_entropy_rule(&path)?;
+    if entropy_rule != EntropyRule::default() {
+        writeln!(
+            output,
+            "warning: non-default scanner thresholds high_entropy min_length={} entropy_threshold={}",
+            entropy_rule.min_len, entropy_rule.threshold
+        )?;
+    }
     for policy in document.commands.values().filter(|policy| !policy.override_explicit()) {
         writeln!(
             output,

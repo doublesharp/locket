@@ -1,7 +1,8 @@
 use super::{
-    FindingKind, KnownRedaction, RULE_ID_HIGH_ENTROPY, ScanFinding, is_default_high_entropy_token,
-    is_high_entropy_token, partition_inline_suppressions, redact_text,
-    redact_text_with_known_values, scan_text, shannon_entropy,
+    EntropyRule, FindingKind, KnownRedaction, RULE_ID_HIGH_ENTROPY, ScanFinding,
+    is_default_high_entropy_token, is_high_entropy_token, partition_inline_suppressions,
+    redact_text, redact_text_with_known_values, scan_text, scan_text_with_entropy_rule,
+    shannon_entropy,
 };
 
 #[test]
@@ -32,6 +33,20 @@ fn custom_threshold_can_be_lowered() {
 }
 
 #[test]
+fn high_entropy_rule_excludes_public_identifiers() {
+    let permissive = EntropyRule { min_len: 8, threshold: 1.0 };
+    assert!(!super::is_high_entropy_token_with_rule(
+        "550e8400-e29b-41d4-a716-446655440000",
+        permissive,
+    ));
+    assert!(!super::is_high_entropy_token_with_rule(
+        "e3b0c44298fc1c149afbf4c8996fb924",
+        permissive,
+    ));
+    assert!(!super::is_high_entropy_token_with_rule("lk_proj_0123456789abcdef", permissive));
+}
+
+#[test]
 fn scan_text_reports_metadata_without_token_values() {
     let token = "sk_live_sampleTokenValue123";
     let findings = scan_text("config.txt", &format!("prefix\n  {token}\n"));
@@ -54,6 +69,20 @@ fn scan_text_flags_default_high_entropy_tokens() {
     assert_eq!(findings[0].line, 1);
     assert_eq!(findings[0].column, 1);
     assert_eq!(findings[0].token_length, token.len());
+    assert_eq!(findings[0].kind, FindingKind::HighEntropy);
+    assert!(!format!("{:?}", findings[0]).contains(token));
+}
+
+#[test]
+fn scan_text_uses_configured_entropy_rule() {
+    let token = "aB3$dE5&gH7*";
+    let findings = scan_text_with_entropy_rule(
+        "notes.txt",
+        token,
+        EntropyRule { min_len: 12, threshold: 3.0 },
+    );
+
+    assert_eq!(findings.len(), 1);
     assert_eq!(findings[0].kind, FindingKind::HighEntropy);
     assert!(!format!("{:?}", findings[0]).contains(token));
 }

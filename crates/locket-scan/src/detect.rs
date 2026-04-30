@@ -1,7 +1,7 @@
 //! Internal token tokenization and detection helpers shared by scan and redact.
 
 use crate::FindingKind;
-use crate::rules::{is_default_high_entropy_token, is_provider_token};
+use crate::rules::{EntropyRule, is_high_entropy_token_with_rule, is_provider_token};
 
 #[derive(Debug, Clone, Copy)]
 pub struct Detection<'a> {
@@ -30,6 +30,13 @@ struct CandidateSegment<'a> {
 }
 
 pub fn sensitive_detections(text: &str) -> Vec<Detection<'static>> {
+    sensitive_detections_with_entropy_rule(text, EntropyRule::default())
+}
+
+pub fn sensitive_detections_with_entropy_rule(
+    text: &str,
+    entropy_rule: EntropyRule,
+) -> Vec<Detection<'static>> {
     let mut detections = Vec::new();
 
     for token in printable_tokens(text) {
@@ -43,7 +50,7 @@ pub fn sensitive_detections(text: &str) -> Vec<Detection<'static>> {
                     kind: FindingKind::ProviderTokenPattern,
                     marker: None,
                 });
-            } else if is_default_high_entropy_token(candidate.value) {
+            } else if is_high_entropy_token_with_rule(candidate.value, entropy_rule) {
                 detections.push(Detection {
                     start: candidate.start,
                     end: candidate.end,

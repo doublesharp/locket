@@ -109,6 +109,42 @@ fn policy_commands_update_locket_toml_without_duplicates_and_audit_metadata()
 }
 
 #[test]
+fn policy_doctor_reports_non_default_scanner_thresholds() -> Result<(), Box<dyn std::error::Error>>
+{
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(directory.path().join("locket.toml"))?
+        .write_all(
+            br"
+[scan.high_entropy]
+min_length = 24
+entropy_threshold = 4.8
+",
+        )?;
+
+    let mut doctor_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "policy", "doctor"])?,
+        &context,
+        &mut doctor_output,
+    )?;
+
+    let doctor_output = String::from_utf8(doctor_output)?;
+    assert!(doctor_output.contains(
+        "warning: non-default scanner thresholds high_entropy min_length=24 entropy_threshold=4.8"
+    ));
+    assert!(doctor_output.contains("metadata_only: yes"));
+    Ok(())
+}
+
+#[test]
 fn policy_doctor_rejects_invalid_policy_document() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempdir()?;
     let context = test_context(&directory);
