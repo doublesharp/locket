@@ -187,9 +187,9 @@ skill set fits a leaf better.
   - [ ] **subtask** — team-invite-revoke: `locket team revoke-invite`.
     Pre-req: `team-invite-create`.
 - [~] [52c592db] branch agent-52c592db/team-role-authorization, worktree .worktrees/agent-52c592db-team-role-authorization; Role-based authorization for team-managed state (`docs/specs/team-sync-recovery.md:75-110`).
-- [ ] Passkey support. Metadata storage and `list`/`remove` exist.
-  Remaining: platform registration and PRF optional key wrapping
-  (`docs/specs/crypto.md:192-218`).
+- [~] [acda32e4] branch agent-acda32e4/passkey-remove-user-verification, worktree .worktrees/agent-acda32e4-passkey-remove-user-verification; **subtask** - passkey-remove-user-verification: fresh local verification before passkey removal.
+- [ ] Passkey support remaining: platform registration and PRF
+  optional key wrapping (`docs/specs/crypto.md:192-218`).
 - [ ] Device descriptors (`lkdev1_` base64url JSON), v1 fingerprint
   hash, PGP-word-list safety-word derivation, and full local
   device-key lifecycle (`docs/specs/team-sync-recovery.md:50-58`).
