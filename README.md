@@ -231,11 +231,14 @@ make bench-report
 make supply-chain-local
 make deny
 make audit
+make unsafe-inventory
+make sbom
 make fuzz-smoke
 ```
 
 Release-style checks should be run explicitly when the required tools and
-network-backed advisory data are available:
+network-backed advisory data are available. `make ci-strict` includes the
+unsafe inventory and SBOM release artifacts under `target/quality/`.
 
 ```bash
 make ci-strict OFFLINE=0 STRICT=1

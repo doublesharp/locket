@@ -3,6 +3,7 @@ SHELL := /bin/bash
 CARGO ?= cargo
 CARGO_DENY ?= cargo deny
 CARGO_AUDIT ?= cargo audit
+CARGO_GEIGER ?= cargo geiger
 CARGO_LLVM_COV ?= cargo llvm-cov
 CARGO_FUZZ ?= cargo +nightly fuzz
 PNPM ?= $(shell command -v pnpm 2>/dev/null)
@@ -31,7 +32,7 @@ ci: ci-local
 
 ci-local: fmt-check clippy test leak-canary bench-ci supply-chain-local
 
-ci-strict: fmt-check clippy test coverage coverage-branch mutation leak-canary docs-check bench-ci deny audit fuzz-smoke
+ci-strict: fmt-check clippy test coverage coverage-branch mutation leak-canary docs-check bench-ci deny audit unsafe-inventory sbom fuzz-smoke
 
 fmt:
 	$(CARGO) fmt --all
@@ -72,7 +73,7 @@ deny:
 	scripts/supply-chain.sh deny
 
 unsafe-inventory:
-	scripts/supply-chain.sh unsafe
+	CARGO_GEIGER="$(CARGO_GEIGER)" scripts/supply-chain.sh unsafe
 
 sbom:
 	scripts/supply-chain.sh sbom

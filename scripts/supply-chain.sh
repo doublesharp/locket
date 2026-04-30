@@ -5,6 +5,7 @@ mode="${1:-local}"
 cargo_bin="${CARGO:-cargo}"
 cargo_deny="${CARGO_DENY:-cargo deny}"
 cargo_audit="${CARGO_AUDIT:-cargo audit}"
+cargo_geiger="${CARGO_GEIGER:-cargo geiger}"
 strict="${STRICT:-0}"
 quality_dir="target/quality"
 
@@ -68,18 +69,122 @@ audit_strict() {
 }
 
 unsafe_inventory() {
-  if command -v cargo-geiger >/dev/null 2>&1; then
-    cargo geiger --all-features --output-format GitHubMarkdown > "${quality_dir}/unsafe-inventory.md"
-    echo "wrote ${quality_dir}/unsafe-inventory.md"
-    return 0
+  local report="${quality_dir}/unsafe-inventory.md"
+  local geiger_report="${quality_dir}/unsafe-inventory.geiger.md"
+
+  metadata
+
+  if require_tool "cargo-geiger" "${cargo_geiger}"; then
+    if ${cargo_geiger} --all-features --output-format GitHubMarkdown > "${geiger_report}"; then
+      {
+        echo "# Unsafe Inventory"
+        echo
+        echo "- Tool: cargo-geiger"
+        echo "- Scope: workspace, all features"
+        echo "- Metadata: ${quality_dir}/cargo-metadata.json"
+        echo
+        cat "${geiger_report}"
+      } > "${report}"
+      rm -f "${geiger_report}"
+      echo "wrote ${report}"
+      return 0
+    fi
+
+    if [[ "${strict}" == "1" ]]; then
+      echo "cargo-geiger failed during strict unsafe inventory" >&2
+      exit 1
+    fi
+
+    echo "cargo-geiger failed; writing lexical unsafe inventory fallback" >&2
+  else
+    echo "cargo-geiger is not installed; writing lexical unsafe inventory fallback" >&2
   fi
 
-  if [[ "${strict}" == "1" ]]; then
-    echo "cargo-geiger is required for strict unsafe inventory" >&2
-    exit 127
-  fi
+  unsafe_inventory_fallback "${report}"
+}
 
-  echo "cargo-geiger is not installed; skipping unsafe inventory" >&2
+unsafe_inventory_fallback() {
+  local report="$1"
+
+  perl -MJSON::PP -MFile::Find=find -MFile::Basename=dirname -MFile::Spec -e '
+    use strict;
+    use warnings;
+
+    my ($metadata_path, $report_path) = @ARGV;
+    open my $metadata_fh, "<", $metadata_path or die "open $metadata_path: $!";
+    local $/;
+    my $metadata = decode_json(<$metadata_fh>);
+    close $metadata_fh;
+
+    my %workspace_members = map { $_ => 1 } @{ $metadata->{workspace_members} // [] };
+    my @rows;
+
+    for my $package (@{ $metadata->{packages} // [] }) {
+      my $manifest = $package->{manifest_path} // next;
+      my $root = dirname($manifest);
+      next unless -d $root;
+
+      my ($files, $tokens) = (0, 0);
+      find(
+        {
+          wanted => sub {
+            return unless -f $_;
+            return unless /\.rs\z/;
+            ++$files;
+            open my $fh, "<", $_ or die "open $_: $!";
+            while (my $line = <$fh>) {
+              while ($line =~ /\bunsafe\b/g) {
+                ++$tokens;
+              }
+            }
+            close $fh;
+          },
+          no_chdir => 1,
+        },
+        $root,
+      );
+
+      push @rows, {
+        name => $package->{name},
+        version => $package->{version},
+        scope => $workspace_members{$package->{id}} ? "workspace" : "dependency",
+        files => $files,
+        tokens => $tokens,
+      };
+    }
+
+    @rows = sort {
+      ($b->{scope} eq "workspace") <=> ($a->{scope} eq "workspace")
+        || $a->{name} cmp $b->{name}
+        || $a->{version} cmp $b->{version}
+    } @rows;
+
+    my $total_files = 0;
+    my $total_tokens = 0;
+    for my $row (@rows) {
+      $total_files += $row->{files};
+      $total_tokens += $row->{tokens};
+    }
+
+    open my $out, ">", $report_path or die "open $report_path: $!";
+    print {$out} "# Unsafe Inventory\n\n";
+    print {$out} "- Tool: lexical unsafe-token inventory fallback\n";
+    print {$out} "- Scope: Cargo.lock packages from cargo metadata --offline --locked\n";
+    print {$out} "- Metadata: target/quality/cargo-metadata.json\n";
+    print {$out} "- Review trigger: run before public releases and after crypto, IPC, platform-verification, or storage dependency changes.\n";
+    print {$out} "- Note: fallback counts `unsafe` tokens in Rust source and does not classify callsites like cargo-geiger.\n\n";
+    print {$out} "| Package | Version | Scope | Rust files | unsafe tokens |\n";
+    print {$out} "| --- | --- | --- | ---: | ---: |\n";
+    for my $row (@rows) {
+      print {$out} "| $row->{name} | $row->{version} | $row->{scope} | $row->{files} | $row->{tokens} |\n";
+    }
+    print {$out} "\n";
+    print {$out} "Total Rust files: $total_files\n\n";
+    print {$out} "Total unsafe tokens: $total_tokens\n";
+    close $out;
+
+    print "wrote $report_path\n";
+  ' "${quality_dir}/cargo-metadata.json" "${report}"
 }
 
 sbom() {
