@@ -849,9 +849,10 @@ editing — they drift. Severity: **blocker** (security/correctness),
     confirm gate, user-verification gate. Pairs with the `locket run`
     subtask tree.
     Claim: branch agent-aa40a4ce/e2e-policy-run, worktree .worktrees/agent-aa40a4ce-e2e-policy-run.
-  - [ ] **subtask** — e2e-docker-compose: `locket exec` and
+  - [~] [7138f228] **subtask** — e2e-docker-compose: `locket exec` and
     `locket run` against a stub `docker compose`, names-only audit,
     refusal of remote contexts.
+    Claim: branch agent-7138f228/e2e-docker-compose, worktree .worktrees/agent-7138f228-e2e-docker-compose. Scope: end-to-end test that drives `prepare_docker_policy_execution` and `prepare_compose_policy_execution` through a docker-policy + compose-policy run with a `docker` argv0 (no real docker), asserts names-only `RUN` audit metadata, and a remote-DOCKER_HOST refusal.
   - [x] **subtask** — e2e-recovery-roundtrip: `init` → `recover` → `recovery rotate`; refusal-when-keychain-valid and `--force` audit override.
   - [ ] **subtask** — e2e-team-invite-accept: `team init` →
     `team invite` → `team accept` (signature + safety-words display)
