@@ -609,17 +609,16 @@ the spec already covers. Closed slices land in
     socket. Pre-req: `agent-socket-server`.
   - [ ] **subtask** — harden-socket-perms: 0600/equivalent socket and
     pipe permissions; refuse to start if the bind path is wider.
-  - [ ] **subtask** — harden-memory-lock: `mlock`/equivalent for
+  - [~] [7138f228] **subtask** — harden-memory-lock: `mlock`/equivalent for
     unwrapped key buffers; warn on unsupported platforms.
+    Claim: branch agent-7138f228/harden-memory-lock, worktree .worktrees/agent-7138f228-harden-memory-lock. Scope: process-wide `mlockall(MCL_CURRENT | MCL_FUTURE)` at CLI startup with graceful `Degraded` fallback when `RLIMIT_MEMLOCK` is too low; mirrors the core_dumps shape and hands the state to the existing doctor `hardening` check.
   - [ ] **subtask** — harden-zeroize: ensure unwrapped keys/values
     are wrapped in `Zeroizing`/equivalent at every owner; audit
     sites that haven't been migrated.
   - [ ] **subtask** — harden-session-lock: lock on system sleep,
     screen lock, and user-session switch; emit `LOCK` audit row.
-  - [~] [7138f228] **subtask** — harden-doctor-degraded: doctor reports each
-    hardening feature's status (`active`/`degraded`/`unsupported`)
-    so users can see fall-backs.
-    Claim: branch agent-7138f228/harden-doctor-degraded, worktree .worktrees/agent-7138f228-harden-doctor-degraded. Scope: surface `core_dumps` hardening in doctor; other hardening features get added to the same check as they ship.
+  - [x] **subtask** — harden-doctor-degraded: doctor reports
+    `core_dumps` hardening status; future features added as they ship.
 - [ ] Member/device revocation produces a rotation checklist for every
   profile/secret the revoked principal could access.
 - [ ] `imported_audit_chains` structural verifier (monotonic sequence,
