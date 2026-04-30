@@ -476,10 +476,7 @@ Re-verify file:line references before editing — they drift. Severity:
   (`docs/specs/testing.md:14`).
 - [ ] Cross-platform test mocks and mutation tests
   (`docs/specs/testing.md`):
-  - [ ] **subtask** — mock-peer-credentials: in-process socket
-    harness returning spoofable peer creds for testing
-    peer-validation logic without root. Pre-req:
-    `agent-peer-validation` (shipped).
+  - [~] [acda32e4] branch agent-acda32e4/mock-peer-credentials, worktree .worktrees/agent-acda32e4-mock-peer-credentials; **subtask** — mock-peer-credentials: spoofable peer-credential test harness for agent peer validation.
 - [ ] Bench fixtures: metadata, runtime, reference-resolution,
   staged-scan, full-scan, Argon2 (`docs/specs/performance.md`).
 - [ ] PR vs release tolerance gate: 10% PR / 20% tracked-regression
