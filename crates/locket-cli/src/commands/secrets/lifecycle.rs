@@ -28,27 +28,24 @@ pub fn rm_command(
     ensure_trusted_project_root(&store, &resolved)?;
     let profile = default_profile(&store, &resolved.config)?;
     let project_id = resolved.config.project_id.as_str();
-    let secret = match args.source.source {
-        Some(source) => {
-            let source = source_arg_to_str(source);
-            store
-                .get_active_secret(project_id, &profile.id, &args.key, source)?
-                .ok_or_else(|| secret_not_found_error("secret not found"))?
-        }
-        None => {
-            let active = store
-                .list_secrets_by_name(project_id, &profile.id, &args.key)?
-                .into_iter()
-                .filter(|secret| secret.state == "active")
-                .collect::<Vec<_>>();
-            match active.as_slice() {
-                [] => return Err(secret_not_found_error("secret not found")),
-                [secret] => secret.clone(),
-                _ => {
-                    return Err(invalid_reference_error(
-                        "multiple sources exist for this secret; pass --source",
-                    ));
-                }
+    let secret = if let Some(source) = args.source.source {
+        let source = source_arg_to_str(source);
+        store
+            .get_active_secret(project_id, &profile.id, &args.key, source)?
+            .ok_or_else(|| secret_not_found_error("secret not found"))?
+    } else {
+        let active = store
+            .list_secrets_by_name(project_id, &profile.id, &args.key)?
+            .into_iter()
+            .filter(|secret| secret.state == "active")
+            .collect::<Vec<_>>();
+        match active.as_slice() {
+            [] => return Err(secret_not_found_error("secret not found")),
+            [secret] => secret.clone(),
+            _ => {
+                return Err(invalid_reference_error(
+                    "multiple sources exist for this secret; pass --source",
+                ));
             }
         }
     };
