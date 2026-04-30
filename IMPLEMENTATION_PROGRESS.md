@@ -625,6 +625,52 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
   stored `schema_version`, not the binary's current version.
 - [ ] Typed `metadata_json` shape validator per audit action family
   (required fields, no unknown fields without a schema bump).
+- [ ] Audit-tx atomicity: append + data change share one SQLite
+  transaction; sequence assigned at commit; rollback leaves no gap
+  or phantom row (`docs/specs/audit.md`).
+- [ ] `metadata_json` ≤64 KiB per-row cap enforced at write time;
+  large `secret_names`/`redacted_secret_names` collections summarize
+  to stay under the cap (`docs/specs/audit.md`,
+  `docs/specs/data-model.md:400`).
+- [ ] Recovery code one-time display with scrollback warning and
+  optional screen-clear on `init`/`device init`/`recovery rotate`
+  (`docs/specs/team-sync-recovery.md`).
+- [ ] `device init` first-run-on-machine bootstrap: creates master
+  key, recovery envelope, and recovery code on a teammate clone
+  (`docs/specs/team-sync-recovery.md`).
+- [ ] `locket export --sealed --recipient ... [--profile|--all-profiles]
+  [--include-audit] [--output]` command surface, default
+  `locket-bundle-<utc>.locket-bundle` filename, dangerous-profile
+  typed confirmation, and `BACKUP_EXPORT` audit row.
+- [ ] `locket bundle verify` non-destructive command (structural
+  checks, age-decryptability probe, `BUNDLE_VERIFY` audit row,
+  documented exit-code rules).
+- [ ] Solo-developer authorization: treat the local user as Owner
+  when no `Team` record exists, while still enforcing typed
+  confirmations / verification / audit / source-selection rules
+  (`docs/specs/team-sync-recovery.md`).
+- [ ] LocalUserVerifier macOS LocalAuthentication backend.
+- [ ] LocalUserVerifier Windows Hello backend.
+- [ ] LocalUserVerifier Linux Secret Service / hardware-key-presence
+  backend.
+- [ ] Passkey RP ID policy: `webauthn_relying_party_id` storage,
+  `locket.localhost` default, controlled signed-distribution RP ID
+  with re-registration migration, synced-passkey backup-eligibility
+  display (`docs/specs/crypto.md`).
+- [ ] Recovery envelope v1 binary container parser/writer
+  (`recovery/envelope.bin` + `recovery/kdf.toml`): magic, schema,
+  `kdf_profile_id`, entry layout, HKDF entry-key derivation, AAD;
+  KDF parameters upgrade-only and fail closed when the binary cannot
+  meet stored params (`docs/specs/crypto.md`).
+- [ ] Recovery `kdf.toml` ↔ envelope-header `lk_kdf_*` id match
+  check; mismatched ids fail recovery closed
+  (`docs/specs/storage.md:24`).
+- [ ] Negative-path decryption tests across wrong key/nonce/AAD/
+  project/profile/secret-id/name/version dimensions
+  (`docs/specs/crypto.md`).
+- [ ] Secret value encoding: reject NUL bytes / multiline values in
+  `set`/`import`; treat values as bytes-after-UTF-8 across docker/
+  compose/exec/redact/scan paths (`docs/specs/crypto.md`).
 
 ### App/UI
 
