@@ -6,7 +6,7 @@ use rusqlite::types::Type;
 use crate::Store;
 use crate::error::StoreError;
 
-/// Default WebAuthn relying party id for optional PRF credentials.
+/// Default `WebAuthn` relying party id for optional PRF credentials.
 pub const DEFAULT_WEBAUTHN_RELYING_PARTY_ID: &str = "locket.localhost";
 
 /// Passkey/WebAuthn credential public metadata row.
@@ -24,7 +24,7 @@ pub struct PasskeyCredentialRecord {
     pub transports: Vec<String>,
     /// Whether PRF/hmac-secret key-wrapping is supported.
     pub prf_capable: bool,
-    /// WebAuthn relying party id used when this credential was registered.
+    /// `WebAuthn` relying party id used when this credential was registered.
     pub webauthn_relying_party_id: String,
     /// Whether the authenticator reported backup eligibility.
     pub backup_eligible: Option<bool>,
