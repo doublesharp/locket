@@ -371,6 +371,7 @@ fn collect_diagnostics(
                         project.config.project_id.as_str(),
                         prune_runtime_session_secret_names,
                     ));
+                    checks.push(check_automation_client_nonces_pruning(&store));
                     checks.push(
                         match store.get_profile_by_name(
                             project.config.project_id.as_str(),
@@ -560,6 +561,28 @@ fn runtime_session_secret_name_cutoff(
                     "runtime.session_secret_name_retention duration is too large".to_owned()
                 })?;
             Ok((now.saturating_sub(retention_nanos), duration.to_string()))
+        }
+    }
+}
+
+fn check_automation_client_nonces_pruning(store: &locket_store::Store) -> DiagnosticCheck {
+    let now = match now_unix_nanos() {
+        Ok(now) => now,
+        Err(error) => {
+            return DiagnosticCheck::fail(
+                "automation_client_nonces_pruning",
+                false,
+                error.to_string(),
+            );
+        }
+    };
+    match store.prune_automation_client_nonces(now) {
+        Ok(pruned) => DiagnosticCheck::pass(
+            "automation_client_nonces_pruning",
+            format!("pruned_nonce_rows={pruned}"),
+        ),
+        Err(error) => {
+            DiagnosticCheck::fail("automation_client_nonces_pruning", false, error.to_string())
         }
     }
 }

@@ -760,6 +760,100 @@ fn doctor_reports_and_prunes_expired_runtime_session_secret_names()
 }
 
 #[test]
+fn doctor_prunes_expired_automation_client_nonces() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+
+    let resolved = crate::resolve_project(&context.cwd)?.ok_or("project should resolve")?;
+    let project_id = resolved.config.project_id.to_string();
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    store.insert_automation_client(&locket_store::AutomationClientRecord {
+        id: "lk_client_doctor".to_owned(),
+        project_id,
+        name: "ci".to_owned(),
+        public_key: vec![7; 32],
+        fingerprint: "fingerprint".to_owned(),
+        storage: "external".to_owned(),
+        allowed_actions: vec!["run-policy".to_owned()],
+        allowed_policies: vec!["test".to_owned()],
+        created_at: 100,
+        last_used_at: None,
+        revoked_at: None,
+    })?;
+    store.insert_automation_client_nonce(&locket_store::AutomationClientNonceRecord {
+        client_id: "lk_client_doctor".to_owned(),
+        nonce: [9; 24],
+        request_timestamp: 0,
+        seen_at: 0,
+        expires_at: 1,
+    })?;
+    let nonce_count: u32 = store.connection().query_row(
+        "SELECT COUNT(*) FROM automation_client_nonces",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(nonce_count, 1);
+    drop(store);
+
+    let mut doctor_output = Vec::new();
+    let code =
+        run_with_context(Cli::try_parse_from(["locket", "doctor"])?, &context, &mut doctor_output)?;
+    assert_eq!(code, 0);
+    let doctor_output = String::from_utf8(doctor_output)?;
+    assert!(
+        doctor_output.contains("pass automation_client_nonces_pruning: pruned_nonce_rows=1"),
+        "{doctor_output}"
+    );
+
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let remaining: u32 = store.connection().query_row(
+        "SELECT COUNT(*) FROM automation_client_nonces",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(remaining, 0);
+
+    let doctor_metadata = store.connection().query_row(
+        "SELECT metadata_json FROM audit_log WHERE action = 'DOCTOR' ORDER BY sequence DESC LIMIT 1",
+        [],
+        |row| row.get::<_, String>(0),
+    )?;
+    let doctor_metadata: serde_json::Value = serde_json::from_str(&doctor_metadata)?;
+    assert!(doctor_metadata["check_names"].as_array().is_some_and(|names| {
+        names.iter().any(|name| name == "automation_client_nonces_pruning")
+    }));
+    assert_eq!(doctor_metadata["status"], "SUCCESS");
+    Ok(())
+}
+
+#[test]
+fn doctor_reports_zero_pruned_when_no_expired_nonces() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+
+    let mut doctor_output = Vec::new();
+    let code =
+        run_with_context(Cli::try_parse_from(["locket", "doctor"])?, &context, &mut doctor_output)?;
+    assert_eq!(code, 0);
+    let doctor_output = String::from_utf8(doctor_output)?;
+    assert!(
+        doctor_output.contains("pass automation_client_nonces_pruning: pruned_nonce_rows=0"),
+        "{doctor_output}"
+    );
+    Ok(())
+}
+
+#[test]
 fn debug_bundle_redacted_writes_metadata_only_summary() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempdir()?;
     let context = test_context(&directory);
