@@ -314,9 +314,7 @@ mod tests {
         let mut height = 0;
         let mut idat = Vec::new();
         while offset + 12 <= bytes.len() {
-            let length =
-                u32::from_be_bytes(bytes[offset..offset + 4].try_into().expect("chunk length"))
-                    as usize;
+            let length = read_be_u32(&bytes[offset..offset + 4]) as usize;
             offset += 4;
             let tag = &bytes[offset..offset + 4];
             offset += 4;
@@ -325,8 +323,8 @@ mod tests {
             offset += 4;
             match tag {
                 b"IHDR" => {
-                    width = u32::from_be_bytes(data[0..4].try_into().expect("png width"));
-                    height = u32::from_be_bytes(data[4..8].try_into().expect("png height"));
+                    width = read_be_u32(&data[0..4]);
+                    height = read_be_u32(&data[4..8]);
                     assert_eq!(data[8], 8, "expected 8-bit PNG");
                     assert_eq!(data[9], 6, "expected RGBA PNG");
                 }
@@ -355,9 +353,9 @@ mod tests {
             offset += 1;
             let final_block = header & 1 == 1;
             assert_eq!(header & 0b110, 0, "expected stored deflate block");
-            let len = u16::from_le_bytes(bytes[offset..offset + 2].try_into().expect("len"));
+            let len = read_le_u16(&bytes[offset..offset + 2]);
             offset += 2;
-            let nlen = u16::from_le_bytes(bytes[offset..offset + 2].try_into().expect("nlen"));
+            let nlen = read_le_u16(&bytes[offset..offset + 2]);
             offset += 2;
             assert_eq!(nlen, !len);
             let len = usize::from(len);
@@ -368,5 +366,19 @@ mod tests {
             }
         }
         out
+    }
+
+    fn read_be_u32(bytes: &[u8]) -> u32 {
+        assert_eq!(bytes.len(), 4);
+        let mut value = [0; 4];
+        value.copy_from_slice(bytes);
+        u32::from_be_bytes(value)
+    }
+
+    fn read_le_u16(bytes: &[u8]) -> u16 {
+        assert_eq!(bytes.len(), 2);
+        let mut value = [0; 2];
+        value.copy_from_slice(bytes);
+        u16::from_le_bytes(value)
     }
 }
