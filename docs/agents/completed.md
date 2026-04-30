@@ -246,6 +246,8 @@ Slices that have merged to `main` and verified. Open work tracked in
   desktop execution monitor.
 - [x] search-projects-profiles: Added a dashboard search and filter surface for
   project/profile metadata.
+- [x] desktop-scan-data: Wires the desktop scan view to the typed agent scan command.
+  Shows scan timestamp, locked state, and metadata-only scan errors.
 
 ## Full Spec Coverage TODO — Code Health and Bug Fixes
 

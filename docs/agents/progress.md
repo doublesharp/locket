@@ -286,7 +286,6 @@ Slices 1+2 shipped (agent client, tray binding, 6 view scaffolds,
   - [ ] **subtask** — agent-scan-known-values-impl: real handler.
     Pre-req: `agent-unlock-cache` (matching) + `locket-scan`
     (pattern/entropy fallback). Emit `SCAN` rows.
-  - [~] [52c592db] branch agent-52c592db/desktop-scan-data, worktree .worktrees/agent-52c592db-desktop-scan-data; **subtask** — desktop-scan-data: wire into `ScanResults.vue` + rescan trigger. Slice 10.
   - [~] [90b9f58a] branch agent-90b9f58a/agent-config-read-write, worktree .worktrees/agent-90b9f58a-agent-config-read-write; **subtask** — agent-config-read-write: settings RPCs for privacy, unlock TTL, verification policy, and dangerous-profile.
   - [ ] **subtask** — desktop-settings-data: wire into `Settings.vue`;
     propagate `privacy.redact_names` reactively. Slice 11.
