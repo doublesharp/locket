@@ -588,6 +588,10 @@ the spec already covers. Closed slices land in
   display (`docs/specs/crypto.md`).
 ### App/UI
 
+Campaign plan: `docs/superpowers/specs/2026-04-29-desktop-ui-campaign.md`.
+Slices 1+2 shipped (agent client, tray binding, 6 view scaffolds, 5 typed
+RPC stubs). Remaining work decomposed below; each subtask is one slice.
+
 - [ ] Tauri desktop app (`docs/specs/desktop.md:5-65`). Shell + agent
   client + tray binding + 6 primary views + tray icon-state pusher
   shipped. Remaining: real data sources for each view, tray menu
@@ -599,40 +603,217 @@ the spec already covers. Closed slices land in
     `SubscribeStatus` and update tray label/icon on lock-state and
     heartbeat events. Pre-req: `agent-subscribe-status` (shipped).
     Today the desktop polls `agent_status` every 5 s; replace with
-    a streaming subscription.
+    a streaming subscription. Pairs with the desktop-side
+    `desktop-subscribe-status` subtask below.
   - [ ] **subtask** — tray-menu-actions: register tray menu items
     (open app, lock, unlock, switch profile, run saved policy, scan).
     Each must route through the agent, never bypass core policy.
+  - [ ] **subtask** — tray-recent-activity: bounded recent-activity
+    surface in the tray (counts/safe statuses only; never names or
+    values). Source rows from the same `agent-list-audit` query.
+- [ ] Desktop UI campaign — remaining work (per
+  `docs/superpowers/specs/2026-04-29-desktop-ui-campaign.md`).
+  Each subtask wires one piece of the empty-data shell that landed
+  in slices 1+2. Pre-req for every subtask is the slice it pairs
+  with; almost all need at least one new agent RPC.
+  - [ ] **subtask** — desktop-subscribe-status: replace the 5 s poll
+    in `useAgent` with a Tauri event channel bridging the agent's
+    `SubscribeStatus` stream into the webview. Pre-req:
+    `agent-subscribe-status` (shipped). Slice 3.
+  - [ ] **subtask** — agent-list-secrets: agent RPC `ListSecrets`
+    that returns metadata-only `SecretRowMeta`-shaped rows for the
+    active profile, including source-precedence ordering. Never
+    returns values. Pre-req: `agent-unlock-cache` for the
+    locked-vault path (locked → metadata-only).
+  - [ ] **subtask** — desktop-secrets-data: wire `agent-list-secrets`
+    into `SecretMetadataList.vue`, replace the empty stub array, and
+    add a "Last refreshed" timestamp. Slice 4.
+  - [ ] **subtask** — agent-list-versions: agent RPC
+    `ListSecretVersions` returning `current` / `deprecated` /
+    `purged` metadata plus `deprecated_at`, `grace_until`,
+    pinned-eligibility, and the rotation audit summary. Pre-req:
+    `agent-unlock-cache`.
+  - [ ] **subtask** — desktop-versions-data: wire
+    `agent-list-versions` into `SecretVersionHistory.vue`. Slice 5.
+  - [ ] **subtask** — agent-list-runtime-sessions: agent RPC
+    `ListRuntimeSessions` returning `runtime_sessions` rows scoped
+    to the active profile, with profile/policy aliases applied when
+    `privacy.redact_names` is on.
+  - [ ] **subtask** — desktop-execution-data: wire
+    `agent-list-runtime-sessions` into `ExecutionMonitor.vue`,
+    including a "stale" classifier for sessions whose `(pid,
+    process_start_time)` no longer resolves. Slice 6.
+  - [ ] **subtask** — agent-reveal-copy-impl: real `Reveal` and
+    `Copy` handlers. Today both stub `UnlockRequired`. Wire policy
+    authorization, grant lookup, value return with `ttl_seconds`,
+    and `REVEAL` / `COPY` audit rows (never the value). Pre-req:
+    `agent-unlock-cache` and `agent-grant-table`.
+  - [ ] **subtask** — desktop-reveal-modal: short-lived reveal modal
+    in the webview with TTL countdown, accessibility-metadata scrub
+    on expiry, and dismiss-on-blur. Pre-req: `agent-reveal-copy-impl`.
+    Slice 7.
+  - [ ] **subtask** — desktop-clipboard-copy: copy helper that
+    copies the value, schedules a clipboard clear after the
+    agent-supplied TTL, and re-checks the clipboard before clearing
+    (only clear if the value is still ours). Wayland degraded path
+    emits a warning via the existing `unsupported_reason` audit
+    metadata. Pre-req: `agent-reveal-copy-impl`.
+  - [ ] **subtask** — desktop-tray-reveal-copy: tray context menu
+    actions for the selected secret (reveal / copy). Pre-req:
+    `tray-menu-actions`, `desktop-reveal-modal`,
+    `desktop-clipboard-copy`. Slice 8.
+  - [ ] **subtask** — desktop-tray-notifications: route the four
+    `TrayNotificationKind` cases (RevealOrCopy / DeniedAccess /
+    ScanFinding / ExecutionFailure) through the OS notification
+    system using `passive_notification` so names and values never
+    leak. Honor system "Do Not Disturb".
+  - [ ] **subtask** — agent-list-audit: agent RPC `ListAuditRows`
+    with filter parameters (action, profile, status, timestamp
+    range) and returning `AuditLogRow`-shaped metadata. Includes a
+    chain-status field (`hmac_ok`, `first_break_sequence`).
+  - [ ] **subtask** — agent-verify-audit: agent RPC
+    `VerifyAuditChain` returning a structural HMAC check result.
+    Used by the audit-view "Verify" button.
+  - [ ] **subtask** — desktop-audit-data: wire `agent-list-audit`
+    and `agent-verify-audit` into `AuditLog.vue`. Slice 9.
+  - [ ] **subtask** — agent-scan-known-values-impl: real
+    `ScanKnownValues` handler. Today the stub returns
+    `findings: [], locked: true`. Pre-req: `agent-unlock-cache` for
+    matching, `locket-scan` for pattern/entropy fallback. Emit
+    `SCAN` audit rows.
+  - [ ] **subtask** — desktop-scan-data: wire
+    `agent-scan-known-values-impl` into `ScanResults.vue`,
+    including a rescan trigger and "scan running" indicator.
+    Slice 10.
+  - [ ] **subtask** — agent-config-read-write: agent RPCs
+    `GetConfig` / `SetConfig` for `privacy.redact_names`,
+    `unlock_ttl_seconds`, verification policy, and dangerous-profile
+    flag. Writes emit `CONFIG_UPDATE` audit rows; reads are
+    metadata-only.
+  - [ ] **subtask** — desktop-settings-data: wire
+    `agent-config-read-write` into `Settings.vue` and propagate the
+    `privacy.redact_names` setting reactively to every open view.
+    Slice 11.
+  - [ ] **subtask** — agent-list-policies: agent RPC `ListPolicies`
+    returning saved `CommandPolicy` metadata (argv vs shell mode,
+    required/optional secrets, gates) without exposing any
+    references' resolved values.
+  - [ ] **subtask** — agent-policy-doctor-rpc: agent RPC
+    `RunPolicyDoctor` that exercises `lk://` resolution + env-mode
+    expansion against the live store and returns warnings/errors.
+    Pre-req: `agent-resolve-reference-impl`.
+  - [ ] **subtask** — desktop-policy-editor-view: new view
+    `PolicyEditor.vue` mounted under a 7th nav tab. Renders the
+    policy list with argv/shell mode, required/optional secret
+    badges, confirm/verify/ttl gates, and a "doctor" button.
+    Editing is read-only in this slice; `policy add` / `policy
+    edit` surfaces ship in `desktop-policy-editor-write`. Slice 12a.
+  - [ ] **subtask** — desktop-policy-editor-write: extend
+    `PolicyEditor.vue` with create/edit/delete forms backed by an
+    `agent-policy-write` RPC. Dangerous-profile policies require
+    typed confirmation. `POLICY_UPDATE` audit row.
+  - [ ] **subtask** — agent-resolve-reference-impl: real
+    `ResolveReference` handler with `lk://` parsing, version pinning
+    + grace handling, policy authorization, and
+    `RESOLVE_REFERENCE` audit. Pre-req: `agent-grant-table`,
+    `agent-unlock-cache`. (Cross-references the existing
+    `lk-resolve-rpc` decomposition under Runtime/DX.)
+  - [ ] **subtask** — agent-prepare-exec-impl: real `PrepareExec`
+    handler returning the resolved env-name allow-list and TTL from
+    the policy declaration. Pre-req: `policy-ttls`,
+    `agent-resolve-reference-impl`.
+  - [ ] **subtask** — desktop-backup-recovery-view: new view
+    `BackupRecovery.vue` mounted under an 8th nav tab. Provides
+    `export --sealed`, `import-bundle`, `bundle verify`, and
+    recovery code rotation flows backed by per-action agent RPCs.
+    Recovery code display uses the same scrollback warning +
+    optional screen clear as the CLI. Slice 12b.
+  - [ ] **subtask** — desktop-team-invite-view: extend
+    `BackupRecovery.vue` (or split into `TeamMembers.vue`) with
+    invite issue / accept / revoke flows; safety-words display on
+    accept; member and device removal. Pre-req: team-invite-* and
+    invite-ceremony subtasks under Security/Recovery/Team.
+  - [ ] **subtask** — desktop-project-dashboard-view: new view
+    `ProjectDashboard.vue` mounted as the default tab. Shows active
+    project, active profile (alias-aware), recent-activity counts,
+    open scan-warning count, agent status, and quick-action links
+    to the other views. Pure aggregator over existing RPCs.
+  - [ ] **subtask** — desktop-profile-switcher-view: new view
+    `ProfileSwitcher.vue` for switching the active profile and
+    handling dangerous-profile typed confirmations. Pre-req:
+    `agent-set-active-profile` RPC.
+  - [ ] **subtask** — agent-set-active-profile: agent RPC
+    `SetActiveProfile` that switches the active profile,
+    invalidates profile-scoped grants, and emits the documented
+    audit row.
+  - [ ] **subtask** — desktop-secret-editor-view: new view
+    `SecretEditor.vue` for set/update with TTL-bound reveal of the
+    current value. Pre-req: `desktop-reveal-modal`,
+    `agent-set-secret` RPC.
+  - [ ] **subtask** — agent-set-secret: agent RPC `SetSecret` that
+    creates or rotates a secret with a value supplied by the
+    webview's secure input. Emits `SET` / `ROTATE` audit row.
+    Pre-req: `agent-unlock-cache`, `agent-grant-table`.
 - [ ] Reveal/copy UI gates with short-lived plaintext handling
-  (`REVEAL`/`COPY` go through the agent).
+  (`REVEAL`/`COPY` go through the agent). Decomposed under
+  `desktop-reveal-modal` + `desktop-clipboard-copy` above.
 - [ ] Status subscriptions from the agent (`SubscribeStatus`).
+  Decomposed under `desktop-subscribe-status` above.
 - [ ] Privacy-mode rendering in desktop, tray, and editor-facing UI.
-- [ ] Audit, policy, profile, scan, and bootstrap views.
+  Rendering helpers shipped under view scaffolds; toggle propagation
+  lands in `desktop-settings-data` above.
+- [ ] Audit, policy, profile, scan, and bootstrap views. Decomposed
+  under `desktop-audit-data`, `desktop-policy-editor-view`,
+  `desktop-profile-switcher-view`, `desktop-scan-data`, and
+  `desktop-project-dashboard-view` above.
 - [ ] Tauri hardening (`docs/specs/desktop.md`). Independent subtasks
   — pre-req: `locket-app` Tauri shell exists.
   - [ ] **subtask** — extend deny-by-default capabilities as future Tauri
     surfaces opt in; the empty baseline shipped with `tauri-shell`.
+  - [ ] **subtask** — tauri-capabilities-per-view: each new Tauri
+    command opts into the minimum capability set in
+    `capabilities/desktop.json`. Add a regression that fails CI if
+    a command is added without a paired capability entry.
 - [ ] Search/filter UI (`docs/specs/desktop.md`). Each subtask renders
-  one surface and never exposes values; pre-req: the relevant view.
-  - [ ] **subtask** — search-projects-profiles
-  - [ ] **subtask** — search-secrets-metadata
-  - [ ] **subtask** — search-policies
-  - [ ] **subtask** — search-audit
-  - [ ] **subtask** — search-scan-findings
-  - [ ] **subtask** — search-devices-members
+  one surface and never exposes values; pre-req: the relevant view's
+  data RPC.
+  - [ ] **subtask** — search-projects-profiles: pre-req
+    `desktop-project-dashboard-view`.
+  - [ ] **subtask** — search-secrets-metadata: pre-req
+    `desktop-secrets-data`.
+  - [ ] **subtask** — search-policies: pre-req
+    `desktop-policy-editor-view`.
+  - [ ] **subtask** — search-audit: pre-req `desktop-audit-data`.
+  - [ ] **subtask** — search-scan-findings: pre-req
+    `desktop-scan-data`.
+  - [ ] **subtask** — search-devices-members: pre-req
+    `desktop-team-invite-view`.
 - [ ] Primary desktop views beyond version-history/execution-monitor:
   project dashboard, profile switcher, secret metadata list, secret
   editor, command-policy editor, scan results, audit log/verification,
-  backup/recovery, and Settings (`docs/specs/desktop.md`).
+  backup/recovery, and Settings (`docs/specs/desktop.md`). Decomposed
+  into the `desktop-*-view` and `desktop-*-data` subtasks above.
 - [ ] Tray template-image policy: macOS template-image (alpha-mask)
   vs Windows/Linux full-color light/dark variants
-  (`docs/specs/desktop.md`).
+  (`docs/specs/desktop.md`). Placeholder PNGs ship today; real Lucide
+  icon set lands here.
+  - [ ] **subtask** — tray-icons-real: replace the build-script
+    placeholder PNGs with real Lucide-derived assets (`lock-open`,
+    `lock`, `shield-alert`, `alert-triangle`) per spec, in
+    macOS template + Win/Linux light/dark variants.
 - [ ] Cross-surface error-text parity: CLI/UI/tray/shell/VS Code show
   the same reason and next action for each typed error
   (`docs/specs/desktop.md`).
+  - [ ] **subtask** — error-copy-table: extract typed-error display
+    copy into a shared table in `crates/locket-core/src/error.rs`
+    (or a new `error_messages.rs`) consumed by the CLI, the desktop
+    `AgentUnavailableBanner`, the tray notification dispatcher, and
+    the shell prompt. Add a regression that asserts every
+    `LocketError` variant has a row.
 - [ ] Tray bounded recent-activity surface: counts/safe statuses
   only; details remain in the in-app audit view
-  (`docs/specs/desktop.md`).
+  (`docs/specs/desktop.md`). Decomposed under `tray-recent-activity`
+  above.
 - [ ] VS Code diagnostics: `process.env.KEY` missing in active
   profile and pinned `lk://...@vN` near/past `grace_until`
   (`docs/specs/integrations.md:48-49`).
@@ -653,7 +834,7 @@ item is independently claimable; re-verify file:line references before
 editing — they drift. Severity: **blocker** (security/correctness),
 **important** (real defect), **nit** (cleanup).
 
-- [~] **important** — Typed error system underused: ~6 typed callers vs ~249
+- [ ] **important** — Typed error system underused: ~6 typed callers vs ~249
   `CliError::Config`.
   Partial: `SecretNotFound` (77), `ProfileNotFound` (78), `ConfirmationFailed`
   (68), `InvalidSecretName` / `InvalidProfileName` (64) variants added across
