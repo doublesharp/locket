@@ -8,6 +8,8 @@ Slices that have merged to `main` and verified. Open work tracked in
 - [x] `locket init` spec coverage.
 - [x] `locket init` rolls back late resume failures across store rows,
   recovery files, and newly created master-key material.
+- [x] High-entropy scanning supports project thresholds, public-id exclusions,
+  and `policy doctor` warnings for non-default settings.
 - [x] `locket status` spec coverage.
 - [x] `locket emit-example` spec coverage.
 - [x] `locket completion <shell>`.
