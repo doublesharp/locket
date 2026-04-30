@@ -468,10 +468,9 @@ the spec already covers. Closed slices land in
   - [x] **subtask** — team-store-schema: `teams`, `team_members`,
     `team_invites` tables and constraints are in place; no migration bump
     needed.
-  - [~] [aa40a4ce] **subtask** — team-init-command: implement `locket team init` with a
-    Claim: branch agent-aa40a4ce/team-init-command, worktree .worktrees/agent-aa40a4ce-team-init-command. Scope: golden-path init + TEAM_INIT audit + already-initialized rejection. Role-gated re-init deferred to team-role helper subtask.
-    `TEAM_INIT` audit row and golden-path coverage. Errors: `TeamRoleDenied`
-    on a re-init attempt without role. Depends on `team-store-schema`.
+  - [x] **subtask** — team-init-command: `locket team init <name>` inserts
+    a single team row and writes a `TEAM_INIT` audit row; re-init rejects
+    with `SecretAlreadyExists` until the team-role helper lands.
   - [ ] **subtask** — team-invite-create: implement `locket team invite`
     issuance — signed invite file with issuer keys, recipient fingerprint,
     expiry, nonce, role, profiles. Audit `TEAM_INVITE` (creation). Errors:
@@ -942,8 +941,9 @@ editing — they drift. Severity: **blocker** (security/correctness),
   (user-only perms) before schema-mutating migrations; `locket doctor`
   reports backup-skipped migrations and last backup path
   (`docs/specs/storage.md`).
-- [ ] `automation_client_nonces` opportunistic pruning during client
+- [~] [2b8d143a] `automation_client_nonces` opportunistic pruning during client
   auth and via `locket doctor` (`docs/specs/storage.md`).
+  Claim: branch agent-2b8d143a/automation-nonce-pruning, worktree .worktrees/agent-2b8d143a-automation-nonce-pruning. Scope: doctor-side prune (client-auth half deferred until challenge-response auth lands).
 ## Spec-by-Spec Completion Gates
 
 Do this after all the other tasks are completed.
