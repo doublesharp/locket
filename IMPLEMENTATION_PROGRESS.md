@@ -643,7 +643,8 @@ the spec already covers. Closed slices land in
   to stay under the cap (`docs/specs/audit.md`,
   `docs/specs/data-model.md:400`).
   Claim: branch agent-7138f228/audit-metadata-cap, worktree .worktrees/agent-7138f228-audit-metadata-cap. Scope: enforce the 64 KiB cap inside `append_audit` with a typed `MetadataInvalid` error; caller-side summarization for large `secret_names` collections is a separate `[ ]` follow-up.
-- [ ] Recovery code one-time display with scrollback warning and
+- [~] [aa40a4ce] Recovery code one-time display with scrollback warning and
+  Claim: branch agent-aa40a4ce/recovery-rotate-scrollback-warning, worktree .worktrees/agent-aa40a4ce-recovery-rotate-scrollback-warning. Scope: add the scrollback warning to `recovery rotate` (init already has it). Optional screen-clear on `init`/`device init`/`recovery rotate` and `device init` recovery-bootstrap stay as separate follow-ups.
   optional screen-clear on `init`/`device init`/`recovery rotate`
   (`docs/specs/team-sync-recovery.md`).
 - [ ] `device init` first-run-on-machine bootstrap: creates master
