@@ -56,6 +56,20 @@ fn agent_start_command(context: &RuntimeContext, output: &mut impl Write) -> Res
         return Ok(());
     }
 
+    // If the pid file is missing or stale but the socket owner still
+    // answers trusted status requests, preserve the live daemon and
+    // keep start idempotent instead of unlinking its socket.
+    if socket_path.exists() {
+        if let Ok(snapshot) = request_status_snapshot(&socket_path) {
+            writeln!(output, "agent: already running")?;
+            writeln!(output, "running: yes")?;
+            writeln!(output, "pid: -")?;
+            write_agent_paths(context, output)?;
+            write_agent_status_snapshot(output, &snapshot)?;
+            return Ok(());
+        }
+    }
+
     // Best-effort cleanup of stale pid/socket files. The daemon may have
     // crashed and left them behind; bind_socket_listener will refuse if
     // a live owner is still present.
@@ -107,17 +121,7 @@ fn agent_status_command(context: &RuntimeContext, output: &mut impl Write) -> Re
             writeln!(output, "running: yes")?;
             writeln!(output, "pid: {pid}")?;
             write_agent_paths(context, output)?;
-            let lock_state =
-                snapshot.get("lock_state").and_then(Value::as_str).unwrap_or("unknown");
-            writeln!(output, "lock_state: {lock_state}")?;
-            if let Some(ttl) = snapshot.get("unlock_ttl_seconds").and_then(Value::as_u64) {
-                writeln!(output, "unlock_ttl_seconds: {ttl}")?;
-            }
-            let live_grants = snapshot.get("live_grant_count").and_then(Value::as_u64).unwrap_or(0);
-            writeln!(output, "live_grants: {live_grants}")?;
-            let version =
-                snapshot.get("agent_version").and_then(Value::as_str).unwrap_or("unknown");
-            writeln!(output, "agent_version: {version}")?;
+            write_agent_status_snapshot(output, &snapshot)?;
             if let Some(project) = resolve_project(&context.cwd)? {
                 writeln!(output, "active_project_id: {}", project.config.project_id)?;
                 writeln!(output, "active_profile: {}", project.config.default_profile)?;
@@ -263,6 +267,19 @@ fn read_running_pid(context: &RuntimeContext) -> Result<Option<u32>, CliError> {
         return Ok(None);
     };
     Ok(if process_is_live(pid) { Some(pid) } else { None })
+}
+
+fn write_agent_status_snapshot(output: &mut impl Write, snapshot: &Value) -> Result<(), io::Error> {
+    let lock_state = snapshot.get("lock_state").and_then(Value::as_str).unwrap_or("unknown");
+    writeln!(output, "lock_state: {lock_state}")?;
+    if let Some(ttl) = snapshot.get("unlock_ttl_seconds").and_then(Value::as_u64) {
+        writeln!(output, "unlock_ttl_seconds: {ttl}")?;
+    }
+    let live_grants = snapshot.get("live_grant_count").and_then(Value::as_u64).unwrap_or(0);
+    writeln!(output, "live_grants: {live_grants}")?;
+    let version = snapshot.get("agent_version").and_then(Value::as_str).unwrap_or("unknown");
+    writeln!(output, "agent_version: {version}")?;
+    Ok(())
 }
 
 fn parse_pid(value: &str) -> Option<u32> {
