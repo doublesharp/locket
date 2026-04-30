@@ -477,7 +477,7 @@ impl Store {
     ///
     /// Returns [`StoreError::InviteReplayDetected`] when the invite is already
     /// accepted or revoked, [`StoreError::InviteNotFound`] when no row matches
-    /// `invite_id`, or [`StoreError`] when SQLite or audit append fails.
+    /// `invite_id`, or [`StoreError`] when `SQLite` or audit append fails.
     pub fn revoke_team_invite(
         &mut self,
         invite_id: &str,
