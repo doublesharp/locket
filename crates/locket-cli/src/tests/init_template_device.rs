@@ -1906,6 +1906,23 @@ fn assert_metadata_invalid<T>(
     Ok(())
 }
 
+fn assert_typed_error<T>(
+    result: Result<T, crate::CliError>,
+    expected_kind: locket_core::LocketError,
+    expected_message: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let Err(error) = result else {
+        return Err(format!("expected {expected_kind:?} error").into());
+    };
+    assert_eq!(error.exit_code(), expected_kind.exit_code());
+    let crate::CliError::Typed { kind, message } = error else {
+        return Err(format!("expected typed {expected_kind:?} error, got {error:?}").into());
+    };
+    assert_eq!(kind, expected_kind);
+    assert!(message.contains(expected_message), "{message}");
+    Ok(())
+}
+
 #[test]
 #[allow(clippy::too_many_lines)]
 fn team_invite_creates_signed_file_pending_row_and_audit() -> Result<(), Box<dyn std::error::Error>>
@@ -2301,6 +2318,292 @@ fn team_accept_verifies_invite_displays_trust_summary_and_records_audit()
     assert_eq!(metadata["recipient_device_fingerprint"], local_device.fingerprint);
     assert_eq!(metadata["role"], "developer");
     assert_eq!(metadata["profiles"], json!(["dev"]));
+    Ok(())
+}
+
+#[test]
+fn team_accept_expired_invite_fails_closed_with_denial_audit()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture =
+        team_accept_invite_fixture("lk_invite_accept_expired", 1, None, None, None, None)?;
+    let accept_context = context_with_confirmation(&fixture.context, "unused\n");
+    let result = run_with_context(
+        Cli::try_parse_from([
+            "locket",
+            "team",
+            "accept",
+            fixture.invite_path.to_str().ok_or("non-utf8 invite path")?,
+        ])?,
+        &accept_context,
+        &mut Vec::new(),
+    );
+
+    assert_typed_error(result, locket_core::LocketError::InviteExpired, "invite expired")?;
+    assert_invite_not_accepted(&fixture.directory, &fixture.invite_id)?;
+    assert_team_accept_denial_audit(
+        &fixture.directory,
+        &fixture.invite_id,
+        "invite_expired",
+        locket_core::LocketError::InviteExpired,
+    )?;
+    Ok(())
+}
+
+#[test]
+fn team_accept_bad_signature_fails_closed_with_denial_audit()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = team_accept_invite_fixture(
+        "lk_invite_accept_bad_signature",
+        4_102_444_800,
+        None,
+        None,
+        Some(data_encoding::BASE64URL_NOPAD.encode(&[0_u8; 64])),
+        None,
+    )?;
+    let accept_context = context_with_confirmation(&fixture.context, "unused\n");
+    let result = run_with_context(
+        Cli::try_parse_from([
+            "locket",
+            "team",
+            "accept",
+            fixture.invite_path.to_str().ok_or("non-utf8 invite path")?,
+        ])?,
+        &accept_context,
+        &mut Vec::new(),
+    );
+
+    assert_typed_error(
+        result,
+        locket_core::LocketError::InviteSignatureInvalid,
+        "invite verification failed",
+    )?;
+    assert_invite_not_accepted(&fixture.directory, &fixture.invite_id)?;
+    assert_team_accept_denial_audit(
+        &fixture.directory,
+        &fixture.invite_id,
+        "signature_invalid",
+        locket_core::LocketError::InviteSignatureInvalid,
+    )?;
+    Ok(())
+}
+
+#[test]
+fn team_accept_fingerprint_mismatch_fails_closed_with_denial_audit()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = team_accept_invite_fixture(
+        "lk_invite_accept_bad_fingerprint",
+        4_102_444_800,
+        Some("00".repeat(32)),
+        None,
+        None,
+        None,
+    )?;
+    let accept_context = context_with_confirmation(&fixture.context, "unused\n");
+    let result = run_with_context(
+        Cli::try_parse_from([
+            "locket",
+            "team",
+            "accept",
+            fixture.invite_path.to_str().ok_or("non-utf8 invite path")?,
+        ])?,
+        &accept_context,
+        &mut Vec::new(),
+    );
+
+    assert_typed_error(
+        result,
+        locket_core::LocketError::DeviceDescriptorInvalid,
+        "invite issuer fingerprint does not match issuer keys",
+    )?;
+    assert_invite_not_accepted(&fixture.directory, &fixture.invite_id)?;
+    assert_team_accept_denial_audit(
+        &fixture.directory,
+        &fixture.invite_id,
+        "fingerprint_mismatch",
+        locket_core::LocketError::DeviceDescriptorInvalid,
+    )?;
+    Ok(())
+}
+
+#[test]
+fn team_accept_revoked_invite_fails_closed_with_denial_audit()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = team_accept_invite_fixture(
+        "lk_invite_accept_revoked",
+        4_102_444_800,
+        None,
+        None,
+        None,
+        Some(123),
+    )?;
+    let accept_context =
+        context_with_confirmation(&fixture.context, &format!("{}\n", fixture.issuer_fingerprint));
+    let result = run_with_context(
+        Cli::try_parse_from([
+            "locket",
+            "team",
+            "accept",
+            fixture.invite_path.to_str().ok_or("non-utf8 invite path")?,
+        ])?,
+        &accept_context,
+        &mut Vec::new(),
+    );
+
+    assert_typed_error(result, locket_core::LocketError::ReplayDetected, "already accepted")?;
+    assert_invite_not_accepted(&fixture.directory, &fixture.invite_id)?;
+    assert_team_accept_denial_audit(
+        &fixture.directory,
+        &fixture.invite_id,
+        "replay_detected",
+        locket_core::LocketError::ReplayDetected,
+    )?;
+    Ok(())
+}
+
+struct TeamAcceptInviteFixture {
+    directory: tempfile::TempDir,
+    context: RuntimeContext,
+    invite_path: PathBuf,
+    issuer_fingerprint: String,
+    invite_id: String,
+}
+
+fn team_accept_invite_fixture(
+    invite_id: &str,
+    expires_at: i64,
+    issuer_fingerprint_override: Option<String>,
+    recipient_fingerprint_override: Option<String>,
+    signature_override: Option<String>,
+    revoked_at: Option<i64>,
+) -> Result<TeamAcceptInviteFixture, Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    run_with_context(
+        Cli::try_parse_from(["locket", "device", "init"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    run_with_context(
+        Cli::try_parse_from(["locket", "team", "init", "platform-team"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+
+    let config = crate::read_project_config(&directory.path().join("locket.toml"))?;
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let local_device =
+        store.get_active_local_device(config.project_id.as_str())?.ok_or("local device")?;
+    let (team_id, issuer_member_id): (String, String) = store.connection().query_row(
+        "SELECT t.id, m.id
+         FROM teams t JOIN team_members m ON m.team_id = t.id
+         WHERE t.project_id = ?1
+         LIMIT 1",
+        [config.project_id.as_str()],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+
+    let issuer_signing = ed25519_dalek::SigningKey::from_bytes(&[51; 32]);
+    let issuer_signing_public_key: [u8; 32] = issuer_signing.verifying_key().to_bytes();
+    let issuer_sealing_public_key = [52; 32];
+    let issuer_fingerprint = locket_core::fingerprint_hex(&locket_core::device_fingerprint_v1(
+        &issuer_signing_public_key,
+        &issuer_sealing_public_key,
+    ));
+    let payload_recipient_fingerprint =
+        recipient_fingerprint_override.unwrap_or_else(|| local_device.fingerprint.clone());
+    let payload_issuer_fingerprint =
+        issuer_fingerprint_override.unwrap_or_else(|| issuer_fingerprint.clone());
+    let payload = locket_core::InvitePayload {
+        v: 1,
+        invite_id: locket_core::InviteId::new(invite_id.to_owned())?,
+        project_id: locket_core::ProjectId::new(config.project_id.to_string())?,
+        issuer_member_id: locket_core::MemberId::new(issuer_member_id.clone())?,
+        issuer_signing_public_key: data_encoding::BASE64URL_NOPAD
+            .encode(&issuer_signing_public_key),
+        issuer_sealing_public_key: data_encoding::BASE64URL_NOPAD
+            .encode(&issuer_sealing_public_key),
+        issuer_device_fingerprint: payload_issuer_fingerprint,
+        recipient_device_fingerprint: payload_recipient_fingerprint.clone(),
+        recipient_sealing_public_key: data_encoding::BASE64URL_NOPAD
+            .encode(&local_device.sealing_public_key),
+        role: locket_core::TeamRole::Developer,
+        profiles: vec!["dev".to_owned()],
+        expires_at,
+        nonce: data_encoding::BASE64URL_NOPAD.encode(&[7; 24]),
+    };
+    let mut signed = locket_core::SignedInvite::sign(&issuer_signing, payload)?;
+    if let Some(signature) = signature_override {
+        signed.signature = signature;
+    }
+    let invite_path = directory.path().join(format!("{invite_id}.locket-invite"));
+    std::fs::write(&invite_path, signed.encode()?)?;
+    store.connection().execute(
+        "INSERT INTO team_invites(
+           id, team_id, issuer_member_id, recipient_device_fingerprint, role, profiles_json,
+           nonce, created_at, expires_at, accepted_at, revoked_at
+         )
+         VALUES (?1, ?2, ?3, ?4, 'developer', '[\"dev\"]', zeroblob(24), 1, ?5, NULL, ?6)",
+        (
+            invite_id,
+            team_id.as_str(),
+            issuer_member_id.as_str(),
+            payload_recipient_fingerprint.as_str(),
+            expires_at * 1_000_000_000,
+            revoked_at,
+        ),
+    )?;
+    drop(store);
+
+    Ok(TeamAcceptInviteFixture {
+        directory,
+        context,
+        invite_path,
+        issuer_fingerprint,
+        invite_id: invite_id.to_owned(),
+    })
+}
+
+fn assert_invite_not_accepted(
+    directory: &tempfile::TempDir,
+    invite_id: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let accepted_at: Option<i64> = store.connection().query_row(
+        "SELECT accepted_at FROM team_invites WHERE id = ?1",
+        [invite_id],
+        |row| row.get(0),
+    )?;
+    assert!(accepted_at.is_none());
+    Ok(())
+}
+
+fn assert_team_accept_denial_audit(
+    directory: &tempfile::TempDir,
+    invite_id: &str,
+    failure_reason: &str,
+    kind: locket_core::LocketError,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let metadata: String = store.connection().query_row(
+        "SELECT metadata_json FROM audit_log
+         WHERE action = 'TEAM_ACCEPT' AND status = 'DENIED'
+         ORDER BY sequence DESC LIMIT 1",
+        [],
+        |row| row.get(0),
+    )?;
+    let metadata: serde_json::Value = serde_json::from_str(&metadata)?;
+    assert_eq!(metadata["action"], "TEAM_ACCEPT");
+    assert_eq!(metadata["status"], "DENIED");
+    assert_eq!(metadata["command"], "team accept");
+    assert_eq!(metadata["invite_id"], invite_id);
+    assert_eq!(metadata["failure_reason"], failure_reason);
+    assert_eq!(metadata["exit_code"], kind.exit_code());
+    assert!(metadata.get("recipient_device_fingerprint").is_some());
     Ok(())
 }
 
