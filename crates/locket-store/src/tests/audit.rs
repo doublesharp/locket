@@ -7,6 +7,7 @@ use locket_core::{
 use serde_json::json;
 use sha2::Sha256;
 
+use crate::audit::append_audit;
 use crate::{AuditContext, AuditWrite, StoreError};
 
 use super::{
@@ -336,6 +337,118 @@ fn audit_verify_flags_appended_chain_row_and_link_mutations() -> Result<(), Box<
         )?;
         assert_eq!(audit_rows, 2, "case {case}");
     }
+
+    Ok(())
+}
+
+#[test]
+fn rolled_back_transaction_leaves_no_audit_row_or_sequence_gap() -> Result<(), Box<dyn Error>> {
+    let mut test_store = open_initialized_store()?;
+    insert_project_profile(&test_store.store)?;
+
+    let metadata = json!({
+        "schema_version": 1,
+        "action": "SET",
+        "status": "SUCCESS",
+        "secret_name": "DATABASE_URL",
+    });
+    let write = AuditWrite {
+        project_id: "lk_proj_test",
+        profile_id: Some("lk_prof_test"),
+        action: "SET",
+        status: "SUCCESS",
+        secret_name: Some("DATABASE_URL"),
+        command: None,
+        metadata_json: &metadata,
+        timestamp: 100,
+    };
+
+    {
+        let connection = test_store.store.connection_mut();
+        let transaction = connection.transaction()?;
+        append_audit(&transaction, &[42; 32], &write)?;
+        // Drop the transaction without commit; rusqlite rolls it back.
+    }
+
+    let after_rollback: i64 = test_store.store.connection().query_row(
+        "SELECT COUNT(*) FROM audit_log WHERE project_id = 'lk_proj_test'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(after_rollback, 0, "rolled-back tx must not leave an audit row");
+
+    test_store.store.append_audit(&[42; 32], &write)?;
+
+    let landed_sequence: u64 = test_store.store.connection().query_row(
+        "SELECT sequence FROM audit_log WHERE project_id = 'lk_proj_test'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(
+        landed_sequence, 1,
+        "next successful append must reuse sequence 1, not skip past the rolled-back attempt"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn data_change_failure_inside_audit_tx_drops_audit_row_atomically() -> Result<(), Box<dyn Error>> {
+    let mut test_store = open_initialized_store()?;
+    insert_project_profile(&test_store.store)?;
+
+    let metadata = json!({
+        "schema_version": 1,
+        "action": "SET",
+        "status": "SUCCESS",
+        "secret_name": "DATABASE_URL",
+    });
+    let write = AuditWrite {
+        project_id: "lk_proj_test",
+        profile_id: Some("lk_prof_test"),
+        action: "SET",
+        status: "SUCCESS",
+        secret_name: Some("DATABASE_URL"),
+        command: None,
+        metadata_json: &metadata,
+        timestamp: 100,
+    };
+
+    {
+        let connection = test_store.store.connection_mut();
+        let transaction = connection.transaction()?;
+        append_audit(&transaction, &[42; 32], &write)?;
+        // Force a data-change failure inside the same tx via a foreign-key
+        // violation; the `?` would propagate in production code and the
+        // outer scope would drop the tx without commit.
+        let result = transaction.execute(
+            "INSERT INTO secrets(
+               id, project_id, profile_id, name, source, origin, required,
+               current_version, state, created_at, updated_at
+             )
+             VALUES (
+               'lk_sec_orphan', 'lk_proj_missing', 'lk_prof_test', 'DATABASE_URL',
+               'user-local', 'manual', 0, 1, 'active', 1, 1
+             )",
+            [],
+        );
+        assert!(result.is_err(), "FK violation must surface as a SQLite error");
+        // Drop without commit.
+    }
+
+    let audit_rows: i64 = test_store.store.connection().query_row(
+        "SELECT COUNT(*) FROM audit_log WHERE project_id = 'lk_proj_test'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(audit_rows, 0, "data-change failure must roll back the audit row in the same tx");
+
+    let secret_rows: i64 = test_store.store.connection().query_row(
+        "SELECT COUNT(*) FROM secrets WHERE id = 'lk_sec_orphan'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(secret_rows, 0, "the failed secret insert must not have persisted either");
 
     Ok(())
 }
