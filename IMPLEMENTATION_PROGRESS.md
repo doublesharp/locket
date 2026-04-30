@@ -338,10 +338,27 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
     `crates/locket-core/src/policy/`.
 - [x] Shell command surface (`shellenv`, `hook`, `allow`, `deny`)
   (agent-hook install and live-grant TTL tracked under the agent daemon).
-- [ ] Resolve `lk://` references through the agent (policy
-  authorization, pinned-version resolution, expired-grace behavior;
-  `RESOLVE_REFERENCE` audit never carries the value)
-  (`docs/specs/runtime.md:123-155`).
+- [ ] Resolve `lk://` references through the agent
+  (`docs/specs/runtime.md:123-155`). Decomposed below; later subtasks
+  depend on `lk-resolve-rpc`.
+  - [ ] **subtask** — lk-resolve-rpc: agent `ResolveReference` handler
+    parses `lk://`, looks up the secret, returns the value or a typed
+    error. Pre-req: `agent-socket-server` and `agent-unlock-cache` from
+    the Local agent daemon decomposition.
+  - [ ] **subtask** — lk-resolve-policy-auth: gate the resolver by
+    policy authorization (the resolving caller's policy must allow the
+    target secret). Errors: `AccessDenied` (70). Depends on
+    `lk-resolve-rpc`.
+  - [ ] **subtask** — lk-resolve-pinned-version: honor pinned
+    `lk://...@vN`; return `SecretVersionExpired` (75) past
+    `grace_until`. Depends on `lk-resolve-rpc`.
+  - [ ] **subtask** — lk-resolve-grace: deprecated-but-in-grace
+    versions resolve with a metadata-only warning audit row; reject
+    after grace. Depends on `lk-resolve-pinned-version`.
+  - [ ] **subtask** — lk-resolve-audit: write `RESOLVE_REFERENCE` rows
+    (reference id, profile id, version, grant id; never the value) on
+    every successful and failed resolution. Depends on
+    `lk-resolve-rpc`.
 - [x] Wire Docker and Docker Compose into policy-backed CLI.
 - [~] `locket exec --all` typed-confirmation flow and `EXEC` audit
   shipped. Remaining: `locket env inspect` enhancements and env-layering /
