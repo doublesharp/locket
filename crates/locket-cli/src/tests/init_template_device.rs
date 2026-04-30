@@ -2185,6 +2185,7 @@ fn team_invite_locked_vault_fails_before_writing_output() -> Result<(), Box<dyn 
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn team_accept_verifies_invite_displays_trust_summary_and_records_audit()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempdir()?;
