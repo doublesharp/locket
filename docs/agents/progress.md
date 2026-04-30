@@ -383,9 +383,7 @@ Slices 1+2 shipped (agent client, tray binding, 6 view scaffolds,
   (`docs/specs/integrations.md:48-49`).
 - [~] [52c592db] branch agent-52c592db/vscode-reference-completion, worktree .worktrees/agent-52c592db-vscode-reference-completion; VS Code reference completion for `lk://` in `.env.example`, JSON, TOML, YAML, shell, source files (`docs/specs/integrations.md:48`).
 - [~] [90b9f58a] branch agent-90b9f58a/vscode-reveal-webview, worktree .worktrees/agent-90b9f58a-vscode-reveal-webview; VS Code gated reveal webview with short-lived data (`docs/specs/integrations.md:50-51`).
-- [ ] Profile-scoped grant invalidation on `locket use <profile>`;
-  hook re-prompts `GrantRequired` when no `directory_grants` row
-  for the now-active profile (`docs/specs/integrations.md:26`).
+- [~] [90b9f58a] branch agent-90b9f58a/profile-grant-invalidation, worktree .worktrees/agent-90b9f58a-profile-grant-invalidation; Profile-scoped grant invalidation on `locket use <profile>` (`docs/specs/integrations.md:26`).
 
 ### Code Health and Bug Fixes
 
