@@ -5,12 +5,13 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::io::Write;
 use std::path::Path;
-use std::process::ExitStatus;
+use std::process::{Command as ProcessCommand, ExitStatus};
 use std::str::FromStr;
 
 use locket_core::{CommandPolicy, CommandSpec, ExternalEnvSource, SecretName, SessionId};
 use locket_platform::{LocalUserVerificationRequest, PlatformError};
 use locket_store::{ProfileRecord, RuntimeSessionRecord, RuntimeSessionSecretNameRetention, Store};
+use serde_json::Value;
 
 use crate::commands::config::spec::{config_get_value, read_user_config};
 use crate::commands::secrets::import::{EnvImportEntry, parse_env_import};
@@ -183,6 +184,39 @@ pub fn resolve_policy_external_env(
     parent_env: &locket_exec::EnvMap,
     project_root: &Path,
 ) -> Result<locket_exec::EnvMap, CliError> {
+    resolve_policy_external_env_with_compose_config_command(
+        policy,
+        parent_env,
+        project_root,
+        &ComposeConfigCommand::docker(),
+    )
+}
+
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) struct ComposeConfigCommand<'a> {
+    program: &'a Path,
+    args: &'a [&'a str],
+}
+
+#[allow(clippy::elidable_lifetime_names)]
+impl<'a> ComposeConfigCommand<'a> {
+    #[cfg(test)]
+    pub(crate) const fn new(program: &'a Path, args: &'a [&'a str]) -> Self {
+        Self { program, args }
+    }
+
+    fn docker() -> Self {
+        Self { program: Path::new("docker"), args: &["compose", "config", "--format", "json"] }
+    }
+}
+
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) fn resolve_policy_external_env_with_compose_config_command(
+    policy: &CommandPolicy,
+    parent_env: &locket_exec::EnvMap,
+    project_root: &Path,
+    compose_config_command: &ComposeConfigCommand<'_>,
+) -> Result<locket_exec::EnvMap, CliError> {
     let mut external_env = locket_exec::EnvMap::new();
     for source in &policy.external_env_sources {
         match source {
@@ -195,7 +229,15 @@ pub fn resolve_policy_external_env(
             ExternalEnvSource::File(path) => {
                 external_env.extend(resolve_external_env_file(path, project_root, policy)?);
             }
-            ExternalEnvSource::Compose | ExternalEnvSource::Ide => {
+            ExternalEnvSource::Compose => {
+                external_env.extend(resolve_external_env_compose(
+                    compose_config_command,
+                    parent_env,
+                    project_root,
+                    policy,
+                )?);
+            }
+            ExternalEnvSource::Ide => {
                 return Err(unimplemented_in_build_error(
                     "external env source is not wired in this build",
                 ));
@@ -203,6 +245,50 @@ pub fn resolve_policy_external_env(
         }
     }
     Ok(external_env)
+}
+
+fn resolve_external_env_compose(
+    compose_config_command: &ComposeConfigCommand<'_>,
+    parent_env: &locket_exec::EnvMap,
+    project_root: &Path,
+    policy: &CommandPolicy,
+) -> Result<locket_exec::EnvMap, CliError> {
+    let output = ProcessCommand::new(compose_config_command.program)
+        .args(compose_config_command.args)
+        .current_dir(project_root)
+        .env_clear()
+        .envs(parent_env.iter().map(|(name, value)| (name, value.as_str())))
+        .output()
+        .map_err(|error| {
+            metadata_invalid_error(format!("docker compose config could not be executed: {error}"))
+        })?;
+    if !output.status.success() {
+        return Err(metadata_invalid_error(format!(
+            "docker compose config failed with status {}",
+            output.status
+        )));
+    }
+    let value = serde_json::from_slice::<Value>(&output.stdout).map_err(|error| {
+        metadata_invalid_error(format!("docker compose config JSON invalid: {error}"))
+    })?;
+    let environment = value.get("environment").and_then(Value::as_object).ok_or_else(|| {
+        metadata_invalid_error("docker compose config JSON missing top-level environment map")
+    })?;
+    let allowed_names =
+        policy.allowed_secrets.iter().map(|name| name.as_str().to_owned()).collect::<BTreeSet<_>>();
+    let mut env = locket_exec::EnvMap::new();
+    for (name, value) in environment {
+        if !allowed_names.contains(name) {
+            continue;
+        }
+        let Some(value) = value.as_str() else {
+            return Err(metadata_invalid_error(format!(
+                "docker compose config environment value for {name} must be a string"
+            )));
+        };
+        env.insert(name.clone(), locket_exec::env_value(value));
+    }
+    Ok(env)
 }
 
 fn warn_implicit_locket_override_conflicts(

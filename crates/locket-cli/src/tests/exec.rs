@@ -560,6 +560,106 @@ env_mode = "strict"
 }
 
 #[test]
+fn compose_external_env_source_uses_process_stub_without_docker()
+-> Result<(), Box<dyn std::error::Error>> {
+    let document = locket_core::PolicyDocument::from_toml_str(
+        r#"
+[commands.env_check]
+argv = ["/bin/sh", "-c", "true"]
+required_secrets = ["DATABASE_URL"]
+optional_secrets = ["LOG_LEVEL"]
+external_env_sources = ["compose"]
+env_mode = "strict"
+"#,
+    )?;
+    let policy = document.commands.get("env_check").ok_or("missing policy")?;
+    let project_root = tempdir()?;
+    let args = [
+        "-c",
+        r#"printf '%s' '{"environment":{"DATABASE_URL":"from-compose","LOG_LEVEL":"debug","NOT_ALLOWED":"denied"}}'"#,
+    ];
+    let command = crate::ComposeConfigCommand::new(Path::new("/bin/sh"), &args);
+
+    let external_env = crate::resolve_policy_external_env_with_compose_config_command(
+        policy,
+        &locket_exec::EnvMap::new(),
+        project_root.path(),
+        &command,
+    )?;
+
+    assert_eq!(external_env.len(), 2);
+    assert_eq!(external_env.get("DATABASE_URL").map(|value| value.as_str()), Some("from-compose"));
+    assert_eq!(external_env.get("LOG_LEVEL").map(|value| value.as_str()), Some("debug"));
+    assert!(!external_env.contains_key("NOT_ALLOWED"));
+    Ok(())
+}
+
+#[test]
+fn compose_external_env_source_reports_command_failure_without_values()
+-> Result<(), Box<dyn std::error::Error>> {
+    let document = locket_core::PolicyDocument::from_toml_str(
+        r#"
+[commands.env_check]
+argv = ["/bin/sh", "-c", "true"]
+required_secrets = ["DATABASE_URL"]
+external_env_sources = ["compose"]
+env_mode = "strict"
+"#,
+    )?;
+    let policy = document.commands.get("env_check").ok_or("missing policy")?;
+    let project_root = tempdir()?;
+    let args = ["-c", "printf '%s' 'from-compose' >&2; exit 19"];
+    let command = crate::ComposeConfigCommand::new(Path::new("/bin/sh"), &args);
+
+    let result = crate::resolve_policy_external_env_with_compose_config_command(
+        policy,
+        &locket_exec::EnvMap::new(),
+        project_root.path(),
+        &command,
+    );
+
+    let Err(error) = result else {
+        return Err("failing docker compose config stub must fail".into());
+    };
+    assert_eq!(error.exit_code(), locket_core::LocketError::MetadataInvalid.exit_code());
+    let message = error.to_string();
+    assert!(message.contains("docker compose config failed"));
+    assert!(!message.contains("from-compose"));
+    Ok(())
+}
+
+#[test]
+fn compose_external_env_source_rejects_invalid_json() -> Result<(), Box<dyn std::error::Error>> {
+    let document = locket_core::PolicyDocument::from_toml_str(
+        r#"
+[commands.env_check]
+argv = ["/bin/sh", "-c", "true"]
+required_secrets = ["DATABASE_URL"]
+external_env_sources = ["compose"]
+env_mode = "strict"
+"#,
+    )?;
+    let policy = document.commands.get("env_check").ok_or("missing policy")?;
+    let project_root = tempdir()?;
+    let args = ["-c", "printf '%s' 'not json'"];
+    let command = crate::ComposeConfigCommand::new(Path::new("/bin/sh"), &args);
+
+    let result = crate::resolve_policy_external_env_with_compose_config_command(
+        policy,
+        &locket_exec::EnvMap::new(),
+        project_root.path(),
+        &command,
+    );
+
+    let Err(error) = result else {
+        return Err("invalid docker compose config JSON must fail".into());
+    };
+    assert_eq!(error.exit_code(), locket_core::LocketError::MetadataInvalid.exit_code());
+    assert!(error.to_string().contains("docker compose config JSON invalid"));
+    Ok(())
+}
+
+#[test]
 fn docker_policy_plan_and_audit_are_metadata_only() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempdir()?;
     let context = test_context(&directory);
