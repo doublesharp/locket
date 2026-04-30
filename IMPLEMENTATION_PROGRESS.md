@@ -929,7 +929,7 @@ editing — they drift. Severity: **blocker** (security/correctness),
   - [x] [bec7ddfc] **subtask** — proptest-policy-toml: policy TOML parse →
     normalize → re-serialize round-trip; rejection of disallowed
     fields.
-  - [ ] **subtask** — proptest-lk-uri: `lk://` parser round-trip,
+  - [~] [bec7ddfc] **subtask** — proptest-lk-uri: `lk://` parser round-trip,
     fragment/query rejection, and pinned-version normalization.
   - [~] [e7389a73] **subtask** — proptest-canonical-json: canonical JSON encoder
     is total-ordered, idempotent, and stable across permutations.
