@@ -188,8 +188,7 @@ skill set fits a leaf better.
 - [ ] Invite issuer/recipient trust ceremony
   (`docs/specs/team-sync-recovery.md:56-69`). `invite-codec`,
   `invite-replay-protect`, `invite-clock-skew` shipped. Remaining:
-  - [ ] **subtask** — invite-issue: `team invite` produces a signed
-    invite using the device signing key. Pre-req: `team-store-schema`.
+  - [~] [acda32e4] branch agent-acda32e4/invite-issue, worktree .worktrees/agent-acda32e4-invite-issue; **subtask** — invite-issue: `team invite` produces a signed invite using the device signing key. Pre-req: `team-store-schema`.
   - [ ] **subtask** — invite-accept-display: issuer fingerprint +
     PGP safety words, typed confirmation before applying.
   - [ ] **subtask** — invite-fail-closed: expired / revoked /
