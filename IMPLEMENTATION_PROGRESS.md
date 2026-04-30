@@ -671,14 +671,6 @@ the spec already covers. Closed slices land in
   `locket.localhost` default, controlled signed-distribution RP ID
   with re-registration migration, synced-passkey backup-eligibility
   display (`docs/specs/crypto.md`).
-- [ ] Recovery envelope v1 binary container parser/writer
-  (`recovery/envelope.bin` + `recovery/kdf.toml`): magic, schema,
-  `kdf_profile_id`, entry layout, HKDF entry-key derivation, AAD;
-  KDF parameters upgrade-only and fail closed when the binary cannot
-  meet stored params (`docs/specs/crypto.md`).
-- [ ] Recovery `kdf.toml` ↔ envelope-header `lk_kdf_*` id match
-  check; mismatched ids fail recovery closed
-  (`docs/specs/storage.md:24`).
 - [~] [e7389a73] Negative-path decryption tests across wrong key/nonce/AAD/
   project/profile/secret-id/name/version dimensions
   (`docs/specs/crypto.md`).

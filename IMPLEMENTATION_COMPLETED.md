@@ -121,6 +121,12 @@ Slices that have merged to `main` and verified. Open work tracked in
   (`MetadataInvalid` 64, `MetadataLooksLikeSecret` 66).
 - [x] Recovery-code Crockford Base32 encoding with two checksum chars
   (detect-only; never auto-correct).
+- [x] Recovery envelope v1 binary container with magic, schema,
+  `kdf_profile_id`, HKDF-derived entry keys, and AAD; KDF parameters
+  fail closed on mismatch (`crates/locket-platform/src/recovery.rs`,
+  `crates/locket-crypto/src/recovery_envelope.rs`).
+- [x] Recovery `kdf.toml` ↔ envelope-header `lk_kdf_*` id match check
+  rejects mismatched ids during recovery.
 - [x] Sealed-bundle plaintext manifest minimization: no profile, secret,
   policy names; no member/device labels (only digest, recipients,
   project id, schema, `created_at`, profile count).
