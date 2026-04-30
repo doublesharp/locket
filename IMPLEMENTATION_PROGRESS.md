@@ -842,7 +842,7 @@ editing — they drift. Severity: **blocker** (security/correctness),
   - [x] **subtask** — tests-scanner-rules: cover `crates/locket-scan/`
     rule matching, severity overrides, suppression markers, and the
     `--require-known` pre-commit mode.
-  - [~] [bec7ddfc] **subtask** — tests-audit-hmac: verify the audit chain HMAC
+  - [x] **subtask** — tests-audit-hmac: verify the audit chain HMAC
     recomputes against each row's stored `schema_version`; pairs with
     the existing audit-chain HMAC line in `Security/Recovery/Team`.
   - [ ] **subtask** — tests-runtime-sessions: cover
