@@ -94,6 +94,22 @@ fn ai_safe_redacts_known_secret_across_partial_line_flush_boundary() {
 }
 
 #[test]
+fn ai_safe_partial_line_cap_emits_redacted_buffer_without_values() {
+    let token = "sk_test_sampleTokenValue123";
+    let mut bytes = format!("token={token} ").into_bytes();
+    bytes.extend(std::iter::repeat_n(b'a', crate::AI_SAFE_PARTIAL_LINE_MAX_BYTES));
+
+    let mut redactor = crate::AiSafeStreamRedactor::new(&[]);
+    let chunks =
+        redactor.push(crate::AiSafeRawChunk { stream: crate::AiSafeStream::Stdout, bytes });
+    let text = chunks.iter().map(|chunk| chunk.text.as_str()).collect::<String>();
+
+    assert!(chunks.iter().any(|chunk| chunk.buffer_limit_reached));
+    assert!(text.contains("lk_redacted_PROVIDER_TOKEN"));
+    assert!(!text.contains(token));
+}
+
+#[test]
 fn ai_safe_fails_closed_when_locked_unless_pattern_only() -> Result<(), Box<dyn std::error::Error>>
 {
     let directory = tempdir()?;
