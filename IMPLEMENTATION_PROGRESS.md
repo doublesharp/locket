@@ -268,13 +268,13 @@ the spec already covers. Closed slices land in
 
 ### Near-Term CLI/Core
 
-- [~] Scan ignore/suppression: inline markers, `SCAN`/`SUPPRESSED` audit
+- [ ] Scan ignore/suppression: inline markers, `SCAN`/`SUPPRESSED` audit
   rows, and per-rule severity (`ScanFindingBlocked` 69) shipped.
   Remaining: project-level severity overrides and `.env` policy table.
-- [~] Destructive confirmation flows: `purge`, dangerous-profile, and
+- [ ] Destructive confirmation flows: `purge`, dangerous-profile, and
   root untrust shipped. Remaining: policy deletion and other sensitive
   surfaces (`docs/specs/policy.md:26`).
-- [~] Source-precedence and multi-source behavior across `set`, `get`,
+- [ ] Source-precedence and multi-source behavior across `set`, `get`,
   `list`, `rotate`, `rm`, `purge`, `history`, `diff`, `copy`,
   reveal/copy, and execution. Run audit records selected source by
   precedence and set tombstone preflight returns typed `SecretDeleted`;
@@ -394,7 +394,7 @@ the spec already covers. Closed slices land in
     (reference id, profile id, version, grant id; never the value) on
     every successful and failed resolution. Depends on
     `lk-resolve-rpc`.
-- [~] `locket exec --all` typed-confirmation flow and `EXEC` audit
+- [ ] `locket exec --all` typed-confirmation flow and `EXEC` audit
   shipped. Remaining: `locket env inspect` enhancements and env-layering /
   override-mode docs.
 - [ ] On-demand agent startup: `locket exec`/`run` start the agent
@@ -414,7 +414,7 @@ the spec already covers. Closed slices land in
     `LOCKET_IDE_ENV_SESSION` and the agent-socket consumer side
     that resolves it. Pre-req: `vscode-agent-client`,
     `env-source-ide` subtask.
-- [~] Automation-client flows. Public metadata storage, allowed
+- [ ] Automation-client flows. Public metadata storage, allowed
   action/policy fields, nonce primitives, and CLI metadata are in.
   Remaining: private-key storage and challenge-response authentication
   (`docs/specs/agent.md:62-79`).
@@ -425,7 +425,7 @@ the spec already covers. Closed slices land in
   - [ ] **subtask** — policy-ttls: `ttl` translates to a grant TTL
     used by the agent grant table. Pre-req: `policy-parser`,
     `agent-grant-table`.
-- [~] Clipboard clear-after-TTL only if clipboard still contains the
+- [ ] Clipboard clear-after-TTL only if clipboard still contains the
   value. Wayland-aware pre-copy warning and `COPY` audit
   `unsupported_reason` shipped; background TTL clearing remains.
 ### Security/Recovery/Team
@@ -510,11 +510,9 @@ the spec already covers. Closed slices land in
   - [x] **subtask** — team-members-list: `locket team members` lists
     member metadata and pending invites with privacy aliases; locked vaults
     remain metadata-only.
-  - [x] **subtask** — team-remove-member: `locket team remove` with `TEAM_REMOVE` audit and `TeamRoleDenied` typed error.
-  - [x] **subtask** — team-revoke-device: `locket team revoke-device` with `DEVICE_REVOKE` audit, `TeamRoleDenied` error, idempotent for already-revoked devices.
 - [ ] Role-based authorization for team-managed state
   (`docs/specs/team-sync-recovery.md:75-110`).
-- [~] Passkey support. Metadata storage and `list`/`remove` CLI behavior exist.
+- [ ] Passkey support. Metadata storage and `list`/`remove` CLI behavior exist.
   Remaining: platform registration and PRF optional key wrapping.
   - Spec: `docs/specs/crypto.md:192-218` (local user verification + passkey
     PRF wrapping).
@@ -535,52 +533,35 @@ the spec already covers. Closed slices land in
   - Files: `crates/locket-platform/src/helpers.rs` (descriptor codec),
     `crates/locket-crypto/src/` (fingerprint hash + safety-words derivation).
 - [ ] Invite issuer/recipient trust ceremony
-  (`docs/specs/team-sync-recovery.md:56-69`). Subtasks below; later
-  ones depend on `invite-codec`.
-  - [x] **subtask** — invite-codec: signed-invite struct with encode/decode/verify in `crates/locket-core/src/invite.rs`.
+  (`docs/specs/team-sync-recovery.md:56-69`). `invite-codec`,
+  `invite-replay-protect`, and `invite-clock-skew` shipped (see
+  `IMPLEMENTATION_COMPLETED.md`). Remaining subtasks:
   - [ ] **subtask** — invite-issue: `team invite` produces a signed
     invite using the device signing key; emit `TEAM_INVITE` audit.
-    Pre-req: `invite-codec`, team-store-schema.
+    Pre-req: team-store-schema.
   - [ ] **subtask** — invite-accept-display: `team accept` displays
     issuer fingerprint + PGP safety words and requires typed
-    confirmation before applying. Pre-req: `invite-codec`.
-  - [x] [e7389a73] **subtask** — invite-replay-protect: track accepted invite
-    ids; reject second use with `ReplayDetected` (113). Pre-req:
-    `invite-codec`.
-  - [x] [7138f228] **subtask** — invite-clock-skew: 5-minute clock-skew tolerance
-    on expiry; outside → `InviteExpired`. Pre-req: `invite-codec`.
+    confirmation before applying.
   - [ ] **subtask** — invite-fail-closed: expired/revoked/
     fingerprint-mismatched/signature-invalid invites fail closed with
     typed errors and audit denial rows.
-- [~] Audit coverage for denials: reveal/copy denial rows shipped
+- [ ] Audit coverage for denials: reveal/copy denial rows shipped
   (`status = DENIED`, `denial_reason`). Remaining sweep:
   dangerous-profile reads, locked-vault refusals (needs degraded-audit
   mechanism), role denials, grant denials.
-- [~] Local user verification gates: `LocalUserVerifier` and
+- [ ] Local user verification gates: `LocalUserVerifier` and
   `require_user_verification` shipped; `get --reveal/--copy --verify-user`
   enforces and writes typed denial rows. Remaining sweep: `unlock`,
   `recovery`, team/device, and dangerous-profile actions.
-- [~] Privacy-mode rendering across status, context, redaction labels,
+- [ ] Privacy-mode rendering across status, context, redaction labels,
   and debug bundles via `privacy_alias`/`privacy_redact_names_enabled`;
   tray/desktop/editor renderers pending until those crates exist.
 - [ ] Agent/process hardening (`docs/specs/agent.md`,
-  `docs/specs/operations.md`). Subtasks are largely independent;
-  `harden-peer-cred` and `harden-socket-perms` are pre-reqs for the
-  agent daemon listening on real connections.
-  - [x] [7138f228] **subtask** — harden-peer-cred: peer credential validation
-    (`SO_PEERCRED`/`LOCAL_PEERCRED`/named-pipe SID) on the agent
-    socket. Pre-req: `agent-socket-server`.
-  - [x] [e7389a73] **subtask** — harden-socket-perms: 0600/equivalent socket and
-    pipe permissions; refuse to start if the bind path is wider.
-  - [x] **subtask** — harden-memory-lock: `mlockall` at CLI startup;
-    graceful `Degraded` on `RLIMIT_MEMLOCK` limit; `Unsupported` on macOS/Windows.
-  - [x] **subtask** — harden-zeroize: `Zeroizing` wrappers at all key/value owner sites; recovery envelope return value wrapped.
+  `docs/specs/operations.md`). `harden-peer-cred`, `harden-socket-perms`,
+  `harden-memory-lock`, `harden-zeroize`, and `harden-doctor-degraded`
+  shipped (see `IMPLEMENTATION_COMPLETED.md`). Remaining subtasks:
   - [ ] **subtask** — harden-session-lock: lock on system sleep,
     screen lock, and user-session switch; emit `LOCK` audit row.
-  - [x] **subtask** — harden-doctor-degraded: doctor reports
-    `core_dumps` hardening status; future features added as they ship.
-- [x] [7138f228] Member/device revocation produces a rotation checklist for every
-  profile/secret the revoked principal could access.
 - [ ] `imported_audit_chains` structural verifier (monotonic sequence,
   prev-HMAC linkage, checkpoint HMAC match) used by
   `import-bundle`/`team accept` and surfaced via `audit verify`.
@@ -594,25 +575,8 @@ the spec already covers. Closed slices land in
   records the override in the `RECOVER` audit row.
 - [ ] Typed `metadata_json` shape validator per audit action family
   (required fields, no unknown fields without a schema bump).
-- [x] Audit-tx atomicity: rollback regression tests lock in the in-tx
-  invariant — no phantom row, no sequence gap on rollback.
-- [x] `metadata_json` ≤64 KiB per-row cap enforced at write time;
-  `AuditMetadataTooLarge` typed error (`MetadataInvalid` 64).
-- [x] Caller-side summarization: `summarize_names` helper applied to all 4 audit sites; large collections stay under 64 KiB cap.
-- [x] `recovery rotate` prints the scrollback warning after revealing
-  the new code (matches `init` behavior).
-- [x] Optional screen-clear after one-time recovery code display on `init` and `recovery rotate`; ANSI clear emitted only when stdout is a TTY.
 - [ ] `device init` first-run-on-machine bootstrap: creates master
   key, recovery envelope, and recovery code on a teammate clone
-  (`docs/specs/team-sync-recovery.md`).
-- [x] `locket export --sealed` dangerous-profile confirmation gate;
-  mismatch returns `ConfirmationFailed` (68) before any bundle is written.
-- [x] `locket bundle verify` writes a `BUNDLE_VERIFY` audit row when
-  the bundle's project matches the cwd; unknown-project invocations
-  stay metadata-only.
-- [x] [aa40a4ce] Solo-developer authorization: treat the local user as Owner
-  when no `Team` record exists, while still enforcing typed
-  confirmations / verification / audit / source-selection rules
   (`docs/specs/team-sync-recovery.md`).
 - [ ] LocalUserVerifier macOS LocalAuthentication backend.
 - [ ] LocalUserVerifier Windows Hello backend.
@@ -622,19 +586,13 @@ the spec already covers. Closed slices land in
   `locket.localhost` default, controlled signed-distribution RP ID
   with re-registration migration, synced-passkey backup-eligibility
   display (`docs/specs/crypto.md`).
-- [x] Negative-path decryption tests: 9 cases covering wrong key/nonce
-  and changed AAD fields all exit `DecryptionFailed`.
-- [x] `set`/`rotate`/`import` reject NUL and multiline secret values
-  via `validate_secret_value_str` (`MetadataInvalid` 64).
-- [x] Bytes-after-UTF-8 sweep: non-ASCII UTF-8 secret values pass byte-for-byte through exec, docker, run, redact, and scan paths.
-
 ### App/UI
 
-- [~] Tauri desktop app (`docs/specs/desktop.md:5-65`). Shell + agent
+- [ ] Tauri desktop app (`docs/specs/desktop.md:5-65`). Shell + agent
   client + tray binding + 6 primary views + tray icon-state pusher
   shipped. Remaining: real data sources for each view, tray menu
   actions, SubscribeStatus stream consumer.
-- [~] Tray/status panel (`docs/specs/desktop.md:65-108`). Icon binding
+- [ ] Tray/status panel (`docs/specs/desktop.md:65-108`). Icon binding
   per platform shipped. Remaining: SubscribeStatus stream-driven label
   updates, menu actions (lock/unlock/profile-switch/run-policy).
   - [ ] **subtask** — tray-status-binding: subscribe to the agent's
@@ -684,8 +642,6 @@ the spec already covers. Closed slices land in
 - [ ] VS Code gated reveal webview with short-lived data and no
   plaintext persistence (separate from the generic Reveal/copy UI
   gates) (`docs/specs/integrations.md:50-51`).
-- [x] `locket allow` requires the root hash to be trusted; regression
-  test confirms untrusted root exits 71, no `ALLOW_DIRECTORY` row.
 - [ ] Profile-scoped grant invalidation on `locket use <profile>`;
   hook re-prompts `GrantRequired` when no `directory_grants` row
   exists for the now-active profile (`docs/specs/integrations.md:26`).
@@ -752,59 +708,21 @@ editing — they drift. Severity: **blocker** (security/correctness),
 
 ### Diagnostics, Distribution, and Quality Gates
 
-- [ ] Expand tests toward spec coverage (90% line/branch gate).
-  Decomposed by spec surface; subtasks are independent and may be
-  claimed in parallel. Each subtask must add tests that demonstrably
-  raise covered lines/branches; cite `cargo llvm-cov` deltas in the
-  commit message (`docs/specs/testing.md:8-72`).
-  - [x] **subtask** — tests-policy-evaluation: cover
-    `crates/locket-core/src/policy/` deny-by-default evaluation,
-    required vs optional secret semantics, malformed-policy rejection,
-    and `confirm`/`require_user_verification`/`ttl` edge cases.
-  - [x] **subtask** — tests-env-merge: cover `minimal`/`strict`/
-    `merge`/`passthrough` modes, `override = "preserve"`/"error",
-    the conservative allowlist, and `LC_*` matching.
-  - [x] **subtask** — tests-crypto-aad: AAD construction, key-wrap canonicalization, audit HMAC, recovery envelope, and device descriptor parsing in `crates/locket-crypto/`.
-  - [x] **subtask** — tests-store-migrations: schema migration paths, `SCHEMA_MIGRATE` audit on every step, rollback on failure.
-  - [x] **subtask** — tests-typed-errors: per-variant exit-code
-    regression for all `LocketError` variants.
-  - [x] [aa40a4ce] **subtask** — tests-source-precedence: cover the unified
-    resolver across `set`, `get`, `list`, `rotate`, `rm`, `purge`,
-    `history`, `diff`, `copy`, reveal/copy, and execution. Pairs with
-    the source-precedence item under `Near-Term CLI/Core`.
-  - [x] **subtask** — tests-scanner-rules: cover `crates/locket-scan/`
-    rule matching, severity overrides, suppression markers, and the
-    `--require-known` pre-commit mode.
-  - [x] **subtask** — tests-audit-hmac: verify the audit chain HMAC
-    recomputes against each row's stored `schema_version`; pairs with
-    the existing audit-chain HMAC line in `Security/Recovery/Team`.
-  - [x] **subtask** — tests-runtime-sessions: cover
-    `runtime_sessions` storage, retention, and `exec`/`run` recording.
+- [ ] Expand tests toward spec coverage (90% line/branch gate). Per-surface
+  test subtasks (policy/env/crypto/store/typed/source-precedence/scanner/
+  audit-hmac/runtime-sessions) shipped (see `IMPLEMENTATION_COMPLETED.md`).
+  Remaining (`docs/specs/testing.md:8-72`):
   - [ ] **subtask** — tests-coverage-ratchet: raise the
     `make coverage-branch` gate by visible deltas after each `tests-*`
     subtask lands. Final acceptance for the parent: 90% line and
     branch on the listed security-critical crates.
-- [ ] End-to-end coverage. Decomposed by representative flow; each
-  subtask is one E2E harness that drives the CLI/agent/UI through a
-  golden path plus the documented failure paths
-  (`docs/specs/testing.md:38`). Subtasks are independent.
-  - [x] **subtask** — e2e-greenfield-init: `locket init` →
-    `device init` → `profile create dev` → `set` → `get`. Asserts
-    audit chain integrity and 0600 file modes.
-  - [x] **subtask** — e2e-dotenv-migration: `import` from `.env` →
-    confirmation prompt → tombstone old → emit `.env.example`. Covers
-    the post-import delete-`.env` confirmation.
+- [ ] End-to-end coverage. `e2e-greenfield-init`, `e2e-dotenv-migration`,
+  `e2e-policy-run`, `e2e-docker-compose`, and `e2e-recovery-roundtrip`
+  shipped (see `IMPLEMENTATION_COMPLETED.md`). Remaining
+  (`docs/specs/testing.md:38`):
   - [ ] **subtask** — e2e-agent-rpc: drive the agent socket through
     `Status`, `Lock`, `Unlock`, `RequestGrant`, `RevokeGrant`,
     `SubscribeStatus`. Depends on the daemon subtasks.
-  - [x] [aa40a4ce] **subtask** — e2e-policy-run: write a policy, `policy doctor`,
-    `locket run` argv path with required/optional secrets, deny path,
-    confirm gate, user-verification gate. Pairs with the `locket run`
-    subtask tree.
-  - [x] [7138f228] **subtask** — e2e-docker-compose: `locket exec` and
-    `locket run` against a stub `docker compose`, names-only audit,
-    refusal of remote contexts.
-  - [x] **subtask** — e2e-recovery-roundtrip: `init` → `recover` → `recovery rotate`; refusal-when-keychain-valid and `--force` audit override.
   - [ ] **subtask** — e2e-team-invite-accept: `team init` →
     `team invite` → `team accept` (signature + safety-words display)
     → `team revoke-invite` failure path. Depends on the team-* and
@@ -817,18 +735,18 @@ editing — they drift. Severity: **blocker** (security/correctness),
     app (vault status, secrets list, reveal/copy gates) and the VS
     Code extension. Depends on `desktop-tauri-shell` and the VS Code
     extension item.
-- [~] Bench harnesses and performance gates. Local smoke/report
+- [ ] Bench harnesses and performance gates. Local smoke/report
   scaffolding exists. Remaining: full spec fixtures, hard p95/throughput
   budgets, and `make bench`/`bench-ci`/`bench-report` PR vs release
   modes (`docs/specs/performance.md`).
-- [~] Branch coverage and mutation gates (`make coverage-branch`,
+- [ ] Branch coverage and mutation gates (`make coverage-branch`,
   `make mutation`). Local fallbacks exist; line coverage still below 90%.
-- [~] Supply-chain tooling. Offline-safe local commands and strict-mode
+- [ ] Supply-chain tooling. Offline-safe local commands and strict-mode
   hooks exist. Remaining: enforced `cargo deny`/`audit`, cargo-vet,
   unsafe inventory, SBOM, auditable builds, provenance, signing.
-- [~] Leak canary harness. Scanner/redactor tests and `make leak-canary`
+- [ ] Leak canary harness. Scanner/redactor tests and `make leak-canary`
   exist. Remaining: broader CLI/agent/UI artifact scanning.
-- [~] Signed distribution packaging and update-check verification.
+- [ ] Signed distribution packaging and update-check verification.
   Offline signed update-manifest verifier and typed
   `UpdateManifestInvalid` shipped. Remaining: package builders and
   signing workflows for Homebrew / signed macOS pkg / Windows MSI /
@@ -849,37 +767,16 @@ editing — they drift. Severity: **blocker** (security/correctness),
   Scorecard once public; keyless signing with transparency logs for CI
   artifacts; frontend `pnpm lint`/`typecheck`/`test`/`build` once
   `locket-app` exists.
-- [ ] Property tests. Decomposed per surface; subtasks are
-  independent and each lands one `proptest`/`quickcheck` harness
-  asserting the documented invariants
-  (`docs/specs/testing.md:14`).
-  - [x] [bec7ddfc] **subtask** — proptest-dotenv: `.env` parser round-trip and
-    rejection invariants.
-  - [x] [bec7ddfc] **subtask** — proptest-policy-toml: policy TOML parse →
-    normalize → re-serialize round-trip; rejection of disallowed
-    fields.
-  - [x] [bec7ddfc] **subtask** — proptest-lk-uri: `lk://` parser round-trip,
-    fragment/query rejection, and pinned-version normalization.
-  - [x] **subtask** — proptest-canonical-json: canonical JSON encoder is total-ordered, idempotent, stable across permutations.
-  - [x] **subtask** — proptest-device-descriptor: descriptor codec round-trip; rejects malformed `lkdev1_` payloads.
-  - [x] [e7389a73] **subtask** — proptest-bundle-manifest: plaintext-manifest
-    round-trip; rejects forbidden fields (profile/secret/policy/
-    member/device names). Depends on `bundle-container-format`.
+- [ ] Property tests. All current `proptest-*` subtasks (dotenv,
+  policy-toml, lk-uri, canonical-json, device-descriptor, bundle-manifest)
+  shipped (see `IMPLEMENTATION_COMPLETED.md`). Add new harnesses for
+  uncovered invariants here as they're identified (`docs/specs/testing.md:14`).
 - [ ] Cross-platform test mocks and mutation tests
   (`docs/specs/testing.md`). Subtasks are independent — pick any:
   - [ ] **subtask** — mock-peer-credentials: in-process socket harness
     that returns spoofable peer creds so the agent's peer-validation
     logic can be tested without root. Pre-req:
     `agent-peer-validation` subtask under Local agent daemon.
-  - [x] [bec7ddfc] **subtask** — mutation-malformed-crypto: tamper AAD/nonces
-    and replay automation-client nonces; assert typed
-    `IntegrityFailure`/`ReplayDetected` paths.
-  - [x] **subtask** — mutation-locked-vault-scan: locked vault scan
-    stays metadata-only, no secret leakage, no SCAN row, `--require-known` exits `UnlockRequired`.
-  - [x] [aa40a4ce] **subtask** — mutation-expired-versions: pinned `lk://...@vN`
-    past `grace_until` returns typed `SecretVersionExpired`.
-  - [x] [aa40a4ce] **subtask** — mutation-dangerous-profile: dangerous-profile
-    reads emit the documented denial audit and refuse value access.
 - [ ] Bench fixtures: metadata, runtime, reference-resolution,
   staged-scan, full-scan, and Argon2 fixtures used by `make bench`
   (`docs/specs/performance.md`).
@@ -894,8 +791,6 @@ editing — they drift. Severity: **blocker** (security/correctness),
 - [ ] RustSec advisory severity policy: high/critical block,
   medium runtime block, dev-only exception, low triage
   (`docs/specs/engineering.md`).
-- [x] Markdown lint integrated into `make docs-check`: trailing
-  whitespace, tabs, empty files, missing final newlines, unclosed fences.
 - [ ] Supply-chain exception ledger (package, version, reason,
   compensating controls, owner, expiration) enforced by CI;
   no-expiration entries are invalid (`docs/specs/engineering.md`).
