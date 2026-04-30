@@ -268,7 +268,7 @@ Slices 1+2 shipped (agent client, tray binding, 6 view scaffolds,
   - [~] [90b9f58a] branch agent-90b9f58a/agent-config-read-write, worktree .worktrees/agent-90b9f58a-agent-config-read-write; **subtask** — agent-config-read-write: settings RPCs for privacy, unlock TTL, verification policy, and dangerous-profile.
   - [ ] **subtask** — desktop-settings-data: wire into `Settings.vue`;
     propagate `privacy.redact_names` reactively. Slice 11.
-  - [~] [90b9f58a] branch agent-90b9f58a/agent-list-policies, worktree .worktrees/agent-90b9f58a-agent-list-policies; **subtask** — agent-list-policies: metadata-only saved policy RPC.
+  - [~] [acda32e4] branch agent-acda32e4/agent-list-policies, worktree .worktrees/agent-acda32e4-agent-list-policies; **subtask** — agent-list-policies: metadata-only saved policy RPC.
   - [ ] **subtask** — agent-policy-doctor-rpc: RPC exercising
     `lk://` resolution + env-mode expansion. Pre-req:
     `agent-resolve-reference-impl`.
