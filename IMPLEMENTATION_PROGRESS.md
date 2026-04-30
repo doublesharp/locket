@@ -931,8 +931,9 @@ editing — they drift. Severity: **blocker** (security/correctness),
     fields.
   - [ ] **subtask** — proptest-lk-uri: `lk://` parser round-trip,
     fragment/query rejection, and pinned-version normalization.
-  - [ ] **subtask** — proptest-canonical-json: canonical JSON encoder
+  - [~] [e7389a73] **subtask** — proptest-canonical-json: canonical JSON encoder
     is total-ordered, idempotent, and stable across permutations.
+    Claim: branch agent-e7389a73/proptest-canonical-json, worktree .worktrees/agent-e7389a73-proptest-canonical-json.
   - [ ] **subtask** — proptest-device-descriptor: descriptor codec
     round-trip; rejects malformed `lkdev1_` payloads, version-bump
     behavior. Depends on the descriptor codec landing.
