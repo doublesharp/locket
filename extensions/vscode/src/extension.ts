@@ -3,9 +3,11 @@
 import type { ExtensionContext } from 'vscode';
 
 import { AgentClient } from './agentClient';
+import { registerReferenceCompletionProvider } from './referenceCompletion';
 
 export function activate(context: ExtensionContext): void {
   const agentClient = new AgentClient();
+  context.subscriptions.push(registerReferenceCompletionProvider(agentClient));
   context.subscriptions.push({
     dispose: () => {
       agentClient.dispose();
