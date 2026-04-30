@@ -1,0 +1,19 @@
+agent_id = "e7389a73"
+topic = "harden-zeroize"
+branch = "agent-e7389a73/harden-zeroize"
+worktree = ".worktrees/agent-e7389a73-harden-zeroize"
+head_sha = "a3df75b788c0e7acd06e53b4d6972fca5a2da376"
+todo_section = "Harden"
+todo_line = "harden-zeroize: ensure unwrapped keys/values are wrapped in Zeroizing"
+description = "Changes open_recovery_entry_v1 return type from CryptoResult<Vec<u8>> to CryptoResult<Zeroizing<Vec<u8>>>. This was the only public API in locket-crypto returning unzeroized plaintext key material. All other decrypt paths (unwrap_key_material_v1, unwrap_dek_v1, decrypt_secret_value_v1) already returned Zeroizing. Call sites in recovery.rs use Deref and required no source changes."
+files_touched = [
+  "crates/locket-crypto/src/recovery_envelope.rs",
+]
+typed_errors_added = []
+audit_actions_added = []
+scoped_tests_run = "cargo test -p locket-crypto -p locket-cli -j 12"
+notes = """
+290 tests pass (27 locket-crypto + 263 locket-cli). No test updates
+needed: tests-crypto-aad branch (on separate feature branch) adds
+open_recovery_entry_v1 tests but hasn't been merged to main yet.
+"""
