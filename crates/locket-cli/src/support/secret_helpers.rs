@@ -168,11 +168,10 @@ pub fn resolve_active_secret(
     let profile = default_profile(&store, &project.config)?;
     let secrets =
         store.list_active_secrets_by_profile(project.config.project_id.as_str(), &profile.id)?;
-    let secret = secrets
-        .into_iter()
-        .filter(|secret| secret.name == name.as_str())
-        .max_by_key(|secret| source_precedence(&secret.source))
-        .ok_or_else(|| secret_not_found_error("secret not found"))?;
+    let secret = select_highest_precedence_secret(
+        secrets.into_iter().filter(|secret| secret.name == name.as_str()),
+    )
+    .ok_or_else(|| secret_not_found_error("secret not found"))?;
     Ok(ResolvedSecret { project, profile, secret })
 }
 
@@ -294,21 +293,8 @@ pub fn select_copy_source_secret(
         .into_iter()
         .filter(|secret| secret.state == "active")
         .collect::<Vec<_>>();
-    let highest = active
-        .iter()
-        .map(|secret| source_precedence(&secret.source))
-        .max()
-        .ok_or_else(|| secret_not_found_error("secret not found"))?;
-    let selected = active
-        .iter()
-        .filter(|secret| source_precedence(&secret.source) == highest)
-        .collect::<Vec<_>>();
-    match selected.as_slice() {
-        [secret] => Ok((*secret).clone()),
-        _ => Err(invalid_reference_error(
-            "multiple source candidates have ambiguous precedence; pass --from-source",
-        )),
-    }
+    select_highest_precedence_secret(active)
+        .ok_or_else(|| secret_not_found_error("secret not found"))
 }
 
 pub fn select_copy_target_source(
@@ -477,20 +463,33 @@ pub fn policy_secret_selection(
     active_by_name: &BTreeMap<String, Vec<SecretRecord>>,
 ) -> PolicySecretSelection {
     let secrets = active_by_name.get(name).cloned().unwrap_or_default();
-    let sources = secrets
-        .iter()
-        .map(|secret| secret.source.clone())
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect::<Vec<_>>();
-    let selected = secrets.into_iter().max_by_key(|secret| source_precedence(&secret.source));
+    let sources = sources_by_precedence(secrets.iter().map(|secret| secret.source.clone()));
+    let selected = select_highest_precedence_secret(secrets);
     PolicySecretSelection { name: name.to_owned(), required, sources, selected }
+}
+
+fn select_highest_precedence_secret(
+    secrets: impl IntoIterator<Item = SecretRecord>,
+) -> Option<SecretRecord> {
+    secrets.into_iter().max_by_key(|secret| source_precedence(&secret.source))
+}
+
+fn sources_by_precedence(sources: impl IntoIterator<Item = String>) -> Vec<String> {
+    let mut sources = sources.into_iter().collect::<BTreeSet<_>>().into_iter().collect::<Vec<_>>();
+    sources.sort_by(|left, right| {
+        source_precedence(right).cmp(&source_precedence(left)).then_with(|| left.cmp(right))
+    });
+    sources
 }
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
-    use super::{SECRET_NAMES_INLINE_LIMIT, summarize_names};
+    use std::collections::BTreeMap;
+
+    use locket_store::SecretRecord;
+
+    use super::{SECRET_NAMES_INLINE_LIMIT, policy_secret_selection, summarize_names};
 
     #[test]
     fn summarize_names_passes_through_small_list() {
@@ -515,5 +514,40 @@ mod tests {
         let result = summarize_names(&names);
         assert_eq!(result.len(), SECRET_NAMES_INLINE_LIMIT + 1);
         assert_eq!(result.last().unwrap(), "... 50 more");
+    }
+
+    #[test]
+    fn policy_secret_selection_orders_sources_by_precedence_and_selects_highest() {
+        let mut active_by_name = BTreeMap::new();
+        active_by_name.insert(
+            "DATABASE_URL".to_owned(),
+            vec![
+                secret_record("team-managed"),
+                secret_record("user-local"),
+                secret_record("machine-local"),
+            ],
+        );
+
+        let selection = policy_secret_selection("DATABASE_URL", true, &active_by_name);
+
+        assert_eq!(selection.sources, vec!["machine-local", "user-local", "team-managed"]);
+        assert_eq!(selection.selected.unwrap().source, "machine-local");
+    }
+
+    fn secret_record(source: &str) -> SecretRecord {
+        SecretRecord {
+            id: format!("sec_{source}"),
+            project_id: "proj".to_owned(),
+            profile_id: "prof".to_owned(),
+            name: "DATABASE_URL".to_owned(),
+            source: source.to_owned(),
+            origin: "manual".to_owned(),
+            current_version: 1,
+            state: "active".to_owned(),
+            created_at: 1,
+            updated_at: 1,
+            last_rotated_at: None,
+            deleted_at: None,
+        }
     }
 }
