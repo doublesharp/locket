@@ -289,11 +289,12 @@ the spec already covers. Closed slices land in
   `agent-socket-server` — note the dependency on the claim line if you
   take a downstream task.
   - [x] **subtask** — agent-socket-server: Unix domain socket with 0600/0700 perms, tokio accept loop, Status/Heartbeat stub handlers, `AgentSocketInUse` on collision, framing round-trip tests.
-  - [ ] **subtask** — agent-peer-validation: validate the connecting peer
+  - [~] [e7389a73] **subtask** — agent-peer-validation: validate the connecting peer
     against the daemon's uid (`SO_PEERCRED` on Linux, `LOCAL_PEERPID` +
     `LOCAL_PEEREPID` on macOS, named-pipe peer SID on Windows). Reject
     cross-user connections with `AccessDenied`. Tests: a non-matching uid
     is closed with the typed error. Depends on `agent-socket-server`.
+    Claim: branch agent-e7389a73/agent-peer-validation, worktree .worktrees/agent-e7389a73-agent-peer-validation. Scope: Linux/macOS getpeereid wrapper + pure validator + handle_connection wiring; Windows named-pipe SID stays a separate `[ ]` follow-up.
   - [ ] **subtask** — agent-unlock-cache: in-memory unlock-key cache keyed
     by project_id with TTL eviction that fires `LOCK` audit on expiry. Add
     `Lock`/`Unlock`/`Status` RPC handlers. Errors: `UnlockRequired` (72).
