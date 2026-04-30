@@ -135,17 +135,10 @@ for f in "${reg}"/*.toml; do
 done
 ```
 
-### Claiming work
+### Status legend
 
-Status legend: `[ ]` unclaimed · `[~] [<id>]` in progress (8-char agent
-id from your claim file) · `[x]` merged and verified.
-
-1. Pick an open `[ ]` item; never pick `[x]`.
-2. Flip it to `[~] [<your-agent-id>]` and add a one-line note (branch,
-   worktree, scope). The agent id MUST be the 8-char hex id of your live
-   claim file under `.agents/active/`. Commit on your feature branch.
-3. If a `[~]` line names an id with no live claim file (per the reaper),
-   it's free to reassign — replace the id with yours.
+`[ ]` unclaimed · `[~] [<id>]` in progress (8-char hex id from your
+live claim file) · `[x]` merged and verified.
 
 ### Worktree and branch naming
 
@@ -154,25 +147,14 @@ id from your claim file) · `[x]` merged and verified.
 - Create with
   `git worktree add ".worktrees/agent-${AGENT_ID}-<topic>" -b "agent-${AGENT_ID}/<topic>" main`.
 
-### Scope discipline
+### Scope and conflicts
 
-- One slice per TODO item; don't bundle.
-- Don't edit code another active claim owns. If you need it first, note
-  the dependency on your claim line and pick something else.
-- Never overwrite or revert another agent's committed work; if `main`
-  conflicts with your expectations, stop and surface it.
-
-### Conflict policy
-
-- Prefer rebase over merge for worker branches.
+- One slice per TODO item; don't bundle. Don't edit code another active
+  claim owns; note the dependency on your claim line and pick something
+  else.
 - If two agents produce overlapping work, the more complete slice wins
   and the loser rebases or abandons.
-- Never `--no-verify`, `--no-gpg-sign`, or `git push --force` on `main`.
-
-### Communicating state
-
-This file is the source of truth for open / claimed / done.
-Don't record who-did-what — `git log` is authoritative.
+- `git log` is authoritative for who-did-what — don't record it here.
 
 ## Active Plan
 
