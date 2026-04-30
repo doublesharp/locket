@@ -58,6 +58,26 @@ pub struct AuditLogRecord {
     pub command: Option<String>,
 }
 
+/// Stored row material for structural verification of an imported audit chain.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ImportedAuditChainRow {
+    /// Sequence number from the source project's audit chain.
+    pub sequence: u64,
+    /// Stored previous-row HMAC from the imported row.
+    pub previous_hmac: [u8; AUDIT_HMAC_LEN],
+    /// Stored row HMAC from the imported row.
+    pub hmac: [u8; AUDIT_HMAC_LEN],
+}
+
+/// Summary returned after imported audit-chain structural verification.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ImportedAuditChainVerification {
+    /// Number of imported rows verified.
+    pub rows_verified: u64,
+    /// Checkpoint sequence the imported chain was verified against.
+    pub checkpoint_sequence: u64,
+}
+
 /// Audit key plus row payload for transaction-scoped appends.
 #[derive(Clone, Copy, Debug)]
 pub struct AuditContext<'a> {
@@ -167,6 +187,58 @@ fn hmac_vec_to_array(sequence: u64, value: Vec<u8>) -> Result<[u8; AUDIT_HMAC_LE
         sequence,
         reason: format!("invalid hmac length {}", bytes.len()),
     })
+}
+
+/// Verifies imported remote audit rows against their plaintext bundle checkpoint.
+///
+/// The source project's audit key is never exported in sealed bundles, so this
+/// check verifies only structural continuity and the final checkpoint match.
+pub fn verify_imported_audit_chain_structure(
+    rows: &[ImportedAuditChainRow],
+    checkpoint_sequence: u64,
+    checkpoint_hmac: &[u8; AUDIT_HMAC_LEN],
+) -> Result<ImportedAuditChainVerification, StoreError> {
+    let mut expected_sequence = 1_u64;
+    let mut previous_hmac = [0; AUDIT_HMAC_LEN];
+
+    for row in rows {
+        if row.sequence != expected_sequence {
+            return Err(StoreError::AuditIntegrity {
+                sequence: expected_sequence,
+                reason: "sequence gap or reordering".to_owned(),
+            });
+        }
+        if row.previous_hmac != previous_hmac {
+            return Err(StoreError::AuditIntegrity {
+                sequence: row.sequence,
+                reason: "previous_hmac mismatch".to_owned(),
+            });
+        }
+
+        previous_hmac = row.hmac;
+        expected_sequence += 1;
+    }
+
+    let Some(final_row) = rows.last() else {
+        return Err(StoreError::AuditIntegrity {
+            sequence: 1,
+            reason: "imported audit chain is empty".to_owned(),
+        });
+    };
+    if final_row.sequence != checkpoint_sequence {
+        return Err(StoreError::AuditIntegrity {
+            sequence: final_row.sequence,
+            reason: "checkpoint_sequence mismatch".to_owned(),
+        });
+    }
+    if final_row.hmac != *checkpoint_hmac {
+        return Err(StoreError::AuditIntegrity {
+            sequence: final_row.sequence,
+            reason: "checkpoint_hmac mismatch".to_owned(),
+        });
+    }
+
+    Ok(ImportedAuditChainVerification { rows_verified: rows.len() as u64, checkpoint_sequence })
 }
 
 pub fn append_audit(

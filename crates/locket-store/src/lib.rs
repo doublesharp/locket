@@ -23,7 +23,10 @@ mod schema;
 mod secret;
 mod team;
 
-pub use audit::{AUDIT_METADATA_JSON_LIMIT, AuditContext, AuditLogRecord, AuditWrite};
+pub use audit::{
+    AUDIT_METADATA_JSON_LIMIT, AuditContext, AuditLogRecord, AuditWrite, ImportedAuditChainRow,
+    ImportedAuditChainVerification, verify_imported_audit_chain_structure,
+};
 pub use device::DeviceRecord;
 pub use error::StoreError;
 pub use grants::DirectoryGrantRecord;

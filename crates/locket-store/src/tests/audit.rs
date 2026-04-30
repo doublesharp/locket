@@ -8,12 +8,112 @@ use serde_json::json;
 use sha2::Sha256;
 
 use crate::audit::append_audit;
-use crate::{AuditContext, AuditWrite, StoreError};
+use crate::{
+    AuditContext, AuditWrite, ImportedAuditChainRow, StoreError,
+    verify_imported_audit_chain_structure,
+};
 
 use super::{
     insert_project_profile, open_initialized_store, test_secret, test_secret_blob,
     test_secret_fingerprint, test_secret_version,
 };
+
+fn imported_audit_row(
+    sequence: u64,
+    previous_hmac: [u8; AUDIT_HMAC_LEN],
+    hmac: [u8; AUDIT_HMAC_LEN],
+) -> ImportedAuditChainRow {
+    ImportedAuditChainRow { sequence, previous_hmac, hmac }
+}
+
+#[test]
+fn imported_audit_chain_verifier_accepts_structural_chain() -> Result<(), Box<dyn Error>> {
+    let first_hmac = [1_u8; AUDIT_HMAC_LEN];
+    let second_hmac = [2_u8; AUDIT_HMAC_LEN];
+    let rows = [
+        imported_audit_row(1, [0; AUDIT_HMAC_LEN], first_hmac),
+        imported_audit_row(2, first_hmac, second_hmac),
+    ];
+
+    let verified = verify_imported_audit_chain_structure(&rows, 2, &second_hmac)?;
+
+    assert_eq!(verified.rows_verified, 2);
+    assert_eq!(verified.checkpoint_sequence, 2);
+    Ok(())
+}
+
+#[test]
+fn imported_audit_chain_verifier_rejects_structural_mutations() -> Result<(), Box<dyn Error>> {
+    let first_hmac = [1_u8; AUDIT_HMAC_LEN];
+    let second_hmac = [2_u8; AUDIT_HMAC_LEN];
+    let third_hmac = [3_u8; AUDIT_HMAC_LEN];
+
+    for (case, rows, checkpoint_sequence, checkpoint_hmac, expected_sequence, expected_reason) in [
+        ("empty", vec![], 0, second_hmac, 1, "imported audit chain is empty"),
+        (
+            "sequence_gap",
+            vec![
+                imported_audit_row(1, [0; AUDIT_HMAC_LEN], first_hmac),
+                imported_audit_row(3, first_hmac, third_hmac),
+            ],
+            3,
+            third_hmac,
+            2,
+            "sequence gap or reordering",
+        ),
+        (
+            "previous_hmac",
+            vec![
+                imported_audit_row(1, [0; AUDIT_HMAC_LEN], first_hmac),
+                imported_audit_row(2, third_hmac, second_hmac),
+            ],
+            2,
+            second_hmac,
+            2,
+            "previous_hmac mismatch",
+        ),
+        (
+            "checkpoint_sequence",
+            vec![
+                imported_audit_row(1, [0; AUDIT_HMAC_LEN], first_hmac),
+                imported_audit_row(2, first_hmac, second_hmac),
+            ],
+            3,
+            second_hmac,
+            2,
+            "checkpoint_sequence mismatch",
+        ),
+        (
+            "checkpoint_hmac",
+            vec![
+                imported_audit_row(1, [0; AUDIT_HMAC_LEN], first_hmac),
+                imported_audit_row(2, first_hmac, second_hmac),
+            ],
+            2,
+            third_hmac,
+            2,
+            "checkpoint_hmac mismatch",
+        ),
+    ] {
+        match verify_imported_audit_chain_structure(&rows, checkpoint_sequence, &checkpoint_hmac) {
+            Err(StoreError::AuditIntegrity { sequence, reason }) => {
+                assert_eq!(sequence, expected_sequence, "case {case}");
+                assert_eq!(reason, expected_reason, "case {case}");
+            }
+            Ok(verified) => {
+                return Err(format!(
+                    "{case}: mutated imported chain unexpectedly verified {verified:?}"
+                )
+                .into());
+            }
+            Err(other) => {
+                return Err(format!("{case}: expected audit integrity error, got {other}").into());
+            }
+        }
+    }
+
+    Ok(())
+}
 
 #[test]
 fn audited_secret_create_appends_hmac_chained_row() -> Result<(), Box<dyn Error>> {
