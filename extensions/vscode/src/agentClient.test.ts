@@ -82,6 +82,60 @@ test('agent error envelopes become typed client errors', async () => {
   }
 });
 
+test('status subscription streams status events until disposed', async () => {
+  const { socketPath, cleanup } = await temporarySocketPath();
+  let sawDispose = false;
+  const server = net.createServer((socket) => {
+    socket.once('data', (frame: Buffer) => {
+      const request = decodeRequest(frame);
+      assert.equal(request.kind, 'SubscribeStatus');
+      socket.write(
+        encodeResponse({
+          v: 1,
+          id: request.id,
+          ok: true,
+          payload: {
+            kind: 'status',
+            sequence: 1,
+            lock_state: 'unlocked',
+            project_id: 'lk_proj_test',
+            profile_name: 'dev',
+            live_grant_count: 1,
+            agent_version: 'test-agent',
+            unlock_ttl_seconds: 60,
+          },
+        }),
+      );
+    });
+    socket.once('close', () => {
+      sawDispose = true;
+    });
+  });
+
+  try {
+    await listen(server, socketPath);
+    const client = new AgentClient({ socketPath, connectTimeoutMs: 500 });
+    const event = await new Promise<{ sequence: number; lock_state: string }>((resolve, reject) => {
+      client
+        .subscribeStatus(
+          (status) => resolve(status),
+          (error) => reject(error),
+        )
+        .then((subscription) => {
+          setTimeout(() => subscription.dispose(), 10);
+        })
+        .catch(reject);
+    });
+    assert.equal(event.sequence, 1);
+    assert.equal(event.lock_state, 'unlocked');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(sawDispose, true);
+  } finally {
+    server.close();
+    await cleanup();
+  }
+});
+
 test('socket path honors LOCKET_AGENT_SOCKET override', () => {
   assert.equal(resolveAgentSocketPath({ LOCKET_AGENT_SOCKET: '/tmp/locket-test.sock' }), '/tmp/locket-test.sock');
 });

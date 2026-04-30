@@ -12,10 +12,12 @@ import {
   buildRevealWebviewHtml,
   revealTtlMilliseconds,
 } from './revealWebview';
+import { registerLocketStatusBar } from './statusBar';
 
 export function activate(context: vscode.ExtensionContext): void {
   const agentClient = new AgentClient();
   context.subscriptions.push(registerLocketDiagnostics());
+  context.subscriptions.push(registerLocketStatusBar(agentClient));
   context.subscriptions.push(registerReferenceCompletionProvider(agentClient));
   context.subscriptions.push(
     vscode.commands.registerCommand('locket.revealSecret', () => revealSecret(agentClient)),
