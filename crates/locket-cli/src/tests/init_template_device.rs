@@ -1265,3 +1265,117 @@ fn assert_metadata_invalid<T>(
     assert!(message.contains(expected_message), "{message}");
     Ok(())
 }
+
+#[test]
+fn e2e_greenfield_init_set_get_with_audit_chain_and_file_modes()
+-> Result<(), Box<dyn std::error::Error>> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let directory = tempdir()?;
+    let context = test_context_with_secret_value(&directory, "postgres://localhost/e2e");
+
+    // Step 1: locket init (project name "app" matches the default init confirmation reader)
+    let mut init_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut init_output,
+    )?;
+    let init_text = String::from_utf8(init_output)?;
+    assert!(init_text.contains("initialized locket project"), "init output: {init_text}");
+    assert!(init_text.contains("default_profile: dev"));
+
+    // Step 2: locket device init
+    let mut device_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "device", "init"])?,
+        &context,
+        &mut device_output,
+    )?;
+    let device_text = String::from_utf8(device_output)?;
+    assert!(device_text.contains("device: initialized"), "device init output: {device_text}");
+    assert!(device_text.contains("metadata_only: yes"));
+
+    // Step 3: locket profile create staging
+    let mut profile_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "profile", "create", "staging"])?,
+        &context,
+        &mut profile_output,
+    )?;
+    let profile_text = String::from_utf8(profile_output)?;
+    assert!(profile_text.contains("created profile staging"), "profile create output: {profile_text}");
+
+    // Step 4: locket set DATABASE_URL
+    let mut set_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "set", "DATABASE_URL"])?,
+        &context,
+        &mut set_output,
+    )?;
+    let set_text = String::from_utf8(set_output)?;
+    assert!(set_text.contains("set DATABASE_URL"), "set output: {set_text}");
+    assert!(!set_text.contains("postgres://localhost/e2e"), "secret value must not appear in output");
+
+    // Step 5: locket get DATABASE_URL --reveal --force
+    let mut get_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "get", "DATABASE_URL", "--reveal", "--force"])?,
+        &context,
+        &mut get_output,
+    )?;
+    assert_eq!(
+        String::from_utf8(get_output)?,
+        "postgres://localhost/e2e\n",
+        "get --reveal should output exact secret value"
+    );
+
+    // Verify audit chain integrity via locket audit verify
+    let mut audit_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "audit", "verify"])?,
+        &context,
+        &mut audit_output,
+    )?;
+    let audit_text = String::from_utf8(audit_output)?;
+    assert!(audit_text.contains("audit: verified"), "audit verify output: {audit_text}");
+
+    // Assert no secret values appear in any audit row metadata
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let metadata_rows: Vec<String> = {
+        let mut stmt = store
+            .connection()
+            .prepare("SELECT metadata_json FROM audit_log ORDER BY sequence")?;
+        stmt.query_map([], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    for metadata in &metadata_rows {
+        assert!(
+            !metadata.contains("postgres://localhost/e2e"),
+            "audit metadata must not contain secret value"
+        );
+    }
+
+    // Assert INIT audit row is present
+    let actions: Vec<String> = {
+        let mut stmt = store
+            .connection()
+            .prepare("SELECT action FROM audit_log ORDER BY sequence")?;
+        stmt.query_map([], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    assert!(actions.contains(&"INIT".to_owned()), "INIT audit row missing: {actions:?}");
+    assert!(actions.contains(&"SET".to_owned()), "SET audit row missing: {actions:?}");
+    assert!(actions.contains(&"REVEAL".to_owned()), "REVEAL audit row missing: {actions:?}");
+
+    // Assert passphrase-fallback key file (if present) has 0600 permissions.
+    // The store.db itself uses SQLite's default umask; file-mode hardening for
+    // store.db is tracked as a separate work item.
+    let passphrase_fallback = directory.path().join("passphrase-fallback");
+    if passphrase_fallback.exists() {
+        let mode = fs::metadata(&passphrase_fallback)?.permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "passphrase-fallback must have 0600 permissions, got 0o{mode:o}");
+    }
+
+    Ok(())
+}
