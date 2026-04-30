@@ -588,9 +588,10 @@ the spec already covers. Closed slices land in
   `docs/specs/operations.md`). Subtasks are largely independent;
   `harden-peer-cred` and `harden-socket-perms` are pre-reqs for the
   agent daemon listening on real connections.
-  - [ ] **subtask** — harden-peer-cred: peer credential validation
+  - [~] [7138f228] **subtask** — harden-peer-cred: peer credential validation
     (`SO_PEERCRED`/`LOCAL_PEERCRED`/named-pipe SID) on the agent
     socket. Pre-req: `agent-socket-server`.
+    Claim: branch agent-7138f228/harden-peer-cred, worktree .worktrees/agent-7138f228-harden-peer-cred. Scope: validate the connecting peer's uid matches the daemon's uid via rustix `getsockopt_peercred` (Linux) / `getpeereid` (macOS) inside `handle_connection`; reject mismatched peers with the typed `AccessDenied` ProtocolError envelope before any RPC dispatch. Windows named-pipe SID stays a follow-up.
   - [~] [e7389a73] **subtask** — harden-socket-perms: 0600/equivalent socket and
     pipe permissions; refuse to start if the bind path is wider.
     Claim: branch agent-e7389a73/harden-socket-perms, worktree .worktrees/agent-e7389a73-harden-socket-perms. Scope: refuse to bind when an existing parent dir or socket path is wider than 0o700/0o600.
