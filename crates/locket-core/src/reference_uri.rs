@@ -431,3 +431,153 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::panic)]
+#[allow(clippy::unwrap_used)]
+mod proptest_lk_uri {
+    use proptest::prelude::*;
+
+    use super::{InvalidReferenceUri, LkReferenceUri};
+
+    fn valid_profile_strategy() -> impl Strategy<Value = String> {
+        prop::string::string_regex("[a-z][a-z0-9_-]{0,15}").expect("valid regex")
+    }
+
+    fn valid_secret_strategy() -> impl Strategy<Value = String> {
+        let first = prop::char::ranges(std::borrow::Cow::Borrowed(&['A'..='Z', '_'..='_']));
+        let rest = prop::collection::vec(
+            prop::char::ranges(std::borrow::Cow::Borrowed(&[
+                'A'..='Z',
+                '0'..='9',
+                '_'..='_',
+            ])),
+            0..12,
+        );
+        (first, rest).prop_map(|(f, r)| {
+            let mut s = String::new();
+            s.push(f);
+            s.extend(r);
+            s
+        })
+    }
+
+    proptest! {
+        #[test]
+        fn bare_uri_round_trips_profile_and_key(
+            profile in valid_profile_strategy(),
+            key in valid_secret_strategy(),
+        ) {
+            let uri = format!("lk://{profile}/{key}");
+            let parsed = LkReferenceUri::parse(&uri);
+            prop_assert!(parsed.is_ok(), "valid uri should parse: {parsed:?}");
+            let parsed = parsed.unwrap();
+            prop_assert_eq!(parsed.profile().as_str(), profile.as_str());
+            prop_assert_eq!(parsed.key().as_str(), key.as_str());
+            prop_assert!(parsed.version().is_none(), "no version without @vN");
+            prop_assert!(parsed.source().is_none(), "no source without query");
+        }
+
+        #[test]
+        fn pinned_version_round_trips(
+            profile in valid_profile_strategy(),
+            key in valid_secret_strategy(),
+            version in 1u32..=u32::MAX,
+        ) {
+            let uri = format!("lk://{profile}/{key}@v{version}");
+            let parsed = LkReferenceUri::parse(&uri);
+            prop_assert!(parsed.is_ok(), "pinned uri should parse: {parsed:?}");
+            let parsed = parsed.unwrap();
+            prop_assert_eq!(
+                parsed.version().map(|v| v.get()),
+                Some(version),
+                "version preserved"
+            );
+        }
+
+        #[test]
+        fn version_zero_is_always_rejected(
+            profile in valid_profile_strategy(),
+            key in valid_secret_strategy(),
+        ) {
+            let uri = format!("lk://{profile}/{key}@v0");
+            let result = LkReferenceUri::parse(&uri);
+            prop_assert_eq!(result, Err(InvalidReferenceUri::MalformedVersion));
+        }
+
+        #[test]
+        fn missing_scheme_always_rejects(
+            profile in valid_profile_strategy(),
+            key in valid_secret_strategy(),
+        ) {
+            let bare = format!("{profile}/{key}");
+            prop_assert_eq!(
+                LkReferenceUri::parse(&bare),
+                Err(InvalidReferenceUri::MissingScheme)
+            );
+        }
+
+        #[test]
+        fn empty_query_always_rejects(
+            profile in valid_profile_strategy(),
+            key in valid_secret_strategy(),
+        ) {
+            let uri = format!("lk://{profile}/{key}?");
+            prop_assert_eq!(
+                LkReferenceUri::parse(&uri),
+                Err(InvalidReferenceUri::EmptyQuery)
+            );
+        }
+
+        #[test]
+        fn unknown_query_key_always_rejects(
+            profile in valid_profile_strategy(),
+            key in valid_secret_strategy(),
+            qkey in "[a-z]{3,8}",
+            qval in "[a-z]{3,8}",
+        ) {
+            prop_assume!(qkey != "source");
+            let uri = format!("lk://{profile}/{key}?{qkey}={qval}");
+            prop_assert_eq!(
+                LkReferenceUri::parse(&uri),
+                Err(InvalidReferenceUri::UnknownQueryKey)
+            );
+        }
+
+        #[test]
+        fn invalid_profile_names_rejected(key in valid_secret_strategy()) {
+            for bad_profile in &["Prod", "1dev", "DEV", ""] {
+                let uri = format!("lk://{bad_profile}/{key}");
+                let result = LkReferenceUri::parse(&uri);
+                prop_assert!(
+                    result.is_err(),
+                    "invalid profile {bad_profile:?} must be rejected for key {key}: {result:?}"
+                );
+            }
+        }
+
+        #[test]
+        fn invalid_secret_names_rejected(profile in valid_profile_strategy()) {
+            for bad_key in &["lowercase", "DASH-KEY", "DOT.KEY", ""] {
+                let uri = format!("lk://{profile}/{bad_key}");
+                let result = LkReferenceUri::parse(&uri);
+                prop_assert!(
+                    result.is_err(),
+                    "invalid key {bad_key:?} must be rejected for profile {profile}: {result:?}"
+                );
+            }
+        }
+
+        #[test]
+        fn source_query_param_is_preserved(
+            profile in valid_profile_strategy(),
+            key in valid_secret_strategy(),
+            source in prop::sample::select(vec!["user-local", "machine-local", "team-managed"]),
+        ) {
+            let uri = format!("lk://{profile}/{key}?source={source}");
+            let parsed = LkReferenceUri::parse(&uri);
+            prop_assert!(parsed.is_ok(), "source query should parse: {parsed:?}");
+            prop_assert!(parsed.unwrap().source().is_some(), "source preserved");
+        }
+    }
+}
