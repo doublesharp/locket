@@ -191,7 +191,8 @@ the spec already covers. Closed slices land in
   bits/char, exclude UUIDs/checksums/public ids) with project
   overrides in `locket.toml`; `policy doctor` reports non-default
   thresholds (`docs/specs/scan-redaction.md:24`).
-- [ ] Known-value scan must include deleted-source current versions
+- [~] [bec7ddfc] Known-value scan must include deleted-source current versions
+  Claim: branch agent-bec7ddfc/known-scan-deleted-grace, worktree .worktrees/agent-bec7ddfc-known-scan-deleted-grace.
   with blobs and deprecated versions still within `grace_until`;
   exclude purged versions (`docs/specs/scan-redaction.md:17`).
 - [ ] `locket redact --stdin` streaming mode with non-UTF-8 byte
