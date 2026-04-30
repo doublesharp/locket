@@ -236,6 +236,8 @@ Slices that have merged to `main` and verified. Open work tracked in
   desktop shell. Wires the Policies nav entry to metadata-only policy rows.
 - [x] agent-list-runtime-sessions: Added the agent runtime-session list RPC for the
   desktop execution monitor.
+- [x] search-projects-profiles: Added a dashboard search and filter surface for
+  project/profile metadata.
 
 ## Full Spec Coverage TODO — Code Health and Bug Fixes
 
