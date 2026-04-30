@@ -954,8 +954,9 @@ editing — they drift. Severity: **blocker** (security/correctness),
     stays metadata-only, no secret leakage, no SCAN row, `--require-known` exits `UnlockRequired`.
   - [ ] **subtask** — mutation-expired-versions: pinned `lk://...@vN`
     past `grace_until` returns typed `SecretVersionExpired`.
-  - [ ] **subtask** — mutation-dangerous-profile: dangerous-profile
+  - [~] [aa40a4ce] **subtask** — mutation-dangerous-profile: dangerous-profile
     reads emit the documented denial audit and refuse value access.
+    Claim: branch agent-aa40a4ce/mutation-dangerous-profile, worktree .worktrees/agent-aa40a4ce-mutation-dangerous-profile.
 - [ ] Bench fixtures: metadata, runtime, reference-resolution,
   staged-scan, full-scan, and Argon2 fixtures used by `make bench`
   (`docs/specs/performance.md`).
