@@ -133,8 +133,7 @@ skill set fits a leaf better.
     `lk-resolve-pinned-version`.
   - [ ] **subtask** — lk-resolve-audit: write `RESOLVE_REFERENCE`
     rows on every resolution (success and failure).
-- [ ] `locket exec --all` flow shipped. Remaining: `locket env
-  inspect` enhancements and env-layering / override-mode docs.
+- [~] [90b9f58a] branch agent-90b9f58a/env-inspect-layers, worktree .worktrees/agent-90b9f58a-env-inspect-layers; `locket env inspect` external-layer and override decisions (`docs/specs/runtime.md:67-77`).
 - [ ] On-demand agent startup: `locket exec`/`run` start the agent
   when missing; `AgentUnavailable` only after on-demand startup fails.
 - [ ] VS Code extension backed by the local agent
