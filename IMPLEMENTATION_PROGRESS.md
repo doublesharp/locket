@@ -817,7 +817,7 @@ editing — they drift. Severity: **blocker** (security/correctness),
   claimed in parallel. Each subtask must add tests that demonstrably
   raise covered lines/branches; cite `cargo llvm-cov` deltas in the
   commit message (`docs/specs/testing.md:8-72`).
-  - [~] [bec7ddfc] **subtask** — tests-policy-evaluation: cover
+  - [x] **subtask** — tests-policy-evaluation: cover
     `crates/locket-core/src/policy/` deny-by-default evaluation,
     required vs optional secret semantics, malformed-policy rejection,
     and `confirm`/`require_user_verification`/`ttl` edge cases.
