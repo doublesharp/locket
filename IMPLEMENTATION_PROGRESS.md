@@ -655,10 +655,11 @@ the spec already covers. Closed slices land in
 - [x] `locket bundle verify` writes a `BUNDLE_VERIFY` audit row when
   the bundle's project matches the cwd; unknown-project invocations
   stay metadata-only.
-- [ ] Solo-developer authorization: treat the local user as Owner
+- [~] [aa40a4ce] Solo-developer authorization: treat the local user as Owner
   when no `Team` record exists, while still enforcing typed
   confirmations / verification / audit / source-selection rules
   (`docs/specs/team-sync-recovery.md`).
+  Claim: branch agent-aa40a4ce/solo-dev-authorization, worktree .worktrees/agent-aa40a4ce-solo-dev-authorization. Scope: tests verifying solo (no Team record) projects allow init/set/run/exec/team-members while team-only commands fail appropriately.
 - [ ] LocalUserVerifier macOS LocalAuthentication backend.
 - [ ] LocalUserVerifier Windows Hello backend.
 - [ ] LocalUserVerifier Linux Secret Service / hardware-key-presence
@@ -923,7 +924,7 @@ editing — they drift. Severity: **blocker** (security/correctness),
   independent and each lands one `proptest`/`quickcheck` harness
   asserting the documented invariants
   (`docs/specs/testing.md:14`).
-  - [~] [bec7ddfc] **subtask** — proptest-dotenv: `.env` parser round-trip and
+  - [x] [bec7ddfc] **subtask** — proptest-dotenv: `.env` parser round-trip and
     rejection invariants.
   - [ ] **subtask** — proptest-policy-toml: policy TOML parse →
     normalize → re-serialize round-trip; rejection of disallowed
