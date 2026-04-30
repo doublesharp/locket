@@ -32,13 +32,33 @@ const SOCKET_PERMISSIONS_MODE: u32 = 0o600;
 const SOCKET_PARENT_PERMISSIONS_MODE: u32 = 0o700;
 
 /// Outcome of a single accepted connection's handle loop.
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug)]
 pub enum ConnectionOutcome {
     /// Client closed the stream cleanly.
     PeerClosed,
     /// We answered one or more requests, then hit an error reading.
     Errored,
+    /// The connection was rejected at accept time without a response,
+    /// most commonly because the peer's UID did not match the
+    /// daemon's.
+    Rejected {
+        /// Why the connection was dropped.
+        reason: SocketServerError,
+    },
 }
+
+impl PartialEq for ConnectionOutcome {
+    fn eq(&self, other: &Self) -> bool {
+        matches!(
+            (self, other),
+            (Self::PeerClosed, Self::PeerClosed)
+                | (Self::Errored, Self::Errored)
+                | (Self::Rejected { .. }, Self::Rejected { .. })
+        )
+    }
+}
+
+impl Eq for ConnectionOutcome {}
 
 /// Errors returned by the agent socket server.
 #[derive(Debug, thiserror::Error)]
@@ -63,6 +83,18 @@ pub enum SocketServerError {
         mode: u32,
         /// Maximum allowed mode bits (e.g., `0o700` for parents).
         expected: u32,
+    },
+    /// The connecting peer's effective UID did not match the daemon's
+    /// UID. Maps to [`locket_core::LocketError::AccessDenied`] (exit
+    /// 70) at the CLI boundary.
+    #[error(
+        "agent peer UID {peer_uid} does not match daemon UID {daemon_uid}; refusing cross-user connection"
+    )]
+    PeerCredentialDenied {
+        /// UID reported by the kernel for the connecting peer.
+        peer_uid: u32,
+        /// UID of the running daemon process.
+        daemon_uid: u32,
     },
     /// `bind`/`accept`/permission tweak failed for an OS reason.
     #[error("agent socket I/O error: {0}")]
@@ -171,17 +203,33 @@ fn prepare_parent_directory(parent: &Path) -> Result<(), SocketServerError> {
 pub struct AgentSocketState {
     /// Source of `Status` responses for this slice's stub handlers.
     pub status_source: Arc<Mutex<StubStatusSource>>,
+    /// UID of the running daemon process, used to validate peer
+    /// credentials on every accept.
+    pub daemon_uid: u32,
 }
 
 impl AgentSocketState {
     /// Builds an initial state with a locked status payload. Future
     /// slices replace this with a real key-cache-backed source.
+    ///
+    /// The daemon UID is captured from the live process when the
+    /// state is constructed, which matches how `locket agent start`
+    /// will boot the listener.
     #[must_use]
     pub fn locked(agent_version: impl Into<String>) -> Self {
+        Self::with_daemon_uid(agent_version, crate::peer_cred::current_process_uid())
+    }
+
+    /// Builds an initial state with an explicit daemon UID. Tests use
+    /// this to drive the peer-validation rejection path without
+    /// running as a different user.
+    #[must_use]
+    pub fn with_daemon_uid(agent_version: impl Into<String>, daemon_uid: u32) -> Self {
         Self {
             status_source: Arc::new(Mutex::new(StubStatusSource::new(StatusPayload::locked(
                 agent_version,
             )))),
+            daemon_uid,
         }
     }
 }
@@ -211,13 +259,24 @@ impl StubStatusSource {
     }
 }
 
-/// Handles a single accepted connection: read framed requests one at a
-/// time, dispatch the stub handler, and write framed responses until
-/// the peer closes or a read error occurs.
+/// Handles a single accepted connection: validate peer credentials,
+/// read framed requests one at a time, dispatch the stub handler, and
+/// write framed responses until the peer closes or a read error
+/// occurs.
+///
+/// A peer whose effective UID does not match the daemon's UID is
+/// dropped immediately without any response, so the existence and
+/// state of the daemon are not exposed to other principals on the
+/// host. Same-user connections are allowed through; the rejection is
+/// surfaced through [`ConnectionOutcome::Rejected`] for tests and
+/// future audit wiring.
 pub async fn handle_connection(
     mut stream: UnixStream,
     state: AgentSocketState,
 ) -> ConnectionOutcome {
+    if let Err(error) = crate::peer_cred::validate_peer_stream(&stream, state.daemon_uid) {
+        return ConnectionOutcome::Rejected { reason: error };
+    }
     let mut buffer = Vec::with_capacity(4 * 1024);
     loop {
         match read_one_frame(&mut stream, &mut buffer).await {

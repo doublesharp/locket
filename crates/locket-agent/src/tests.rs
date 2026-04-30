@@ -463,4 +463,108 @@ mod server_tests {
         assert_eq!(nested_mode, 0o700, "freshly created parent must be owner-only");
         Ok(())
     }
+
+    #[tokio::test]
+    async fn handle_connection_rejects_cross_user_peer()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        tighten_directory(directory.path())?;
+        let socket_path = directory.path().join("agent.sock");
+        let config = AgentSocketConfig::new(socket_path.clone(), "0.0.0-test");
+        let listener = bind_socket_listener(&config)?;
+        // Spoof a daemon UID that cannot match the live test process
+        // UID so the live UnixStream::peer_cred() lookup yields a
+        // mismatch. This drives the rejection path without needing
+        // sudo or a second user account.
+        let phantom_daemon_uid =
+            crate::peer_cred::current_process_uid().wrapping_add(1).wrapping_add(0xDEAD);
+        let state = AgentSocketState::with_daemon_uid("0.0.0-test", phantom_daemon_uid);
+
+        let server_state = state.clone();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept");
+            handle_connection(stream, server_state).await
+        });
+
+        let mut client = UnixStream::connect(&socket_path).await?;
+        let request = RequestEnvelope::new("req-1", AgentMethod::Status, Value::Null);
+        let frame = encode_frame(&request, DEFAULT_MAX_MESSAGE_SIZE)?;
+        // The server should drop the stream before reading any frame
+        // — write may succeed into the kernel buffer, but the read
+        // attempt below must observe EOF without ever producing a
+        // response envelope.
+        let _ = client.write_all(&frame).await;
+        let mut buffer = Vec::new();
+        let mut chunk = [0_u8; 1024];
+        loop {
+            let read = client.read(&mut chunk).await?;
+            if read == 0 {
+                break;
+            }
+            buffer.extend_from_slice(&chunk[..read]);
+        }
+        assert!(
+            buffer.is_empty(),
+            "rejected peer must not receive any response bytes, got {buffer:?}"
+        );
+
+        let outcome = server.await?;
+        assert!(
+            matches!(
+                &outcome,
+                ConnectionOutcome::Rejected {
+                    reason: SocketServerError::PeerCredentialDenied { .. },
+                }
+            ),
+            "expected ConnectionOutcome::Rejected with PeerCredentialDenied, got {outcome:?}"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn handle_connection_accepts_same_uid_peer() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        tighten_directory(directory.path())?;
+        let socket_path = directory.path().join("agent.sock");
+        let config = AgentSocketConfig::new(socket_path.clone(), "0.0.0-test");
+        let listener = bind_socket_listener(&config)?;
+        // The default constructor captures the live process UID, so
+        // a same-process UnixStream::connect() satisfies the peer
+        // check.
+        let state = AgentSocketState::locked(config.agent_version.clone());
+
+        let server_state = state.clone();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept");
+            handle_connection(stream, server_state).await
+        });
+
+        let mut client = UnixStream::connect(&socket_path).await?;
+        let request = RequestEnvelope::new("req-1", AgentMethod::Status, Value::Null);
+        let frame = encode_frame(&request, DEFAULT_MAX_MESSAGE_SIZE)?;
+        client.write_all(&frame).await?;
+        client.flush().await?;
+
+        let mut buffer = Vec::new();
+        let mut chunk = [0_u8; 1024];
+        let response = loop {
+            let read = client.read(&mut chunk).await?;
+            buffer.extend_from_slice(&chunk[..read]);
+            if let Ok((response, _)) = decode_response_frame(&buffer, DEFAULT_MAX_MESSAGE_SIZE) {
+                break response;
+            }
+            if read == 0 {
+                return Err("server closed before sending a response".into());
+            }
+        };
+        let ResponseEnvelope::Success(success) = response else {
+            return Err(format!("expected Status success, got {response:?}").into());
+        };
+        assert_eq!(success.id, "req-1");
+
+        drop(client);
+        let outcome = server.await?;
+        assert_eq!(outcome, ConnectionOutcome::PeerClosed);
+        Ok(())
+    }
 }
