@@ -4,6 +4,7 @@
 //! envelope creation, and the rollback bookkeeping used to keep init
 //! atomic on failure.
 
+use std::collections::BTreeSet;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -56,9 +57,11 @@ pub fn init(
         }
 
         let rollback = InitRollback::capture(
+            &store,
             &resolved.root,
             resolved.config.project_id.as_str(),
             !state.project_present,
+            !state.project_key_exists,
         )?;
         let result =
             complete_init(context, output, &mut store, &resolved.config, &resolved.root, timestamp);
@@ -91,7 +94,8 @@ pub fn init(
         return Err(metadata_invalid_error("locket.toml already exists but could not be resolved"));
     }
 
-    let rollback = InitRollback::capture(&context.cwd, config.project_id.as_str(), true)?;
+    let rollback =
+        InitRollback::capture(&store, &context.cwd, config.project_id.as_str(), true, true)?;
     write_project_config(&config_path, &config)?;
     let result = complete_init(context, output, &mut store, &config, &context.cwd, timestamp);
     let completion = match result {
@@ -110,6 +114,7 @@ pub fn init(
 struct InitState {
     project_present: bool,
     profile_present: bool,
+    project_key_exists: bool,
     project_keys_complete: bool,
     profile_keys_complete: bool,
     recovery_ready: bool,
@@ -162,9 +167,65 @@ impl FileSnapshot {
 }
 
 #[derive(Debug)]
+struct StoreSnapshot {
+    profile_ids: BTreeSet<String>,
+    key_ids: BTreeSet<String>,
+    root_hashes: BTreeSet<Vec<u8>>,
+}
+
+impl StoreSnapshot {
+    fn capture(store: &Store, project_id: &str) -> Result<Self, CliError> {
+        Ok(Self {
+            profile_ids: string_set(
+                store,
+                "SELECT id FROM profiles WHERE project_id = ?1",
+                project_id,
+            )?,
+            key_ids: string_set(store, "SELECT id FROM keys WHERE project_id = ?1", project_id)?,
+            root_hashes: bytes_set(
+                store,
+                "SELECT root_hash FROM project_roots WHERE project_id = ?1",
+                project_id,
+            )?,
+        })
+    }
+
+    fn rollback_new_rows(&self, store: &Store, project_id: &str) {
+        if let Ok(ids) = string_set(store, "SELECT id FROM keys WHERE project_id = ?1", project_id)
+        {
+            for id in ids.difference(&self.key_ids) {
+                let _ignored = store.connection().execute("DELETE FROM keys WHERE id = ?1", [id]);
+            }
+        }
+        if let Ok(ids) =
+            string_set(store, "SELECT id FROM profiles WHERE project_id = ?1", project_id)
+        {
+            for id in ids.difference(&self.profile_ids) {
+                let _ignored =
+                    store.connection().execute("DELETE FROM profiles WHERE id = ?1", [id]);
+            }
+        }
+        if let Ok(root_hashes) = bytes_set(
+            store,
+            "SELECT root_hash FROM project_roots WHERE project_id = ?1",
+            project_id,
+        ) {
+            for root_hash in root_hashes.difference(&self.root_hashes) {
+                let _ignored = store.connection().execute(
+                    "DELETE FROM project_roots WHERE project_id = ?1 AND root_hash = ?2",
+                    (project_id, root_hash.as_slice()),
+                );
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
 struct InitRollback {
     project_id: String,
     remove_store_project: bool,
+    master_key_rollback: MasterKeyRollback,
+    store_snapshot: StoreSnapshot,
     snapshots: Vec<FileSnapshot>,
     recovery_dir: PathBuf,
     recovery_dir_existed: bool,
@@ -174,9 +235,11 @@ struct InitRollback {
 
 impl InitRollback {
     fn capture(
+        store: &Store,
         root: &Path,
         project_id: &str,
         remove_store_project: bool,
+        delete_master_key: bool,
     ) -> Result<Self, CliError> {
         let recovery_dir = root.join(".locket").join("recovery");
         let locket_dir = root.join(".locket");
@@ -190,6 +253,8 @@ impl InitRollback {
         Ok(Self {
             project_id: project_id.to_owned(),
             remove_store_project,
+            master_key_rollback: MasterKeyRollback::from_delete(delete_master_key),
+            store_snapshot: StoreSnapshot::capture(store, project_id)?,
             snapshots,
             recovery_dir_existed: recovery_dir.exists(),
             recovery_dir,
@@ -201,6 +266,10 @@ impl InitRollback {
     fn rollback(&self, context: &RuntimeContext, store: &Store) {
         if self.remove_store_project {
             let _ignored = store.delete_project(&self.project_id);
+        } else {
+            self.store_snapshot.rollback_new_rows(store, &self.project_id);
+        }
+        if self.master_key_rollback.should_delete() {
             let _ignored = context.key_store.delete_master_key(&self.project_id);
             let _ignored = context.passphrase_store.delete_master_key(&self.project_id);
         }
@@ -216,6 +285,46 @@ impl InitRollback {
     }
 }
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum MasterKeyRollback {
+    Preserve,
+    Delete,
+}
+
+impl MasterKeyRollback {
+    const fn from_delete(delete: bool) -> Self {
+        if delete { Self::Delete } else { Self::Preserve }
+    }
+
+    const fn should_delete(self) -> bool {
+        matches!(self, Self::Delete)
+    }
+}
+
+fn string_set(
+    store: &Store,
+    sql: &str,
+    project_id: &str,
+) -> Result<BTreeSet<String>, locket_store::StoreError> {
+    let mut statement = store.connection().prepare(sql)?;
+    let rows = statement
+        .query_map([project_id], |row| row.get::<_, String>(0))?
+        .collect::<Result<BTreeSet<_>, _>>()?;
+    Ok(rows)
+}
+
+fn bytes_set(
+    store: &Store,
+    sql: &str,
+    project_id: &str,
+) -> Result<BTreeSet<Vec<u8>>, locket_store::StoreError> {
+    let mut statement = store.connection().prepare(sql)?;
+    let rows = statement
+        .query_map([project_id], |row| row.get::<_, Vec<u8>>(0))?
+        .collect::<Result<BTreeSet<_>, _>>()?;
+    Ok(rows)
+}
+
 fn inspect_init_state(
     store: &Store,
     config: &ProjectConfig,
@@ -224,8 +333,10 @@ fn inspect_init_state(
     let project_id = config.project_id.as_str();
     let project_present = store.get_project(project_id)?.is_some();
     let profile = store.get_profile_by_name(project_id, config.default_profile.as_str())?;
-    let project_keys_complete = key_exists(store, project_id, None, KeyPurpose::ProjectMetadata)?
-        && key_exists(store, project_id, None, KeyPurpose::Audit)?;
+    let metadata_key_exists = key_exists(store, project_id, None, KeyPurpose::ProjectMetadata)?;
+    let audit_key_exists = key_exists(store, project_id, None, KeyPurpose::Audit)?;
+    let project_key_exists = metadata_key_exists || audit_key_exists;
+    let project_keys_complete = metadata_key_exists && audit_key_exists;
     let profile_keys_complete = if let Some(profile) = &profile {
         key_exists(store, project_id, Some(&profile.id), KeyPurpose::ProfileSecret)?
             && key_exists(store, project_id, Some(&profile.id), KeyPurpose::ProfileFingerprint)?
@@ -235,6 +346,7 @@ fn inspect_init_state(
     Ok(InitState {
         project_present,
         profile_present: profile.is_some(),
+        project_key_exists,
         project_keys_complete,
         profile_keys_complete,
         recovery_ready: init_recovery_files_ready(root),

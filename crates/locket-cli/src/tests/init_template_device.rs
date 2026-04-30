@@ -915,6 +915,54 @@ fn init_failure_on_unmanaged_env_example_rolls_back_owned_changes()
 }
 
 #[test]
+fn init_resume_failure_rolls_back_new_store_rows_and_master_key()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let key_store = Arc::new(MemoryMasterKeyStore::default());
+    let context = test_context_with_key_store(&directory, key_store.clone());
+    let config = locket_core::ProjectConfig::new(
+        locket_core::ProjectId::generate()?,
+        "app".to_owned(),
+        locket_core::ProfileName::new("dev".to_owned())?,
+    );
+    crate::write_project_config(&directory.path().join("locket.toml"), &config)?;
+    let original_config_text = std::fs::read_to_string(directory.path().join("locket.toml"))?;
+    std::fs::write(directory.path().join(".env.example"), "MANUAL=kept\n")?;
+
+    let store = crate::open_store(&context)?;
+    store.insert_project_if_absent(config.project_id.as_str(), &config.name, 1_000)?;
+    drop(store);
+
+    let result =
+        run_with_context(Cli::try_parse_from(["locket", "init"])?, &context, &mut Vec::new());
+
+    assert_error_contains(result, "refusing silent overwrite");
+    assert_eq!(
+        std::fs::read_to_string(directory.path().join("locket.toml"))?,
+        original_config_text
+    );
+    assert_eq!(std::fs::read_to_string(directory.path().join(".env.example"))?, "MANUAL=kept\n");
+    assert!(!directory.path().join(".locket/recovery/kdf.toml").exists());
+    assert!(!directory.path().join(".locket/recovery/envelope.bin").exists());
+    assert!(matches!(
+        key_store.load_master_key(config.project_id.as_str()),
+        Err(locket_platform::PlatformError::MasterKeyNotFound)
+    ));
+
+    let store = crate::open_store(&context)?;
+    assert!(store.get_project(config.project_id.as_str())?.is_some());
+    let count_rows = |table: &str| -> Result<i64, Box<dyn std::error::Error>> {
+        let sql = format!("SELECT COUNT(*) FROM {table} WHERE project_id = ?1");
+        Ok(store.connection().query_row(&sql, [config.project_id.as_str()], |row| row.get(0))?)
+    };
+    assert_eq!(count_rows("profiles")?, 0);
+    assert_eq!(count_rows("keys")?, 0);
+    assert_eq!(count_rows("project_roots")?, 0);
+    assert_eq!(count_rows("audit_log")?, 0);
+    Ok(())
+}
+
+#[test]
 fn init_rejects_unsupported_locket_toml_schema_without_rewriting_file()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempdir()?;
