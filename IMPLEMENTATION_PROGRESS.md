@@ -656,16 +656,18 @@ the spec already covers. Closed slices land in
 - [ ] Build the Tauri desktop app (`docs/specs/desktop.md:5-65`).
   Pre-req: `locket-app` workspace crate (already `[x]`).
   Decomposed below; later subtasks depend on `tauri-shell`.
-  - [ ] **subtask** — tauri-shell: Tauri 2 main window + IPC plumbing
+  - [~] [1edee80b] **subtask** — tauri-shell: Tauri 2 main window + IPC plumbing
     in `crates/locket-app/src-tauri/`; opens, renders an empty UI,
     exits cleanly on every supported platform.
+    Claim: branch agent-1edee80b/tauri-shell, worktree .worktrees/agent-1edee80b-tauri-shell. Scope: `tauri-shell` primary, with `tauri-frontend-bootstrap` (Vue3+Vite+pnpm), `tauri-csp`, `tauri-devtools-release`, `tauri-command-scope` (zero commands registered), and `tauri-capabilities-deny-default` bundled into the same slice — they all configure the same `tauri.conf.json`/`capabilities/desktop.json`/`src-tauri/src/lib.rs`. Spec: docs/superpowers/specs/2026-04-29-tauri-shell-design.md.
   - [ ] **subtask** — tauri-agent-client: connect the desktop app to
     the local agent over its socket; surface a typed
     `AgentUnavailable` banner when the daemon isn't running. Pre-req:
     `tauri-shell`; agent-side pre-req: `agent-socket-server`.
-  - [ ] **subtask** — tauri-frontend-bootstrap: pick the JS framework
+  - [~] [1edee80b] **subtask** — tauri-frontend-bootstrap: pick the JS framework
     (per spec), wire `pnpm` build/lint/typecheck, render the empty
     project shell. Pre-req: `tauri-shell`.
+    Bundled into agent-1edee80b/tauri-shell. Picked Vue 3 + Vite + TypeScript.
 - [ ] Build the tray/status panel (`docs/specs/desktop.md:65-108`).
   Pre-req: `tauri-shell`.
   - [ ] **subtask** — tray-bind-platform: register the tray icon and
@@ -681,15 +683,19 @@ the spec already covers. Closed slices land in
 - [ ] Audit, policy, profile, scan, and bootstrap views.
 - [ ] Tauri hardening (`docs/specs/desktop.md`). Independent subtasks
   — pre-req: `locket-app` Tauri shell exists.
-  - [ ] **subtask** — tauri-csp: restrictive Content-Security-Policy
+  - [~] [1edee80b] **subtask** — tauri-csp: restrictive Content-Security-Policy
     on every renderer window; reject inline scripts/styles.
-  - [ ] **subtask** — tauri-devtools-release: gate devtools open
+    Bundled into agent-1edee80b/tauri-shell.
+  - [~] [1edee80b] **subtask** — tauri-devtools-release: gate devtools open
     behind `cfg(debug_assertions)`; never expose in release builds.
-  - [ ] **subtask** — tauri-command-scope: every Tauri command is
+    Bundled into agent-1edee80b/tauri-shell.
+  - [~] [1edee80b] **subtask** — tauri-command-scope: every Tauri command is
     explicitly scoped to the minimum capability set it needs.
-  - [ ] **subtask** — tauri-capabilities-deny-default: deny-by-default
+    Bundled into agent-1edee80b/tauri-shell (zero commands registered).
+  - [~] [1edee80b] **subtask** — tauri-capabilities-deny-default: deny-by-default
     `fs`/`shell`/`network`/`updater`/`clipboard` capabilities; opt
     each in only where the spec calls for it.
+    Bundled into agent-1edee80b/tauri-shell.
 - [ ] Search/filter UI (`docs/specs/desktop.md`). Each subtask renders
   one surface and never exposes values; pre-req: the relevant view.
   - [ ] **subtask** — search-projects-profiles
