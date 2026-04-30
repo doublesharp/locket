@@ -423,10 +423,7 @@ Re-verify file:line references before editing — they drift. Severity:
   - [ ] **subtask** — perf-recovery-envelope-unlock: ≤2 s cold.
   - [ ] **subtask** — perf-agent-idle-memory: ≤50 MB RSS after
     documented warmup. Pre-req: agent daemon subtasks.
-- [ ] Dependency hygiene gates: `cargo machete`/`udeps` in CI;
-  OpenSSF Scorecard once public; keyless signing with transparency
-  logs for CI artifacts; frontend `pnpm lint`/`typecheck`/`test`/
-  `build` once `locket-app` exists.
+- [~] [4ab55ee9] branch agent-4ab55ee9/dependency-hygiene-gates, worktree .worktrees/agent-4ab55ee9-dependency-hygiene-gates; dependency-hygiene-gates: local `cargo machete`/`udeps` gate.
 - [ ] Property tests. All current `proptest-*` subtasks shipped.
   Add new harnesses as uncovered invariants surface
   (`docs/specs/testing.md:14`).
