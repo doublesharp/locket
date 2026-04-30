@@ -646,8 +646,7 @@ editing — they drift. Severity: **blocker** (security/correctness),
   default 200 lines, `--lines` cap 10000, RFC 3339 / Unix `--since`,
   `--follow` streaming (`docs/specs/operations.md`).
   Claim: branch agent-bec7ddfc/agent-logs-retention, worktree .worktrees/agent-bec7ddfc-agent-logs-retention.
-- [~] [6e4d05db] Update-manifest fetch keyed only by channel/platform/arch/version
-  Claim: branch agent-6e4d05db/update-manifest-fetch-privacy, worktree .worktrees/agent-6e4d05db-update-manifest-fetch-privacy.
+- [x] Update-manifest fetch keyed only by channel/platform/arch/version
   (no project/device/host/user/install ids); release-key rotation
   requires a dual-signed manifest (`docs/specs/operations.md`).
 - [ ] Performance reference-runner spec, required report fields, and
