@@ -708,12 +708,39 @@ editing — they drift. Severity: **blocker** (security/correctness),
 - [ ] Property tests for `.env` parsing, policy TOML normalization,
   `lk://` parsing, canonical JSON, device descriptors, and bundle
   manifests.
-- [ ] Cross-platform test mocks for OS keychain, user verification,
-  peer credentials, memory locking, sockets/named pipes, clipboard
-  clearing, and Docker/Compose; mutation/negative-path tests for
-  deny-by-default policy, malformed AAD/nonces, replayed nonces, audit
-  tampering, locked-vault scans, expired versions, and
-  dangerous-profile.
+- [ ] Cross-platform test mocks and mutation tests
+  (`docs/specs/testing.md`). Subtasks are independent — pick any:
+  - [ ] **subtask** — mock-os-keychain: trait-based mock for
+    `crates/locket-platform/src/keychain/` covering get/set/delete
+    success and error paths, used in CLI/store tests.
+  - [ ] **subtask** — mock-user-verification: extend the existing
+    `LocalUserVerifier` mock to cover platform-unsupported and
+    user-cancelled paths in tests.
+  - [ ] **subtask** — mock-peer-credentials: in-process socket harness
+    that returns spoofable peer creds so the agent's peer-validation
+    logic can be tested without root. Pre-req:
+    `agent-peer-validation` subtask under Local agent daemon.
+  - [ ] **subtask** — mock-clipboard: trait mock for the clipboard
+    module covering copy success, post-TTL clear, and the
+    cannot-clear platform path.
+  - [ ] **subtask** — mock-docker-compose: process-stub harness that
+    lets `docker compose config` tests run without Docker installed.
+  - [ ] **subtask** — mutation-deny-by-default: policy-evaluator
+    tests that explicitly inject permissive variants and assert
+    deny-by-default still rejects.
+  - [ ] **subtask** — mutation-malformed-crypto: tamper AAD/nonces
+    and replay automation-client nonces; assert typed
+    `IntegrityFailure`/`ReplayDetected` paths.
+  - [ ] **subtask** — mutation-audit-tamper: append-then-modify rows
+    in a fixture chain and assert `audit verify` flags
+    `IntegrityFailure`.
+  - [ ] **subtask** — mutation-locked-vault-scan: scan against a
+    locked vault asserts the metadata-only path stays within the
+    locked-safe envelope.
+  - [ ] **subtask** — mutation-expired-versions: pinned `lk://...@vN`
+    past `grace_until` returns typed `SecretVersionExpired`.
+  - [ ] **subtask** — mutation-dangerous-profile: dangerous-profile
+    reads emit the documented denial audit and refuse value access.
 - [x] Fuzz tooling and gates: `make fuzz-list`/`fuzz-smoke`/`fuzz`/
   `fuzz-nightly`; PR gate ≥60 s/target on touched fuzzed paths;
   nightly ≥15 min/target with ASan+UBSan; pre-public-release
