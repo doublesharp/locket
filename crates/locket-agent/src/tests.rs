@@ -517,9 +517,11 @@ async fn request_grant_returns_id_bound_to_caller_process() {
     };
     let grant_id = success.payload.get("grant_id").and_then(|v| v.as_str()).unwrap_or_default();
     assert!(!grant_id.is_empty(), "grant id must not be empty");
-    let grants = state.grants.lock().await;
-    assert_eq!(grants.len(), 1);
-    let record = grants.get(grant_id).expect("issued grant is stored");
+    let record = {
+        let grants = state.grants.lock().await;
+        assert_eq!(grants.len(), 1);
+        grants.get(grant_id).cloned().unwrap_or_else(|| unreachable!("issued grant is stored"))
+    };
     assert_eq!(record.project_id, "p-1");
     assert_eq!(record.profile_id, "prof-1");
     assert_eq!(record.action, crate::grant::GrantAction::RunPolicy);

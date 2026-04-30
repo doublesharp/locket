@@ -341,21 +341,20 @@ mod tests {
     }
 
     #[test]
-    fn issued_grants_retain_metadata_without_values() {
+    fn issued_grants_retain_metadata_without_values()
+    -> Result<(), locket_core::id::IdGenerationError> {
         let mut table = GrantTable::default();
-        let record = table
-            .issue(
-                RequestGrantPayload {
-                    project_id: "p-1".to_owned(),
-                    profile_id: "prof-1".to_owned(),
-                    action: GrantAction::ScanKnownValues,
-                    ttl_seconds: 45,
-                    binding: GrantBinding::new(4242, "start-a"),
-                },
-                100,
-                45_000_000_100,
-            )
-            .expect("grant id");
+        let record = table.issue(
+            RequestGrantPayload {
+                project_id: "p-1".to_owned(),
+                profile_id: "prof-1".to_owned(),
+                action: GrantAction::ScanKnownValues,
+                ttl_seconds: 45,
+                binding: GrantBinding::new(4242, "start-a"),
+            },
+            100,
+            45_000_000_100,
+        )?;
 
         assert_eq!(record.project_id, "p-1");
         assert_eq!(record.profile_id, "prof-1");
@@ -363,5 +362,6 @@ mod tests {
         assert_eq!(record.issued_at_unix_nanos, 100);
         assert_eq!(record.ttl_seconds, 45);
         assert_eq!(record.expires_at_unix_nanos, 45_000_000_100);
+        Ok(())
     }
 }
