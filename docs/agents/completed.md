@@ -86,6 +86,10 @@ Slices that have merged to `main` and verified. Open work tracked in
   timeout; `locket doctor` runs `PRAGMA integrity_check`.
 - [x] Status-stream heartbeats (`StatusEvent kind="heartbeat"`, ≥30 s,
   monotonic `sequence`, not treated as state change).
+- [x] agent-subscribe-status: status stream now emits lock-state change
+  events alongside heartbeat cadence.
+- [x] agent-start-socket-idempotency: `locket agent start` preserves an
+  existing live socket owner instead of replacing it.
 - [x] Process-bound grant binding via `(pid, process_start_time)` per
   platform; PIDs are never trusted alone.
 - [x] agent-unlock-cache: Agent lock/unlock now drives the in-memory cache,
@@ -152,6 +156,10 @@ Slices that have merged to `main` and verified. Open work tracked in
   replay rows atomically.
 - [x] agent-grant-table: Agent grants are now stored and validated with caller process
   binding.
+- [x] on-demand-agent-startup: `locket exec`/`run` start the local
+  agent on demand before agent-backed execution paths.
+- [x] pre-migration-backups: schema initialization now records
+  pre-migration backup metadata for doctor reporting.
 
 ## Full Spec Coverage TODO — Security/Recovery/Team
 
@@ -200,6 +208,10 @@ Slices that have merged to `main` and verified. Open work tracked in
 - [x] bundle-export-payload: Sealed bundle export now builds a real encrypted payload
   for selected profile data. Safe export and audit counts cover the serialized sections
   without exposing names or values.
+- [x] team-role-authorization: team mutations now enforce owner/developer
+  role constraints with typed denials.
+- [x] imported-audit-chain-verifier: imported audit chains now validate
+  monotonic sequence, prev-HMAC linkage, and checkpoint HMAC structure.
 
 ## Full Spec Coverage TODO — App/UI
 

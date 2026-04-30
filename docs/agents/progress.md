@@ -71,7 +71,6 @@ skill set fits a leaf better.
 - [ ] Local agent daemon (`docs/specs/agent.md`). `agent-socket-server`
   shipped; remaining subtasks below. Later subtasks depend on
   `agent-unlock-cache` / `agent-grant-table` — note deps on your claim.
-  - [~] [4ab55ee9] branch agent-4ab55ee9/agent-subscribe-status, worktree .worktrees/agent-4ab55ee9-agent-subscribe-status; **subtask** — agent-subscribe-status: stream `lock_state` change events plus heartbeat cadence on top of the existing heartbeat envelope.
   - [~] **subtask** — agent-reveal-copy: dispatch arms wired with
     typed `UnlockRequired`. Remaining: value path + `REVEAL`/`COPY`
     audit emission once cache + grant table ship.
@@ -84,7 +83,6 @@ skill set fits a leaf better.
   - [~] **subtask** — agent-prepare-exec: dispatch arm wired with
     empty allow-list. Remaining: real policy resolution + scoped
     allowed-env-name set + policy-declared `ttl_seconds`.
-- [~] [52c592db] branch agent-52c592db/agent-start-socket-idempotency, worktree .worktrees/agent-52c592db-agent-start-socket-idempotency; Replace metadata-only `agent start/status/stop/logs` with real process behavior and redacted log retention (`docs/specs/agent.md:99-110`) — socket-owner idempotency.
 - [~] `locket run` spec coverage. Argv policy execution exists.
   Remaining (`docs/specs/runtime.md:5-122`, `docs/specs/policy.md`):
   - [ ] **subtask** — run-ttl-grant: enforce policy `ttl = "Xs"`
@@ -119,7 +117,6 @@ skill set fits a leaf better.
     `lk-resolve-pinned-version`.
   - [ ] **subtask** — lk-resolve-audit: write `RESOLVE_REFERENCE`
     rows on every resolution (success and failure).
-- [~] [90b9f58a] branch agent-90b9f58a/on-demand-agent-startup, worktree .worktrees/agent-90b9f58a-on-demand-agent-startup; On-demand agent startup for `locket exec`/`run` (`docs/specs/agent.md`, `docs/specs/runtime.md`).
 - [ ] VS Code extension backed by the local agent
   (`docs/specs/integrations.md:39-65`). Extension never writes audit
   directly. All subtasks depend on `vscode-ext-scaffold` (shipped).
@@ -160,7 +157,6 @@ skill set fits a leaf better.
   `team-store-schema`, `team-init-command`, `team-members-list`
   shipped. Remaining:
   - [~] [acda32e4] branch agent-acda32e4/team-invite-accept, worktree .worktrees/agent-acda32e4-team-invite-accept; **subtask** — team-invite-accept: verify signature, fingerprint, expiry, replay, safety-words display. Pre-req: `team-invite-create`.
-- [~] [52c592db] branch agent-52c592db/team-role-authorization, worktree .worktrees/agent-52c592db-team-role-authorization; Role-based authorization for team-managed state (`docs/specs/team-sync-recovery.md:75-110`).
 - [ ] Passkey support remaining: platform registration and PRF
   optional key wrapping (`docs/specs/crypto.md:192-218`).
 - [ ] Device descriptors (`lkdev1_` base64url JSON), v1 fingerprint
@@ -189,7 +185,6 @@ skill set fits a leaf better.
   `harden-doctor-degraded` shipped. Remaining:
   - [ ] **subtask** — harden-session-lock: lock on system sleep,
     screen lock, user-session switch; emit `LOCK` audit row.
-- [~] [52c592db] branch agent-52c592db/imported-audit-chain-verifier, worktree .worktrees/agent-52c592db-imported-audit-chain-verifier; `imported_audit_chains` structural verifier (monotonic sequence, prev-HMAC linkage, checkpoint HMAC match).
 - [ ] `import-bundle` / `team accept` apply rotate-with-no-grace
   when importing a newer version over an active target.
 - [ ] `locket device init --force` rekey: atomic
@@ -354,7 +349,6 @@ Re-verify file:line references before editing — they drift. Severity:
   (`docs/specs/testing.md:14`).
 - [ ] Cross-platform test mocks and mutation tests
   (`docs/specs/testing.md`):
-- [~] [90b9f58a] branch agent-90b9f58a/pre-migration-backups, worktree .worktrees/agent-90b9f58a-pre-migration-backups; pre-migration backup metadata and doctor reporting (`docs/specs/storage.md`).
 
 ## Spec-by-spec completion gates
 
