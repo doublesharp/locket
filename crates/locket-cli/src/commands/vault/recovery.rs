@@ -156,9 +156,9 @@ pub fn restore_from_recovery_code(
         let mut master_key = zeroize::Zeroizing::new([0_u8; locket_crypto::KEY_LEN]);
         master_key.copy_from_slice(&plaintext);
         context.key_store.store_master_key(project_id, &master_key)?;
-        restored.master_keys += 1;
+        restored.master += 1;
     }
-    if restored.master_keys == 0 {
+    if restored.master == 0 {
         return Err(metadata_invalid_error("no master_key entries found in recovery envelope"));
     }
     restore_automation_client_private_keys(
@@ -179,14 +179,11 @@ pub fn restore_from_recovery_code(
         force_verification.as_ref(),
     )?;
     writeln!(output, "recovered: master_key")?;
-    if restored.automation_client_private_keys > 0
-        || restored.skipped_automation_client_private_keys > 0
-    {
+    if restored.automation_client_private > 0 || restored.skipped_automation_client_private > 0 {
         writeln!(
             output,
             "recovered: automation_client_private_keys={} skipped={}",
-            restored.automation_client_private_keys,
-            restored.skipped_automation_client_private_keys
+            restored.automation_client_private, restored.skipped_automation_client_private
         )?;
     }
     writeln!(output, "metadata_only: yes")?;
@@ -195,9 +192,9 @@ pub fn restore_from_recovery_code(
 
 #[derive(Default)]
 struct RecoveryRestoreSummary {
-    master_keys: usize,
-    automation_client_private_keys: usize,
-    skipped_automation_client_private_keys: usize,
+    master: usize,
+    automation_client_private: usize,
+    skipped_automation_client_private: usize,
 }
 
 fn restore_automation_client_private_keys(
@@ -215,33 +212,30 @@ fn restore_automation_client_private_keys(
             continue;
         };
         let Some(client) = store.get_automation_client(project_id, client_id)? else {
-            restored.skipped_automation_client_private_keys += 1;
+            restored.skipped_automation_client_private += 1;
             continue;
         };
         if client.revoked_at.is_some() {
-            restored.skipped_automation_client_private_keys += 1;
+            restored.skipped_automation_client_private += 1;
             continue;
         }
         let Some(reference) = store.get_automation_client_private_key_ref(&client.id)? else {
-            restored.skipped_automation_client_private_keys += 1;
+            restored.skipped_automation_client_private += 1;
             continue;
         };
-        let plaintext = match open_recovery_entry_v1(
+        let Ok(plaintext) = open_recovery_entry_v1(
             unwrap_root,
             &kdf.kdf_profile_id,
             &entry.entry_kind,
             &entry.entry_id,
             &entry.nonce,
             &entry.ciphertext,
-        ) {
-            Ok(plaintext) => plaintext,
-            Err(_) => {
-                restored.skipped_automation_client_private_keys += 1;
-                continue;
-            }
+        ) else {
+            restored.skipped_automation_client_private += 1;
+            continue;
         };
         if plaintext.len() != locket_crypto::KEY_LEN {
-            restored.skipped_automation_client_private_keys += 1;
+            restored.skipped_automation_client_private += 1;
             continue;
         }
         let mut private_key = zeroize::Zeroizing::new([0_u8; locket_crypto::KEY_LEN]);
@@ -255,9 +249,9 @@ fn restore_automation_client_private_keys(
         )
         .is_ok()
         {
-            restored.automation_client_private_keys += 1;
+            restored.automation_client_private += 1;
         } else {
-            restored.skipped_automation_client_private_keys += 1;
+            restored.skipped_automation_client_private += 1;
         }
     }
     Ok(())
@@ -479,7 +473,7 @@ fn write_recover_audit(
     let envelope_bytes = envelope.serialize()?;
     let envelope_checksum = format_hex(&Sha256::digest(&envelope_bytes));
     let mut restored_entry_kinds = vec!["master_key"];
-    if restored.automation_client_private_keys > 0 {
+    if restored.automation_client_private > 0 {
         restored_entry_kinds.push("automation_client_private_key");
     }
     let mut metadata = json!({
@@ -492,9 +486,9 @@ fn write_recover_audit(
         "envelope_checksum_sha256": envelope_checksum,
         "restored_entry_kinds": restored_entry_kinds,
         "restored_entry_counts": {
-            "master_key": restored.master_keys,
-            "automation_client_private_key": restored.automation_client_private_keys,
-            "automation_client_private_key_skipped": restored.skipped_automation_client_private_keys,
+            "master_key": restored.master,
+            "automation_client_private_key": restored.automation_client_private,
+            "automation_client_private_key_skipped": restored.skipped_automation_client_private,
         },
         "force": force,
     });

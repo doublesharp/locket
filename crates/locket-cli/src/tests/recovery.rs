@@ -95,6 +95,7 @@ fn recovery_restore_recovers_master_key_from_envelope() -> Result<(), Box<dyn st
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn recovery_restore_recovers_managed_automation_client_keys()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempdir()?;
@@ -247,23 +248,27 @@ fn insert_recovery_automation_client(
     let keychain_account =
         (storage == "os-keychain").then(|| format!("automation-client:{client_id}"));
     let local_path_hash = (storage == "wrapped-local-file").then(|| "path-hash".to_owned());
-    let metadata_json = match local_path_hash.as_deref() {
-        Some(path_hash) => serde_json::json!({
-            "schema_version": 1,
-            "storage": storage,
-            "local_path_hash": path_hash,
-        }),
-        None => serde_json::json!({
-            "schema_version": 1,
-            "storage": storage,
-        }),
-    };
+    let metadata_json = local_path_hash.as_deref().map_or_else(
+        || {
+            serde_json::json!({
+                "schema_version": 1,
+                "storage": storage,
+            })
+        },
+        |path_hash| {
+            serde_json::json!({
+                "schema_version": 1,
+                "storage": storage,
+                "local_path_hash": path_hash,
+            })
+        },
+    );
     let reference = locket_store::AutomationClientPrivateKeyRefRecord {
         client_id: client_id.to_owned(),
         storage: storage.to_owned(),
         keychain_service,
         keychain_account,
-        local_path_hash: local_path_hash.clone(),
+        local_path_hash,
         metadata_json: metadata_json.to_string(),
         created_at: 1_000,
         updated_at: 1_000,
