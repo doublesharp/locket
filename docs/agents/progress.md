@@ -159,7 +159,7 @@ skill set fits a leaf better.
 - [ ] Policy TOML — remaining (`docs/specs/policy.md`):
   - [ ] **subtask** — policy-ttls: `ttl` translates to a grant TTL.
     Pre-req: `agent-grant-table`.
-- [ ] Clipboard clear-after-TTL only if clipboard still contains the
+- [~] [90b9f58a] branch agent-90b9f58a/clipboard-ttl-clear, worktree .worktrees/agent-90b9f58a-clipboard-ttl-clear; Clipboard clear-after-TTL only if clipboard still contains the
   value. Wayland-aware pre-copy warning + `unsupported_reason`
   shipped; background TTL clearing remains.
 
