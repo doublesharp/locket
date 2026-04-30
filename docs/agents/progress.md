@@ -335,9 +335,7 @@ Slices 1+2 shipped (agent client, tray binding, 6 view scaffolds,
   - [ ] **subtask** — agent-prepare-exec-impl: real `PrepareExec`
     returning resolved env-name allow-list + TTL. Pre-req:
     `policy-ttls`, `agent-resolve-reference-impl`.
-  - [ ] **subtask** — desktop-backup-recovery-view:
-    `BackupRecovery.vue` — export/import/verify/recovery-rotate.
-    Slice 12b.
+  - [~] [52c592db] branch agent-52c592db/desktop-backup-recovery-view, worktree .worktrees/agent-52c592db-desktop-backup-recovery-view; **subtask** — desktop-backup-recovery-view: `BackupRecovery.vue` — export/import/verify/recovery-rotate. Slice 12b.
   - [ ] **subtask** — desktop-team-invite-view: invite
     issue/accept/revoke + member/device removal. Pre-req:
     `team-invite-*`, invite-ceremony subtasks.
