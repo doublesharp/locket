@@ -70,3 +70,100 @@ fn automation_client_nonces_are_unique_and_prunable() -> Result<(), Box<dyn Erro
     assert_eq!(test_store.store.prune_automation_client_nonces(230)?, 1);
     Ok(())
 }
+
+#[test]
+fn automation_client_auth_nonce_recording_prunes_expired_rows() -> Result<(), Box<dyn Error>> {
+    let mut test_store = open_initialized_store()?;
+    test_store.store.insert_project_if_absent("lk_proj_test", "test", 100)?;
+    test_store.store.insert_automation_client(&AutomationClientRecord {
+        id: "lk_client_auth".to_owned(),
+        project_id: "lk_proj_test".to_owned(),
+        name: "auth-ci".to_owned(),
+        public_key: vec![7; 32],
+        fingerprint: "auth-fingerprint".to_owned(),
+        storage: "external".to_owned(),
+        allowed_actions: vec!["run-policy".to_owned()],
+        allowed_policies: vec!["test".to_owned()],
+        created_at: 200,
+        last_used_at: None,
+        revoked_at: None,
+    })?;
+    test_store.store.insert_automation_client_nonce(&AutomationClientNonceRecord {
+        client_id: "lk_client_auth".to_owned(),
+        nonce: [1; 24],
+        request_timestamp: 100,
+        seen_at: 110,
+        expires_at: 150,
+    })?;
+    test_store.store.insert_automation_client_nonce(&AutomationClientNonceRecord {
+        client_id: "lk_client_auth".to_owned(),
+        nonce: [2; 24],
+        request_timestamp: 180,
+        seen_at: 190,
+        expires_at: 300,
+    })?;
+    let accepted = AutomationClientNonceRecord {
+        client_id: "lk_client_auth".to_owned(),
+        nonce: [3; 24],
+        request_timestamp: 220,
+        seen_at: 230,
+        expires_at: 820,
+    };
+
+    test_store.store.record_automation_client_auth_nonce(&accepted, 200)?;
+
+    let rows: Vec<Vec<u8>> = {
+        let mut statement = test_store.store.connection().prepare(
+            "SELECT nonce FROM automation_client_nonces
+             WHERE client_id = 'lk_client_auth'
+             ORDER BY nonce",
+        )?;
+        statement.query_map([], |row| row.get::<_, Vec<u8>>(0))?.collect::<Result<Vec<_>, _>>()?
+    };
+    assert_eq!(rows, vec![vec![2; 24], vec![3; 24]]);
+    Ok(())
+}
+
+#[test]
+fn automation_client_auth_nonce_replay_keeps_existing_rows_atomic() -> Result<(), Box<dyn Error>> {
+    let mut test_store = open_initialized_store()?;
+    test_store.store.insert_project_if_absent("lk_proj_test", "test", 100)?;
+    test_store.store.insert_automation_client(&AutomationClientRecord {
+        id: "lk_client_auth".to_owned(),
+        project_id: "lk_proj_test".to_owned(),
+        name: "auth-ci".to_owned(),
+        public_key: vec![7; 32],
+        fingerprint: "auth-fingerprint".to_owned(),
+        storage: "external".to_owned(),
+        allowed_actions: vec!["run-policy".to_owned()],
+        allowed_policies: vec!["test".to_owned()],
+        created_at: 200,
+        last_used_at: None,
+        revoked_at: None,
+    })?;
+    test_store.store.insert_automation_client_nonce(&AutomationClientNonceRecord {
+        client_id: "lk_client_auth".to_owned(),
+        nonce: [1; 24],
+        request_timestamp: 100,
+        seen_at: 110,
+        expires_at: 150,
+    })?;
+    let replayed = AutomationClientNonceRecord {
+        client_id: "lk_client_auth".to_owned(),
+        nonce: [2; 24],
+        request_timestamp: 180,
+        seen_at: 190,
+        expires_at: 300,
+    };
+    test_store.store.insert_automation_client_nonce(&replayed)?;
+
+    assert!(test_store.store.record_automation_client_auth_nonce(&replayed, 200).is_err());
+
+    let count: i64 = test_store.store.connection().query_row(
+        "SELECT COUNT(*) FROM automation_client_nonces WHERE client_id = 'lk_client_auth'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(count, 2, "failed replay insert must not partially prune rows");
+    Ok(())
+}

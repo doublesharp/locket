@@ -451,6 +451,40 @@ impl Store {
         Ok(())
     }
 
+    /// Prunes expired automation-client nonces, then records one accepted auth nonce.
+    ///
+    /// This is the write path intended for challenge-response authentication:
+    /// it keeps replay rows bounded while preserving the `(client_id, nonce)`
+    /// uniqueness check that detects accepted nonce reuse across agent restarts.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Sqlite`] when `SQLite` rejects the prune or insert.
+    pub fn record_automation_client_auth_nonce(
+        &mut self,
+        nonce: &AutomationClientNonceRecord,
+        now: i64,
+    ) -> Result<(), StoreError> {
+        let transaction = self.connection.transaction()?;
+        transaction
+            .execute("DELETE FROM automation_client_nonces WHERE expires_at <= ?1", [now])?;
+        transaction.execute(
+            "INSERT INTO automation_client_nonces(
+               client_id, nonce, request_timestamp, seen_at, expires_at
+             )
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                nonce.client_id.as_str(),
+                nonce.nonce.as_slice(),
+                nonce.request_timestamp,
+                nonce.seen_at,
+                nonce.expires_at,
+            ],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
     /// Prunes expired automation-client nonces.
     ///
     /// # Errors
