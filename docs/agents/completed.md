@@ -145,6 +145,8 @@ Slices that have merged to `main` and verified. Open work tracked in
   security-critical package set when cargo-mutants is available.
 - [x] automation-nonce-auth-prune: Automation auth nonce recording now prunes expired
   replay rows atomically.
+- [x] agent-grant-table: Agent grants are now stored and validated with caller process
+  binding.
 
 ## Full Spec Coverage TODO — Security/Recovery/Team
 
