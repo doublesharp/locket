@@ -270,9 +270,7 @@ Re-verify file:line references before editing — they drift. Severity:
   `e2e-dotenv-migration`, `e2e-policy-run`, `e2e-docker-compose`,
   `e2e-recovery-roundtrip` shipped. Remaining
   (`docs/specs/testing.md:38`):
-  - [ ] **subtask** — e2e-agent-rpc: drive the agent socket through
-    `Status`, `Lock`, `Unlock`, `RequestGrant`, `RevokeGrant`,
-    `SubscribeStatus`. Pre-req: daemon subtasks.
+  - [~] [4ab55ee9] branch agent-4ab55ee9/e2e-agent-rpc, worktree .worktrees/agent-4ab55ee9-e2e-agent-rpc; agent RPC e2e covers status, grants, subscription.
   - [ ] **subtask** — e2e-team-invite-accept: `team init` →
     `invite` → `accept` (signature + safety-words) → `revoke-invite`
     failure path. Pre-req: team-* and invite-ceremony subtasks.
