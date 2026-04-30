@@ -322,6 +322,29 @@ fn tampered_wrap_nonce_fails_dek_unwrap() -> Result<(), CryptoError> {
 }
 
 #[test]
+fn tampered_ciphertext_body_fails_secret_decryption() -> Result<(), CryptoError> {
+    let (value_aad, wrap_aad) = canonical_secret_aads()?;
+    let mut encrypted =
+        super::encrypt_secret_value_v1(&PROFILE_SECRET_KEY, "secret", &value_aad, &wrap_aad)?;
+    encrypted.ciphertext[0] ^= 0x01;
+    let result = decrypt_secret_value_v1(&PROFILE_SECRET_KEY, &encrypted, &value_aad, &wrap_aad);
+    assert!(matches!(result, Err(CryptoError::DecryptionFailed)));
+    Ok(())
+}
+
+#[test]
+fn tampered_dek_ciphertext_body_fails_secret_decryption() -> Result<(), CryptoError> {
+    let (value_aad, wrap_aad) = canonical_secret_aads()?;
+    let mut encrypted =
+        super::encrypt_secret_value_v1(&PROFILE_SECRET_KEY, "secret", &value_aad, &wrap_aad)?;
+    // Flip a byte in the DEK ciphertext body (past the NONCE_LEN wrap-nonce prefix).
+    encrypted.encrypted_dek[NONCE_LEN] ^= 0x01;
+    let result = decrypt_secret_value_v1(&PROFILE_SECRET_KEY, &encrypted, &value_aad, &wrap_aad);
+    assert!(matches!(result, Err(CryptoError::DecryptionFailed)));
+    Ok(())
+}
+
+#[test]
 fn changed_project_id_aad_fails_secret_decryption() -> Result<(), CryptoError> {
     let (value_aad, wrap_aad) = canonical_secret_aads()?;
     let changed_value_aad = secret_blob_aad_v1(&SecretBlobAad::new(
