@@ -427,8 +427,7 @@ Re-verify file:line references before editing — they drift. Severity:
 - [ ] Cross-platform test mocks and mutation tests
   (`docs/specs/testing.md`):
   - [~] [acda32e4] branch agent-acda32e4/mock-peer-credentials, worktree .worktrees/agent-acda32e4-mock-peer-credentials; **subtask** — mock-peer-credentials: spoofable peer-credential test harness for agent peer validation.
-- [ ] Bench fixtures: metadata, runtime, reference-resolution,
-  staged-scan, full-scan, Argon2 (`docs/specs/performance.md`).
+- [~] [4ab55ee9] branch agent-4ab55ee9/bench-fixtures, worktree .worktrees/agent-4ab55ee9-bench-fixtures; Bench fixtures: metadata, runtime, reference-resolution, staged-scan, full-scan, Argon2 (`docs/specs/performance.md`).
 - [~] [4ab55ee9] branch agent-4ab55ee9/performance-tolerance-gate, worktree .worktrees/agent-4ab55ee9-performance-tolerance-gate; PR vs release tolerance gate: 10% PR / 20% tracked-regression / no-tolerance release (`docs/specs/performance.md`).
 - [~] [4ab55ee9] branch agent-4ab55ee9/supply-chain-exception-ledger, worktree .worktrees/agent-4ab55ee9-supply-chain-exception-ledger; Supply-chain exception ledger enforced by CI; no-expiration entries are invalid (`docs/specs/engineering.md`).
 - [~] [4ab55ee9] branch agent-4ab55ee9/slsa-provenance-policy, worktree .worktrees/agent-4ab55ee9-slsa-provenance-policy; slsa-provenance-policy: offline release provenance policy verifier (`docs/specs/operations.md`).
