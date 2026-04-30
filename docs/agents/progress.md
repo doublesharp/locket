@@ -408,7 +408,8 @@ Re-verify file:line references before editing — they drift. Severity:
   - [ ] **subtask** — perf-agent-idle-memory: ≤50 MB RSS after
     documented warmup. Pre-req: agent daemon subtasks.
 - [~] [4ab55ee9] branch agent-4ab55ee9/dependency-hygiene-gates, worktree .worktrees/agent-4ab55ee9-dependency-hygiene-gates; dependency-hygiene-gates: local `cargo machete`/`udeps` gate.
-- [ ] Property tests. All current `proptest-*` subtasks shipped.
+- [~] [4ab55ee9] branch agent-4ab55ee9/property-audit-hmac, worktree .worktrees/agent-4ab55ee9-property-audit-hmac; Property-test harness for audit HMAC canonical byte invariants.
+  All current `proptest-*` subtasks shipped.
   Add new harnesses as uncovered invariants surface
   (`docs/specs/testing.md:14`).
 - [ ] Cross-platform test mocks and mutation tests
