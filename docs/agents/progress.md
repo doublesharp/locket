@@ -336,7 +336,7 @@ Slices 1+2 shipped (agent client, tray binding, 6 view scaffolds,
   renders one surface; never exposes values; pre-req is the
   relevant view's data RPC.
   - [~] [acda32e4] branch agent-acda32e4/search-projects-profiles, worktree .worktrees/agent-acda32e4-search-projects-profiles; **subtask** — search-projects-profiles: dashboard project/profile search and filtering surface.
-  - [ ] **subtask** — search-secrets-metadata
+  - [~] [52c592db] branch agent-52c592db/search-secrets-metadata, worktree .worktrees/agent-52c592db-search-secrets-metadata; **subtask** — search-secrets-metadata
   - [ ] **subtask** — search-policies
   - [ ] **subtask** — search-audit
   - [ ] **subtask** — search-scan-findings
