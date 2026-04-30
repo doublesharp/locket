@@ -14,10 +14,13 @@ use tempfile as _;
 mod agent_client;
 mod tray;
 
-pub use agent_client::{AgentClientError, fetch_status, invoke_method, resolve_socket_path};
+pub use agent_client::{
+    AgentClientError, fetch_status, invoke_method, resolve_socket_path, stream_status_events,
+};
 pub use tray::{
     LOCKET_TRAY_ID, TRAY_MENU_ACTION_EVENT, TrayMenuAction, TrayState, icon_bytes_for, setup_tray,
-    tooltip_for, tray_menu_action_for_id, tray_menu_actions, update_tray_state,
+    tooltip_for, tray_menu_action_for_id, tray_menu_actions, tray_state_for_status,
+    tray_state_for_status_event, update_tray_state,
 };
 
 /// Tauri command exposing the agent client to the webview.

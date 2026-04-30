@@ -25,10 +25,15 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use locket_agent::{
-    AgentMethod, AgentSocketConfig, AgentSocketState, ListRuntimeSessionsRequest,
-    bind_socket_listener, handle_connection,
+    AgentMethod, AgentSocketConfig, AgentSocketState, DEFAULT_MAX_MESSAGE_SIZE,
+    ListRuntimeSessionsRequest, LockState, ResponseEnvelope, StatusEvent, StatusPayload,
+    SuccessEnvelope, bind_socket_listener, decode_request_frame, encode_frame, handle_connection,
 };
-use locket_desktop_lib::{AgentClientError, fetch_status, invoke_method, resolve_socket_path};
+use locket_desktop_lib::{
+    AgentClientError, fetch_status, invoke_method, resolve_socket_path, stream_status_events,
+};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::UnixListener;
 use tokio::sync::Notify;
 
 const AGENT_VERSION: &str = "0.0.0-test";
@@ -111,6 +116,54 @@ async fn list_runtime_sessions_round_trips_against_a_live_agent() {
     server.stop().await;
 }
 
+#[tokio::test]
+async fn stream_status_events_decodes_subscribe_status_frames() {
+    let dir = tempdir_user_only();
+    let socket_path = dir.path().join("status-stream.sock");
+    let listener = UnixListener::bind(&socket_path).expect("bind stream listener");
+
+    let server = tokio::spawn(async move {
+        let (mut stream, _addr) = listener.accept().await.expect("accept status client");
+        let mut buffer = Vec::new();
+        let mut chunk = [0_u8; 1024];
+        loop {
+            let read = stream.read(&mut chunk).await.expect("read subscribe request");
+            assert_ne!(read, 0, "client closed before SubscribeStatus");
+            buffer.extend_from_slice(&chunk[..read]);
+            if let Ok((request, _consumed)) =
+                decode_request_frame(&buffer, DEFAULT_MAX_MESSAGE_SIZE)
+            {
+                assert_eq!(request.method().ok(), Some(AgentMethod::SubscribeStatus));
+                break;
+            }
+        }
+
+        let locked = StatusEvent::status(1, StatusPayload::locked(AGENT_VERSION));
+        write_status_event(&mut stream, &locked).await;
+        let mut unlocked = StatusPayload::locked(AGENT_VERSION);
+        unlocked.lock_state = LockState::Unlocked;
+        write_status_event(&mut stream, &StatusEvent::status(2, unlocked)).await;
+    });
+
+    let (sender, mut receiver) = tokio::sync::mpsc::channel(4);
+    let client_path = socket_path.clone();
+    let client = tokio::spawn(async move { stream_status_events(&client_path, sender).await });
+
+    let first = receiver.recv().await.expect("initial status event");
+    assert!(first.is_state_change());
+    assert_eq!(first.sequence, 1);
+    assert_eq!(first.status.lock_state, LockState::Locked);
+
+    let second = receiver.recv().await.expect("updated status event");
+    assert!(second.is_state_change());
+    assert_eq!(second.sequence, 2);
+    assert_eq!(second.status.lock_state, LockState::Unlocked);
+
+    let result = client.await.expect("client task");
+    assert!(matches!(result, Err(AgentClientError::Protocol { .. })));
+    server.await.expect("server task");
+}
+
 #[test]
 fn resolve_socket_path_returns_a_value() {
     // Sanity check: the helper must produce a path even when no env
@@ -118,6 +171,14 @@ fn resolve_socket_path_returns_a_value() {
     // socket directly without depending on this helper.
     let path = resolve_socket_path();
     assert!(!path.as_os_str().is_empty());
+}
+
+async fn write_status_event(stream: &mut tokio::net::UnixStream, event: &StatusEvent) {
+    let payload = serde_json::to_value(event).expect("status event JSON");
+    let response = ResponseEnvelope::Success(SuccessEnvelope::new("desktop-test", payload));
+    let frame = encode_frame(&response, DEFAULT_MAX_MESSAGE_SIZE).expect("status frame");
+    stream.write_all(&frame).await.expect("write status frame");
+    stream.flush().await.expect("flush status frame");
 }
 
 struct TestServer {

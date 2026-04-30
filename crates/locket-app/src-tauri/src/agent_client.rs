@@ -1,21 +1,21 @@
 //! Minimal client for the locket agent's v1 framed JSON protocol.
 //!
-//! Connects to the agent's Unix domain socket, exchanges a single
-//! `Status` request/response, and surfaces a typed error so the
-//! desktop UI can render a precise `AgentUnavailable` banner instead
-//! of swallowing every failure into a generic timeout.
+//! Connects to the agent's Unix domain socket, exchanges framed
+//! request/response RPCs, and subscribes to the metadata-only status
+//! stream used by the system tray.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use locket_agent::{
     AgentMethod, DEFAULT_MAX_MESSAGE_SIZE, ProtocolError, RequestEnvelope, ResponseEnvelope,
-    StatusPayload, decode_response_frame, encode_frame,
+    StatusEvent, StatusPayload, decode_response_frame, encode_frame,
 };
 use locket_core::{ErrorDisplayCopy, LocketError};
 use serde::{Serialize, de::DeserializeOwned};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
+use tokio::sync::mpsc;
 
 /// Default subdirectory under the user's data dir for agent sockets.
 const DEFAULT_DATA_DIR: &str = ".locket";
@@ -153,6 +153,40 @@ pub async fn invoke_method<P: Serialize, R: DeserializeOwned>(
     decode_payload(response)
 }
 
+/// Subscribe to metadata-only agent status events.
+///
+/// Opens a dedicated `SubscribeStatus` connection and forwards decoded
+/// [`StatusEvent`] values into `sender` until the socket closes or the
+/// receiver is dropped. No per-read timeout is applied because the
+/// server is allowed to idle until its heartbeat interval.
+///
+/// # Errors
+///
+/// Returns [`AgentClientError`] when the socket can't be reached, the
+/// initial request can't be written, the wire protocol fails, or the
+/// agent replies with an error envelope.
+pub async fn stream_status_events(
+    socket_path: &Path,
+    sender: mpsc::Sender<StatusEvent>,
+) -> Result<(), AgentClientError> {
+    let mut stream = connect(socket_path).await?;
+    let request = RequestEnvelope::new(
+        new_request_id(),
+        AgentMethod::SubscribeStatus,
+        serde_json::Value::Null,
+    );
+    let frame = encode_frame(&request, DEFAULT_MAX_MESSAGE_SIZE)?;
+    stream
+        .write_all(&frame)
+        .await
+        .map_err(|error| AgentClientError::Protocol { reason: format!("write failed: {error}") })?;
+    stream
+        .flush()
+        .await
+        .map_err(|error| AgentClientError::Protocol { reason: format!("flush failed: {error}") })?;
+    read_status_stream(&mut stream, sender).await
+}
+
 async fn connect(socket_path: &Path) -> Result<UnixStream, AgentClientError> {
     if !socket_path.exists() {
         return Err(AgentClientError::unavailable("agent socket not found", socket_path));
@@ -212,6 +246,37 @@ async fn read_response_frame(
         if read == 0 {
             return Err(AgentClientError::Protocol {
                 reason: "agent closed connection before response".to_owned(),
+            });
+        }
+        buffer.extend_from_slice(&chunk[..read]);
+    }
+}
+
+async fn read_status_stream(
+    stream: &mut UnixStream,
+    sender: mpsc::Sender<StatusEvent>,
+) -> Result<(), AgentClientError> {
+    let mut buffer: Vec<u8> = Vec::with_capacity(4096);
+    let mut chunk = [0_u8; 4096];
+    loop {
+        match decode_response_frame(&buffer, DEFAULT_MAX_MESSAGE_SIZE) {
+            Ok((response, consumed)) => {
+                buffer.drain(..consumed);
+                let event = decode_payload::<StatusEvent>(response)?;
+                if sender.send(event).await.is_err() {
+                    return Ok(());
+                }
+                continue;
+            }
+            Err(ProtocolError::IncompleteFrame) => {}
+            Err(error) => return Err(error.into()),
+        }
+        let read = stream.read(&mut chunk).await.map_err(|error| AgentClientError::Protocol {
+            reason: format!("read failed: {error}"),
+        })?;
+        if read == 0 {
+            return Err(AgentClientError::Protocol {
+                reason: "agent closed status stream".to_owned(),
             });
         }
         buffer.extend_from_slice(&chunk[..read]);

@@ -1,7 +1,7 @@
 //! Tauri 2 system tray binding for the Locket desktop shell.
 //!
-//! This module registers the tray icon, a metadata-only menu, and a way
-//! to push state updates from the rest of the app. Notification dispatch
+//! This module registers the tray icon, a metadata-only menu, and a
+//! direct subscription to the agent status stream. Notification dispatch
 //! lands in a later slice. Per the desktop tray privacy spec the
 //! registered surface is metadata-only:
 //! tooltip text comes from `TrayIconState::descriptor().label`, which is
@@ -19,6 +19,7 @@
 //! Lucide-derived final assets without touching this module.
 #![allow(clippy::missing_panics_doc)]
 
+use locket_agent::{LockState, StatusEvent, StatusPayload};
 use locket_app::TrayIconState;
 use serde::{Deserialize, Serialize};
 use tauri::image::Image;
@@ -195,6 +196,25 @@ pub fn tooltip_for(state: TrayIconState) -> &'static str {
     state.descriptor().label
 }
 
+/// Pure mapping from agent status metadata to the generic tray state.
+#[must_use]
+pub const fn tray_state_for_status(status: &StatusPayload) -> TrayIconState {
+    match status.lock_state {
+        LockState::Unlocked => TrayIconState::AgentUnlocked,
+        LockState::Locked => TrayIconState::AgentLocked,
+        LockState::Unknown => TrayIconState::ErrorDegraded,
+    }
+}
+
+/// Pure mapping from a stream event to a tray state update.
+///
+/// Heartbeats are keepalives only; the agent marks them as not being
+/// state changes, so the tray ignores them.
+#[must_use]
+pub fn tray_state_for_status_event(event: &StatusEvent) -> Option<TrayIconState> {
+    event.is_state_change().then(|| tray_state_for_status(&event.status))
+}
+
 const fn macos_bytes(state: TrayIconState) -> &'static [u8] {
     match state {
         TrayIconState::AgentUnlocked => MACOS_AGENT_UNLOCKED,
@@ -258,9 +278,9 @@ const fn icon_is_template() -> bool {
 /// in a later slice.
 ///
 /// The initial icon is the `AgentStopped` placeholder because the
-/// agent socket connect happens after `setup`. The frontend's
-/// `useTray` composable replaces it with the real state on the first
-/// `agent_status` poll.
+/// agent socket connect happens after `setup`. A background
+/// `SubscribeStatus` task replaces it with the real state when the
+/// daemon is reachable.
 ///
 /// # Errors
 ///
@@ -284,6 +304,7 @@ pub fn setup_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
             // platforms that need an explicit listener.
         })
         .build(app)?;
+    start_tray_status_subscription(app.clone());
     Ok(())
 }
 
@@ -330,6 +351,27 @@ fn show_main_window<R: Runtime>(app: &AppHandle<R>) {
     }
 }
 
+fn start_tray_status_subscription<R: Runtime>(app: AppHandle<R>) {
+    tauri::async_runtime::spawn(async move {
+        let path = crate::agent_client::resolve_socket_path();
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(16);
+        let updater_app = app.clone();
+        let updater = tauri::async_runtime::spawn(async move {
+            while let Some(event) = receiver.recv().await {
+                let Some(state) = tray_state_for_status_event(&event) else {
+                    continue;
+                };
+                let _ = update_tray_state(&updater_app, state);
+            }
+        });
+        let result = crate::agent_client::stream_status_events(&path, sender).await;
+        let _ = updater.await;
+        if result.is_err() {
+            let _ = update_tray_state(&app, TrayIconState::AgentStopped);
+        }
+    });
+}
+
 /// Update the registered tray icon to reflect a new `TrayIconState`.
 ///
 /// Looks up the tray by `LOCKET_TRAY_ID`, re-decodes the baked-in PNG
@@ -362,8 +404,10 @@ pub fn update_tray_state<R: Runtime>(
 mod tests {
     use super::{
         TrayMenuAction, TrayState, dark_bytes, icon_bytes_for, light_bytes, macos_bytes,
-        tooltip_for, tray_menu_action_for_id, tray_menu_actions,
+        tooltip_for, tray_menu_action_for_id, tray_menu_actions, tray_state_for_status,
+        tray_state_for_status_event,
     };
+    use locket_agent::{LockState, StatusEvent, StatusPayload};
     use locket_app::{TrayIconState, tray_icon_states};
 
     #[test]
@@ -435,6 +479,30 @@ mod tests {
         for (wire, expected) in pairs {
             assert_eq!(TrayIconState::from(wire), expected);
         }
+    }
+
+    #[test]
+    fn status_payload_maps_to_metadata_only_tray_state() {
+        let mut status = StatusPayload::locked("test-version");
+        assert_eq!(tray_state_for_status(&status), TrayIconState::AgentLocked);
+
+        status.lock_state = LockState::Unlocked;
+        status.project_id = Some("project-main".to_owned());
+        status.profile_name = Some("profile-prod".to_owned());
+        assert_eq!(tray_state_for_status(&status), TrayIconState::AgentUnlocked);
+
+        status.lock_state = LockState::Unknown;
+        assert_eq!(tray_state_for_status(&status), TrayIconState::ErrorDegraded);
+    }
+
+    #[test]
+    fn status_stream_events_only_update_on_state_changes() {
+        let status = StatusPayload::locked("test-version");
+        let event = StatusEvent::status(1, status.clone());
+        assert_eq!(tray_state_for_status_event(&event), Some(TrayIconState::AgentLocked));
+
+        let heartbeat = StatusEvent::heartbeat(2, status);
+        assert_eq!(tray_state_for_status_event(&heartbeat), None);
     }
 
     struct DecodedPng {
