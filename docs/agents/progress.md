@@ -211,8 +211,7 @@ Slices 1+2 shipped (agent client, tray binding, 6 view scaffolds,
   - [ ] **subtask** — agent-scan-known-values-impl: real handler.
     Pre-req: `agent-unlock-cache` (matching) + `locket-scan`
     (pattern/entropy fallback). Emit `SCAN` rows.
-  - [ ] **subtask** — desktop-settings-data: wire into `Settings.vue`;
-    propagate `privacy.redact_names` reactively. Slice 11.
+  - [~] [4ab55ee9] branch agent-4ab55ee9/desktop-settings-data, worktree .worktrees/agent-4ab55ee9-desktop-settings-data; settings view reads and writes desktop config data.
   - [ ] **subtask** — agent-policy-doctor-rpc: RPC exercising
     `lk://` resolution + env-mode expansion. Pre-req:
     `agent-resolve-reference-impl`.
