@@ -542,9 +542,10 @@ the spec already covers. Closed slices land in
     Audit `TEAM_REMOVE`. Errors: `TeamRoleDenied`. Depends on
     `team-store-schema`.
     Claim: branch agent-aa40a4ce/team-remove-member, worktree .worktrees/agent-aa40a4ce-team-remove-member. Scope: `locket team remove <member>` command, `TEAM_REMOVE` audit row, `TeamRoleDenied` typed error.
-  - [ ] **subtask** — team-revoke-device: implement `locket team
+  - [~] [aa40a4ce] **subtask** — team-revoke-device: implement `locket team
     revoke-device`. Audit `DEVICE_REVOKE`. Errors: `TeamRoleDenied`. Depends
     on `team-store-schema`.
+    Claim: branch agent-aa40a4ce/team-revoke-device, worktree .worktrees/agent-aa40a4ce-team-revoke-device. Scope: `locket team revoke-device <device>` command, `DEVICE_REVOKE` audit row.
 - [ ] Role-based authorization for team-managed state
   (`docs/specs/team-sync-recovery.md:75-110`).
 - [~] Passkey support. Metadata storage and `list`/`remove` CLI behavior exist.
@@ -640,10 +641,10 @@ the spec already covers. Closed slices land in
   `AuditMetadataTooLarge` typed error (`MetadataInvalid` 64).
 - [ ] Caller-side summarization: large `secret_names`/`redacted_secret_names`
   collections summarized before append to stay under 64 KiB cap.
-- [~] [aa40a4ce] Recovery code one-time display with scrollback warning and
-  Claim: branch agent-aa40a4ce/recovery-rotate-scrollback-warning, worktree .worktrees/agent-aa40a4ce-recovery-rotate-scrollback-warning. Scope: add the scrollback warning to `recovery rotate` (init already has it). Optional screen-clear on `init`/`device init`/`recovery rotate` and `device init` recovery-bootstrap stay as separate follow-ups.
-  optional screen-clear on `init`/`device init`/`recovery rotate`
-  (`docs/specs/team-sync-recovery.md`).
+- [x] `recovery rotate` prints the scrollback warning after revealing
+  the new code (matches `init` behavior).
+- [ ] Optional screen-clear after one-time recovery code display on
+  `init` and `recovery rotate`.
 - [ ] `device init` first-run-on-machine bootstrap: creates master
   key, recovery envelope, and recovery code on a teammate clone
   (`docs/specs/team-sync-recovery.md`).
@@ -823,10 +824,11 @@ editing — they drift. Severity: **blocker** (security/correctness),
   - [~] [bec7ddfc] **subtask** — tests-env-merge: cover `minimal`/`strict`/
     `merge`/`passthrough` modes, `override = "preserve"`/"error",
     the conservative allowlist, and `LC_*` matching.
-  - [ ] **subtask** — tests-crypto-aad: cover AAD construction,
+  - [~] [e7389a73] **subtask** — tests-crypto-aad: cover AAD construction,
     key-wrap canonicalization, audit HMAC canonicalization, recovery
     envelope parsing, and device descriptor parsing in
     `crates/locket-crypto/`.
+    Claim: branch agent-e7389a73/tests-crypto-aad, worktree .worktrees/agent-e7389a73-tests-crypto-aad.
   - [ ] **subtask** — tests-store-migrations: cover schema migration
     paths, `SCHEMA_MIGRATE` audit on every step, and rollback on
     failure in `crates/locket-store/`.

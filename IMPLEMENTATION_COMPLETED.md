@@ -122,6 +122,8 @@ Slices that have merged to `main` and verified. Open work tracked in
 
 ## Full Spec Coverage TODO — Security/Recovery/Team
 
+- [x] `recovery rotate` prints the scrollback warning after revealing
+  the new code (matches `init` behavior).
 - [x] Passphrase fallback beyond OS-key-store path.
 - [x] Recovery command surfaces (`recover`, `recovery rotate`).
 - [x] Recovery-code generation, one-time display, restore, and rotation.
