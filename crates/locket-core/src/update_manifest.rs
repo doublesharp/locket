@@ -40,13 +40,40 @@ pub struct UpdateManifestPayload {
 }
 
 /// Supported update channels for signed manifests.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum UpdateChannel {
     /// Stable public release channel.
     Stable,
     /// Beta prerelease channel.
     Beta,
+}
+
+impl UpdateChannel {
+    /// Stable wire token used in update-manifest fetch paths.
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Stable => "stable",
+            Self::Beta => "beta",
+        }
+    }
+}
+
+/// Public release key material pinned by the binary.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReleaseKey {
+    /// Stable release-key identifier.
+    pub key_id: String,
+    /// Unpadded base64url Ed25519 verifying key.
+    pub public_key_base64url: String,
+}
+
+/// Privacy-preserving update-manifest fetch request.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UpdateManifestFetchRequest {
+    /// HTTPS URL keyed only by channel, platform, architecture, and current app version.
+    pub url: String,
 }
 
 /// Metadata for one downloadable release artifact.
@@ -137,19 +164,74 @@ pub fn verify_update_manifest(
         return Err(UpdateManifestError::UnsupportedSchema);
     }
     validate_payload(&manifest.signed)?;
-    let verifying_key = decode_verifying_key(pinned_public_key_base64url)?;
-    let signature = manifest
-        .signatures
-        .iter()
-        .find(|signature| {
-            signature.key_id == pinned_key_id && signature.algorithm == SIGNATURE_ALGORITHM
-        })
-        .ok_or(UpdateManifestError::MissingSignature)?;
-    let signature = decode_signature(&signature.signature)?;
-    verifying_key
-        .verify(&signed_payload_bytes(&manifest.signed)?, &signature)
-        .map_err(|_| UpdateManifestError::SignatureVerificationFailed)?;
+    verify_manifest_signature(&manifest, pinned_key_id, pinned_public_key_base64url)?;
     Ok(VerifiedUpdateManifest { payload: manifest.signed, key_id: pinned_key_id.to_owned() })
+}
+
+/// Parses and verifies a release-key rotation manifest signed by both keys.
+///
+/// Rotation succeeds only when the same signed payload verifies with the
+/// currently pinned key and the next pinned key. Callers can then persist or
+/// ship the next key knowing the rotation manifest was authorized by both.
+///
+/// # Errors
+///
+/// Returns [`UpdateManifestError`] when the manifest is malformed, either
+/// release key is invalid, either required signature is missing, or either
+/// signature does not verify the signed payload.
+pub fn verify_update_manifest_key_rotation(
+    manifest_bytes: &[u8],
+    current_key: &ReleaseKey,
+    next_key: &ReleaseKey,
+) -> Result<VerifiedUpdateManifest, UpdateManifestError> {
+    if current_key.key_id == next_key.key_id {
+        return Err(UpdateManifestError::InvalidMetadata);
+    }
+    let manifest: SignedUpdateManifest =
+        serde_json::from_slice(manifest_bytes).map_err(|_| UpdateManifestError::InvalidJson)?;
+    if manifest.v != MANIFEST_SCHEMA_VERSION {
+        return Err(UpdateManifestError::UnsupportedSchema);
+    }
+    validate_payload(&manifest.signed)?;
+    verify_manifest_signature(&manifest, &current_key.key_id, &current_key.public_key_base64url)?;
+    verify_manifest_signature(&manifest, &next_key.key_id, &next_key.public_key_base64url)?;
+    Ok(VerifiedUpdateManifest { payload: manifest.signed, key_id: next_key.key_id.clone() })
+}
+
+/// Builds the opt-in manifest fetch request without accepting private identifiers.
+///
+/// The returned request has no dynamic headers and the URL path contains only
+/// update channel, platform, architecture, and current app version. The
+/// configured base URL must be HTTPS and static: no query string, fragment,
+/// userinfo, or explicit port.
+///
+/// # Errors
+///
+/// Returns [`UpdateManifestError::InvalidMetadata`] when the configured base
+/// URL is not static HTTPS metadata or any path token contains characters that
+/// would allow extra path/query/header data.
+pub fn build_update_manifest_fetch_request(
+    manifest_base_url: &str,
+    channel: UpdateChannel,
+    platform: &str,
+    arch: &str,
+    current_version: &str,
+) -> Result<UpdateManifestFetchRequest, UpdateManifestError> {
+    validate_https_static_url(manifest_base_url)?;
+    validate_fetch_token(platform)?;
+    validate_fetch_token(arch)?;
+    validate_fetch_token(current_version)?;
+    let base = manifest_base_url.trim_end_matches('/');
+    Ok(UpdateManifestFetchRequest {
+        url: format!(
+            "{}/{}/{}/{}/{}/manifest.json",
+            base,
+            channel.as_str(),
+            platform,
+            arch,
+            current_version
+        ),
+    })
 }
 
 fn validate_payload(payload: &UpdateManifestPayload) -> Result<(), UpdateManifestError> {
@@ -177,6 +259,18 @@ fn validate_nonempty_token(value: &str) -> Result<(), UpdateManifestError> {
     Ok(())
 }
 
+fn validate_fetch_token(value: &str) -> Result<(), UpdateManifestError> {
+    if value.is_empty()
+        || value.len() > 128
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-' | b'+'))
+    {
+        return Err(UpdateManifestError::InvalidMetadata);
+    }
+    Ok(())
+}
+
 fn validate_https_static_url(url: &str) -> Result<(), UpdateManifestError> {
     let Some(rest) = url.strip_prefix("https://") else {
         return Err(UpdateManifestError::InvalidMetadata);
@@ -193,6 +287,23 @@ fn validate_https_static_url(url: &str) -> Result<(), UpdateManifestError> {
         return Err(UpdateManifestError::InvalidMetadata);
     }
     Ok(())
+}
+
+fn verify_manifest_signature(
+    manifest: &SignedUpdateManifest,
+    key_id: &str,
+    public_key_base64url: &str,
+) -> Result<(), UpdateManifestError> {
+    let verifying_key = decode_verifying_key(public_key_base64url)?;
+    let signature = manifest
+        .signatures
+        .iter()
+        .find(|signature| signature.key_id == key_id && signature.algorithm == SIGNATURE_ALGORITHM)
+        .ok_or(UpdateManifestError::MissingSignature)?;
+    let signature = decode_signature(&signature.signature)?;
+    verifying_key
+        .verify(&signed_payload_bytes(&manifest.signed)?, &signature)
+        .map_err(|_| UpdateManifestError::SignatureVerificationFailed)
 }
 
 fn validate_sha256_hex(value: &str) -> Result<(), UpdateManifestError> {
@@ -237,8 +348,9 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        SignedUpdateManifest, UpdateArtifact, UpdateChannel, UpdateManifestError,
-        UpdateManifestPayload, UpdateManifestSignature, verify_update_manifest,
+        ReleaseKey, SignedUpdateManifest, UpdateArtifact, UpdateChannel, UpdateManifestError,
+        UpdateManifestPayload, UpdateManifestSignature, build_update_manifest_fetch_request,
+        verify_update_manifest, verify_update_manifest_key_rotation,
     };
     use crate::LocketError;
 
@@ -360,6 +472,98 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn builds_privacy_preserving_manifest_fetch_request() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let request = build_update_manifest_fetch_request(
+            "https://updates.example.test/locket",
+            UpdateChannel::Stable,
+            "macos",
+            "aarch64",
+            "0.2.0",
+        )?;
+
+        assert_eq!(
+            request.url,
+            "https://updates.example.test/locket/stable/macos/aarch64/0.2.0/manifest.json"
+        );
+        for forbidden in [
+            "project", "profile", "secret", "policy", "device", "member", "hostname", "username",
+            "install", "token", "?", "#",
+        ] {
+            assert!(!request.url.contains(forbidden));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_non_static_or_private_manifest_fetch_inputs() {
+        let query = build_update_manifest_fetch_request(
+            "https://updates.example.test/manifest.json?install_id=abc",
+            UpdateChannel::Stable,
+            "macos",
+            "aarch64",
+            "0.2.0",
+        );
+        assert_eq!(query, Err(UpdateManifestError::InvalidMetadata));
+
+        let path_escape = build_update_manifest_fetch_request(
+            "https://updates.example.test/manifest.json",
+            UpdateChannel::Stable,
+            "macos/lk_proj_secret",
+            "aarch64",
+            "0.2.0",
+        );
+        assert_eq!(path_escape, Err(UpdateManifestError::InvalidMetadata));
+    }
+
+    #[test]
+    fn key_rotation_requires_old_and_new_signatures() -> Result<(), Box<dyn std::error::Error>> {
+        let current_key_id = "release-key-v1".to_owned();
+        let next_key_id = "release-key-v2".to_owned();
+        let current_signing_key = SigningKey::from_bytes(&[7; 32]);
+        let next_signing_key = SigningKey::from_bytes(&[8; 32]);
+        let current_release_key = ReleaseKey {
+            key_id: current_key_id.clone(),
+            public_key_base64url: BASE64URL_NOPAD
+                .encode(current_signing_key.verifying_key().as_bytes()),
+        };
+        let next_release_key = ReleaseKey {
+            key_id: next_key_id.clone(),
+            public_key_base64url: BASE64URL_NOPAD
+                .encode(next_signing_key.verifying_key().as_bytes()),
+        };
+        let manifest = signed_manifest_with_artifact_and_keys(
+            release_artifact(),
+            vec![
+                (current_key_id.clone(), current_signing_key.clone()),
+                (next_key_id.clone(), next_signing_key),
+            ],
+        )?;
+
+        let verified = verify_update_manifest_key_rotation(
+            &manifest,
+            &current_release_key,
+            &next_release_key,
+        )?;
+
+        assert_eq!(verified.key_id, next_key_id);
+
+        let missing_next = signed_manifest_with_artifact_and_keys(
+            release_artifact(),
+            vec![(current_key_id, current_signing_key)],
+        )?;
+        let Err(error) = verify_update_manifest_key_rotation(
+            &missing_next,
+            &current_release_key,
+            &next_release_key,
+        ) else {
+            return Err("rotation manifest should require both signatures".into());
+        };
+        assert_eq!(error, UpdateManifestError::MissingSignature);
+        Ok(())
+    }
+
     fn signed_manifest() -> Result<(Vec<u8>, String, String), Box<dyn std::error::Error>> {
         signed_manifest_with_url("https://updates.example.test/releases/locket-0.2.0-aarch64.pkg")
     }
@@ -393,26 +597,48 @@ mod tests {
     ) -> Result<(Vec<u8>, String, String), Box<dyn std::error::Error>> {
         let key_id = "release-key-v1".to_owned();
         let signing_key = SigningKey::from_bytes(&[7; 32]);
+        let public_key = BASE64URL_NOPAD.encode(signing_key.verifying_key().as_bytes());
+        let manifest =
+            signed_manifest_with_artifact_and_keys(artifact, vec![(key_id.clone(), signing_key)])?;
+        Ok((manifest, key_id, public_key))
+    }
+
+    fn signed_manifest_with_artifact_and_keys(
+        artifact: UpdateArtifact,
+        signers: Vec<(String, SigningKey)>,
+    ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
         let payload = UpdateManifestPayload {
             channel: UpdateChannel::Stable,
             version: "0.2.0".to_owned(),
             published_at: "2026-04-29T00:00:00Z".to_owned(),
             artifacts: vec![artifact],
         };
-        let signature = signing_key.sign(&super::signed_payload_bytes(&payload)?);
+        let signed_payload = super::signed_payload_bytes(&payload)?;
         let envelope = SignedUpdateManifest {
             v: 1,
             signed: payload,
-            signatures: vec![UpdateManifestSignature {
-                key_id: key_id.clone(),
-                algorithm: "Ed25519".to_owned(),
-                signature: BASE64URL_NOPAD.encode(&signature.to_bytes()),
-            }],
+            signatures: signers
+                .into_iter()
+                .map(|(key_id, signing_key)| {
+                    let signature = signing_key.sign(&signed_payload);
+                    UpdateManifestSignature {
+                        key_id,
+                        algorithm: "Ed25519".to_owned(),
+                        signature: BASE64URL_NOPAD.encode(&signature.to_bytes()),
+                    }
+                })
+                .collect(),
         };
-        Ok((
-            serde_json::to_vec(&envelope)?,
-            key_id,
-            BASE64URL_NOPAD.encode(signing_key.verifying_key().as_bytes()),
-        ))
+        Ok(serde_json::to_vec(&envelope)?)
+    }
+
+    fn release_artifact() -> UpdateArtifact {
+        UpdateArtifact {
+            platform: "macos".to_owned(),
+            arch: "aarch64".to_owned(),
+            url: "https://updates.example.test/releases/locket-0.2.0-aarch64.pkg".to_owned(),
+            sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_owned(),
+            size_bytes: 42,
+        }
     }
 }
