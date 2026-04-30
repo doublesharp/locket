@@ -610,9 +610,8 @@ the spec already covers. Closed slices land in
     socket. Pre-req: `agent-socket-server`.
   - [ ] **subtask** — harden-socket-perms: 0600/equivalent socket and
     pipe permissions; refuse to start if the bind path is wider.
-  - [~] [7138f228] **subtask** — harden-memory-lock: `mlock`/equivalent for
-    unwrapped key buffers; warn on unsupported platforms.
-    Claim: branch agent-7138f228/harden-memory-lock, worktree .worktrees/agent-7138f228-harden-memory-lock. Scope: process-wide `mlockall(MCL_CURRENT | MCL_FUTURE)` at CLI startup with graceful `Degraded` fallback when `RLIMIT_MEMLOCK` is too low; mirrors the core_dumps shape and hands the state to the existing doctor `hardening` check.
+  - [x] **subtask** — harden-memory-lock: `mlockall` at CLI startup;
+    graceful `Degraded` on `RLIMIT_MEMLOCK` limit; `Unsupported` on macOS/Windows.
   - [~] [e7389a73] **subtask** — harden-zeroize: ensure unwrapped keys/values
     are wrapped in `Zeroizing`/equivalent at every owner; audit
     sites that haven't been migrated.
@@ -640,8 +639,9 @@ the spec already covers. Closed slices land in
   invariant — no phantom row, no sequence gap on rollback.
 - [x] `metadata_json` ≤64 KiB per-row cap enforced at write time;
   `AuditMetadataTooLarge` typed error (`MetadataInvalid` 64).
-- [ ] Caller-side summarization: large `secret_names`/`redacted_secret_names`
+- [~] [aa40a4ce] Caller-side summarization: large `secret_names`/`redacted_secret_names`
   collections summarized before append to stay under 64 KiB cap.
+  Claim: branch agent-aa40a4ce/caller-side-summarization, worktree .worktrees/agent-aa40a4ce-caller-side-summarization. Scope: summarize_secret_names helper, applied to all 4 audit sites (exec, docker, run, redact).
 - [x] `recovery rotate` prints the scrollback warning after revealing
   the new code (matches `init` behavior).
 - [ ] Optional screen-clear after one-time recovery code display on

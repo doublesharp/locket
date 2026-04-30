@@ -256,6 +256,8 @@ Slices that have merged to `main` and verified. Open work tracked in
 
 - [x] `locket allow` requires trusted root; regression test confirms
   untrusted root exits 71, no `ALLOW_DIRECTORY` row written.
+- [x] `mlockall(MCL_CURRENT|MCL_FUTURE)` at CLI startup; `Degraded`
+  on low `RLIMIT_MEMLOCK`, `Unsupported` on macOS/Windows.
 
 ## Spec-by-Spec Completion Gates
 
