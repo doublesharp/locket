@@ -238,7 +238,7 @@ Slices 1+2 shipped (agent client, tray binding, 6 view scaffolds,
   - [ ] **subtask** — desktop-subscribe-status: replace `useAgent`
     poll with a Tauri event channel bridging `SubscribeStatus`.
     Slice 3.
-  - [~] [90b9f58a] branch agent-90b9f58a/agent-list-secrets, worktree .worktrees/agent-90b9f58a-agent-list-secrets; **subtask** — agent-list-secrets: metadata-only active-profile secret rows with source-precedence ordering.
+  - [~] [acda32e4] branch agent-acda32e4/agent-list-secrets, worktree .worktrees/agent-acda32e4-agent-list-secrets; **subtask** — agent-list-secrets: metadata-only active-profile secret rows with source-precedence ordering.
   - [ ] **subtask** — desktop-secrets-data: wire `agent-list-secrets`
     into `SecretMetadataList.vue` + last-refreshed timestamp. Slice 4.
   - [~] [90b9f58a] branch agent-90b9f58a/agent-list-versions, worktree .worktrees/agent-90b9f58a-agent-list-versions; **subtask** — agent-list-versions: current/deprecated/purged metadata plus rotation summary.
