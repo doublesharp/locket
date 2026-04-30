@@ -763,6 +763,49 @@ fn team_remove_member_sets_removed_at_and_writes_team_remove_audit()
 }
 
 #[test]
+fn team_revoke_device_sets_revoked_at_and_writes_device_revoke_audit()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    seed_team_members_fixture(&directory, false)?;
+
+    let mut output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "team", "revoke-device", "lk_dev_team_owner"])?,
+        &context,
+        &mut output,
+    )?;
+
+    let output = String::from_utf8(output)?;
+    assert!(output.contains("device: revoked"));
+    assert!(output.contains("device_id: lk_dev_team_owner"));
+    assert!(output.contains("metadata_only: yes"));
+
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let revoked_at: Option<i64> = store.connection().query_row(
+        "SELECT revoked_at FROM devices WHERE id = 'lk_dev_team_owner'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert!(revoked_at.is_some(), "revoked_at must be set after team revoke-device");
+
+    let metadata: String = store.connection().query_row(
+        "SELECT metadata_json FROM audit_log WHERE action = 'DEVICE_REVOKE' AND metadata_json LIKE '%team revoke-device%'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert!(metadata.contains("\"action\":\"DEVICE_REVOKE\""));
+    assert!(metadata.contains("\"command\":\"team revoke-device\""));
+    assert!(metadata.contains("\"device_id\":\"lk_dev_team_owner\""));
+    Ok(())
+}
+
+#[test]
 fn team_remove_last_owner_is_rejected_with_team_role_denied()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempdir()?;
@@ -840,6 +883,61 @@ fn team_remove_unknown_member_fails_with_secret_not_found() -> Result<(), Box<dy
     Ok(())
 }
 
+#[test]
+fn team_revoke_device_already_revoked_is_idempotent() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    seed_team_members_fixture(&directory, false)?;
+    // Pre-revoke the device directly.
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let project_id =
+        crate::read_project_config(&directory.path().join("locket.toml"))?.project_id.into_string();
+    store.revoke_device(&project_id, "lk_dev_team_owner", 1_i64)?;
+
+    let mut output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "team", "revoke-device", "lk_dev_team_owner"])?,
+        &context,
+        &mut output,
+    )?;
+
+    let output = String::from_utf8(output)?;
+    assert!(output.contains("device: already revoked"));
+    assert!(output.contains("metadata_only: yes"));
+    Ok(())
+}
+
+#[test]
+fn team_revoke_device_unknown_device_fails_with_invalid_reference()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    seed_team_members_fixture(&directory, false)?;
+
+    let result = run_with_context(
+        Cli::try_parse_from(["locket", "team", "revoke-device", "nonexistent"])?,
+        &context,
+        &mut Vec::new(),
+    );
+
+    let Err(error) = result else {
+        return Err("revoking unknown device must fail".into());
+    };
+    assert_eq!(error.exit_code(), 64, "InvalidReference is in the input band");
+    assert!(error.to_string().contains("device not found"));
+    Ok(())
+}
+
 /// Seed two owners so the last-owner guard doesn't fire during remove tests.
 fn seed_team_members_with_two_owners(
     directory: &tempfile::TempDir,
@@ -862,8 +960,6 @@ fn seed_team_members_with_two_owners(
          VALUES (?1, ?2, ?3, ?4, ?5)",
         ("lk_member_owner2", "lk_team_two", "Bob Owner", "owner", 20_i64),
     )?;
-    Ok(())
-}
 
 #[test]
 fn init_writes_recovery_envelope_and_metadata_only_audit() -> Result<(), Box<dyn std::error::Error>>

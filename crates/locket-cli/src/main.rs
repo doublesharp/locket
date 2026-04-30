@@ -821,6 +821,9 @@ pub(crate) enum TeamCommand {
     Members,
     /// Remove a member from the team.
     Remove(TeamRemoveArgs),
+    /// Revoke a team member's device.
+    #[command(name = "revoke-device")]
+    RevokeDevice(TeamRevokeDeviceArgs),
 }
 
 #[derive(Debug, Args)]
@@ -833,6 +836,12 @@ pub(crate) struct TeamInitArgs {
 pub(crate) struct TeamRemoveArgs {
     /// Member display name or member id to remove.
     pub member: String,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct TeamRevokeDeviceArgs {
+    /// Device name, id, or fingerprint to revoke.
+    pub device: String,
 }
 
 #[derive(Debug, Args)]

@@ -6,10 +6,10 @@ use locket_store::{AuditWrite, PendingTeamInviteRecord, TeamMemberListRecord, Te
 use serde_json::json;
 
 use crate::{
-    CliError, RuntimeContext, TeamCommand, TeamInitArgs, TeamRemoveArgs, confirmation_failed_error,
-    ensure_project_exists, load_project_key, now_unix_nanos, open_store, privacy_alias,
-    privacy_redact_names_enabled, require_project, secret_already_exists_error,
-    secret_not_found_error, team_role_denied_error,
+    CliError, RuntimeContext, TeamCommand, TeamInitArgs, TeamRemoveArgs, TeamRevokeDeviceArgs,
+    confirmation_failed_error, ensure_project_exists, invalid_reference_error, load_project_key,
+    now_unix_nanos, open_store, privacy_alias, privacy_redact_names_enabled, require_project,
+    secret_already_exists_error, secret_not_found_error, team_role_denied_error,
 };
 
 pub fn team_command(
@@ -21,6 +21,7 @@ pub fn team_command(
         TeamCommand::Init(args) => team_init_command(context, output, &args),
         TeamCommand::Members => team_members_command(context, output),
         TeamCommand::Remove(args) => team_remove_command(context, output, &args),
+        TeamCommand::RevokeDevice(args) => team_revoke_device_command(context, output, &args),
     }
 }
 
@@ -157,6 +158,68 @@ fn team_remove_command(
     Ok(())
 }
 
+fn team_revoke_device_command(
+    context: &RuntimeContext,
+    output: &mut impl Write,
+    args: &TeamRevokeDeviceArgs,
+) -> Result<(), CliError> {
+    let resolved = require_project(context)?;
+    let mut store = open_store(context)?;
+    let project_id = resolved.config.project_id.as_str();
+    ensure_project_exists(&store, project_id)?;
+
+    if store.get_team_by_project(project_id)?.is_none() {
+        return Err(team_role_denied_error("no team initialized for this project"));
+    }
+
+    let device = store
+        .find_device(project_id, &args.device)?
+        .ok_or_else(|| invalid_reference_error("device not found"))?;
+
+    if device.revoked_at.is_some() {
+        writeln!(output, "device: already revoked")?;
+        writeln!(output, "device_id: {}", device.id)?;
+        writeln!(output, "metadata_only: yes")?;
+        return Ok(());
+    }
+
+    let timestamp = now_unix_nanos()?;
+    store.revoke_device(project_id, &device.id, timestamp)?;
+
+    let audit_key = load_project_key(context, &store, project_id, KeyPurpose::Audit)?;
+    let metadata = json!({
+        "schema_version": 1,
+        "action": "DEVICE_REVOKE",
+        "status": "SUCCESS",
+        "command": "team revoke-device",
+        "device_id": device.id,
+        "device_name": device.name,
+        "fingerprint": device.fingerprint,
+        "local": device.local,
+    });
+    let audit = AuditWrite {
+        project_id,
+        profile_id: None,
+        action: "DEVICE_REVOKE",
+        status: "SUCCESS",
+        secret_name: None,
+        command: Some("team revoke-device"),
+        metadata_json: &metadata,
+        timestamp,
+    };
+    store.append_audit(audit_key.as_ref(), &audit)?;
+
+    writeln!(output, "device: revoked")?;
+    writeln!(output, "device_id: {}", device.id)?;
+    writeln!(output, "fingerprint: {}", device.fingerprint)?;
+    writeln!(
+        output,
+        "note: a rotation checklist for accessible profiles and secrets is recommended"
+    )?;
+    writeln!(output, "metadata_only: yes")?;
+    Ok(())
+}
+
 fn team_members_command(context: &RuntimeContext, output: &mut impl Write) -> Result<(), CliError> {
     let resolved = require_project(context)?;
     let store = open_store(context)?;
@@ -231,56 +294,4 @@ fn write_pending_invites(
         )?;
     }
     Ok(())
-}
-
-fn team_name_label(team: &TeamRecord, redact_names: bool) -> String {
-    if redact_names { privacy_alias("team", &team.name) } else { team.name.clone() }
-}
-
-fn team_id_label(team: &TeamRecord, redact_names: bool) -> String {
-    if redact_names { privacy_alias("team", &team.id) } else { team.id.clone() }
-}
-
-fn member_id_label(member: &TeamMemberListRecord, redact_names: bool) -> String {
-    if redact_names { privacy_alias("member", &member.id) } else { member.id.clone() }
-}
-
-fn member_display_label(member: &TeamMemberListRecord, redact_names: bool) -> String {
-    if redact_names {
-        privacy_alias("member", &member.display_name)
-    } else {
-        member.display_name.clone()
-    }
-}
-
-fn invite_id_label(invite: &PendingTeamInviteRecord, redact_names: bool) -> String {
-    if redact_names { privacy_alias("invite", &invite.id) } else { invite.id.clone() }
-}
-
-fn invite_recipient_label(invite: &PendingTeamInviteRecord, redact_names: bool) -> String {
-    if redact_names {
-        privacy_alias("device", &invite.recipient_device_fingerprint)
-    } else {
-        invite.recipient_device_fingerprint.clone()
-    }
-}
-
-fn invite_profiles_label(invite: &PendingTeamInviteRecord, redact_names: bool) -> String {
-    if invite.profiles.is_empty() {
-        return "-".to_owned();
-    }
-    invite
-        .profiles
-        .iter()
-        .map(
-            |profile| {
-                if redact_names { privacy_alias("profile", profile) } else { profile.clone() }
-            },
-        )
-        .collect::<Vec<_>>()
-        .join(",")
-}
-
-fn optional_timestamp_label(value: Option<i64>) -> String {
-    value.map_or_else(|| "-".to_owned(), |timestamp| timestamp.to_string())
 }
