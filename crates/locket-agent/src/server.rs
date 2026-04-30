@@ -582,8 +582,10 @@ async fn handle_list_runtime_sessions(
             Ok(request) => request,
             Err(_) => return crate::runtime_sessions::invalid_payload_response(envelope),
         };
-    let sessions = state.runtime_sessions.lock().await;
-    let response = crate::runtime_sessions::list_runtime_sessions_response(&request, &sessions);
+    let response = {
+        let sessions = state.runtime_sessions.lock().await;
+        crate::runtime_sessions::list_runtime_sessions_response(&request, &sessions)
+    };
     crate::runtime_sessions::success_response(envelope, response)
 }
 

@@ -148,7 +148,7 @@ fn runtime_session_row(
     }
 }
 
-fn runtime_session_state(session: &RuntimeSessionSnapshot) -> RuntimeSessionState {
+const fn runtime_session_state(session: &RuntimeSessionSnapshot) -> RuntimeSessionState {
     match (session.ended_at, session.exit_status) {
         (None, _) => RuntimeSessionState::Running,
         (Some(_), Some(0)) => RuntimeSessionState::Completed,
