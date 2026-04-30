@@ -1,5 +1,6 @@
 //! Implementation of the `locket exec` command and its private helpers.
 
+use std::collections::BTreeMap;
 use std::io::Write;
 
 use locket_crypto::KeyPurpose;
@@ -55,10 +56,12 @@ pub fn exec_command(
     let mut resolved_secrets = Vec::with_capacity(args.secrets.len());
     let mut locket_env = locket_exec::EnvMap::new();
     let mut injected_names = Vec::with_capacity(secret_names.len());
+    let mut injected_sources = BTreeMap::new();
     for key in &secret_names {
         let resolved = resolve_active_secret(context, key)?;
         let value = decrypt_current_secret(context, &resolved)?;
         injected_names.push(resolved.secret.name.clone());
+        injected_sources.insert(resolved.secret.name.clone(), resolved.secret.source.clone());
         locket_env.insert(resolved.secret.name.clone(), value);
         resolved_secrets.push(resolved);
     }
@@ -107,6 +110,7 @@ pub fn exec_command(
         &argv_program,
         arg_count,
         &injected_names,
+        &injected_sources,
         args.all,
         exit_code,
         if status.success() { "SUCCESS" } else { "FAILED" },
@@ -154,6 +158,7 @@ fn write_exec_audit_if_available(
     argv_program: &str,
     arg_count: usize,
     injected_names: &[String],
+    injected_sources: &BTreeMap<String, String>,
     all_mode: bool,
     exit_code: Option<i32>,
     status: &str,
@@ -167,11 +172,13 @@ fn write_exec_audit_if_available(
     let metadata = json!({
         "schema_version": 1,
         "action": "EXEC",
+        "command": "exec",
         "status": status,
         "profile_id": profile.id,
         "argv_program": argv_program,
         "arg_count": arg_count,
         "secret_names": injected_names,
+        "secret_sources": injected_sources,
         "all_mode": all_mode,
         "exit_code": exit_code,
     });

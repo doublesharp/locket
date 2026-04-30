@@ -142,18 +142,12 @@ fn exec_injects_secret_into_child_scope() -> Result<(), Box<dyn std::error::Erro
         &context,
         &mut output,
     )?;
-    let args = crate::SecretWriteArgs {
-        key: "DATABASE_URL".to_owned(),
-        source: crate::SourceArg { source: Some(crate::SecretSourceArg::UserLocal) },
-        metadata: crate::SecretMetadataFlags {
-            description: None,
-            owner: None,
-            tags: Vec::new(),
-            required: false,
-            optional: false,
-        },
-    };
-    crate::set_secret_value(&context, &args, "postgres://localhost/app", "manual", 1_000)?;
+    let user_args =
+        test_secret_write_args_for_source("DATABASE_URL", crate::SecretSourceArg::UserLocal);
+    crate::set_secret_value(&context, &user_args, "user-db-value", "manual", 1_000)?;
+    let machine_args =
+        test_secret_write_args_for_source("DATABASE_URL", crate::SecretSourceArg::MachineLocal);
+    crate::set_secret_value(&context, &machine_args, "machine-db-value", "manual", 2_000)?;
 
     let mut exec_output = Vec::new();
     run_with_context(
@@ -165,7 +159,7 @@ fn exec_injects_secret_into_child_scope() -> Result<(), Box<dyn std::error::Erro
             "--",
             "/bin/sh",
             "-c",
-            "test \"$DATABASE_URL\" = \"postgres://localhost/app\"",
+            "test \"$DATABASE_URL\" = \"machine-db-value\"",
         ])?,
         &context,
         &mut exec_output,
@@ -190,7 +184,64 @@ fn exec_injects_secret_into_child_scope() -> Result<(), Box<dyn std::error::Erro
     assert!(session.1);
     assert_eq!(session.2, Some(0));
     assert_eq!(session.3, "[\"DATABASE_URL\"]");
-    assert!(!session.3.contains("postgres://localhost/app"));
+    assert!(!session.3.contains("machine-db-value"));
+    assert!(!session.3.contains("user-db-value"));
+
+    let metadata: String = store.connection().query_row(
+        "SELECT metadata_json FROM audit_log WHERE action = 'EXEC'
+         ORDER BY sequence DESC LIMIT 1",
+        [],
+        |row| row.get(0),
+    )?;
+    let metadata: serde_json::Value = serde_json::from_str(&metadata)?;
+    assert_eq!(metadata["action"], "EXEC");
+    assert_eq!(metadata["status"], "SUCCESS");
+    assert_eq!(metadata["all_mode"], false);
+    assert_eq!(metadata["secret_names"], json!(["DATABASE_URL"]));
+    assert_eq!(metadata["secret_sources"]["DATABASE_URL"], "machine-local");
+    assert_eq!(metadata["argv_program"], "/bin/sh");
+    assert_eq!(metadata["arg_count"], 3);
+    assert_eq!(metadata["command"], "exec");
+    assert!(!metadata.to_string().contains("machine-db-value"));
+    assert!(!metadata.to_string().contains("user-db-value"));
+    Ok(())
+}
+
+#[test]
+fn exec_secret_requires_unlocked_vault_before_spawn() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    let args = test_secret_write_args("DATABASE_URL");
+    crate::set_secret_value(&context, &args, "postgres://localhost/app", "manual", 1_000)?;
+    let (project_id, _) = test_project_id_and_master_key(&context)?;
+    context.key_store.delete_master_key(&project_id)?;
+
+    let mut output = Vec::new();
+    let result = run_with_context(
+        Cli::try_parse_from([
+            "locket",
+            "exec",
+            "--secret",
+            "DATABASE_URL",
+            "--",
+            "/bin/sh",
+            "-c",
+            "touch spawned-locked",
+        ])?,
+        &context,
+        &mut output,
+    );
+    let Err(error) = result else {
+        return Err("locked exec --secret must fail".into());
+    };
+    assert_eq!(error.exit_code(), locket_core::LocketError::UnlockRequired.exit_code());
+    assert!(String::from_utf8(output)?.is_empty());
+    assert!(!directory.path().join("spawned-locked").exists());
     Ok(())
 }
 
