@@ -233,12 +233,15 @@ secrets = ["DATABASE_URL"]
         ];
 
         for (input, field) in cases {
-            let error = PolicyDocument::from_toml_str(input).expect_err("permissive policy passed");
-            let message = error.to_string();
-            assert!(
-                message.contains(field),
-                "error for {field} should mention rejected field, got {message:?}"
-            );
+            let result = PolicyDocument::from_toml_str(input);
+            assert!(result.is_err(), "permissive policy passed for field {field}");
+            if let Err(error) = result {
+                let message = error.to_string();
+                assert!(
+                    message.contains(field),
+                    "error for {field} should mention rejected field, got {message:?}"
+                );
+            }
         }
     }
 
