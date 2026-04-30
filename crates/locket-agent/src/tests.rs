@@ -1665,6 +1665,178 @@ mod server_tests {
         }
     }
 
+    async fn write_request_frame(
+        client: &mut UnixStream,
+        request: &RequestEnvelope,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let frame = encode_frame(request, DEFAULT_MAX_MESSAGE_SIZE)?;
+        client.write_all(&frame).await?;
+        client.flush().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn e2e_agent_rpc_drives_status_unlock_grants_and_subscription()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::time::Duration;
+
+        let directory = tempdir()?;
+        tighten_directory(directory.path())?;
+        let socket_path = directory.path().join("agent.sock");
+        let config = AgentSocketConfig::new(socket_path.clone(), "e2e-agent-rpc-test");
+        let listener = bind_socket_listener(&config)?;
+        let state = AgentSocketState::locked(config.agent_version.clone());
+        state.set_test_heartbeat_interval(Duration::from_secs(60)).await;
+
+        let server_state = state.clone();
+        let server = tokio::spawn(async move {
+            let (stream, _) = match listener.accept().await {
+                Ok(pair) => pair,
+                Err(error) => return Err(error),
+            };
+            Ok(handle_connection(stream, server_state).await)
+        });
+
+        let mut client = UnixStream::connect(&socket_path).await?;
+        let mut buffer = Vec::new();
+
+        write_request_frame(
+            &mut client,
+            &RequestEnvelope::new("status-locked", AgentMethod::Status, Value::Null),
+        )
+        .await?;
+        let Some(status_locked) = read_one_response_frame(&mut client, &mut buffer).await? else {
+            return Err("server closed before initial Status response".into());
+        };
+        let ResponseEnvelope::Success(status_locked) = status_locked else {
+            return Err(format!("expected initial Status success, got {status_locked:?}").into());
+        };
+        assert_eq!(status_locked.payload["lock_state"], "locked");
+        assert_eq!(status_locked.payload["live_grant_count"], 0);
+
+        write_request_frame(
+            &mut client,
+            &RequestEnvelope::new(
+                "unlock",
+                AgentMethod::Unlock,
+                serde_json::json!({
+                    "project_id": "project-main",
+                    "key": [3, 3, 3, 3, 3, 3, 3, 3,
+                            3, 3, 3, 3, 3, 3, 3, 3,
+                            3, 3, 3, 3, 3, 3, 3, 3,
+                            3, 3, 3, 3, 3, 3, 3, 3],
+                    "ttl_seconds": 60,
+                    "method": "Passphrase"
+                }),
+            ),
+        )
+        .await?;
+        let Some(unlock) = read_one_response_frame(&mut client, &mut buffer).await? else {
+            return Err("server closed before Unlock response".into());
+        };
+        assert!(matches!(unlock, ResponseEnvelope::Success(_)));
+
+        write_request_frame(
+            &mut client,
+            &RequestEnvelope::new("status-unlocked", AgentMethod::Status, Value::Null),
+        )
+        .await?;
+        let Some(status_unlocked) = read_one_response_frame(&mut client, &mut buffer).await? else {
+            return Err("server closed before unlocked Status response".into());
+        };
+        let ResponseEnvelope::Success(status_unlocked) = status_unlocked else {
+            return Err(format!("expected unlocked Status success, got {status_unlocked:?}").into());
+        };
+        assert_eq!(status_unlocked.payload["lock_state"], "unlocked");
+        let ttl = status_unlocked.payload["unlock_ttl_seconds"].as_u64().unwrap_or_default();
+        assert!((1..=60).contains(&ttl), "unlock ttl should remain live, got {ttl}");
+
+        write_request_frame(
+            &mut client,
+            &RequestEnvelope::new(
+                "grant",
+                AgentMethod::RequestGrant,
+                serde_json::json!({
+                    "project_id": "project-main",
+                    "profile_id": "profile-main",
+                    "action": "RunPolicy",
+                    "ttl_seconds": 30,
+                    "binding": {
+                        "pid": std::process::id(),
+                        "process_start_time": "e2e-start"
+                    }
+                }),
+            ),
+        )
+        .await?;
+        let Some(grant) = read_one_response_frame(&mut client, &mut buffer).await? else {
+            return Err("server closed before RequestGrant response".into());
+        };
+        let ResponseEnvelope::Success(grant) = grant else {
+            return Err(format!("expected RequestGrant success, got {grant:?}").into());
+        };
+        let grant_id = grant.payload["grant_id"].as_str().unwrap_or_default().to_owned();
+        assert!(!grant_id.is_empty());
+
+        write_request_frame(
+            &mut client,
+            &RequestEnvelope::new("status-granted", AgentMethod::Status, Value::Null),
+        )
+        .await?;
+        let Some(status_granted) = read_one_response_frame(&mut client, &mut buffer).await? else {
+            return Err("server closed before granted Status response".into());
+        };
+        let ResponseEnvelope::Success(status_granted) = status_granted else {
+            return Err(format!("expected granted Status success, got {status_granted:?}").into());
+        };
+        assert_eq!(status_granted.payload["live_grant_count"], 1);
+
+        write_request_frame(
+            &mut client,
+            &RequestEnvelope::new(
+                "revoke",
+                AgentMethod::RevokeGrant,
+                serde_json::json!({ "grant_id": grant_id }),
+            ),
+        )
+        .await?;
+        let Some(revoke) = read_one_response_frame(&mut client, &mut buffer).await? else {
+            return Err("server closed before RevokeGrant response".into());
+        };
+        assert!(matches!(revoke, ResponseEnvelope::Success(_)));
+
+        write_request_frame(
+            &mut client,
+            &RequestEnvelope::new("subscribe", AgentMethod::SubscribeStatus, serde_json::json!({})),
+        )
+        .await?;
+        let Some(subscription) = read_one_response_frame(&mut client, &mut buffer).await? else {
+            return Err("server closed before SubscribeStatus event".into());
+        };
+        let ResponseEnvelope::Success(subscription) = subscription else {
+            return Err(format!("expected SubscribeStatus event, got {subscription:?}").into());
+        };
+        assert_eq!(subscription.id, "subscribe");
+        assert_eq!(subscription.payload["kind"], "status");
+        assert_eq!(subscription.payload["lock_state"], "unlocked");
+        assert_eq!(subscription.payload["live_grant_count"], 0);
+
+        write_request_frame(
+            &mut client,
+            &RequestEnvelope::new(
+                "subscribe",
+                AgentMethod::CancelSubscription,
+                serde_json::json!({}),
+            ),
+        )
+        .await?;
+        drop(client);
+
+        let outcome = server.await??;
+        assert_eq!(outcome, ConnectionOutcome::PeerClosed);
+        Ok(())
+    }
+
     #[tokio::test]
     async fn subscribe_status_writes_initial_event_then_heartbeat_over_socket()
     -> Result<(), Box<dyn std::error::Error>> {
