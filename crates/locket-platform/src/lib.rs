@@ -4,6 +4,7 @@
 // triggering this lint. Cannot be fixed without upgrading all crates.
 #![allow(clippy::multiple_crate_versions)]
 
+mod core_dumps;
 mod error;
 mod fs_helpers;
 mod master_key;
@@ -12,6 +13,7 @@ mod process;
 mod recovery;
 mod user_verification;
 
+pub use core_dumps::{CoreDumpHardening, disable_core_dumps};
 pub use error::PlatformError;
 pub use master_key::{
     KeyringMasterKeyStore, MasterKeyStore, MemoryMasterKeyStore, MockMasterKeyStore,

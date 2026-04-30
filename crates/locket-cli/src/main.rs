@@ -1025,6 +1025,11 @@ struct SecretMetadataFlags {
 }
 
 fn main() -> ProcessExitCode {
+    // Suppress core dumps before any secret material can be unwrapped
+    // into this process. A degraded hardening state is not a startup
+    // failure; diagnostics surface hardening gaps separately.
+    let _ = locket_platform::disable_core_dumps();
+
     let cli = Cli::parse();
     if let Some(Command::Completion(args)) = &cli.command {
         let mut output = io::stdout();
