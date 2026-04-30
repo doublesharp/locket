@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, ref } from 'vue';
 
 import type {
   AuditLogRow,
@@ -11,6 +11,7 @@ import type {
 } from '../types/views';
 
 type DashboardTarget = 'secrets' | 'versions' | 'execution' | 'audit' | 'scan' | 'settings';
+type ProjectProfileSearchScope = 'all' | 'project' | 'profile';
 
 interface Props {
   lockLabel: string;
@@ -27,6 +28,8 @@ interface Props {
 }
 
 const props = defineProps<Props>();
+const projectProfileSearch = ref<string>('');
+const projectProfileSearchScope = ref<ProjectProfileSearchScope>('all');
 
 const emit = defineEmits<{
   (e: 'navigate', target: DashboardTarget): void;
@@ -49,6 +52,30 @@ const scanWarningCount = computed<number>(
 const auditIssueCount = computed<number>(
   () => props.auditRows.filter((row) => row.status !== 'OK' || !row.hmacOk).length,
 );
+const projectProfileRows = computed(() => [
+  {
+    kind: 'project' as const,
+    label: props.projectLabel,
+    detail: props.lockLabel === 'Unavailable' ? 'agent unavailable' : 'active project',
+  },
+  {
+    kind: 'profile' as const,
+    label: props.profileLabel,
+    detail: props.settings.dangerousProfileFlag ? 'dangerous profile' : 'active profile',
+  },
+]);
+const filteredProjectProfileRows = computed(() => {
+  const query = projectProfileSearch.value.trim().toLowerCase();
+  return projectProfileRows.value.filter((row) => {
+    const scopeMatches =
+      projectProfileSearchScope.value === 'all' || projectProfileSearchScope.value === row.kind;
+    const queryMatches =
+      query.length === 0 ||
+      row.label.toLowerCase().includes(query) ||
+      row.detail.toLowerCase().includes(query);
+    return scopeMatches && queryMatches;
+  });
+});
 
 const statusClass = computed<string>(() => {
   switch (props.lockLabel) {
@@ -151,6 +178,54 @@ function refresh(): void {
       </button>
     </section>
 
+    <section class="dashboard__search" aria-labelledby="dashboard-search-heading">
+      <div class="dashboard__search-header">
+        <h3 id="dashboard-search-heading">Project and profile search</h3>
+        <div class="dashboard__search-scopes" aria-label="Filter project and profile results">
+          <button
+            type="button"
+            :class="['dashboard__scope', { 'dashboard__scope--active': projectProfileSearchScope === 'all' }]"
+            @click="projectProfileSearchScope = 'all'"
+          >
+            All
+          </button>
+          <button
+            type="button"
+            :class="['dashboard__scope', { 'dashboard__scope--active': projectProfileSearchScope === 'project' }]"
+            @click="projectProfileSearchScope = 'project'"
+          >
+            Projects
+          </button>
+          <button
+            type="button"
+            :class="['dashboard__scope', { 'dashboard__scope--active': projectProfileSearchScope === 'profile' }]"
+            @click="projectProfileSearchScope = 'profile'"
+          >
+            Profiles
+          </button>
+        </div>
+      </div>
+      <label class="dashboard__search-box">
+        <span>Search metadata</span>
+        <input
+          v-model="projectProfileSearch"
+          type="search"
+          autocomplete="off"
+          placeholder="Filter current project or profile"
+        />
+      </label>
+      <ul class="dashboard__search-results">
+        <li v-for="row in filteredProjectProfileRows" :key="row.kind">
+          <span>{{ row.kind }}</span>
+          <strong>{{ row.label }}</strong>
+          <em>{{ row.detail }}</em>
+        </li>
+        <li v-if="filteredProjectProfileRows.length === 0" class="dashboard__search-empty">
+          <span>No matching metadata</span>
+        </li>
+      </ul>
+    </section>
+
     <section class="dashboard__health" aria-labelledby="dashboard-health-heading">
       <h3 id="dashboard-health-heading">Health</h3>
       <ul>
@@ -173,6 +248,7 @@ function refresh(): void {
 
 .dashboard__header,
 .dashboard__status,
+.dashboard__search,
 .dashboard__health {
   background: #0f1115;
   border-radius: 0.5rem;
@@ -187,6 +263,7 @@ function refresh(): void {
 }
 
 .dashboard__header h2,
+.dashboard__search h3,
 .dashboard__health h3 {
   margin: 0;
   font-size: 1rem;
@@ -309,6 +386,95 @@ function refresh(): void {
   font-size: 2rem;
 }
 
+.dashboard__search {
+  display: flex;
+  flex-direction: column;
+  gap: 0.875rem;
+}
+
+.dashboard__search-header {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.dashboard__search-scopes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.375rem;
+}
+
+.dashboard__scope {
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 0.375rem;
+  background: rgba(255, 255, 255, 0.04);
+  color: #e6e8ec;
+  cursor: pointer;
+  min-height: 2rem;
+  padding: 0 0.7rem;
+}
+
+.dashboard__scope--active {
+  border-color: rgba(248, 215, 122, 0.65);
+  color: #f8d77a;
+}
+
+.dashboard__search-box {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+}
+
+.dashboard__search-box span,
+.dashboard__search-results li span,
+.dashboard__search-results li em {
+  color: #9aa3b2;
+  font-size: 0.78rem;
+  font-style: normal;
+}
+
+.dashboard__search-box input {
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 0.375rem;
+  background: rgba(255, 255, 255, 0.04);
+  color: #e6e8ec;
+  min-height: 2.5rem;
+  padding: 0 0.75rem;
+}
+
+.dashboard__search-box input:focus,
+.dashboard__scope:focus-visible {
+  border-color: rgba(248, 215, 122, 0.65);
+  outline: none;
+}
+
+.dashboard__search-results {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.dashboard__search-results li {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 0.5rem;
+  display: grid;
+  gap: 0.25rem;
+  min-height: 4.5rem;
+  padding: 0.75rem;
+}
+
+.dashboard__search-results li strong {
+  overflow-wrap: anywhere;
+}
+
+.dashboard__search-empty {
+  grid-column: 1 / -1;
+}
+
 .dashboard__health ul {
   margin: 0.75rem 0 0;
   padding: 0;
@@ -344,11 +510,13 @@ function refresh(): void {
   .dashboard__status,
   .dashboard__facts,
   .dashboard__metrics,
+  .dashboard__search-results,
   .dashboard__health ul {
     grid-template-columns: 1fr;
   }
 
-  .dashboard__header {
+  .dashboard__header,
+  .dashboard__search-header {
     align-items: stretch;
     flex-direction: column;
   }
