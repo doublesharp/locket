@@ -379,19 +379,16 @@ the spec already covers. Closed slices land in
     `policy-parser`.
   - [x] **subtask** — policy-required-secrets: required missing returns
     `InvalidPolicy` (65).
-  - [ ] **subtask** — policy-confirm: `confirm = true` enforced via
-    `RuntimeContext::confirmation_reader`. Pre-req: `policy-parser`.
-  - [ ] **subtask** — policy-user-verification:
-    `require_user_verification` calls the user-verification gate
-    before allowing the command. Pre-req: `policy-parser` and
-    user-verification gates infra.
+  - [x] **subtask** — policy-confirm: `confirm = true` enforced via
+    `RuntimeContext::confirmation_reader` in `locket run`.
+  - [x] **subtask** — policy-user-verification: `require_user_verification`
+    calls the user-verification gate before allowing the command.
   - [ ] **subtask** — policy-ttls: `ttl` translates to a grant TTL
     used by the agent grant table. Pre-req: `policy-parser`,
     `agent-grant-table`.
-  - [ ] **subtask** — policy-shell-vs-argv: parser distinguishes
-    `argv = [...]` vs `shell = "..."` and the evaluator picks the
-    right spawn path. Pre-req: `policy-parser` and
-    `run-shell-policy`.
+  - [x] **subtask** — policy-shell-vs-argv: parser distinguishes
+    `argv = [...]` vs `shell = "..."`; evaluator dispatches on
+    `CommandSpec`.
 - [ ] Ephemeral env-file fallback for children that can't accept an env
   map: 0700 parent / 0600 file outside project tree, post-spawn delete,
   audited delivery mode, secure-erase warning when unsupported.
