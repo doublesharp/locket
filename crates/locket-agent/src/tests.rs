@@ -11,6 +11,19 @@ use super::{
 };
 use serde_json::json;
 
+fn test_grant_record(grant_id: &str, expires_at_unix_nanos: i128) -> crate::grant::GrantRecord {
+    crate::grant::GrantRecord::new(crate::grant::GrantRecordFields {
+        grant_id: grant_id.to_owned(),
+        project_id: "p-1".to_owned(),
+        profile_id: "prof-1".to_owned(),
+        action: crate::grant::GrantAction::RunPolicy,
+        binding: crate::grant::GrantBinding::new(std::process::id(), "0"),
+        issued_at_unix_nanos: 0,
+        ttl_seconds: 30,
+        expires_at_unix_nanos,
+    })
+}
+
 #[test]
 fn agent_methods_round_trip_through_wire_names() -> Result<(), UnknownMethod> {
     let methods = [
@@ -256,17 +269,12 @@ fn status_event_success_envelope_decodes_for_stream_clients() -> Result<(), Prot
 #[tokio::test(flavor = "current_thread")]
 async fn unlock_then_lock_round_trip() {
     use crate::envelope::{RequestEnvelope, ResponseEnvelope};
-    use crate::grant::{GrantBinding, GrantRecord};
     use crate::method::AgentMethod;
     use crate::server::{AgentSocketState, dispatch};
     use serde_json::json;
 
     let state = AgentSocketState::locked("test-version");
-    state.grants.lock().await.insert(GrantRecord::new(
-        "g-live",
-        GrantBinding::new(std::process::id(), "0"),
-        i128::MAX,
-    ));
+    state.grants.lock().await.insert(test_grant_record("g-live", i128::MAX));
 
     let unlock = RequestEnvelope::new(
         "req-1",
@@ -522,22 +530,12 @@ async fn request_grant_returns_id_bound_to_caller_process() {
 #[tokio::test(flavor = "current_thread")]
 async fn revoke_grant_drops_record_and_unknown_returns_grant_required() {
     use crate::envelope::{RequestEnvelope, ResponseEnvelope};
-    use crate::grant::{GrantAction, GrantBinding, GrantRecord};
     use crate::method::AgentMethod;
     use crate::server::{AgentSocketState, dispatch};
     use serde_json::json;
 
     let state = AgentSocketState::locked("test-version");
-    state.grants.lock().await.insert(GrantRecord::new(
-        "g-1",
-        "p-1",
-        "prof-1",
-        GrantAction::RunPolicy,
-        GrantBinding::new(std::process::id(), "0"),
-        0,
-        30,
-        i128::MAX,
-    ));
+    state.grants.lock().await.insert(test_grant_record("g-1", i128::MAX));
 
     let revoke =
         RequestEnvelope::new("r-1", AgentMethod::RevokeGrant, json!({ "grant_id": "g-1" }));
@@ -557,22 +555,12 @@ async fn revoke_grant_drops_record_and_unknown_returns_grant_required() {
 #[tokio::test(flavor = "current_thread")]
 async fn expire_grant_drops_already_expired_record() {
     use crate::envelope::{RequestEnvelope, ResponseEnvelope};
-    use crate::grant::{GrantAction, GrantBinding, GrantRecord};
     use crate::method::AgentMethod;
     use crate::server::{AgentSocketState, dispatch};
     use serde_json::json;
 
     let state = AgentSocketState::locked("test-version");
-    state.grants.lock().await.insert(GrantRecord::new(
-        "g-2",
-        "p-1",
-        "prof-1",
-        GrantAction::RunPolicy,
-        GrantBinding::new(std::process::id(), "0"),
-        0,
-        30,
-        1,
-    ));
+    state.grants.lock().await.insert(test_grant_record("g-2", 1));
 
     let request =
         RequestEnvelope::new("r-1", AgentMethod::ExpireGrant, json!({ "grant_id": "g-2" }));
@@ -584,22 +572,12 @@ async fn expire_grant_drops_already_expired_record() {
 #[tokio::test(flavor = "current_thread")]
 async fn expire_grant_leaves_live_grant_intact() {
     use crate::envelope::{RequestEnvelope, ResponseEnvelope};
-    use crate::grant::{GrantAction, GrantBinding, GrantRecord};
     use crate::method::AgentMethod;
     use crate::server::{AgentSocketState, dispatch};
     use serde_json::json;
 
     let state = AgentSocketState::locked("test-version");
-    state.grants.lock().await.insert(GrantRecord::new(
-        "g-live",
-        "p-1",
-        "prof-1",
-        GrantAction::RunPolicy,
-        GrantBinding::new(std::process::id(), "0"),
-        0,
-        30,
-        i128::MAX,
-    ));
+    state.grants.lock().await.insert(test_grant_record("g-live", i128::MAX));
 
     let request =
         RequestEnvelope::new("r-1", AgentMethod::ExpireGrant, json!({ "grant_id": "g-live" }));

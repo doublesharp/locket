@@ -26,8 +26,8 @@ pub use envelope::{ErrorEnvelope, RequestEnvelope, ResponseEnvelope, SuccessEnve
 pub use error::ProtocolError;
 pub use framing::{decode_request_frame, decode_response_frame, encode_frame};
 pub use grant::{
-    GrantAction, GrantBinding, GrantIdPayload, GrantRecord, GrantTable, GrantValidation,
-    RequestGrantPayload,
+    GrantAction, GrantBinding, GrantIdPayload, GrantRecord, GrantRecordFields, GrantTable,
+    GrantValidation, RequestGrantPayload,
 };
 pub use method::{AgentMethod, UnknownMethod};
 #[cfg(unix)]
