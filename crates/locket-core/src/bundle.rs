@@ -1,0 +1,559 @@
+//! Sealed bundle versioned container format.
+//!
+//! A bundle is a versioned Locket container with:
+//! - 8-byte ASCII magic header (`LKBNDL\0\0`),
+//! - `u16` little-endian schema version,
+//! - `u32` little-endian plaintext manifest length followed by the
+//!   canonical-JSON manifest bytes,
+//! - `u64` little-endian encrypted-payload length followed by the
+//!   opaque payload bytes.
+//!
+//! The plaintext manifest is intentionally minimal because sealed
+//! bundles are commonly stored in sync folders. Only a small allow-list
+//! of fields is permitted; the writer rejects manifests that mention
+//! profile, secret, policy, member, or device names — those belong
+//! inside the encrypted payload, not the plaintext header.
+//!
+//! The reader/writer pair in this module is format-only: it carries an
+//! opaque `encrypted_payload` byte slice. Encryption (age) and payload
+//! schema are layered on top by separate slices.
+
+use std::collections::BTreeSet;
+
+use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
+use thiserror::Error;
+
+/// Magic header that prefixes every Locket sealed bundle.
+pub const BUNDLE_MAGIC: &[u8; 8] = b"LKBNDL\0\0";
+
+/// Current sealed-bundle container schema version.
+pub const BUNDLE_SCHEMA_V1: u16 = 1;
+
+/// Maximum plaintext manifest size in bytes. The plaintext manifest is
+/// metadata-only; anything larger almost certainly leaks payload data
+/// into the unencrypted header.
+pub const BUNDLE_MAX_MANIFEST_LEN: usize = 64 * 1024;
+
+/// Maximum encrypted payload size in bytes (256 MiB). Bundles larger
+/// than this are rejected on read to bound peak memory while parsing.
+pub const BUNDLE_MAX_PAYLOAD_LEN: u64 = 256 * 1024 * 1024;
+
+/// Plaintext-manifest field allow-list. Any other key in the manifest
+/// JSON is treated as a minimization violation.
+pub const BUNDLE_MANIFEST_ALLOWED_FIELDS: &[&str] = &[
+    "recipient_fingerprints",
+    "project_id",
+    "schema_version",
+    "created_at",
+    "profile_count",
+    "payload_digest",
+];
+
+/// Plaintext-minimal sealed-bundle manifest.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BundleManifest {
+    /// Hex SHA-256 fingerprints of recipient devices.
+    pub recipient_fingerprints: Vec<String>,
+    /// Locket project identifier (`lk_proj_*`).
+    pub project_id: String,
+    /// Schema version, mirrored from the binary header for self-checking.
+    pub schema_version: u16,
+    /// Creation timestamp as Unix nanoseconds.
+    pub created_at: i64,
+    /// Number of profiles whose key material is included in the
+    /// encrypted payload. Names are not included.
+    pub profile_count: u32,
+    /// Hex SHA-256 digest of the encrypted payload.
+    pub payload_digest: String,
+}
+
+/// Errors raised by the sealed-bundle container reader/writer.
+///
+/// All error paths in this module map to
+/// [`LocketError::BundleVerificationFailed`](crate::error::LocketError::BundleVerificationFailed)
+/// (exit `110`) at the call boundary.
+#[derive(Debug, Clone, Error, PartialEq, Eq)]
+pub enum BundleContainerError {
+    /// Magic header bytes did not match `LKBNDL\0\0`.
+    #[error("bundle magic header mismatch")]
+    MagicMismatch,
+    /// Schema version is not one of the supported values.
+    #[error("bundle schema version {0} is not supported")]
+    UnsupportedSchema(u16),
+    /// Bundle bytes ended before the format required.
+    #[error("bundle bytes truncated at offset {0}")]
+    Truncated(usize),
+    /// Plaintext manifest length exceeded [`BUNDLE_MAX_MANIFEST_LEN`].
+    #[error("bundle manifest is {0} bytes (limit {1})")]
+    ManifestTooLarge(usize, usize),
+    /// Encrypted payload length exceeded [`BUNDLE_MAX_PAYLOAD_LEN`].
+    #[error("bundle payload is {0} bytes (limit {1})")]
+    PayloadTooLarge(u64, u64),
+    /// Manifest bytes were not valid canonical JSON.
+    #[error("bundle manifest is not valid JSON: {0}")]
+    ManifestNotJson(String),
+    /// Manifest contained a field outside the allow-list.
+    #[error("bundle manifest field {0} is not allowed")]
+    ManifestForbiddenField(String),
+    /// Manifest was missing a required field.
+    #[error("bundle manifest is missing required field {0}")]
+    ManifestMissingField(&'static str),
+    /// Manifest schema_version did not match the header.
+    #[error("bundle manifest schema_version {manifest} does not match header {header}")]
+    ManifestSchemaMismatch {
+        /// Schema version from the binary header.
+        header: u16,
+        /// Schema version inside the JSON manifest.
+        manifest: u16,
+    },
+    /// Bundle had trailing bytes after the declared payload.
+    #[error("bundle has {0} trailing bytes after payload")]
+    TrailingBytes(usize),
+}
+
+/// Result alias for sealed-bundle container operations.
+pub type BundleContainerResult<T> = Result<T, BundleContainerError>;
+
+/// Plaintext header + encrypted payload pair as it appears on disk.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BundleContainer {
+    /// Plaintext manifest.
+    pub manifest: BundleManifest,
+    /// Opaque encrypted payload bytes (age v1 ciphertext or test stub).
+    pub encrypted_payload: Vec<u8>,
+}
+
+impl BundleContainer {
+    /// Constructs a container, validating that the manifest carries
+    /// only allow-listed fields and a sane schema version.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BundleContainerError`] if the manifest is malformed
+    /// or its schema version is unsupported.
+    pub fn new(
+        manifest: BundleManifest,
+        encrypted_payload: Vec<u8>,
+    ) -> BundleContainerResult<Self> {
+        validate_manifest(&manifest)?;
+        Ok(Self { manifest, encrypted_payload })
+    }
+
+    /// Serializes the container to its canonical binary representation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BundleContainerError::ManifestTooLarge`] when the
+    /// canonical JSON manifest exceeds [`BUNDLE_MAX_MANIFEST_LEN`], or
+    /// [`BundleContainerError::PayloadTooLarge`] when the encrypted
+    /// payload exceeds [`BUNDLE_MAX_PAYLOAD_LEN`].
+    pub fn serialize(&self) -> BundleContainerResult<Vec<u8>> {
+        validate_manifest(&self.manifest)?;
+        let manifest_bytes = serialize_manifest(&self.manifest);
+        if manifest_bytes.len() > BUNDLE_MAX_MANIFEST_LEN {
+            return Err(BundleContainerError::ManifestTooLarge(
+                manifest_bytes.len(),
+                BUNDLE_MAX_MANIFEST_LEN,
+            ));
+        }
+        let payload_len = self.encrypted_payload.len() as u64;
+        if payload_len > BUNDLE_MAX_PAYLOAD_LEN {
+            return Err(BundleContainerError::PayloadTooLarge(
+                payload_len,
+                BUNDLE_MAX_PAYLOAD_LEN,
+            ));
+        }
+        let manifest_len_u32 = u32::try_from(manifest_bytes.len()).expect(
+            "manifest length already bounded by BUNDLE_MAX_MANIFEST_LEN which fits in u32",
+        );
+        let mut buf = Vec::with_capacity(
+            BUNDLE_MAGIC.len() + 2 + 4 + manifest_bytes.len() + 8 + self.encrypted_payload.len(),
+        );
+        buf.extend_from_slice(BUNDLE_MAGIC);
+        buf.extend_from_slice(&self.manifest.schema_version.to_le_bytes());
+        buf.extend_from_slice(&manifest_len_u32.to_le_bytes());
+        buf.extend_from_slice(&manifest_bytes);
+        buf.extend_from_slice(&payload_len.to_le_bytes());
+        buf.extend_from_slice(&self.encrypted_payload);
+        Ok(buf)
+    }
+
+    /// Parses a container from its canonical binary representation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BundleContainerError`] for any structural problem:
+    /// magic mismatch, unsupported schema, truncation, oversized
+    /// fields, manifest minimization violation, or trailing bytes.
+    pub fn deserialize(data: &[u8]) -> BundleContainerResult<Self> {
+        let mut cursor = 0usize;
+        let magic = read_slice(&mut cursor, data, BUNDLE_MAGIC.len())?;
+        if magic != BUNDLE_MAGIC.as_slice() {
+            return Err(BundleContainerError::MagicMismatch);
+        }
+        let schema_bytes = read_slice(&mut cursor, data, 2)?;
+        let schema_version = u16::from_le_bytes([schema_bytes[0], schema_bytes[1]]);
+        if schema_version != BUNDLE_SCHEMA_V1 {
+            return Err(BundleContainerError::UnsupportedSchema(schema_version));
+        }
+        let manifest_len_bytes = read_slice(&mut cursor, data, 4)?;
+        let manifest_len = u32::from_le_bytes(manifest_len_bytes.try_into().expect(
+            "read_slice returned the requested 4 bytes; conversion to [u8; 4] cannot fail",
+        )) as usize;
+        if manifest_len > BUNDLE_MAX_MANIFEST_LEN {
+            return Err(BundleContainerError::ManifestTooLarge(
+                manifest_len,
+                BUNDLE_MAX_MANIFEST_LEN,
+            ));
+        }
+        let manifest_bytes = read_slice(&mut cursor, data, manifest_len)?.to_vec();
+        let payload_len_bytes = read_slice(&mut cursor, data, 8)?;
+        let payload_len = u64::from_le_bytes(payload_len_bytes.try_into().expect(
+            "read_slice returned the requested 8 bytes; conversion to [u8; 8] cannot fail",
+        ));
+        if payload_len > BUNDLE_MAX_PAYLOAD_LEN {
+            return Err(BundleContainerError::PayloadTooLarge(
+                payload_len,
+                BUNDLE_MAX_PAYLOAD_LEN,
+            ));
+        }
+        let payload_len_usize = usize::try_from(payload_len)
+            .map_err(|_| BundleContainerError::PayloadTooLarge(payload_len, BUNDLE_MAX_PAYLOAD_LEN))?;
+        let payload = read_slice(&mut cursor, data, payload_len_usize)?.to_vec();
+        if cursor != data.len() {
+            return Err(BundleContainerError::TrailingBytes(data.len() - cursor));
+        }
+
+        let manifest = parse_manifest(&manifest_bytes, schema_version)?;
+        Ok(Self { manifest, encrypted_payload: payload })
+    }
+}
+
+/// Validates that a manifest carries only allow-listed fields and a
+/// supported schema version. The manifest bytes themselves are not
+/// inspected here — that happens at parse time on the receiver side.
+fn validate_manifest(manifest: &BundleManifest) -> BundleContainerResult<()> {
+    if manifest.schema_version != BUNDLE_SCHEMA_V1 {
+        return Err(BundleContainerError::UnsupportedSchema(manifest.schema_version));
+    }
+    if manifest.project_id.is_empty() {
+        return Err(BundleContainerError::ManifestMissingField("project_id"));
+    }
+    if manifest.payload_digest.is_empty() {
+        return Err(BundleContainerError::ManifestMissingField("payload_digest"));
+    }
+    Ok(())
+}
+
+fn serialize_manifest(manifest: &BundleManifest) -> Vec<u8> {
+    // The order here mirrors `BUNDLE_MANIFEST_ALLOWED_FIELDS` lexically.
+    // serde_json serializes BTreeMap-backed `Map` in sorted key order
+    // anyway, so the canonical JSON byte order is stable.
+    let mut object = Map::new();
+    object.insert(
+        "recipient_fingerprints".to_owned(),
+        Value::Array(
+            manifest.recipient_fingerprints.iter().cloned().map(Value::String).collect(),
+        ),
+    );
+    object.insert("project_id".to_owned(), Value::String(manifest.project_id.clone()));
+    object.insert(
+        "schema_version".to_owned(),
+        Value::Number(serde_json::Number::from(manifest.schema_version)),
+    );
+    object.insert("created_at".to_owned(), Value::Number(serde_json::Number::from(manifest.created_at)));
+    object.insert(
+        "profile_count".to_owned(),
+        Value::Number(serde_json::Number::from(manifest.profile_count)),
+    );
+    object.insert("payload_digest".to_owned(), Value::String(manifest.payload_digest.clone()));
+    crate::canonical_json(&Value::Object(object)).into_bytes()
+}
+
+fn parse_manifest(bytes: &[u8], header_schema_version: u16) -> BundleContainerResult<BundleManifest> {
+    let value: Value = serde_json::from_slice(bytes)
+        .map_err(|error| BundleContainerError::ManifestNotJson(error.to_string()))?;
+    let Value::Object(map) = value else {
+        return Err(BundleContainerError::ManifestNotJson(
+            "manifest is not a JSON object".into(),
+        ));
+    };
+
+    let allowed: BTreeSet<&str> = BUNDLE_MANIFEST_ALLOWED_FIELDS.iter().copied().collect();
+    for key in map.keys() {
+        if !allowed.contains(key.as_str()) {
+            return Err(BundleContainerError::ManifestForbiddenField(key.clone()));
+        }
+    }
+
+    let schema_version = manifest_required_u16(&map, "schema_version")?;
+    if schema_version != header_schema_version {
+        return Err(BundleContainerError::ManifestSchemaMismatch {
+            header: header_schema_version,
+            manifest: schema_version,
+        });
+    }
+
+    let project_id = manifest_required_string(&map, "project_id")?;
+    let payload_digest = manifest_required_string(&map, "payload_digest")?;
+    let created_at = manifest_required_i64(&map, "created_at")?;
+    let profile_count = manifest_required_u32(&map, "profile_count")?;
+    let recipient_fingerprints = manifest_required_string_array(&map, "recipient_fingerprints")?;
+
+    Ok(BundleManifest {
+        recipient_fingerprints,
+        project_id,
+        schema_version,
+        created_at,
+        profile_count,
+        payload_digest,
+    })
+}
+
+fn manifest_required_string(
+    map: &Map<String, Value>,
+    field: &'static str,
+) -> BundleContainerResult<String> {
+    match map.get(field) {
+        Some(Value::String(s)) if !s.is_empty() => Ok(s.clone()),
+        Some(_) | None => Err(BundleContainerError::ManifestMissingField(field)),
+    }
+}
+
+fn manifest_required_u16(
+    map: &Map<String, Value>,
+    field: &'static str,
+) -> BundleContainerResult<u16> {
+    let n = map
+        .get(field)
+        .and_then(Value::as_u64)
+        .ok_or(BundleContainerError::ManifestMissingField(field))?;
+    u16::try_from(n).map_err(|_| BundleContainerError::ManifestMissingField(field))
+}
+
+fn manifest_required_u32(
+    map: &Map<String, Value>,
+    field: &'static str,
+) -> BundleContainerResult<u32> {
+    let n = map
+        .get(field)
+        .and_then(Value::as_u64)
+        .ok_or(BundleContainerError::ManifestMissingField(field))?;
+    u32::try_from(n).map_err(|_| BundleContainerError::ManifestMissingField(field))
+}
+
+fn manifest_required_i64(
+    map: &Map<String, Value>,
+    field: &'static str,
+) -> BundleContainerResult<i64> {
+    map.get(field).and_then(Value::as_i64).ok_or(BundleContainerError::ManifestMissingField(field))
+}
+
+fn manifest_required_string_array(
+    map: &Map<String, Value>,
+    field: &'static str,
+) -> BundleContainerResult<Vec<String>> {
+    let value = map.get(field).ok_or(BundleContainerError::ManifestMissingField(field))?;
+    let Value::Array(items) = value else {
+        return Err(BundleContainerError::ManifestMissingField(field));
+    };
+    let mut out = Vec::with_capacity(items.len());
+    for item in items {
+        let Value::String(s) = item else {
+            return Err(BundleContainerError::ManifestMissingField(field));
+        };
+        out.push(s.clone());
+    }
+    Ok(out)
+}
+
+fn read_slice<'data>(
+    cursor: &mut usize,
+    data: &'data [u8],
+    len: usize,
+) -> BundleContainerResult<&'data [u8]> {
+    let end = cursor.checked_add(len).ok_or(BundleContainerError::Truncated(*cursor))?;
+    if end > data.len() {
+        return Err(BundleContainerError::Truncated(*cursor));
+    }
+    let slice = &data[*cursor..end];
+    *cursor = end;
+    Ok(slice)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_manifest() -> BundleManifest {
+        BundleManifest {
+            recipient_fingerprints: vec!["a".repeat(64), "b".repeat(64)],
+            project_id: "lk_proj_demo".to_owned(),
+            schema_version: BUNDLE_SCHEMA_V1,
+            created_at: 1_700_000_000_000_000_000,
+            profile_count: 2,
+            payload_digest: "c".repeat(64),
+        }
+    }
+
+    #[test]
+    fn round_trip_synthetic_container_preserves_manifest_and_payload() {
+        let payload = b"opaque-encrypted-payload-bytes".to_vec();
+        let container =
+            BundleContainer::new(sample_manifest(), payload.clone()).expect("valid container");
+        let bytes = container.serialize().expect("serialize succeeds");
+        assert_eq!(&bytes[..BUNDLE_MAGIC.len()], BUNDLE_MAGIC.as_slice());
+        let parsed = BundleContainer::deserialize(&bytes).expect("deserialize succeeds");
+        assert_eq!(parsed, container);
+        assert_eq!(parsed.encrypted_payload, payload);
+    }
+
+    #[test]
+    fn deserialize_rejects_unknown_schema_version() {
+        let mut bytes =
+            BundleContainer::new(sample_manifest(), Vec::new()).unwrap().serialize().unwrap();
+        // Schema version sits immediately after the 8-byte magic.
+        bytes[BUNDLE_MAGIC.len()] = 99;
+        bytes[BUNDLE_MAGIC.len() + 1] = 0;
+        let error = BundleContainer::deserialize(&bytes).unwrap_err();
+        assert_eq!(error, BundleContainerError::UnsupportedSchema(99));
+    }
+
+    #[test]
+    fn deserialize_rejects_oversized_manifest_length_field() {
+        let payload = b"x".to_vec();
+        let mut bytes =
+            BundleContainer::new(sample_manifest(), payload).unwrap().serialize().unwrap();
+        // Overwrite the manifest_len u32 with a value past the cap.
+        let len_offset = BUNDLE_MAGIC.len() + 2;
+        let oversized = (BUNDLE_MAX_MANIFEST_LEN as u32 + 1).to_le_bytes();
+        bytes[len_offset..len_offset + 4].copy_from_slice(&oversized);
+        let error = BundleContainer::deserialize(&bytes).unwrap_err();
+        match error {
+            BundleContainerError::ManifestTooLarge(actual, limit) => {
+                assert_eq!(limit, BUNDLE_MAX_MANIFEST_LEN);
+                assert_eq!(actual, BUNDLE_MAX_MANIFEST_LEN + 1);
+            }
+            other => panic!("expected ManifestTooLarge, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn deserialize_rejects_disallowed_manifest_fields() {
+        // Hand-craft a container where the JSON manifest carries a
+        // forbidden key (`profile_name`). Names belong inside the
+        // encrypted payload, not the plaintext header.
+        let mut object = Map::new();
+        object.insert(
+            "recipient_fingerprints".to_owned(),
+            Value::Array(vec![Value::String("a".repeat(64))]),
+        );
+        object.insert("project_id".to_owned(), Value::String("lk_proj_demo".to_owned()));
+        object.insert(
+            "schema_version".to_owned(),
+            Value::Number(BUNDLE_SCHEMA_V1.into()),
+        );
+        object.insert("created_at".to_owned(), Value::Number(1_i64.into()));
+        object.insert("profile_count".to_owned(), Value::Number(0_u32.into()));
+        object.insert("payload_digest".to_owned(), Value::String("c".repeat(64)));
+        // Forbidden field — names must never appear in the plaintext header.
+        object.insert("profile_name".to_owned(), Value::String("dev".to_owned()));
+        let manifest_bytes = crate::canonical_json(&Value::Object(object)).into_bytes();
+
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(BUNDLE_MAGIC);
+        bytes.extend_from_slice(&BUNDLE_SCHEMA_V1.to_le_bytes());
+        bytes.extend_from_slice(&(manifest_bytes.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&manifest_bytes);
+        bytes.extend_from_slice(&0_u64.to_le_bytes());
+
+        let error = BundleContainer::deserialize(&bytes).unwrap_err();
+        assert!(
+            matches!(error, BundleContainerError::ManifestForbiddenField(ref f) if f == "profile_name"),
+            "expected ManifestForbiddenField(profile_name), got {error:?}"
+        );
+    }
+
+    #[test]
+    fn deserialize_rejects_bad_magic() {
+        let mut bytes = BundleContainer::new(sample_manifest(), Vec::new())
+            .unwrap()
+            .serialize()
+            .unwrap();
+        bytes[0] = 0xFF;
+        let error = BundleContainer::deserialize(&bytes).unwrap_err();
+        assert_eq!(error, BundleContainerError::MagicMismatch);
+    }
+
+    #[test]
+    fn deserialize_rejects_truncation() {
+        let bytes =
+            BundleContainer::new(sample_manifest(), b"abc".to_vec()).unwrap().serialize().unwrap();
+        for cut in [0_usize, 4, BUNDLE_MAGIC.len() + 1, bytes.len() - 1] {
+            let truncated = &bytes[..cut];
+            assert!(matches!(
+                BundleContainer::deserialize(truncated),
+                Err(BundleContainerError::Truncated(_) | BundleContainerError::MagicMismatch)
+            ));
+        }
+    }
+
+    #[test]
+    fn deserialize_rejects_trailing_bytes() {
+        let mut bytes = BundleContainer::new(sample_manifest(), b"abc".to_vec())
+            .unwrap()
+            .serialize()
+            .unwrap();
+        bytes.push(0xAA);
+        let error = BundleContainer::deserialize(&bytes).unwrap_err();
+        assert_eq!(error, BundleContainerError::TrailingBytes(1));
+    }
+
+    #[test]
+    fn deserialize_rejects_manifest_schema_mismatch() {
+        // Build a manifest whose embedded schema_version disagrees
+        // with the header. Both fields exist for self-checking.
+        let mut object = Map::new();
+        object.insert("recipient_fingerprints".to_owned(), Value::Array(Vec::new()));
+        object.insert("project_id".to_owned(), Value::String("lk_proj_demo".to_owned()));
+        object.insert("schema_version".to_owned(), Value::Number(2_u16.into()));
+        object.insert("created_at".to_owned(), Value::Number(1_i64.into()));
+        object.insert("profile_count".to_owned(), Value::Number(0_u32.into()));
+        object.insert("payload_digest".to_owned(), Value::String("d".repeat(64)));
+        let manifest_bytes = crate::canonical_json(&Value::Object(object)).into_bytes();
+
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(BUNDLE_MAGIC);
+        bytes.extend_from_slice(&BUNDLE_SCHEMA_V1.to_le_bytes());
+        bytes.extend_from_slice(&(manifest_bytes.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&manifest_bytes);
+        bytes.extend_from_slice(&0_u64.to_le_bytes());
+
+        let error = BundleContainer::deserialize(&bytes).unwrap_err();
+        assert!(matches!(
+            error,
+            BundleContainerError::ManifestSchemaMismatch { header: 1, manifest: 2 }
+        ));
+    }
+
+    #[test]
+    fn deserialize_rejects_payload_length_above_cap() {
+        let mut bytes =
+            BundleContainer::new(sample_manifest(), Vec::new()).unwrap().serialize().unwrap();
+        // Payload length sits at the tail right before the (empty) payload.
+        let payload_len_offset = bytes.len() - 8;
+        let oversized = (BUNDLE_MAX_PAYLOAD_LEN + 1).to_le_bytes();
+        bytes[payload_len_offset..].copy_from_slice(&oversized);
+        let error = BundleContainer::deserialize(&bytes).unwrap_err();
+        assert!(matches!(error, BundleContainerError::PayloadTooLarge(_, _)));
+    }
+
+    #[test]
+    fn new_rejects_unsupported_schema_at_construction() {
+        let mut manifest = sample_manifest();
+        manifest.schema_version = 7;
+        let error = BundleContainer::new(manifest, Vec::new()).unwrap_err();
+        assert_eq!(error, BundleContainerError::UnsupportedSchema(7));
+    }
+}

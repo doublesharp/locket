@@ -1,6 +1,7 @@
 //! Core policy and validation primitives for Locket.
 
 pub mod audit;
+pub mod bundle;
 pub mod env;
 pub mod error;
 pub mod id;
@@ -18,6 +19,10 @@ pub use audit::{
     AUDIT_HMAC_LEN, AuditCanonicalizationError, AuditHmacInput, audit_hmac_v1_bytes, bytes,
     canonical_json, canonical_json_bytes, canonical_json_string, field,
     insert_convenience_metadata,
+};
+pub use bundle::{
+    BUNDLE_MAGIC, BUNDLE_MANIFEST_ALLOWED_FIELDS, BUNDLE_MAX_MANIFEST_LEN, BUNDLE_MAX_PAYLOAD_LEN,
+    BUNDLE_SCHEMA_V1, BundleContainer, BundleContainerError, BundleContainerResult, BundleManifest,
 };
 pub use env::{
     EnvMap, EnvMergeError, EnvMode, EnvOverrideMode, EnvValue, InvalidEnvMode,
