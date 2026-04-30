@@ -362,10 +362,7 @@ Slices 1+2 shipped (agent client, tray binding, 6 view scaffolds,
     `agent-grant-table`.
 - [ ] Tauri hardening. Empty deny-by-default baseline shipped with
   `tauri-shell`. Remaining (`docs/specs/desktop.md`):
-  - [ ] **subtask** — tauri-capabilities-per-view: each new Tauri
-    command opts into the minimum capability in
-    `capabilities/desktop.json`; CI regression fails if a command
-    is added without a paired capability entry.
+  - [~] [acda32e4] branch agent-acda32e4/tauri-capabilities-per-view, worktree .worktrees/agent-acda32e4-tauri-capabilities-per-view; **subtask** — tauri-capabilities-per-view: per-command desktop capability coverage with CI regression.
 - [ ] Search/filter UI (`docs/specs/desktop.md`). Each subtask
   renders one surface; never exposes values; pre-req is the
   relevant view's data RPC.
