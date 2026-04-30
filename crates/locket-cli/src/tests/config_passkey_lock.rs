@@ -485,6 +485,65 @@ fn passkey_list_and_remove_use_project_store_and_audit() -> Result<(), Box<dyn s
     assert!(metadata.contains("\"backup_eligible\":true"));
     assert!(metadata.contains("\"backup_state\":false"));
     assert!(!metadata.contains("abcdef123456abcdef"));
+    let metadata: serde_json::Value = serde_json::from_str(&metadata)?;
+    assert_eq!(metadata["user_verification"]["required"], true);
+    assert_eq!(metadata["user_verification"]["satisfied"], true);
+    assert_eq!(metadata["user_verification"]["method"], "test");
+    Ok(())
+}
+
+#[test]
+fn passkey_remove_requires_fresh_user_verification_before_revocation()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context_with_confirmation(&directory, "work-laptop\n");
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    let resolved = crate::resolve_project(&context.cwd)?.ok_or("project should resolve")?;
+    let project_id = resolved.config.project_id.to_string();
+    let credential = locket_store::PasskeyCredentialRecord {
+        id: "lk_passkey_test".to_owned(),
+        project_id: project_id.clone(),
+        label: "work-laptop".to_owned(),
+        credential_id: vec![0xab, 0xcd, 0xef, 0x12, 0x34, 0x56],
+        transports: vec!["internal".to_owned()],
+        prf_capable: true,
+        backup_eligible: Some(true),
+        backup_state: Some(false),
+        created_at: 100,
+        last_used_at: None,
+        revoked_at: None,
+    };
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    store.insert_passkey_credential(&credential)?;
+
+    let denied_context =
+        context_with_user_verifier(&context, Arc::new(MemoryLocalUserVerifier::denying()));
+    let mut remove_output = Vec::new();
+    let result = run_with_context(
+        Cli::try_parse_from(["locket", "passkey", "remove", "work-laptop"])?,
+        &denied_context,
+        &mut remove_output,
+    );
+    let Err(error) = result else {
+        return Err("passkey removal must require local user verification".into());
+    };
+    assert_eq!(error.exit_code(), locket_core::LocketError::UserVerificationFailed.exit_code());
+    assert!(error.to_string().contains("local user verification"));
+    assert!(String::from_utf8(remove_output)?.is_empty());
+
+    let active = store.list_passkey_credentials(&project_id, false)?;
+    assert_eq!(active.len(), 1);
+    assert!(active[0].revoked_at.is_none());
+    let remove_count: i64 = store.connection().query_row(
+        "SELECT COUNT(*) FROM audit_log WHERE action = 'PASSKEY_REMOVE'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(remove_count, 0);
     Ok(())
 }
 

@@ -6,6 +6,7 @@ use locket_crypto::KeyPurpose;
 use locket_store::{AuditWrite, PasskeyCredentialRecord, Store};
 use serde_json::json;
 
+use crate::runtime::user_verification::{UserVerificationAudit, require_user_verification};
 use crate::{
     CliError, PasskeyCommand, PasskeyListArgs, ResolvedProject, RuntimeContext,
     confirmation_failed_error, ensure_project_exists, format_hex, format_unix_nanos,
@@ -91,6 +92,11 @@ fn passkey_remove_command(
             ));
         }
     };
+    let user_verification = require_user_verification(
+        context,
+        "passkey remove",
+        format!("remove passkey {}", credential.label),
+    )?;
     writeln!(output, "passkey: revoke")?;
     writeln!(output, "label: {}", credential.label)?;
     writeln!(output, "credential_id_prefix: {}", credential_id_prefix(&credential.credential_id))?;
@@ -108,6 +114,7 @@ fn passkey_remove_command(
         &mut store,
         &resolved,
         &credential,
+        &user_verification,
         timestamp,
     )?;
     writeln!(output, "passkey: revoked")?;
@@ -134,6 +141,7 @@ fn write_passkey_remove_audit_if_available(
     store: &mut Store,
     resolved: &ResolvedProject,
     credential: &PasskeyCredentialRecord,
+    user_verification: &UserVerificationAudit,
     timestamp: i64,
 ) -> Result<(), CliError> {
     let audit_key =
@@ -151,6 +159,7 @@ fn write_passkey_remove_audit_if_available(
         "prf_capable": credential.prf_capable,
         "backup_eligible": credential.backup_eligible,
         "backup_state": credential.backup_state,
+        "user_verification": user_verification,
     });
     let audit = AuditWrite {
         project_id: resolved.config.project_id.as_str(),
