@@ -258,6 +258,8 @@ Slices that have merged to `main` and verified. Open work tracked in
   requires a dual-signed manifest (`docs/specs/operations.md`).
 - [x] Performance reference-runner spec, required report fields, and
   sampling rules (warmup, sample counts, p95 index, throughput formula)
+- [x] make-test-targets: Testing Make targets are documented and guarded
+  by docs-check so required coverage/test entrypoints stay exposed.
   (`docs/specs/performance.md`).
 - [x] Production-crate clippy denies (`unwrap_used`, `expect_used`,
   `panic`, `todo`, `unimplemented`, `dbg_macro`, `print_stdout`,
