@@ -2,8 +2,9 @@
 
 pub(super) use clap::Parser;
 pub(super) use locket_platform::{
-    LocalUserVerifier, MasterKeyStore, MemoryLocalUserVerifier, MemoryMasterKeyStore,
-    MockMasterKeyStore, MockMasterKeyStoreFailure, PassphraseFallbackMasterKeyStore, PlatformError,
+    LocalUserVerifier, MasterKeyStore, MemoryAutomationClientKeyStore, MemoryLocalUserVerifier,
+    MemoryMasterKeyStore, MockMasterKeyStore, MockMasterKeyStoreFailure,
+    PassphraseFallbackMasterKeyStore, PlatformError,
 };
 pub(super) use serde_json::json;
 pub(super) use std::collections::BTreeSet;
@@ -228,6 +229,7 @@ pub(super) fn test_context_with_key_store_confirmation_and_secret(
         config_path: directory.path().join("config.toml"),
         template_dir: directory.path().join(".locket").join("templates"),
         key_store,
+        automation_client_key_store: Arc::new(MemoryAutomationClientKeyStore::default()),
         passphrase_store: PassphraseFallbackMasterKeyStore::new(
             directory.path().join("passphrase-fallback"),
         ),

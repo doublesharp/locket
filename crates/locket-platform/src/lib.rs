@@ -4,6 +4,7 @@
 // triggering this lint. Cannot be fixed without upgrading all crates.
 #![allow(clippy::multiple_crate_versions)]
 
+mod automation_client_key;
 mod core_dumps;
 mod error;
 mod fs_helpers;
@@ -14,8 +15,13 @@ mod process;
 mod recovery;
 mod user_verification;
 
+pub use automation_client_key::{
+    AutomationClientKeyStore, AutomationClientKeychainRef, KeyringAutomationClientKeyStore,
+    MemoryAutomationClientKeyStore,
+};
 pub use core_dumps::{CoreDumpHardening, core_dump_hardening_state, disable_core_dumps};
 pub use error::PlatformError;
+pub use fs_helpers::{secure_directory, write_user_only_file};
 pub use master_key::{
     KeyringMasterKeyStore, MasterKeyStore, MemoryMasterKeyStore, MockMasterKeyStore,
     MockMasterKeyStoreFailure,

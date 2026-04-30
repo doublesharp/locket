@@ -39,8 +39,9 @@ pub use profile::{ProfileDangerousAudit, ProfileDangerousChange, ProfileRecord};
 pub use project::ProjectRecord;
 pub use roots::ProjectRootRecord;
 pub use runtime_session::{
-    AutomationClientNonceRecord, AutomationClientRecord, InvalidRuntimeSessionSecretNameRetention,
-    RuntimeSessionRecord, RuntimeSessionSecretNameRetention,
+    AutomationClientNonceRecord, AutomationClientPrivateKeyRefRecord, AutomationClientRecord,
+    InvalidRuntimeSessionSecretNameRetention, RuntimeSessionRecord,
+    RuntimeSessionSecretNameRetention,
 };
 pub use schema::{AUDIT_ACTION_SCHEMA_MIGRATE, SCHEMA_VERSION};
 pub use secret::{

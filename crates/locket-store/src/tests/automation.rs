@@ -1,6 +1,8 @@
 use std::error::Error;
 
-use crate::{AutomationClientNonceRecord, AutomationClientRecord};
+use crate::{
+    AutomationClientNonceRecord, AutomationClientPrivateKeyRefRecord, AutomationClientRecord,
+};
 
 use super::open_initialized_store;
 
@@ -165,5 +167,44 @@ fn automation_client_auth_nonce_replay_keeps_existing_rows_atomic() -> Result<()
         |row| row.get(0),
     )?;
     assert_eq!(count, 2, "failed replay insert must not partially prune rows");
+    Ok(())
+}
+
+#[test]
+fn automation_client_private_key_refs_are_metadata_only() -> Result<(), Box<dyn Error>> {
+    let test_store = open_initialized_store()?;
+    test_store.store.insert_project_if_absent("lk_proj_test", "test", 100)?;
+    test_store.store.insert_automation_client(&AutomationClientRecord {
+        id: "lk_client_test".to_owned(),
+        project_id: "lk_proj_test".to_owned(),
+        name: "ci".to_owned(),
+        public_key: vec![7; 32],
+        fingerprint: "fingerprint".to_owned(),
+        storage: "os-keychain".to_owned(),
+        allowed_actions: vec!["run-policy".to_owned()],
+        allowed_policies: vec!["test".to_owned()],
+        created_at: 200,
+        last_used_at: None,
+        revoked_at: None,
+    })?;
+    let reference = AutomationClientPrivateKeyRefRecord {
+        client_id: "lk_client_test".to_owned(),
+        storage: "os-keychain".to_owned(),
+        keychain_service: Some("dev.0xdoublesharp.locket".to_owned()),
+        keychain_account: Some("automation-client:lk_client_test".to_owned()),
+        local_path_hash: None,
+        metadata_json: r#"{"schema_version":1,"storage":"os-keychain"}"#.to_owned(),
+        created_at: 210,
+        updated_at: 210,
+    };
+
+    test_store.store.upsert_automation_client_private_key_ref(&reference)?;
+    assert_eq!(
+        test_store.store.get_automation_client_private_key_ref("lk_client_test")?,
+        Some(reference)
+    );
+
+    assert!(test_store.store.delete_automation_client_private_key_ref("lk_client_test")?);
+    assert!(test_store.store.get_automation_client_private_key_ref("lk_client_test")?.is_none());
     Ok(())
 }

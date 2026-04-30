@@ -32,6 +32,11 @@ pub fn validate_path_component(value: &str) -> Result<(), PlatformError> {
     Ok(())
 }
 
+/// Creates a directory tree and restricts it to the current user where supported.
+///
+/// # Errors
+///
+/// Returns [`PlatformError::Io`] when the directory cannot be created or hardened.
 pub fn secure_directory(path: &Path) -> Result<(), PlatformError> {
     fs::create_dir_all(path)?;
     #[cfg(unix)]
@@ -41,6 +46,11 @@ pub fn secure_directory(path: &Path) -> Result<(), PlatformError> {
     Ok(())
 }
 
+/// Writes a file with owner-only permissions where supported.
+///
+/// # Errors
+///
+/// Returns [`PlatformError::Io`] when the file cannot be created, written, or synced.
 pub fn write_user_only_file(path: &Path, contents: &[u8]) -> Result<(), PlatformError> {
     let mut options = fs::OpenOptions::new();
     options.write(true).create(true).truncate(true);

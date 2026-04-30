@@ -6,7 +6,8 @@ use std::sync::Arc;
 
 use directories::{BaseDirs, ProjectDirs};
 use locket_platform::{
-    KeyringMasterKeyStore, LocalUserVerifier, MasterKeyStore, PassphraseFallbackMasterKeyStore,
+    AutomationClientKeyStore, KeyringAutomationClientKeyStore, KeyringMasterKeyStore,
+    LocalUserVerifier, MasterKeyStore, PassphraseFallbackMasterKeyStore,
     UnavailableLocalUserVerifier,
 };
 
@@ -25,6 +26,7 @@ pub struct RuntimeContext {
     pub config_path: PathBuf,
     pub template_dir: PathBuf,
     pub key_store: Arc<dyn MasterKeyStore + Send + Sync>,
+    pub automation_client_key_store: Arc<dyn AutomationClientKeyStore + Send + Sync>,
     pub passphrase_store: PassphraseFallbackMasterKeyStore,
     pub passphrase_reader: Arc<dyn PassphraseReader + Send + Sync>,
     pub recovery_code_reader: Arc<dyn RecoveryCodeReader + Send + Sync>,
@@ -52,6 +54,7 @@ impl RuntimeContext {
             config_path: config_dir.join(CONFIG_TOML),
             template_dir: base_dirs.home_dir().join(".locket").join("templates"),
             key_store: Arc::new(KeyringMasterKeyStore),
+            automation_client_key_store: Arc::new(KeyringAutomationClientKeyStore),
             passphrase_store: PassphraseFallbackMasterKeyStore::new(
                 data_dir.join("passphrase-fallback"),
             ),

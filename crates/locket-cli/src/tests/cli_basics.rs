@@ -107,6 +107,105 @@ fn client_add_list_and_revoke_are_metadata_only() -> Result<(), Box<dyn std::err
 }
 
 #[test]
+fn client_create_stores_locket_managed_private_key_refs() -> Result<(), Box<dyn std::error::Error>>
+{
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    run_with_context(
+        Cli::try_parse_from(["locket", "policy", "add", "ci", "--", "cargo", "test"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+
+    let mut keychain_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from([
+            "locket",
+            "client",
+            "create",
+            "managed_keychain",
+            "--action",
+            "run-policy",
+            "--policy",
+            "ci",
+        ])?,
+        &context,
+        &mut keychain_output,
+    )?;
+    let keychain_output = String::from_utf8(keychain_output)?;
+    assert!(keychain_output.contains("private_key_storage: os-keychain"));
+    assert!(keychain_output.contains("private_key_material: never displayed"));
+
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let resolved = crate::resolve_project(&context.cwd)?.ok_or("project should resolve")?;
+    let keychain_client = store
+        .get_automation_client(resolved.config.project_id.as_str(), "managed_keychain")?
+        .ok_or("keychain client should exist")?;
+    let keychain_ref = store
+        .get_automation_client_private_key_ref(&keychain_client.id)?
+        .ok_or("keychain private key ref should exist")?;
+    assert_eq!(keychain_ref.storage, "os-keychain");
+    assert!(keychain_ref.keychain_account.as_deref().unwrap_or("").contains(&keychain_client.id));
+    assert!(keychain_ref.local_path_hash.is_none());
+
+    let mut file_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from([
+            "locket",
+            "client",
+            "create",
+            "managed_file",
+            "--storage",
+            "wrapped-local-file",
+            "--action",
+            "run-policy",
+            "--policy",
+            "ci",
+        ])?,
+        &context,
+        &mut file_output,
+    )?;
+    let file_output = String::from_utf8(file_output)?;
+    assert!(file_output.contains("private_key_storage: wrapped-local-file"));
+    assert!(file_output.contains("private_key_material: never displayed"));
+
+    let file_client = store
+        .get_automation_client(resolved.config.project_id.as_str(), "managed_file")?
+        .ok_or("file client should exist")?;
+    let file_ref = store
+        .get_automation_client_private_key_ref(&file_client.id)?
+        .ok_or("file private key ref should exist")?;
+    assert_eq!(file_ref.storage, "wrapped-local-file");
+    assert!(file_ref.local_path_hash.is_some());
+    assert!(file_ref.keychain_account.is_none());
+    let key_file =
+        directory.path().join("automation-clients").join(format!("{}.key", file_client.id));
+    let key_file_text = fs::read_to_string(&key_file)?;
+    assert!(key_file_text.contains("wrapped_private_key"));
+    assert!(!key_file_text.contains("private_key_material"));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        assert_eq!(fs::metadata(&key_file)?.permissions().mode() & 0o777, 0o600);
+    }
+
+    run_with_context(
+        Cli::try_parse_from(["locket", "client", "revoke", "managed_file"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    assert!(!key_file.exists());
+    assert!(store.get_automation_client_private_key_ref(&file_client.id)?.is_none());
+    Ok(())
+}
+
+#[test]
 fn client_rejects_unsupported_actions_and_missing_policies()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempdir()?;

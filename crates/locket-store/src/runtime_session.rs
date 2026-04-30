@@ -67,6 +67,27 @@ pub struct AutomationClientRecord {
     pub revoked_at: Option<i64>,
 }
 
+/// Metadata-only reference for Locket-managed automation-client private keys.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AutomationClientPrivateKeyRefRecord {
+    /// Parent automation-client identifier.
+    pub client_id: String,
+    /// Storage backend, currently `os-keychain` or `wrapped-local-file`.
+    pub storage: String,
+    /// OS keychain service when `storage = os-keychain`.
+    pub keychain_service: Option<String>,
+    /// OS keychain account when `storage = os-keychain`.
+    pub keychain_account: Option<String>,
+    /// Hash of the local wrapped-key path when `storage = wrapped-local-file`.
+    pub local_path_hash: Option<String>,
+    /// Metadata-only JSON object.
+    pub metadata_json: String,
+    /// Creation timestamp in nanoseconds since the Unix epoch.
+    pub created_at: i64,
+    /// Last update timestamp in nanoseconds since the Unix epoch.
+    pub updated_at: i64,
+}
+
 /// Recently seen automation-client challenge nonce.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AutomationClientNonceRecord {
@@ -182,6 +203,21 @@ fn automation_client_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Autom
         created_at: row.get(8)?,
         last_used_at: row.get(9)?,
         revoked_at: row.get(10)?,
+    })
+}
+
+fn automation_client_private_key_ref_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<AutomationClientPrivateKeyRefRecord> {
+    Ok(AutomationClientPrivateKeyRefRecord {
+        client_id: row.get(0)?,
+        storage: row.get(1)?,
+        keychain_service: row.get(2)?,
+        keychain_account: row.get(3)?,
+        local_path_hash: row.get(4)?,
+        metadata_json: row.get(5)?,
+        created_at: row.get(6)?,
+        updated_at: row.get(7)?,
     })
 }
 
@@ -356,6 +392,62 @@ impl Store {
         Ok(())
     }
 
+    /// Registers public automation-client metadata and its private-key reference atomically.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Sqlite`] when `SQLite` rejects either row.
+    pub fn insert_automation_client_with_private_key_ref(
+        &mut self,
+        client: &AutomationClientRecord,
+        private_key_ref: Option<&AutomationClientPrivateKeyRefRecord>,
+    ) -> Result<(), StoreError> {
+        let allowed_actions_json = json!(&client.allowed_actions).to_string();
+        let allowed_policies_json = json!(&client.allowed_policies).to_string();
+        let transaction = self.connection.transaction()?;
+        transaction.execute(
+            "INSERT INTO automation_clients(
+               id, project_id, name, public_key, fingerprint, storage,
+               allowed_actions_json, allowed_policies_json, created_at, last_used_at, revoked_at
+             )
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            params![
+                client.id.as_str(),
+                client.project_id.as_str(),
+                client.name.as_str(),
+                client.public_key.as_slice(),
+                client.fingerprint.as_str(),
+                client.storage.as_str(),
+                allowed_actions_json,
+                allowed_policies_json,
+                client.created_at,
+                client.last_used_at,
+                client.revoked_at,
+            ],
+        )?;
+        if let Some(reference) = private_key_ref {
+            transaction.execute(
+                "INSERT INTO automation_client_private_key_refs(
+                   client_id, storage, keychain_service, keychain_account, local_path_hash,
+                   metadata_json, created_at, updated_at
+                 )
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![
+                    reference.client_id.as_str(),
+                    reference.storage.as_str(),
+                    reference.keychain_service.as_deref(),
+                    reference.keychain_account.as_deref(),
+                    reference.local_path_hash.as_deref(),
+                    reference.metadata_json.as_str(),
+                    reference.created_at,
+                    reference.updated_at,
+                ],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
     /// Lists automation-client metadata for a project.
     ///
     /// # Errors
@@ -422,6 +514,80 @@ impl Store {
              SET revoked_at = ?3
              WHERE project_id = ?1 AND id = ?2 AND revoked_at IS NULL",
             params![project_id, client_id, revoked_at],
+        )?;
+        Ok(self.connection.changes() == 1)
+    }
+
+    /// Inserts or replaces the metadata-only private-key storage reference.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Sqlite`] when `SQLite` rejects the row.
+    pub fn upsert_automation_client_private_key_ref(
+        &self,
+        reference: &AutomationClientPrivateKeyRefRecord,
+    ) -> Result<(), StoreError> {
+        self.connection.execute(
+            "INSERT INTO automation_client_private_key_refs(
+               client_id, storage, keychain_service, keychain_account, local_path_hash,
+               metadata_json, created_at, updated_at
+             )
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(client_id) DO UPDATE SET
+               storage = excluded.storage,
+               keychain_service = excluded.keychain_service,
+               keychain_account = excluded.keychain_account,
+               local_path_hash = excluded.local_path_hash,
+               metadata_json = excluded.metadata_json,
+               updated_at = excluded.updated_at",
+            params![
+                reference.client_id.as_str(),
+                reference.storage.as_str(),
+                reference.keychain_service.as_deref(),
+                reference.keychain_account.as_deref(),
+                reference.local_path_hash.as_deref(),
+                reference.metadata_json.as_str(),
+                reference.created_at,
+                reference.updated_at,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Returns a metadata-only private-key storage reference.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Sqlite`] when the row cannot be queried.
+    pub fn get_automation_client_private_key_ref(
+        &self,
+        client_id: &str,
+    ) -> Result<Option<AutomationClientPrivateKeyRefRecord>, StoreError> {
+        self.connection
+            .query_row(
+                "SELECT client_id, storage, keychain_service, keychain_account, local_path_hash,
+                        metadata_json, created_at, updated_at
+                 FROM automation_client_private_key_refs
+                 WHERE client_id = ?1",
+                [client_id],
+                automation_client_private_key_ref_from_row,
+            )
+            .optional()
+            .map_err(StoreError::from)
+    }
+
+    /// Deletes a metadata-only private-key storage reference.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Sqlite`] when `SQLite` rejects the delete.
+    pub fn delete_automation_client_private_key_ref(
+        &self,
+        client_id: &str,
+    ) -> Result<bool, StoreError> {
+        self.connection.execute(
+            "DELETE FROM automation_client_private_key_refs WHERE client_id = ?1",
+            [client_id],
         )?;
         Ok(self.connection.changes() == 1)
     }

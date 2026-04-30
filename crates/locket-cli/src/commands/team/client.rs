@@ -1,12 +1,18 @@
 //! Automation client command implementations.
 
 use std::collections::BTreeSet;
+use std::fs;
 use std::io::Write;
+use std::path::{Path, PathBuf};
 
+use data_encoding::BASE64URL_NOPAD;
 use ed25519_dalek::SigningKey;
 use locket_core::ClientId;
-use locket_crypto::{KeyPurpose, generate_key};
-use locket_store::{AuditWrite, AutomationClientRecord, Store};
+use locket_crypto::{KeyPurpose, generate_key, wrap_dek_v1};
+use locket_platform::{secure_directory, write_user_only_file};
+use locket_store::{
+    AuditWrite, AutomationClientPrivateKeyRefRecord, AutomationClientRecord, Store,
+};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
@@ -49,6 +55,7 @@ fn client_create_command(
             actions: &args.actions,
             policies: &args.policies,
             created_by_locket: true,
+            private_key: Some(&seed),
         },
     )
 }
@@ -69,6 +76,7 @@ fn client_add_command(
             actions: &args.actions,
             policies: &args.policies,
             created_by_locket: false,
+            private_key: None,
         },
     )
 }
@@ -81,6 +89,7 @@ struct ClientRegistrationRequest<'a> {
     actions: &'a [String],
     policies: &'a [String],
     created_by_locket: bool,
+    private_key: Option<&'a locket_crypto::KeyBytes>,
 }
 
 fn register_client_metadata(
@@ -98,6 +107,22 @@ fn register_client_metadata(
     let timestamp = now_unix_nanos()?;
     let id = ClientId::generate().map_err(|error| corrupt_db_error(error.to_string()))?;
     let fingerprint = client_public_key_fingerprint(request.public_key);
+    let private_key_ref = if request.created_by_locket {
+        let Some(private_key) = request.private_key else {
+            return Err(corrupt_db_error("missing generated automation client private key"));
+        };
+        Some(store_client_private_key(
+            context,
+            &store,
+            &resolved,
+            id.as_str(),
+            request.storage,
+            private_key,
+            timestamp,
+        )?)
+    } else {
+        None
+    };
     let client = AutomationClientRecord {
         id: id.as_str().to_owned(),
         project_id: resolved.config.project_id.to_string(),
@@ -111,7 +136,14 @@ fn register_client_metadata(
         last_used_at: None,
         revoked_at: None,
     };
-    store.insert_automation_client(&client)?;
+    if let Err(error) =
+        store.insert_automation_client_with_private_key_ref(&client, private_key_ref.as_ref())
+    {
+        if request.created_by_locket {
+            cleanup_client_private_key(context, request.storage, &client.id);
+        }
+        return Err(error.into());
+    }
     let metadata = json!({
         "schema_version": 1,
         "action": "CLIENT_ADD",
@@ -143,7 +175,7 @@ fn register_client_metadata(
     writeln!(output, "allowed_policies: {}", client.allowed_policies.join(","))?;
     writeln!(output, "private_key_material: never displayed")?;
     if request.created_by_locket {
-        writeln!(output, "private_key_storage: not implemented in this metadata foundation")?;
+        writeln!(output, "private_key_storage: {}", client.storage)?;
     }
     Ok(())
 }
@@ -206,7 +238,12 @@ fn client_revoke_command(
         return Ok(());
     }
     let timestamp = now_unix_nanos()?;
+    let private_key_ref = store.get_automation_client_private_key_ref(&client.id)?;
     store.revoke_automation_client(resolved.config.project_id.as_str(), &client.id, timestamp)?;
+    if let Some(reference) = &private_key_ref {
+        delete_client_private_key(context, reference)?;
+        store.delete_automation_client_private_key_ref(&client.id)?;
+    }
     let metadata = json!({
         "schema_version": 1,
         "action": "CLIENT_REVOKE",
@@ -234,6 +271,143 @@ fn client_revoke_command(
     writeln!(output, "revoked_at: {}", format_unix_nanos(timestamp))?;
     writeln!(output, "private_key_material: never displayed")?;
     Ok(())
+}
+
+fn store_client_private_key(
+    context: &RuntimeContext,
+    store: &Store,
+    resolved: &ResolvedProject,
+    client_id: &str,
+    storage: &str,
+    private_key: &locket_crypto::KeyBytes,
+    timestamp: i64,
+) -> Result<AutomationClientPrivateKeyRefRecord, CliError> {
+    match storage {
+        "os-keychain" => {
+            let reference =
+                context.automation_client_key_store.store_client_key(client_id, private_key)?;
+            Ok(AutomationClientPrivateKeyRefRecord {
+                client_id: client_id.to_owned(),
+                storage: storage.to_owned(),
+                keychain_service: Some(reference.service),
+                keychain_account: Some(reference.account),
+                local_path_hash: None,
+                metadata_json: json!({
+                    "schema_version": 1,
+                    "storage": storage,
+                })
+                .to_string(),
+                created_at: timestamp,
+                updated_at: timestamp,
+            })
+        }
+        "wrapped-local-file" => {
+            let path = automation_client_key_path(context, client_id)?;
+            let project_key = load_project_key(
+                context,
+                store,
+                resolved.config.project_id.as_str(),
+                KeyPurpose::ProjectMetadata,
+            )?;
+            let aad =
+                automation_client_private_key_aad(resolved.config.project_id.as_str(), client_id);
+            let wrapped_key = wrap_dek_v1(&project_key, private_key, &aad)?;
+            let path_hash = path_hash(&path);
+            let parent =
+                path.parent().ok_or_else(|| corrupt_db_error("invalid client key path"))?;
+            secure_directory(parent)?;
+            let file = json!({
+                "schema_version": 1,
+                "algorithm": "xchacha20poly1305-key-wrap-v1",
+                "project_id": resolved.config.project_id.as_str(),
+                "client_id": client_id,
+                "wrapped_private_key": BASE64URL_NOPAD.encode(&wrapped_key),
+            });
+            let contents = serde_json::to_vec_pretty(&file)?;
+            write_user_only_file(&path, &contents)?;
+            Ok(AutomationClientPrivateKeyRefRecord {
+                client_id: client_id.to_owned(),
+                storage: storage.to_owned(),
+                keychain_service: None,
+                keychain_account: None,
+                local_path_hash: Some(path_hash.clone()),
+                metadata_json: json!({
+                    "schema_version": 1,
+                    "storage": storage,
+                    "local_path_hash": path_hash,
+                    "wrapped_key_schema": 1,
+                })
+                .to_string(),
+                created_at: timestamp,
+                updated_at: timestamp,
+            })
+        }
+        _ => Err(metadata_invalid_error("unsupported automation client private-key storage")),
+    }
+}
+
+fn delete_client_private_key(
+    context: &RuntimeContext,
+    reference: &AutomationClientPrivateKeyRefRecord,
+) -> Result<(), CliError> {
+    match reference.storage.as_str() {
+        "os-keychain" => {
+            context.automation_client_key_store.delete_client_key(&reference.client_id)?;
+        }
+        "wrapped-local-file" => {
+            let path = automation_client_key_path(context, &reference.client_id)?;
+            match fs::remove_file(path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        _ => {
+            return Err(metadata_invalid_error(
+                "unsupported automation client private-key storage",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn cleanup_client_private_key(context: &RuntimeContext, storage: &str, client_id: &str) {
+    match storage {
+        "os-keychain" => {
+            let _ = context.automation_client_key_store.delete_client_key(client_id);
+        }
+        "wrapped-local-file" => {
+            if let Ok(path) = automation_client_key_path(context, client_id) {
+                let _ = fs::remove_file(path);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn automation_client_key_path(
+    context: &RuntimeContext,
+    client_id: &str,
+) -> Result<PathBuf, CliError> {
+    let parent = context
+        .store_path
+        .parent()
+        .ok_or_else(|| corrupt_db_error("could not resolve automation client key directory"))?;
+    Ok(parent.join("automation-clients").join(format!("{client_id}.key")))
+}
+
+fn automation_client_private_key_aad(project_id: &str, client_id: &str) -> Vec<u8> {
+    let mut aad = Vec::new();
+    aad.extend_from_slice(b"locket-automation-client-private-key-v1");
+    aad.extend_from_slice(project_id.as_bytes());
+    aad.push(0);
+    aad.extend_from_slice(client_id.as_bytes());
+    aad
+}
+
+fn path_hash(path: &Path) -> String {
+    let digest = Sha256::digest(path.to_string_lossy().as_bytes());
+    format_hex(&digest[..16])
 }
 
 fn parse_client_public_key(value: &str) -> Result<[u8; 32], CliError> {
