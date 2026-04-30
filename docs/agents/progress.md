@@ -241,7 +241,7 @@ Slices 1+2 shipped (agent client, tray binding, 6 view scaffolds,
   - [~] [acda32e4] branch agent-acda32e4/agent-list-secrets, worktree .worktrees/agent-acda32e4-agent-list-secrets; **subtask** — agent-list-secrets: metadata-only active-profile secret rows with source-precedence ordering.
   - [ ] **subtask** — desktop-secrets-data: wire `agent-list-secrets`
     into `SecretMetadataList.vue` + last-refreshed timestamp. Slice 4.
-  - [~] [90b9f58a] branch agent-90b9f58a/agent-list-versions, worktree .worktrees/agent-90b9f58a-agent-list-versions; **subtask** — agent-list-versions: current/deprecated/purged metadata plus rotation summary.
+  - [~] [acda32e4] branch agent-acda32e4/agent-list-versions, worktree .worktrees/agent-acda32e4-agent-list-versions; **subtask** — agent-list-versions: current/deprecated/purged metadata plus rotation summary.
   - [ ] **subtask** — desktop-versions-data: wire into
     `SecretVersionHistory.vue`. Slice 5.
   - [~] [acda32e4] branch agent-acda32e4/desktop-execution-data, worktree .worktrees/agent-acda32e4-desktop-execution-data; **subtask** — desktop-execution-data: wire into `ExecutionMonitor.vue` + stale-session classifier. Slice 6.
