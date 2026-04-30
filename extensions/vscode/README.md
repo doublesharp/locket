@@ -28,6 +28,15 @@ pnpm run test
 
 (Test runner lands with `vscode-agent-client`.)
 
+## Package
+
+```sh
+make vscode-vsix-package
+```
+
+The package artifact and SHA-256 sidecar are written under
+`target/package/vscode/`.
+
 ## Scope
 
 - `src/extension.ts` — extension activation and client lifecycle.

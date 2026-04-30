@@ -34,7 +34,7 @@ else
 CARGO_OFFLINE_FLAG :=
 endif
 
-.PHONY: ci ci-local ci-strict fmt fmt-check clippy test nextest coverage coverage-html coverage-branch mutation supply-chain supply-chain-local audit deny vet unsafe-inventory sbom supply-chain-exceptions dependency-hygiene machete udeps bench-fixtures bench bench-ci bench-report perf-passphrase-unlock perf-recovery-envelope-unlock slsa-provenance fuzz-list fuzz-smoke fuzz fuzz-nightly fuzz-minimize leak-canary docs-check app-ui-install app-ui-check app-ui-build clean
+.PHONY: ci ci-local ci-strict fmt fmt-check clippy test nextest coverage coverage-html coverage-branch mutation supply-chain supply-chain-local audit deny vet unsafe-inventory sbom supply-chain-exceptions dependency-hygiene machete udeps bench-fixtures bench bench-ci bench-report perf-passphrase-unlock perf-recovery-envelope-unlock slsa-provenance fuzz-list fuzz-smoke fuzz fuzz-nightly fuzz-minimize leak-canary docs-check app-ui-install app-ui-check app-ui-build vscode-vsix-package clean
 
 # Local default gate. It avoids network by default and skips missing optional tools
 # with explicit warnings. Use `make ci-strict OFFLINE=0 STRICT=1` for release-style
@@ -182,6 +182,9 @@ app-ui-build: app-ui-install
 	else \
 		$(PNPM) --dir crates/locket-app/ui build; \
 	fi
+
+vscode-vsix-package:
+	PNPM="$(PNPM)" scripts/package-vscode-extension.sh
 
 clean:
 	$(CARGO) clean

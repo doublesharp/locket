@@ -6,6 +6,11 @@
   "private": true,
   "license": "Apache-2.0 OR MIT",
   "publisher": "locket",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/doublesharp/locket.git",
+    "directory": "extensions/vscode"
+  },
   "engines": {
     "vscode": "^1.80.0",
     "node": ">=18"
@@ -32,13 +37,14 @@
     "watch": "tsc -p . --watch",
     "lint": "eslint src --ext .ts",
     "test": "pnpm run build && node --test out/*.test.js",
-    "package": "vsce package"
+    "package": "vsce package --no-dependencies"
   },
   "devDependencies": {
     "@types/node": "^20",
     "@types/vscode": "^1.80.0",
     "@typescript-eslint/eslint-plugin": "^7",
     "@typescript-eslint/parser": "^7",
+    "@vscode/vsce": "^3.9.1",
     "eslint": "^8",
     "typescript": "^5"
   }
