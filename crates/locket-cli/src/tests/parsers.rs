@@ -51,6 +51,12 @@ fn grace_ttl_parser_handles_absent_values_caps_and_timestamp_overflow()
 -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(crate::grace_until_from_args(None, 1_000)?, None);
     assert_eq!(crate::grace_until_from_args(Some("24h"), 1_000)?, Some(86_400_000_001_000),);
+    for value in ["0s", "1h30m", "1.5h", "1H", " 1h", "1h "] {
+        assert_error_contains(
+            crate::grace_until_from_args(Some(value), 1_000).map(|_| ()),
+            "invalid grace TTL duration",
+        );
+    }
     assert_error_contains(crate::grace_until_from_args(Some("8d"), 1_000).map(|_| ()), "7d cap");
     assert!(matches!(
         crate::grace_until_from_args(Some("1s"), i64::MAX - 10),

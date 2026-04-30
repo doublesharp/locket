@@ -167,7 +167,10 @@ mod tests {
 
     #[test]
     fn rejects_invalid_duration_syntax() {
-        for input in ["", "0s", "01s", "-1s", "1.5h", "1h30m", "1H", " 1h", "1h ", "1"] {
+        for input in [
+            "", "0s", "01s", "-1s", "+1s", "1.5h", "1h30m", "1H", "1M", "1 h", " 1h", "1h ",
+            "\t1h", "1",
+        ] {
             assert!(Duration::from_str(input).is_err(), "{input} should be invalid");
         }
     }

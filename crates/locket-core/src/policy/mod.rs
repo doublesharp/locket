@@ -260,4 +260,24 @@ ttl = "9h"
             })
         );
     }
+
+    #[test]
+    fn rejects_invalid_ttl_duration_grammar() {
+        for value in ["0s", "1h30m", "1.5h", "1H", " 1h", "1h "] {
+            let result = PolicyDocument::from_toml_str(&format!(
+                r#"[commands.dev]
+argv = ["pnpm"]
+ttl = "{value}"
+"#
+            ));
+
+            assert_eq!(
+                result,
+                Err(PolicyParseError::InvalidTtl {
+                    command: "dev".to_owned(),
+                    value: value.to_owned(),
+                })
+            );
+        }
+    }
 }

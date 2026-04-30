@@ -141,3 +141,22 @@ fn runtime_session_retention_off_filters_names_before_storage() -> Result<(), Bo
 
     Ok(())
 }
+
+#[test]
+fn runtime_session_retention_uses_duration_grammar() -> Result<(), Box<dyn Error>> {
+    for value in ["0s", "1h30m", "1.5h", "1H", " 1h", "1h "] {
+        assert!(
+            RuntimeSessionSecretNameRetention::from_str(value).is_err(),
+            "{value} should be invalid"
+        );
+    }
+
+    match RuntimeSessionSecretNameRetention::from_str("2w")? {
+        RuntimeSessionSecretNameRetention::RetainFor(duration) => {
+            assert_eq!(duration.as_secs(), 14 * 24 * 60 * 60);
+            assert_eq!(duration.to_string(), "2w");
+        }
+        RuntimeSessionSecretNameRetention::Off => return Err("2w should retain names".into()),
+    }
+    Ok(())
+}

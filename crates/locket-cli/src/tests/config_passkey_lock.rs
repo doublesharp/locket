@@ -275,6 +275,17 @@ fn config_value_validation_errors_are_typed_metadata_failures()
         &locket_core::LocketError::MetadataInvalid,
         "invalid config duration",
     )?;
+    for value in ["0s", "1h30m", "1.5h", "1H", " 1h", "1h "] {
+        assert_typed_config_error(
+            run_with_context(
+                Cli::try_parse_from(["locket", "config", "set", "agent.unlock_ttl", value])?,
+                &context,
+                &mut Vec::new(),
+            ),
+            &locket_core::LocketError::MetadataInvalid,
+            "invalid config duration",
+        )?;
+    }
     assert_typed_config_error(
         run_with_context(
             Cli::try_parse_from([
