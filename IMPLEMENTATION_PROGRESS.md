@@ -935,9 +935,10 @@ editing — they drift. Severity: **blocker** (security/correctness),
   - [~] [e7389a73] **subtask** — proptest-canonical-json: canonical JSON encoder
     is total-ordered, idempotent, and stable across permutations.
     Claim: branch agent-e7389a73/proptest-canonical-json, worktree .worktrees/agent-e7389a73-proptest-canonical-json.
-  - [ ] **subtask** — proptest-device-descriptor: descriptor codec
+  - [~] [e7389a73] **subtask** — proptest-device-descriptor: descriptor codec
     round-trip; rejects malformed `lkdev1_` payloads, version-bump
     behavior. Depends on the descriptor codec landing.
+    Claim: branch agent-e7389a73/proptest-device-descriptor, worktree .worktrees/agent-e7389a73-proptest-device-descriptor.
   - [ ] **subtask** — proptest-bundle-manifest: plaintext-manifest
     round-trip; rejects forbidden fields (profile/secret/policy/
     member/device names). Depends on `bundle-container-format`.
