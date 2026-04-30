@@ -390,9 +390,7 @@ Slices 1+2 shipped (agent client, tray binding, 6 view scaffolds,
 - [ ] VS Code diagnostics: `process.env.KEY` missing in active
   profile; pinned `lk://...@vN` near/past `grace_until`
   (`docs/specs/integrations.md:48-49`).
-- [ ] VS Code reference completion for `lk://` in `.env.example`,
-  JSON, TOML, YAML, shell, source files
-  (`docs/specs/integrations.md:48`).
+- [~] [52c592db] branch agent-52c592db/vscode-reference-completion, worktree .worktrees/agent-52c592db-vscode-reference-completion; VS Code reference completion for `lk://` in `.env.example`, JSON, TOML, YAML, shell, source files (`docs/specs/integrations.md:48`).
 - [ ] VS Code gated reveal webview with short-lived data, no
   plaintext persistence (`docs/specs/integrations.md:50-51`).
 - [ ] Profile-scoped grant invalidation on `locket use <profile>`;
