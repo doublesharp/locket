@@ -9,7 +9,6 @@
 // `unused_crate_dependencies` at the bin boundary; pull each in
 // explicitly so the lint stays quiet without disabling it.
 use locket_agent as _;
-#[cfg(test)]
 use locket_app as _;
 use serde as _;
 use serde_json as _;

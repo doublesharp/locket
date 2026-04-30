@@ -23,14 +23,14 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 locket-agent = { path = "../../locket-agent" }
+locket-app = { path = ".." }
 serde = { workspace = true }
 serde_json = { workspace = true }
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 
 [dev-dependencies]
-locket-app = { path = ".." }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true }

@@ -318,6 +318,11 @@ async fn dispatch(envelope: &RequestEnvelope, state: &AgentSocketState) -> Respo
             let payload = serde_json::to_value(snapshot).unwrap_or(serde_json::Value::Null);
             ResponseEnvelope::Success(SuccessEnvelope::new(envelope.id.clone(), payload))
         }
+        Ok(AgentMethod::Reveal) => crate::reveal::handle_reveal(envelope),
+        Ok(AgentMethod::Copy) => crate::reveal::handle_copy(envelope),
+        Ok(AgentMethod::ScanKnownValues) => crate::scan::handle_scan(envelope),
+        Ok(AgentMethod::ResolveReference) => crate::resolve::handle_resolve(envelope),
+        Ok(AgentMethod::PrepareExec) => crate::prepare_exec::handle_prepare_exec(envelope),
         Ok(method) => ResponseEnvelope::Error(ErrorEnvelope::new(
             envelope.id.clone(),
             "ProtocolError",

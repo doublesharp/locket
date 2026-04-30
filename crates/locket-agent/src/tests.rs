@@ -384,7 +384,9 @@ mod server_tests {
         });
 
         let mut client = UnixStream::connect(&socket_path).await?;
-        let request = RequestEnvelope::new("req-2", AgentMethod::PrepareExec, Value::Null);
+        // `Unlock` is one of the methods that still has no dispatch
+        // arm, so it exercises the catch-all `ProtocolError` branch.
+        let request = RequestEnvelope::new("req-2", AgentMethod::Unlock, Value::Null);
         let frame = encode_frame(&request, DEFAULT_MAX_MESSAGE_SIZE)?;
         client.write_all(&frame).await?;
         client.flush().await?;
@@ -406,7 +408,7 @@ mod server_tests {
         };
         assert_eq!(error.id, "req-2");
         assert_eq!(error.error, "ProtocolError");
-        assert!(error.message.contains("PrepareExec"));
+        assert!(error.message.contains("Unlock"));
         assert!(!error.retryable);
 
         drop(client);
