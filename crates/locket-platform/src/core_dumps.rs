@@ -82,10 +82,8 @@ mod unix {
     }
 
     pub fn core_dump_hardening_state() -> CoreDumpHardening {
-        let core_zeroed = matches!(
-            getrlimit(Resource::Core),
-            Rlimit { current: Some(0), maximum: Some(0) }
-        );
+        let core_zeroed =
+            matches!(getrlimit(Resource::Core), Rlimit { current: Some(0), maximum: Some(0) });
         let dumpable_cleared = dumpable_flag_cleared();
         if core_zeroed && dumpable_cleared {
             CoreDumpHardening::Active

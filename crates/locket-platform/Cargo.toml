@@ -23,7 +23,7 @@ toml = { workspace = true }
 zeroize = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
-rustix = { workspace = true }
+rustix = { workspace = true, features = ["mm", "process"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }

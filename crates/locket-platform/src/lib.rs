@@ -8,6 +8,7 @@ mod core_dumps;
 mod error;
 mod fs_helpers;
 mod master_key;
+mod memory_lock;
 mod passphrase;
 mod process;
 mod recovery;
@@ -19,6 +20,7 @@ pub use master_key::{
     KeyringMasterKeyStore, MasterKeyStore, MemoryMasterKeyStore, MockMasterKeyStore,
     MockMasterKeyStoreFailure,
 };
+pub use memory_lock::{MemoryLockHardening, lock_process_memory, memory_lock_hardening_state};
 pub use passphrase::PassphraseFallbackMasterKeyStore;
 pub use process::{
     ProcessBinding, current_process_binding, process_binding_for_pid,

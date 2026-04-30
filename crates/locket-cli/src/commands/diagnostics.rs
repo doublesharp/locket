@@ -641,13 +641,14 @@ fn check_agent_placeholder(context: &RuntimeContext) -> DiagnosticCheck {
 
 fn check_hardening() -> DiagnosticCheck {
     let core_dumps = locket_platform::core_dump_hardening_state();
-    let detail = format!("core_dumps={core_dumps}");
-    match core_dumps {
-        locket_platform::CoreDumpHardening::Active => DiagnosticCheck::pass("hardening", detail),
-        locket_platform::CoreDumpHardening::Unsupported => {
-            DiagnosticCheck::warn("hardening", detail)
-        }
-        locket_platform::CoreDumpHardening::Degraded => DiagnosticCheck::warn("hardening", detail),
+    let memory_lock = locket_platform::memory_lock_hardening_state();
+    let detail = format!("core_dumps={core_dumps} memory_lock={memory_lock}");
+    let core_active = matches!(core_dumps, locket_platform::CoreDumpHardening::Active);
+    let memory_active = matches!(memory_lock, locket_platform::MemoryLockHardening::Active);
+    if core_active && memory_active {
+        DiagnosticCheck::pass("hardening", detail)
+    } else {
+        DiagnosticCheck::warn("hardening", detail)
     }
 }
 
