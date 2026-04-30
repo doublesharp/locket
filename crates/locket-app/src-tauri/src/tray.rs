@@ -241,7 +241,7 @@ pub fn update_tray_state<R: Runtime>(
 
 #[cfg(test)]
 mod tests {
-    use super::{TrayState, icon_bytes_for, light_bytes, macos_bytes, tooltip_for};
+    use super::{TrayState, dark_bytes, icon_bytes_for, light_bytes, macos_bytes, tooltip_for};
     use locket_app::{TrayIconState, tray_icon_states};
 
     #[test]
@@ -250,6 +250,26 @@ mod tests {
             assert!(!icon_bytes_for(*state).is_empty());
             assert!(!macos_bytes(*state).is_empty());
             assert!(!light_bytes(*state).is_empty());
+        }
+    }
+
+    #[test]
+    fn generated_icon_variants_contain_visible_pixels() {
+        for state in tray_icon_states() {
+            for bytes in [macos_bytes(*state), light_bytes(*state), dark_bytes(*state)] {
+                let pixels = decode_stored_rgba_png(bytes);
+                assert_eq!(pixels.width, 32);
+                assert_eq!(pixels.height, 32);
+                assert!(
+                    pixels.visible_alpha_pixels() > 32,
+                    "{state:?} must not be a transparent placeholder",
+                );
+            }
+            assert_ne!(
+                light_bytes(*state),
+                dark_bytes(*state),
+                "{state:?} must have distinct light and dark variants",
+            );
         }
     }
 
@@ -273,5 +293,80 @@ mod tests {
         for (wire, expected) in pairs {
             assert_eq!(TrayIconState::from(wire), expected);
         }
+    }
+
+    struct DecodedPng {
+        width: u32,
+        height: u32,
+        pixels: Vec<u8>,
+    }
+
+    impl DecodedPng {
+        fn visible_alpha_pixels(&self) -> usize {
+            self.pixels.chunks_exact(4).filter(|rgba| rgba[3] > 0).count()
+        }
+    }
+
+    fn decode_stored_rgba_png(bytes: &[u8]) -> DecodedPng {
+        assert!(bytes.starts_with(b"\x89PNG\r\n\x1a\n"));
+        let mut offset = 8;
+        let mut width = 0;
+        let mut height = 0;
+        let mut idat = Vec::new();
+        while offset + 12 <= bytes.len() {
+            let length =
+                u32::from_be_bytes(bytes[offset..offset + 4].try_into().expect("chunk length"))
+                    as usize;
+            offset += 4;
+            let tag = &bytes[offset..offset + 4];
+            offset += 4;
+            let data = &bytes[offset..offset + length];
+            offset += length;
+            offset += 4;
+            match tag {
+                b"IHDR" => {
+                    width = u32::from_be_bytes(data[0..4].try_into().expect("png width"));
+                    height = u32::from_be_bytes(data[4..8].try_into().expect("png height"));
+                    assert_eq!(data[8], 8, "expected 8-bit PNG");
+                    assert_eq!(data[9], 6, "expected RGBA PNG");
+                }
+                b"IDAT" => idat.extend_from_slice(data),
+                b"IEND" => break,
+                _ => {}
+            }
+        }
+        let raw = decode_zlib_stored(&idat);
+        let row_len = (width as usize * 4) + 1;
+        assert_eq!(raw.len(), row_len * height as usize);
+        let mut pixels = Vec::with_capacity(width as usize * height as usize * 4);
+        for row in raw.chunks_exact(row_len) {
+            assert_eq!(row[0], 0, "expected unfiltered rows");
+            pixels.extend_from_slice(&row[1..]);
+        }
+        DecodedPng { width, height, pixels }
+    }
+
+    fn decode_zlib_stored(bytes: &[u8]) -> Vec<u8> {
+        assert_eq!(&bytes[0..2], &[0x78, 0x01]);
+        let mut offset = 2;
+        let mut out = Vec::new();
+        loop {
+            let header = bytes[offset];
+            offset += 1;
+            let final_block = header & 1 == 1;
+            assert_eq!(header & 0b110, 0, "expected stored deflate block");
+            let len = u16::from_le_bytes(bytes[offset..offset + 2].try_into().expect("len"));
+            offset += 2;
+            let nlen = u16::from_le_bytes(bytes[offset..offset + 2].try_into().expect("nlen"));
+            offset += 2;
+            assert_eq!(nlen, !len);
+            let len = usize::from(len);
+            out.extend_from_slice(&bytes[offset..offset + len]);
+            offset += len;
+            if final_block {
+                break;
+            }
+        }
+        out
     }
 }
