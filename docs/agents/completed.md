@@ -208,6 +208,8 @@ Slices that have merged to `main` and verified. Open work tracked in
 - [x] Frontend toolchain refresh via `ncu`: Vue 3.5.33, Vite 8, TypeScript
   6.0, ESLint 10, Prettier 3.8, `@tauri-apps/api` 2.10.
   `eslint-config-prettier` aligns the two; `pnpm-lock.yaml` is committed.
+- [x] vscode-reference-completion: The VS Code extension now registers
+  `lk://` reference completion for supported local file types.
 
 ## Full Spec Coverage TODO — Code Health and Bug Fixes
 
