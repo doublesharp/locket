@@ -587,10 +587,10 @@ fn doctor_reports_locked_safe_diagnostics_and_exit_codes() -> Result<(), Box<dyn
     // child of cargo, so the helper has been called at process startup; the
     // line is `pass hardening: core_dumps=active` on Unix and a warn on
     // Windows.
-    let hardening_line = doctor_output
-        .lines()
-        .find(|line| line.contains(" hardening:"))
-        .expect("doctor must include a hardening check");
+    let Some(hardening_line) = doctor_output.lines().find(|line| line.contains(" hardening:"))
+    else {
+        return Err("doctor must include a hardening check".into());
+    };
     assert!(hardening_line.contains("core_dumps="));
     assert!(doctor_output.contains("summary:"));
 
