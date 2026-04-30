@@ -478,9 +478,7 @@ Re-verify file:line references before editing — they drift. Severity:
   / no-tolerance release (`docs/specs/performance.md`).
 - [~] [4ab55ee9] branch agent-4ab55ee9/make-test-targets, worktree .worktrees/agent-4ab55ee9-make-test-targets; `make coverage-html` and `make test` Make targets exposed (`docs/specs/testing.md`).
 - [~] [4ab55ee9] branch agent-4ab55ee9/cargo-geiger-inventory, worktree .worktrees/agent-4ab55ee9-cargo-geiger-inventory; `cargo geiger` (or equivalent) unsafe inventory before public release and after any crypto/IPC/platform/storage dep change (`docs/specs/engineering.md`).
-- [ ] RustSec advisory severity policy: high/critical block, medium
-  runtime block, dev-only exception, low triage
-  (`docs/specs/engineering.md`).
+- [~] [4ab55ee9] branch agent-4ab55ee9/rustsec-severity-policy, worktree .worktrees/agent-4ab55ee9-rustsec-severity-policy; RustSec advisory severity policy: high/critical block, medium runtime block, dev-only exception, low triage (`docs/specs/engineering.md`).
 - [ ] Supply-chain exception ledger (package, version, reason,
   compensating controls, owner, expiration) enforced by CI;
   no-expiration entries are invalid (`docs/specs/engineering.md`).
