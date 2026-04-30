@@ -514,6 +514,38 @@ fn purge_resolves_explicit_source_for_version_purge() -> Result<(), Box<dyn std:
 }
 
 #[test]
+fn purge_without_source_requires_explicit_source_when_multiple_sources_exist()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+
+    setup_two_source_secret(&context, "DB_PASS", "user-pass", "machine-pass", 1_000)?;
+
+    let mut purge_output = Vec::new();
+    let result = run_with_context(
+        Cli::try_parse_from(["locket", "purge", "DB_PASS", "--version", "1", "--force"])?,
+        &context,
+        &mut purge_output,
+    );
+    assert_error_contains(result, "pass --source");
+    assert!(String::from_utf8(purge_output)?.is_empty());
+
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let purge_count: i64 = store.connection().query_row(
+        "SELECT COUNT(*) FROM audit_log WHERE action = 'PURGE'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(purge_count, 0);
+    Ok(())
+}
+
+#[test]
 fn exec_injects_highest_precedence_source_value_and_records_source_in_audit()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempdir()?;
