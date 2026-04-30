@@ -123,7 +123,7 @@ skill set fits a leaf better.
 - [ ] Resolve `lk://` references through the agent
   (`docs/specs/runtime.md:123-155`). All subtasks depend on
   `lk-resolve-rpc`.
-  - [~] [52c592db] branch agent-52c592db/lk-resolve-rpc, worktree .worktrees/agent-52c592db-lk-resolve-rpc; **subtask** — lk-resolve-rpc: `ResolveReference` handler
+  - [ ] **subtask** — lk-resolve-rpc: `ResolveReference` handler
     parses `lk://`, looks up the secret, returns the value or a
     typed error. Pre-req: `agent-unlock-cache`. **Critical path.**
   - [ ] **subtask** — lk-resolve-policy-auth: gate by policy
