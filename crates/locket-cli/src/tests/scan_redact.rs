@@ -212,6 +212,98 @@ fn scan_require_known_matches_vault_values_without_printing_them()
 }
 
 #[test]
+fn scan_require_known_matches_deleted_current_version_with_blob()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    let args = test_secret_write_args("DATABASE_URL");
+    crate::set_secret_value(&context, &args, "deleted-current-fixture", "manual", 1_000)?;
+    run_with_context(
+        Cli::try_parse_from(["locket", "rm", "DATABASE_URL"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    std::fs::write(directory.path().join("sample.txt"), "db=deleted-current-fixture\n")?;
+
+    let mut scan_output = Vec::new();
+    let result = run_with_context(
+        Cli::try_parse_from(["locket", "scan", "--require-known", "sample.txt"])?,
+        &context,
+        &mut scan_output,
+    );
+    let Err(error) = result else {
+        return Err("deleted current version with blob must remain known-scan eligible".into());
+    };
+    assert_eq!(error.exit_code(), 69);
+    let scan_output = String::from_utf8(scan_output)?;
+    assert!(scan_output.contains("[blocking] known-secret"));
+    assert!(scan_output.contains("known-value coverage checked 1 value(s)"));
+    assert!(!scan_output.contains("deleted-current-fixture"));
+    Ok(())
+}
+
+#[test]
+fn scan_require_known_includes_grace_versions_and_excludes_purged_versions()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    let args = test_secret_write_args("DATABASE_URL");
+    crate::set_secret_value(&context, &args, "grace-old-fixture", "manual", 1_000)?;
+    let rotate_args = test_rotate_args("DATABASE_URL", Some("24h"));
+    let timestamp = crate::now_unix_nanos()?;
+    let grace_until = crate::grace_until_from_args(rotate_args.grace_ttl.as_deref(), timestamp)?;
+    crate::rotate_secret_value(
+        &context,
+        &rotate_args,
+        "grace-new-fixture",
+        timestamp,
+        grace_until,
+    )?;
+    std::fs::write(directory.path().join("grace.txt"), "db=grace-old-fixture\n")?;
+
+    let mut grace_scan_output = Vec::new();
+    let grace_result = run_with_context(
+        Cli::try_parse_from(["locket", "scan", "--require-known", "grace.txt"])?,
+        &context,
+        &mut grace_scan_output,
+    );
+    let Err(error) = grace_result else {
+        return Err("deprecated version inside grace window must be scan eligible".into());
+    };
+    assert_eq!(error.exit_code(), 69);
+    let grace_scan_output = String::from_utf8(grace_scan_output)?;
+    assert!(grace_scan_output.contains("[blocking] known-secret"));
+    assert!(!grace_scan_output.contains("grace-old-fixture"));
+
+    run_with_context(
+        Cli::try_parse_from(["locket", "purge", "DATABASE_URL", "--version", "1", "--force"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    let mut purged_scan_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "scan", "--require-known", "grace.txt"])?,
+        &context,
+        &mut purged_scan_output,
+    )?;
+    let purged_scan_output = String::from_utf8(purged_scan_output)?;
+    assert!(purged_scan_output.contains("known-value coverage checked 1 value(s)"));
+    assert!(!purged_scan_output.contains("[blocking] known-secret"));
+    assert!(!purged_scan_output.contains("grace-old-fixture"));
+    Ok(())
+}
+
+#[test]
 fn scan_staged_uses_index_content_without_printing_known_values()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempdir()?;
