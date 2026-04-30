@@ -235,6 +235,10 @@ fn sealed_bundle_export_verify_and_import_are_metadata_only()
     )?;
     let export_output = String::from_utf8(export_output)?;
     assert!(export_output.contains("bundle: exported"));
+    assert!(export_output.contains("secret_count: 1"));
+    assert!(export_output.contains("secret_version_count: 1"));
+    assert!(export_output.contains("blob_count: 1"));
+    assert!(export_output.contains("profile_key_count: 2"));
     assert!(export_output.contains("active_secret_count: 1"));
     assert!(export_output.contains("metadata_only: yes"));
     let bundle_bytes = fs::read(&bundle_path)?;

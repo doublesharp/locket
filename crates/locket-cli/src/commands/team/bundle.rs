@@ -5,29 +5,43 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
+use data_encoding::BASE64URL_NOPAD;
 use locket_core::{
-    BUNDLE_SCHEMA_V1, BundleContainer, BundleContainerError, BundleManifest,
-    encrypt_bundle_payload_for_age_recipients, verify_age_payload_structure,
+    BUNDLE_SCHEMA_V1, BundleContainer, BundleContainerError, BundleManifest, CommandPolicy,
+    CommandSpec, encrypt_bundle_payload_for_age_recipients, verify_age_payload_structure,
 };
 use locket_crypto::KeyPurpose;
-use locket_store::{AuditWrite, ProfileRecord, Store};
+use locket_store::{AuditWrite, ProfileRecord, SecretBlobRecord, SecretRecord, Store};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
 use super::device;
+use crate::runtime::key_access::load_profile_key;
 use crate::{
-    BundleCommand, BundleVerifyArgs, CliError, ExportArgs, ImportBundleArgs, ResolvedProject,
-    RuntimeContext, bundle_verification_error, confirmation_failed_error, default_profile,
-    ensure_project_exists, ensure_trusted_project_root, format_hex, invalid_reference_error,
-    load_project_key, metadata_invalid_error, now_unix_nanos, open_store, profile_not_found_error,
-    require_project, set_user_only_file_options, set_user_only_file_permissions,
+    BundleCommand, BundleVerifyArgs, CliError, ExportArgs, ImportBundleArgs, LOCKET_TOML,
+    ResolvedProject, RuntimeContext, bundle_verification_error, command_type,
+    confirmation_failed_error, default_profile, ensure_project_exists, ensure_trusted_project_root,
+    external_env_source_label, format_hex, invalid_reference_error, load_project_key,
+    metadata_invalid_error, now_unix_nanos, open_store, profile_not_found_error,
+    read_policy_document, require_project, set_user_only_file_options,
+    set_user_only_file_permissions,
 };
 
 #[derive(Debug, Deserialize, Serialize)]
 struct SealedBundlePayloadV1 {
     profiles: Vec<SealedBundleProfileV1>,
+    command_policies: Vec<SealedBundleCommandPolicyV1>,
+    secrets: Vec<SealedBundleSecretV1>,
+    secret_versions: Vec<SealedBundleSecretVersionV1>,
+    blobs: Vec<SealedBundleBlobV1>,
+    profile_keys: Vec<SealedBundleProfileKeyV1>,
     profile_count: usize,
+    command_policy_count: usize,
+    secret_count: usize,
+    secret_version_count: usize,
+    blob_count: usize,
+    profile_key_count: usize,
     active_secret_count: usize,
     audit_rows_included: bool,
 }
@@ -35,8 +49,77 @@ struct SealedBundlePayloadV1 {
 #[derive(Debug, Deserialize, Serialize)]
 struct SealedBundleProfileV1 {
     profile_id: String,
+    name: String,
     dangerous: bool,
     active_secret_count: usize,
+    created_at: i64,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[allow(clippy::struct_excessive_bools)]
+struct SealedBundleCommandPolicyV1 {
+    name: String,
+    command_kind: String,
+    argv: Vec<String>,
+    shell: Option<String>,
+    allowed_secrets: Vec<String>,
+    required_secrets: Vec<String>,
+    optional_secrets: Vec<String>,
+    inherit_env: Vec<String>,
+    env_mode: String,
+    override_mode: String,
+    override_explicit: bool,
+    external_env_sources: Vec<String>,
+    allow_remote_docker: bool,
+    confirm: bool,
+    require_user_verification: bool,
+    ttl_seconds: u64,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct SealedBundleSecretV1 {
+    id: String,
+    profile_id: String,
+    name: String,
+    source: String,
+    origin: String,
+    current_version: u32,
+    state: String,
+    created_at: i64,
+    updated_at: i64,
+    last_rotated_at: Option<i64>,
+    deleted_at: Option<i64>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct SealedBundleSecretVersionV1 {
+    secret_id: String,
+    version: u32,
+    source: String,
+    origin: String,
+    state: String,
+    created_at: i64,
+    deprecated_at: Option<i64>,
+    grace_until: Option<i64>,
+    purged_at: Option<i64>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct SealedBundleBlobV1 {
+    secret_id: String,
+    version: u32,
+    encrypted_dek_b64: String,
+    ciphertext_b64: String,
+    value_nonce_b64: String,
+    aad_schema_version: u16,
+    created_at: i64,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct SealedBundleProfileKeyV1 {
+    profile_id: String,
+    purpose: String,
+    key_material_b64: String,
 }
 
 struct BundleRecipientV1 {
@@ -47,6 +130,11 @@ struct BundleRecipientV1 {
 struct ExportedBundleV1 {
     manifest: BundleManifest,
     active_secret_count: usize,
+    command_policy_count: usize,
+    secret_count: usize,
+    secret_version_count: usize,
+    blob_count: usize,
+    profile_key_count: usize,
     include_audit: bool,
 }
 
@@ -86,8 +174,9 @@ pub fn export_bundle_command(
     let selected_profiles = selected_bundle_profiles(&store, &resolved, args)?;
     confirm_dangerous_profile_export(context, output, &selected_profiles)?;
     let timestamp = now_unix_nanos()?;
-    let payload = bundle_payload(&store, &selected_profiles, args.include_audit)?;
-    let plaintext_payload = serde_json::to_vec(&payload)?;
+    let payload =
+        bundle_payload(context, &store, &resolved, &selected_profiles, args.include_audit)?;
+    let plaintext_payload = zeroize::Zeroizing::new(serde_json::to_vec(&payload)?);
     let recipient_keys =
         recipients.iter().map(|recipient| recipient.sealing_public_key).collect::<Vec<_>>();
     let encrypted_payload =
@@ -111,6 +200,11 @@ pub fn export_bundle_command(
     let bundle = ExportedBundleV1 {
         manifest,
         active_secret_count: payload.active_secret_count,
+        command_policy_count: payload.command_policy_count,
+        secret_count: payload.secret_count,
+        secret_version_count: payload.secret_version_count,
+        blob_count: payload.blob_count,
+        profile_key_count: payload.profile_key_count,
         include_audit: args.include_audit,
     };
     write_bundle_audit_if_available(
@@ -130,6 +224,11 @@ pub fn export_bundle_command(
     writeln!(output, "bundle: exported")?;
     writeln!(output, "path: {}", output_path.display())?;
     writeln!(output, "profiles: {}", bundle.manifest.profile_count)?;
+    writeln!(output, "command_policy_count: {}", bundle.command_policy_count)?;
+    writeln!(output, "secret_count: {}", bundle.secret_count)?;
+    writeln!(output, "secret_version_count: {}", bundle.secret_version_count)?;
+    writeln!(output, "blob_count: {}", bundle.blob_count)?;
+    writeln!(output, "profile_key_count: {}", bundle.profile_key_count)?;
     writeln!(output, "active_secret_count: {}", bundle.active_secret_count)?;
     writeln!(output, "recipients: {}", bundle.manifest.recipient_fingerprints.len())?;
     writeln!(output, "include_audit: {}", if bundle.include_audit { "yes" } else { "no" })?;
@@ -265,27 +364,163 @@ fn confirm_dangerous_profile_export(
 }
 
 fn bundle_payload(
+    context: &RuntimeContext,
     store: &Store,
+    resolved: &ResolvedProject,
     profiles: &[ProfileRecord],
     include_audit: bool,
 ) -> Result<SealedBundlePayloadV1, CliError> {
-    let mut profile_summaries = Vec::with_capacity(profiles.len());
+    let command_policies = bundle_command_policies(resolved)?;
+    let mut profile_payloads = Vec::with_capacity(profiles.len());
+    let mut secrets = Vec::new();
+    let mut secret_versions = Vec::new();
+    let mut blobs = Vec::new();
+    let mut profile_keys = Vec::with_capacity(profiles.len().saturating_mul(2));
     let mut active_secret_count = 0_usize;
     for profile in profiles {
-        let secrets = store.list_active_secrets_by_profile(&profile.project_id, &profile.id)?;
-        active_secret_count = active_secret_count.saturating_add(secrets.len());
-        profile_summaries.push(SealedBundleProfileV1 {
+        let active_secrets =
+            store.list_active_secrets_by_profile(&profile.project_id, &profile.id)?;
+        active_secret_count = active_secret_count.saturating_add(active_secrets.len());
+        profile_payloads.push(SealedBundleProfileV1 {
             profile_id: profile.id.clone(),
+            name: profile.name.clone(),
             dangerous: profile.dangerous,
-            active_secret_count: secrets.len(),
+            active_secret_count: active_secrets.len(),
+            created_at: profile.created_at,
         });
+        profile_keys.extend(bundle_profile_keys(context, store, &profile.project_id, &profile.id)?);
+        for secret in store.list_secrets_by_profile(&profile.project_id, &profile.id)? {
+            let versions = store.list_secret_versions(&secret.id)?;
+            for version in versions {
+                if let Some(blob) = store.get_blob(&secret.id, version.version)? {
+                    blobs.push(bundle_blob(blob));
+                }
+                secret_versions.push(SealedBundleSecretVersionV1 {
+                    secret_id: version.secret_id,
+                    version: version.version,
+                    source: version.source,
+                    origin: version.origin,
+                    state: version.state,
+                    created_at: version.created_at,
+                    deprecated_at: version.deprecated_at,
+                    grace_until: version.grace_until,
+                    purged_at: version.purged_at,
+                });
+            }
+            secrets.push(bundle_secret(secret));
+        }
     }
     Ok(SealedBundlePayloadV1 {
-        profile_count: profile_summaries.len(),
+        profile_count: profile_payloads.len(),
+        command_policy_count: command_policies.len(),
+        secret_count: secrets.len(),
+        secret_version_count: secret_versions.len(),
+        blob_count: blobs.len(),
+        profile_key_count: profile_keys.len(),
         active_secret_count,
         audit_rows_included: include_audit,
-        profiles: profile_summaries,
+        profiles: profile_payloads,
+        command_policies,
+        secrets,
+        secret_versions,
+        blobs,
+        profile_keys,
     })
+}
+
+fn bundle_command_policies(
+    resolved: &ResolvedProject,
+) -> Result<Vec<SealedBundleCommandPolicyV1>, CliError> {
+    let policy_document = read_policy_document(&resolved.root.join(LOCKET_TOML))?;
+    Ok(policy_document.commands.values().map(bundle_command_policy).collect())
+}
+
+fn bundle_command_policy(policy: &CommandPolicy) -> SealedBundleCommandPolicyV1 {
+    let (argv, shell) = match &policy.command {
+        CommandSpec::Argv(arguments) => (arguments.clone(), None),
+        CommandSpec::Shell(script) => (Vec::new(), Some(script.clone())),
+    };
+    SealedBundleCommandPolicyV1 {
+        name: policy.name.clone(),
+        command_kind: command_type(&policy.command).to_owned(),
+        argv,
+        shell,
+        allowed_secrets: policy
+            .allowed_secrets
+            .iter()
+            .map(|name| name.as_str().to_owned())
+            .collect(),
+        required_secrets: policy
+            .required_secrets
+            .iter()
+            .map(|name| name.as_str().to_owned())
+            .collect(),
+        optional_secrets: policy
+            .optional_secrets
+            .iter()
+            .map(|name| name.as_str().to_owned())
+            .collect(),
+        inherit_env: policy.inherit_env.clone(),
+        env_mode: policy.env_mode.as_str().to_owned(),
+        override_mode: policy.override_behavior.as_str().to_owned(),
+        override_explicit: policy.override_explicit(),
+        external_env_sources: policy
+            .external_env_sources
+            .iter()
+            .map(external_env_source_label)
+            .collect(),
+        allow_remote_docker: policy.allow_remote_docker,
+        confirm: policy.confirm,
+        require_user_verification: policy.require_user_verification,
+        ttl_seconds: policy.ttl.as_secs(),
+    }
+}
+
+fn bundle_profile_keys(
+    context: &RuntimeContext,
+    store: &Store,
+    project_id: &str,
+    profile_id: &str,
+) -> Result<Vec<SealedBundleProfileKeyV1>, CliError> {
+    [KeyPurpose::ProfileSecret, KeyPurpose::ProfileFingerprint]
+        .into_iter()
+        .map(|purpose| {
+            let key = load_profile_key(context, store, project_id, profile_id, purpose)?;
+            Ok(SealedBundleProfileKeyV1 {
+                profile_id: profile_id.to_owned(),
+                purpose: purpose.as_str().to_owned(),
+                key_material_b64: BASE64URL_NOPAD.encode(key.as_ref()),
+            })
+        })
+        .collect()
+}
+
+fn bundle_secret(secret: SecretRecord) -> SealedBundleSecretV1 {
+    SealedBundleSecretV1 {
+        id: secret.id,
+        profile_id: secret.profile_id,
+        name: secret.name,
+        source: secret.source,
+        origin: secret.origin,
+        current_version: secret.current_version,
+        state: secret.state,
+        created_at: secret.created_at,
+        updated_at: secret.updated_at,
+        last_rotated_at: secret.last_rotated_at,
+        deleted_at: secret.deleted_at,
+    }
+}
+
+fn bundle_blob(blob: SecretBlobRecord) -> SealedBundleBlobV1 {
+    SealedBundleBlobV1 {
+        secret_id: blob.secret_id,
+        version: blob.version,
+        encrypted_dek_b64: BASE64URL_NOPAD.encode(&blob.encrypted_dek),
+        ciphertext_b64: BASE64URL_NOPAD.encode(&blob.ciphertext),
+        value_nonce_b64: BASE64URL_NOPAD.encode(&blob.value_nonce),
+        aad_schema_version: blob.aad_schema_version,
+        created_at: blob.created_at,
+    }
 }
 
 fn bundle_encrypted_payload_digest(encrypted_payload: &[u8]) -> String {
@@ -361,6 +596,26 @@ trait BundleAuditSubject {
         None
     }
 
+    fn command_policy_count(&self) -> Option<usize> {
+        None
+    }
+
+    fn secret_count(&self) -> Option<usize> {
+        None
+    }
+
+    fn secret_version_count(&self) -> Option<usize> {
+        None
+    }
+
+    fn blob_count(&self) -> Option<usize> {
+        None
+    }
+
+    fn profile_key_count(&self) -> Option<usize> {
+        None
+    }
+
     fn include_audit(&self) -> Option<bool> {
         None
     }
@@ -373,6 +628,26 @@ impl BundleAuditSubject for ExportedBundleV1 {
 
     fn active_secret_count(&self) -> Option<usize> {
         Some(self.active_secret_count)
+    }
+
+    fn command_policy_count(&self) -> Option<usize> {
+        Some(self.command_policy_count)
+    }
+
+    fn secret_count(&self) -> Option<usize> {
+        Some(self.secret_count)
+    }
+
+    fn secret_version_count(&self) -> Option<usize> {
+        Some(self.secret_version_count)
+    }
+
+    fn blob_count(&self) -> Option<usize> {
+        Some(self.blob_count)
+    }
+
+    fn profile_key_count(&self) -> Option<usize> {
+        Some(self.profile_key_count)
     }
 
     fn include_audit(&self) -> Option<bool> {
@@ -415,6 +690,21 @@ fn write_bundle_audit_if_available(
     metadata.insert("metadata_only".to_owned(), Value::from(true));
     if let Some(active_secret_count) = request.bundle.active_secret_count() {
         metadata.insert("active_secret_count".to_owned(), Value::from(active_secret_count));
+    }
+    if let Some(command_policy_count) = request.bundle.command_policy_count() {
+        metadata.insert("command_policy_count".to_owned(), Value::from(command_policy_count));
+    }
+    if let Some(secret_count) = request.bundle.secret_count() {
+        metadata.insert("secret_count".to_owned(), Value::from(secret_count));
+    }
+    if let Some(secret_version_count) = request.bundle.secret_version_count() {
+        metadata.insert("secret_version_count".to_owned(), Value::from(secret_version_count));
+    }
+    if let Some(blob_count) = request.bundle.blob_count() {
+        metadata.insert("blob_count".to_owned(), Value::from(blob_count));
+    }
+    if let Some(profile_key_count) = request.bundle.profile_key_count() {
+        metadata.insert("profile_key_count".to_owned(), Value::from(profile_key_count));
     }
     if let Some(include_audit) = request.bundle.include_audit() {
         metadata.insert("include_audit".to_owned(), Value::from(include_audit));
