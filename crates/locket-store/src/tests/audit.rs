@@ -544,3 +544,107 @@ fn append_audit_accepts_metadata_json_at_or_below_cap() -> Result<(), Box<dyn st
     assert_eq!(count, 1);
     Ok(())
 }
+
+#[test]
+fn audit_verify_fails_when_stored_schema_version_is_mutated() -> Result<(), Box<dyn Error>> {
+    let mut test_store = open_initialized_store()?;
+    insert_project_profile(&test_store.store)?;
+
+    let metadata = json!({
+        "schema_version": 1,
+        "action": "DOCTOR",
+        "status": "SUCCESS",
+    });
+    let audit = AuditWrite {
+        project_id: "lk_proj_test",
+        profile_id: None,
+        action: "DOCTOR",
+        status: "SUCCESS",
+        secret_name: None,
+        command: Some("doctor"),
+        metadata_json: &metadata,
+        timestamp: 100,
+    };
+    test_store.store.append_audit(&[42; 32], &audit)?;
+
+    test_store.store.connection().execute(
+        "UPDATE audit_log SET schema_version = 99 WHERE project_id = 'lk_proj_test'",
+        [],
+    )?;
+
+    let result = test_store.store.verify_audit_chain_and_append("lk_proj_test", &[42; 32], 200);
+    let Err(crate::StoreError::AuditIntegrity { sequence, reason }) = result else {
+        return Err("mutated schema_version must fail HMAC verification".into());
+    };
+    assert_eq!(sequence, 1);
+    assert!(
+        reason.contains("hmac mismatch"),
+        "expected 'hmac mismatch' in reason, got {reason:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn audit_verify_processes_each_row_with_its_own_stored_schema_version()
+-> Result<(), Box<dyn Error>> {
+    let mut test_store = open_initialized_store()?;
+    insert_project_profile(&test_store.store)?;
+
+    let previous_hmac_v1 = [0_u8; AUDIT_HMAC_LEN];
+    let metadata_v1 = json!({"schema_version": 1, "action": "SET", "status": "SUCCESS"});
+    let input_v1 = AuditHmacInput {
+        schema_version: 1,
+        sequence: 1,
+        timestamp: Timestamp::from_unix_nanos(100),
+        project_id: Some("lk_proj_test"),
+        profile_id: None,
+        action: "SET",
+        status: "SUCCESS",
+        metadata_json: Some(&metadata_v1),
+        previous_hmac: Some(&previous_hmac_v1),
+    };
+    let canonical_v1 = audit_hmac_v1_bytes(&input_v1)?;
+    let mut mac = Hmac::<Sha256>::new_from_slice(&[42; AUDIT_HMAC_LEN])?;
+    mac.update(&canonical_v1);
+    let hmac_v1: Vec<u8> = mac.finalize().into_bytes().to_vec();
+    let metadata_v1_json = canonical_json_string(Some(&metadata_v1));
+    test_store.store.connection().execute(
+        "INSERT INTO audit_log(
+            project_id, sequence, schema_version, timestamp, profile_id, action,
+            status, metadata_json, secret_name, command, previous_hmac, hmac
+         )
+         VALUES (?1, 1, 1, 100, NULL, 'SET', 'SUCCESS', ?2, NULL, NULL, ?3, ?4)",
+        rusqlite::params!["lk_proj_test", metadata_v1_json, previous_hmac_v1.as_slice(), hmac_v1.as_slice()],
+    )?;
+
+    let metadata_v2 = json!({"schema_version": 2, "action": "GET", "status": "SUCCESS"});
+    let input_v2 = AuditHmacInput {
+        schema_version: 2,
+        sequence: 2,
+        timestamp: Timestamp::from_unix_nanos(200),
+        project_id: Some("lk_proj_test"),
+        profile_id: None,
+        action: "GET",
+        status: "SUCCESS",
+        metadata_json: Some(&metadata_v2),
+        previous_hmac: Some(hmac_v1.as_slice().try_into().map_err(|_| "bad v1 hmac len")?),
+    };
+    let canonical_v2 = audit_hmac_v1_bytes(&input_v2)?;
+    let mut mac2 = Hmac::<Sha256>::new_from_slice(&[42; AUDIT_HMAC_LEN])?;
+    mac2.update(&canonical_v2);
+    let hmac_v2: Vec<u8> = mac2.finalize().into_bytes().to_vec();
+    let metadata_v2_json = canonical_json_string(Some(&metadata_v2));
+    test_store.store.connection().execute(
+        "INSERT INTO audit_log(
+            project_id, sequence, schema_version, timestamp, profile_id, action,
+            status, metadata_json, secret_name, command, previous_hmac, hmac
+         )
+         VALUES (?1, 2, 2, 200, NULL, 'GET', 'SUCCESS', ?2, NULL, NULL, ?3, ?4)",
+        rusqlite::params!["lk_proj_test", metadata_v2_json, hmac_v1.as_slice(), hmac_v2.as_slice()],
+    )?;
+
+    let verified =
+        test_store.store.verify_audit_chain_and_append("lk_proj_test", &[42; 32], 300)?;
+    assert_eq!(verified, 2);
+    Ok(())
+}
