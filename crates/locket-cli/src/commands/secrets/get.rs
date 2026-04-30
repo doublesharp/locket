@@ -308,7 +308,7 @@ pub fn clipboard_clear_limit(
 }
 
 pub fn copy_secret_to_clipboard(value: &str) -> Result<(), String> {
-    copy_secret_to_clipboard_with(value, CLIPBOARD_COMMANDS, command_exists)
+    SystemClipboard.copy(value)
 }
 
 pub fn copy_secret_to_clipboard_with(
@@ -346,6 +346,79 @@ pub fn select_clipboard_command(
     mut exists: impl FnMut(&str) -> bool,
 ) -> Option<&'static ClipboardCommand> {
     commands.iter().find(|command| exists(command.program))
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ClipboardClearResult {
+    Cleared,
+    Changed,
+    Unsupported,
+}
+
+pub trait ClipboardBackend {
+    fn copy(&mut self, value: &str) -> Result<(), String>;
+
+    #[cfg(test)]
+    fn clear_if_current(&mut self, expected: &str) -> ClipboardClearResult;
+}
+
+#[cfg(test)]
+#[derive(Debug, Default, Eq, PartialEq)]
+pub struct MemoryClipboard {
+    value: Option<String>,
+    clear_supported: bool,
+}
+
+#[cfg(test)]
+impl MemoryClipboard {
+    #[must_use]
+    pub const fn clearing_supported() -> Self {
+        Self { value: None, clear_supported: true }
+    }
+
+    #[must_use]
+    pub const fn clearing_unsupported() -> Self {
+        Self { value: None, clear_supported: false }
+    }
+
+    #[must_use]
+    pub fn value(&self) -> Option<&str> {
+        self.value.as_deref()
+    }
+}
+
+#[cfg(test)]
+impl ClipboardBackend for MemoryClipboard {
+    fn copy(&mut self, value: &str) -> Result<(), String> {
+        self.value = Some(value.to_owned());
+        Ok(())
+    }
+
+    fn clear_if_current(&mut self, expected: &str) -> ClipboardClearResult {
+        if !self.clear_supported {
+            return ClipboardClearResult::Unsupported;
+        }
+        if self.value.as_deref() == Some(expected) {
+            self.value = None;
+            ClipboardClearResult::Cleared
+        } else {
+            ClipboardClearResult::Changed
+        }
+    }
+}
+
+pub struct SystemClipboard;
+
+impl ClipboardBackend for SystemClipboard {
+    fn copy(&mut self, value: &str) -> Result<(), String> {
+        copy_secret_to_clipboard_with(value, CLIPBOARD_COMMANDS, command_exists)
+    }
+
+    #[cfg(test)]
+    fn clear_if_current(&mut self, _expected: &str) -> ClipboardClearResult {
+        ClipboardClearResult::Unsupported
+    }
 }
 
 fn command_exists(program: &str) -> bool {

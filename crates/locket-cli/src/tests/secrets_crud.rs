@@ -286,16 +286,20 @@ fn get_copy_writes_metadata_only_audit_without_value_leakage()
     };
     let mut copy_output = Vec::new();
     let mut copy_stderr = Vec::new();
+    let mut clipboard = crate::MemoryClipboard::clearing_supported();
     crate::get_command_with_clipboard(
         &context,
         &mut copy_output,
         &mut copy_stderr,
         &copy_args,
-        |value| {
-            assert_eq!(value, "postgres://localhost/app");
-            Ok(())
-        },
+        |value| crate::ClipboardBackend::copy(&mut clipboard, value),
     )?;
+    assert_eq!(clipboard.value(), Some("postgres://localhost/app"));
+    assert_eq!(
+        crate::ClipboardBackend::clear_if_current(&mut clipboard, "postgres://localhost/app"),
+        crate::ClipboardClearResult::Cleared
+    );
+    assert_eq!(clipboard.value(), None);
     let copy_output = String::from_utf8(copy_output)?;
     let copy_stderr = String::from_utf8(copy_stderr)?;
     assert!(copy_output.contains("metadata_only=yes"));
