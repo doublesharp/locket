@@ -385,10 +385,9 @@ fn append_config_update_audit(
         "schema_version": 1,
         "action": "CONFIG_UPDATE",
         "status": "SUCCESS",
-        "operation": "set",
-        "key": key,
-        "prior_value": "hidden",
-        "new_value": "hidden",
+        "command": "agent config",
+        "config_keys": [key],
+        "updated_field_count": 1,
     });
     let audit = AuditWrite {
         project_id,
@@ -762,8 +761,11 @@ mod tests {
             }),
         );
 
-        let ResponseEnvelope::Success(success) = dispatch(&request, &state).await else {
-            panic!("config write should succeed");
+        let success = match dispatch(&request, &state).await {
+            ResponseEnvelope::Success(success) => success,
+            ResponseEnvelope::Error(error) => {
+                panic!("config write should succeed: {error:?}");
+            }
         };
         let response: WriteConfigResponse =
             serde_json::from_value(success.payload).expect("response payload");
@@ -807,8 +809,7 @@ mod tests {
             .collect::<Result<_, _>>()
             .expect("rows");
         assert_eq!(metadata[0]["action"], "CONFIG_UPDATE");
-        assert_eq!(metadata[0]["key"], PRIVACY_REDACT_NAMES);
-        assert_eq!(metadata[0]["new_value"], "hidden");
+        assert_eq!(metadata[0]["config_keys"], json!([PRIVACY_REDACT_NAMES]));
         assert_eq!(metadata[4]["action"], "PROFILE_CHANGE");
         assert_eq!(metadata[4]["profile_name"], "default");
         assert_eq!(metadata[4]["new_dangerous"], true);

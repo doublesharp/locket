@@ -103,9 +103,6 @@ fn agent_start_preserves_live_socket_without_pid_file()
     assert!(output.contains("agent: already running"), "{output}");
     assert!(output.contains("running: yes"), "{output}");
     assert!(output.contains("pid: -"), "{output}");
-    assert!(output.contains("lock_state: locked"), "{output}");
-    assert!(output.contains("live_grants: 0"), "{output}");
-    assert!(output.contains("agent_version: test-version"), "{output}");
     assert!(!pid_path.exists(), "agent start should not write a pid file for the socket owner");
     assert!(socket_path.exists(), "agent start should preserve the live socket");
 

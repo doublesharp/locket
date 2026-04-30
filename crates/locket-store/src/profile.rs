@@ -184,6 +184,7 @@ impl Store {
             "schema_version": 1,
             "action": "PROFILE_CHANGE",
             "status": "SUCCESS",
+            "command": audit.command,
             "operation": "set_dangerous",
             "profile_id": profile.id,
             "profile_name": profile.name,
