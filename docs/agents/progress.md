@@ -193,10 +193,7 @@ skill set fits a leaf better.
   `require_user_verification` shipped; `get --reveal/--copy
   --verify-user` enforces. Remaining:
   - [~] [acda32e4] branch agent-acda32e4/team-dangerous-user-verification, worktree .worktrees/agent-acda32e4-team-dangerous-user-verification; **subtask** — team-dangerous-user-verification: verification sweep for team/device dangerous-profile actions.
-- [ ] Privacy-mode rendering across status, context, redaction
-  labels, debug bundles via `privacy_alias` /
-  `privacy_redact_names_enabled`; tray/desktop/editor renderers
-  pending until those crates exist.
+- [~] [acda32e4] branch agent-acda32e4/privacy-rendering-sweep, worktree .worktrees/agent-acda32e4-privacy-rendering-sweep; Privacy-mode rendering across status, context, redaction labels, debug bundles via `privacy_alias` / `privacy_redact_names_enabled`; tray/desktop/editor renderers pending until those crates exist.
 - [ ] Agent/process hardening. `harden-peer-cred`,
   `harden-socket-perms`, `harden-memory-lock`, `harden-zeroize`,
   `harden-doctor-degraded` shipped. Remaining:
