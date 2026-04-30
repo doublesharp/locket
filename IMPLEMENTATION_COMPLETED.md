@@ -109,6 +109,8 @@ Slices that have merged to `main` and verified. Open work tracked in
 - [x] Docker active-context detection refuses remote/TCP/SSH contexts
   unless `allow_remote_docker = true`; typed confirmation required;
   mismatch exits `ConfirmationFailed` (68).
+- [x] `set`/`rotate`/`import` reject NUL and multiline secret values
+  via `validate_secret_value_str` (`MetadataInvalid` 64).
 
 ## Full Spec Coverage TODO — Security/Recovery/Team
 

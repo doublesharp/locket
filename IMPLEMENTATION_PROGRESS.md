@@ -678,14 +678,10 @@ the spec already covers. Closed slices land in
   .worktrees/agent-e7389a73-negative-path-decryption-tests. Scope:
   per-dimension `decrypt_secret_value_v1` failure tests in
   `crates/locket-crypto/src/tests.rs`.
-- [~] [e7389a73] Secret value encoding: reject NUL bytes / multiline values in
-  `set`/`import`; treat values as bytes-after-UTF-8 across docker/
-  compose/exec/redact/scan paths (`docs/specs/crypto.md`).
-  Claim: branch agent-e7389a73/secret-value-encoding, worktree
-  .worktrees/agent-e7389a73-secret-value-encoding. Scope: tighten
-  `validate_secret_value` and import parser to reject embedded
-  newlines (NUL already rejected); follow-up TODO for the broader
-  bytes-after-UTF-8 sweep across docker/compose/exec/redact/scan.
+- [x] `set`/`rotate`/`import` reject NUL and multiline secret values
+  via `validate_secret_value_str` (`MetadataInvalid` 64).
+- [ ] Bytes-after-UTF-8 sweep across docker/compose/exec/redact/scan
+  paths (`docs/specs/crypto.md`).
 
 ### App/UI
 
