@@ -418,9 +418,11 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
 - [ ] Ephemeral env-file fallback for children that can't accept an env
   map: 0700 parent / 0600 file outside project tree, post-spawn delete,
   audited delivery mode, secure-erase warning when unsupported.
-- [ ] Clipboard clear-after-TTL only if clipboard still contains the
-  value, with pre-copy warning where reliable clearing isn't possible
-  (e.g. some Wayland compositors).
+- [~] [cb2437f7] ready: agent-cb2437f7/clipboard-warning @ 61dca47 — pre-copy
+  warning is now Wayland-aware (`wl-copy` selected or
+  `XDG_SESSION_TYPE=wayland`) and the COPY audit row records
+  `unsupported_reason` for both Wayland and direct-CLI cases. Background
+  TTL clearing remains a follow-up sub-slice.
 - [x] `locket diff --since` resolves git revisions via direct
   `git log -1 --format=%ct <rev>` (no shell construction).
 
@@ -463,7 +465,8 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
   - [x] **subtask** — team-store-schema: `teams`, `team_members`,
     `team_invites` tables and constraints are in place; no migration bump
     needed.
-  - [ ] **subtask** — team-init-command: implement `locket team init` with a
+  - [~] [aa40a4ce] **subtask** — team-init-command: implement `locket team init` with a
+    Claim: branch agent-aa40a4ce/team-init-command, worktree .worktrees/agent-aa40a4ce-team-init-command. Scope: golden-path init + TEAM_INIT audit + already-initialized rejection. Role-gated re-init deferred to team-role helper subtask.
     `TEAM_INIT` audit row and golden-path coverage. Errors: `TeamRoleDenied`
     on a re-init attempt without role. Depends on `team-store-schema`.
   - [ ] **subtask** — team-invite-create: implement `locket team invite`
