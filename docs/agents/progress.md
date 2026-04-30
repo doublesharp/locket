@@ -113,9 +113,7 @@ skill set fits a leaf better.
 - [ ] VS Code extension backed by the local agent
   (`docs/specs/integrations.md:39-65`). Extension never writes audit
   directly. All subtasks depend on `vscode-ext-scaffold` (shipped).
-  - [ ] **subtask** — vscode-status: status-bar element subscribed
-    to `SubscribeStatus`. Pre-req: `vscode-agent-client`,
-    `agent-subscribe-status`.
+  - [~] [4ab55ee9] branch agent-4ab55ee9/vscode-status, worktree .worktrees/agent-4ab55ee9-vscode-status; status bar subscribes to agent status events.
   - [ ] **subtask** — vscode-ide-env-session: terminal injection of
     `LOCKET_IDE_ENV_SESSION` and the agent-socket consumer side.
     Pre-req: `vscode-agent-client`, `env-source-ide`.
