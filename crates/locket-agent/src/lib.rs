@@ -20,9 +20,8 @@ pub use method::{AgentMethod, UnknownMethod};
 pub use peer_cred::{current_process_uid, validate_peer_stream, validate_peer_uid};
 #[cfg(unix)]
 pub use server::{
-    AgentSocketConfig, AgentSocketState, ConnectionOutcome, PeerCredOutcome, SocketServerError,
-    StubStatusSource, bind_socket_listener, handle_connection, socket_permission_mode,
-    validate_peer,
+    AgentSocketConfig, AgentSocketState, ConnectionOutcome, SocketServerError, StubStatusSource,
+    bind_socket_listener, handle_connection, socket_permission_mode,
 };
 pub use status::{
     LockState, STATUS_HEARTBEAT_INTERVAL_SECS, StatusEvent, StatusEventKind, StatusEventSequence,
