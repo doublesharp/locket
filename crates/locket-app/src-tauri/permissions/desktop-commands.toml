@@ -1,0 +1,15 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+[[permission]]
+identifier = "desktop-commands"
+description = "Allows the Locket webview to invoke the metadata-scoped desktop commands registered by this crate."
+commands.allow = [
+  "agent_status",
+  "agent_reveal",
+  "agent_copy",
+  "agent_scan",
+  "agent_resolve",
+  "agent_prepare_exec",
+  "tray_set_state",
+]
+commands.deny = []

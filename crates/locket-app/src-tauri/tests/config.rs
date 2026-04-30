@@ -1,7 +1,7 @@
 //! Security-shape regressions for the Tauri 2 desktop shell.
 //!
 //! These tests pin the release Content-Security-Policy, the deny-by-default
-//! capability set, and the empty IPC surface against the load-bearing
+//! capability set, and the scoped IPC surface against the load-bearing
 //! `ReleaseWebviewPolicy::default()` descriptor in `locket-app`. A future
 //! change to either the Tauri config or the descriptor breaks here, in CI,
 //! before the release build can drift.
@@ -34,9 +34,98 @@ fn crate_root() -> PathBuf {
 
 fn read_json(rel: &str) -> Value {
     let path: PathBuf = crate_root().join(rel);
-    let raw =
-        fs::read_to_string(&path).unwrap_or_else(|err| panic!("read {}: {err}", path.display()));
+    let raw = read_text_path(&path);
     serde_json::from_str(&raw).unwrap_or_else(|err| panic!("parse json {}: {err}", path.display()))
+}
+
+fn read_text(rel: &str) -> String {
+    read_text_path(&crate_root().join(rel))
+}
+
+fn read_text_path(path: &Path) -> String {
+    fs::read_to_string(path).unwrap_or_else(|err| panic!("read {}: {err}", path.display()))
+}
+
+fn handler_command_names(source: &str) -> std::collections::BTreeSet<String> {
+    let handler_marker = "tauri::generate_handler![";
+    assert!(
+        source.contains(handler_marker),
+        "src/lib.rs must register commands via tauri::generate_handler!",
+    );
+    let occurrences = source.matches(handler_marker).count();
+    assert_eq!(
+        occurrences, 1,
+        "src/lib.rs must register commands through exactly one generate_handler! call",
+    );
+    let handler_section = source
+        .split_once(handler_marker)
+        .and_then(|(_, after)| after.split_once(']'))
+        .map(|(inside, _)| inside)
+        .expect("could not isolate generate_handler! contents");
+    handler_section
+        .split(',')
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(String::from)
+        .collect()
+}
+
+fn attributed_command_names(source: &str) -> std::collections::BTreeSet<String> {
+    let lines: Vec<&str> = source.lines().collect();
+    let mut commands = std::collections::BTreeSet::new();
+
+    for (idx, line) in lines.iter().enumerate() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("//") || !trimmed.contains("#[tauri::command") {
+            continue;
+        }
+
+        let function_line = lines
+            .iter()
+            .skip(idx + 1)
+            .map(|line| line.trim_start())
+            .find(|line| line.starts_with("async fn ") || line.starts_with("fn "))
+            .unwrap_or_else(|| panic!("missing function after command attribute near line {idx}"));
+        let name_start = function_line
+            .find("fn ")
+            .map(|pos| pos + "fn ".len())
+            .expect("command function line must contain fn");
+        let function_name = function_line[name_start..]
+            .split_once('(')
+            .map(|(name, _)| name.trim())
+            .expect("command function line must include an argument list");
+        assert!(
+            commands.insert(function_name.to_owned()),
+            "duplicate #[tauri::command] function {function_name}",
+        );
+    }
+
+    commands
+}
+
+fn toml_string_array(raw: &str, key: &str) -> Vec<String> {
+    let (_, after_key) =
+        raw.split_once(key).unwrap_or_else(|| panic!("permission file missing {key}"));
+    let (_, after_eq) =
+        after_key.split_once('=').unwrap_or_else(|| panic!("permission {key} missing ="));
+    let start = after_eq.find('[').unwrap_or_else(|| panic!("permission {key} missing ["));
+    let end = after_eq[start + 1..]
+        .find(']')
+        .map(|end| start + 1 + end)
+        .unwrap_or_else(|| panic!("permission {key} missing ]"));
+    let inside = &after_eq[start + 1..end];
+    inside
+        .split(',')
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
+        .map(|entry| {
+            entry
+                .strip_prefix('"')
+                .and_then(|entry| entry.strip_suffix('"'))
+                .unwrap_or_else(|| panic!("permission {key} entries must be quoted strings"))
+                .to_owned()
+        })
+        .collect()
 }
 
 #[test]
@@ -99,14 +188,17 @@ fn capability_file_denies_default_and_lists_no_broad_permissions() {
         .get("permissions")
         .and_then(Value::as_array)
         .expect("capabilities/desktop.json missing permissions array");
-    assert!(
-        permissions.is_empty(),
-        "deny-by-default capability set must register zero permissions",
+    let permission_names: Vec<&str> = permissions.iter().filter_map(Value::as_str).collect();
+    assert_eq!(
+        permission_names,
+        ["desktop-commands"],
+        "desktop capability must grant only the local command allow-list",
     );
 
-    let raw = fs::read_to_string(crate_root().join("capabilities/desktop.json"))
-        .expect("re-read capability file");
-    for forbidden in ["fs:", "shell:", "http:", "updater:", "clipboard:"] {
+    let raw = read_text("capabilities/desktop.json");
+    for forbidden in
+        ["fs:", "shell:", "http:", "updater:", "clipboard:", "dialog:", "notification:"]
+    {
         assert!(
             !raw.contains(forbidden),
             "capability file must not enable {forbidden} permissions",
@@ -115,48 +207,29 @@ fn capability_file_denies_default_and_lists_no_broad_permissions() {
 }
 
 #[test]
-fn lib_registers_only_explicitly_listed_commands_and_devtools_debug_only() {
-    let path = crate_root().join("src/lib.rs");
-    let source = fs::read_to_string(&path).expect("read src/lib.rs");
-
-    // Every Tauri command must be listed in exactly one `generate_handler!`
-    // invocation, never registered by reflection or magic. This pins the
-    // "every command explicitly scoped" invariant from desktop.md without
-    // having to enumerate the (growing) set of commands here.
-    let handler_marker = "tauri::generate_handler![";
-    assert!(
-        source.contains(handler_marker),
-        "src/lib.rs must register commands via tauri::generate_handler!",
-    );
-    let occurrences = source.matches(handler_marker).count();
+fn desktop_command_permission_matches_registered_handlers() {
+    let source = read_text("src/lib.rs");
+    let registered = handler_command_names(&source);
+    let attributed = attributed_command_names(&source);
     assert_eq!(
-        occurrences, 1,
-        "src/lib.rs must register commands through exactly one generate_handler! call",
+        attributed, registered,
+        "every #[tauri::command] in src/lib.rs must be listed exactly once in generate_handler!",
     );
 
-    // Every #[tauri::command] in the source must appear inside the handler
-    // list. We approximate this by counting #[tauri::command] occurrences on
-    // non-doc-comment lines and asserting each named handler appears once
-    // inside the brackets.
-    let attribute_marker = "#[tauri::command";
-    let attribute_count = source
-        .lines()
-        .filter(|line| !line.trim_start().starts_with("//"))
-        .filter(|line| line.contains(attribute_marker))
-        .count();
-    let handler_section = source
-        .split_once(handler_marker)
-        .and_then(|(_, after)| after.split_once(']'))
-        .map(|(inside, _)| inside)
-        .expect("could not isolate generate_handler! contents");
-    let listed: std::collections::BTreeSet<&str> =
-        handler_section.split(',').map(str::trim).filter(|name| !name.is_empty()).collect();
+    let permission = read_text("permissions/desktop-commands.toml");
+    let allowed: std::collections::BTreeSet<String> =
+        toml_string_array(&permission, "commands.allow").into_iter().collect();
+    let denied = toml_string_array(&permission, "commands.deny");
+    assert!(denied.is_empty(), "desktop command permission must not deny individual commands",);
     assert_eq!(
-        listed.len(),
-        attribute_count,
-        "every #[tauri::command] in src/lib.rs must be listed in generate_handler!: \
-         attributes={attribute_count} listed={listed:?}",
+        allowed, registered,
+        "permissions/desktop-commands.toml commands.allow must match the registered handlers",
     );
+}
+
+#[test]
+fn lib_opens_devtools_in_debug_only() {
+    let source = read_text("src/lib.rs");
 
     // open_devtools may exist but must be gated behind cfg(debug_assertions).
     if source.contains("open_devtools") {
