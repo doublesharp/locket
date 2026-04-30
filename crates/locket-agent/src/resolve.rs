@@ -409,7 +409,7 @@ mod tests {
     use super::{ERROR_GRANT_REQUIRED, ResolveRequest, ResolveResponse, handle_resolve};
     use crate::PROTOCOL_VERSION;
     use crate::envelope::{RequestEnvelope, ResponseEnvelope};
-    use crate::grant::{GrantBinding, GrantRecord};
+    use crate::grant::{GrantAction, GrantBinding, GrantRecord, GrantRecordFields};
     use crate::method::AgentMethod;
     use crate::server::AgentSocketState;
     use crate::unlock_cache::{UnlockEntry, UnlockMethod};
@@ -447,10 +447,24 @@ mod tests {
         ResolveRequest {
             reference: format!("lk://{PROFILE_NAME}/{SECRET_NAME}"),
             project_id: Some(PROJECT_ID.to_owned()),
+            profile_id: Some(PROFILE_ID.to_owned()),
             store_path: Some(fixture.store_path.display().to_string()),
             grant_id: Some(GRANT_ID.to_owned()),
             binding: Some(GrantBinding::new(std::process::id(), "0")),
         }
+    }
+
+    fn test_grant_record(expires_at_unix_nanos: i128) -> GrantRecord {
+        GrantRecord::new(GrantRecordFields {
+            grant_id: GRANT_ID.to_owned(),
+            project_id: PROJECT_ID.to_owned(),
+            profile_id: PROFILE_ID.to_owned(),
+            action: GrantAction::ResolveReference,
+            binding: GrantBinding::new(std::process::id(), "0"),
+            issued_at_unix_nanos: 0,
+            ttl_seconds: 30,
+            expires_at_unix_nanos,
+        })
     }
 
     fn build_fixture() -> Result<ResolveFixture, Box<dyn std::error::Error>> {
@@ -599,11 +613,7 @@ mod tests {
 
     async fn unlocked_state(fixture: &ResolveFixture) -> AgentSocketState {
         let state = AgentSocketState::locked("test-version");
-        state.grants.lock().await.insert(GrantRecord::new(
-            GRANT_ID,
-            GrantBinding::new(std::process::id(), "0"),
-            i128::MAX,
-        ));
+        state.grants.lock().await.insert(test_grant_record(i128::MAX));
         state.unlock_cache.lock().await.insert(
             PROJECT_ID.to_owned(),
             UnlockEntry::new(
@@ -653,6 +663,7 @@ mod tests {
         let request = ResolveRequest {
             reference: "lk://dev/DATABASE_URL@v3".to_owned(),
             project_id: Some(PROJECT_ID.to_owned()),
+            profile_id: Some(PROFILE_ID.to_owned()),
             store_path: Some("/tmp/store.db".to_owned()),
             grant_id: Some(GRANT_ID.to_owned()),
             binding: Some(GrantBinding::new(123, "start")),
@@ -768,11 +779,7 @@ mod tests {
     {
         let fixture = build_fixture()?;
         let state = AgentSocketState::locked("test-version");
-        state.grants.lock().await.insert(GrantRecord::new(
-            GRANT_ID,
-            GrantBinding::new(std::process::id(), "0"),
-            i128::MAX,
-        ));
+        state.grants.lock().await.insert(test_grant_record(i128::MAX));
         let envelope = RequestEnvelope::new(
             "req-locked",
             AgentMethod::ResolveReference,

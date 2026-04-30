@@ -661,7 +661,8 @@ mod tests {
     use std::sync::Arc;
 
     use locket_platform::{
-        KeyringMasterKeyStore, PassphraseFallbackMasterKeyStore, UnavailableLocalUserVerifier,
+        KeyringAutomationClientKeyStore, KeyringMasterKeyStore, PassphraseFallbackMasterKeyStore,
+        UnavailableLocalUserVerifier,
     };
     use serde_json::json;
     use tempfile::{TempDir, tempdir};
@@ -722,6 +723,7 @@ mod tests {
             config_path: directory.path().join("config.toml"),
             template_dir: directory.path().join(".locket").join("templates"),
             key_store: Arc::new(KeyringMasterKeyStore),
+            automation_client_key_store: Arc::new(KeyringAutomationClientKeyStore),
             passphrase_store: PassphraseFallbackMasterKeyStore::new(
                 directory.path().join("passphrase-fallback"),
             ),
