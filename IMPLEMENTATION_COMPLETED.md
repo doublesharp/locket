@@ -101,6 +101,9 @@ Slices that have merged to `main` and verified. Open work tracked in
 - [x] `get --reveal` requires a TTY unless `--force` is passed;
   noninteractive denials write a `REVEAL/DENIED` audit row and
   successful reveals echo `force=true` in metadata.
+- [x] `locket exec --secret KEY` single-key injection records selected
+  source metadata in `EXEC` audit rows and fails typed pre-spawn when
+  the vault is locked.
 
 ## Full Spec Coverage TODO — Security/Recovery/Team
 
