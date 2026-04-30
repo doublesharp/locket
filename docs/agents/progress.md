@@ -82,7 +82,9 @@ skill set fits a leaf better.
 - [ ] Local agent daemon (`docs/specs/agent.md`). `agent-socket-server`
   shipped; remaining subtasks below. Later subtasks depend on
   `agent-unlock-cache` / `agent-grant-table` — note deps on your claim.
-  - [~] [acda32e4] branch agent-acda32e4/agent-unlock-cache, worktree .worktrees/agent-acda32e4-agent-unlock-cache; **subtask** — agent-unlock-cache: in-memory unlock-key cache keyed by project_id with TTL eviction; `Lock`/`Unlock`/`Status` handlers. **Critical path.**
+  - [ ] **subtask** — agent-unlock-cache: in-memory unlock-key cache
+    keyed by project_id with TTL eviction; `Lock`/`Unlock`/`Status`
+    handlers. **Critical path.**
   - [ ] **subtask** — agent-grant-table: SQLite-backed grant table
     with `(pid, process_start_time)` binding (helper landed in
     `agent-4efea70d/process-grant-binding`);
@@ -172,7 +174,7 @@ skill set fits a leaf better.
 
 - [ ] Sealed bundle. `bundle-container-format` shipped
   (`docs/specs/team-sync-recovery.md:111-224`).
-  - [~] [acda32e4] branch agent-acda32e4/bundle-age-encryption, worktree .worktrees/agent-acda32e4-bundle-age-encryption; **subtask** — bundle-age-encryption: integrate `age`/`rage` with multi-recipient support. **Critical path.**
+  - [~] [52c592db] branch agent-52c592db/bundle-age-encryption, worktree .worktrees/agent-52c592db-bundle-age-encryption; **subtask** — bundle-age-encryption: integrate `age`/`rage` with multi-recipient support. **Critical path.**
   - [ ] **subtask** — bundle-export-payload: serialize selected
     profiles, policies, secret metadata, `secret_versions`, blobs,
     and per-profile keys; forbid master/audit/device/recovery key
