@@ -821,7 +821,7 @@ editing — they drift. Severity: **blocker** (security/correctness),
     `crates/locket-core/src/policy/` deny-by-default evaluation,
     required vs optional secret semantics, malformed-policy rejection,
     and `confirm`/`require_user_verification`/`ttl` edge cases.
-  - [~] [bec7ddfc] **subtask** — tests-env-merge: cover `minimal`/`strict`/
+  - [x] **subtask** — tests-env-merge: cover `minimal`/`strict`/
     `merge`/`passthrough` modes, `override = "preserve"`/"error",
     the conservative allowlist, and `LC_*` matching.
   - [~] [e7389a73] **subtask** — tests-crypto-aad: cover AAD construction,
