@@ -2,6 +2,7 @@
 
 This file tracks open implementation work and coordination state across agents.
 History of merged slices lives in `git log`; do not duplicate it here.
+Completed slices live in `IMPLEMENTATION_COMPLETED.md`.
 
 ## Current Goal
 
@@ -40,9 +41,11 @@ doc must reach `main` before the next agent reads the file.
    Never `--no-verify`, `--no-gpg-sign`, or `git push --force` on
    `main`. Never overwrite or revert another agent's committed work.
 7. **Close out on `main`.** In one commit on `main`:
-   - Flip the line to `[x]` and **compress the description to 1–2
-     short lines** about what shipped. Drop spec/error/audit/file
-     pointers and any claim note — those only belong on `[ ]`/`[~]`.
+   - **Move the line to `IMPLEMENTATION_COMPLETED.md`** under its
+     section heading, flipping it to `[x]` and **compressing the
+     description to 1–2 short lines** about what shipped. Drop
+     spec/error/audit/file pointers and any claim note. The line
+     does not stay in `IMPLEMENTATION_PROGRESS.md`.
    - Remove the worktree and delete the branch:
      `git worktree remove .worktrees/agent-<id>-<topic>` then
      `git branch -D agent-<id>/<topic>`.
@@ -138,7 +141,9 @@ done
 ### Status legend
 
 `[ ]` unclaimed · `[~] [<id>]` in progress (8-char hex id from your
-live claim file) · `[x]` merged and verified.
+live claim file). Merged slices move to `IMPLEMENTATION_COMPLETED.md`
+as `[x]`. Subtasks under an open `[~]` parent may be `[x]` in place
+to record what's done within the slice.
 
 ### Worktree and branch naming
 
@@ -164,38 +169,14 @@ _(no active claims)_
 
 Open items name the work and, if the location isn't obvious, point at one
 spec section. Don't restate error variants, audit actions, or file paths
-the spec already covers. Closed items are 1–2 lines about what shipped.
+the spec already covers. Closed slices land in
+`IMPLEMENTATION_COMPLETED.md`.
 
 ### Near-Term CLI/Core
 
-- [x] `locket init` spec coverage.
-- [x] `locket status` spec coverage.
-- [x] `locket emit-example` spec coverage.
-- [x] `locket completion <shell>`.
-- [x] `locket bootstrap` command surface and checklist behavior.
-- [x] `locket import` spec coverage.
-- [x] `locket redact` spec coverage.
-- [x] `locket context` spec coverage.
-- [x] `locket ai-safe` spec coverage.
-- [x] Direct-CLI `LOCK`/`UNLOCK` audit rows record method
-  (`OsKeychain`/`Passphrase`); locked-vault path stays metadata-only.
-  Agent-backed RPC and `ttl_seconds` tracked under the daemon
-  decomposition.
-- [x] Trusted-root management.
-- [x] Dangerous-profile flow.
-- [x] `locket meta`.
-- [x] `locket history`.
-- [x] `locket diff`.
-- [x] `locket copy` (role/team auth tracked under Team).
-- [x] `locket get --copy` and reveal/copy gates (user verification
-  tracked under the local-verification gate).
-- [x] `locket new --from-template`.
-- [x] `locket config` spec coverage.
-- [x] `locket install-hooks`.
 - [~] Scan ignore/suppression: inline markers, `SCAN`/`SUPPRESSED` audit
   rows, and per-rule severity (`ScanFindingBlocked` 69) shipped.
   Remaining: project-level severity overrides and `.env` policy table.
-- [x] Secure interactive secret input for `set`/`rotate`.
 - [~] Destructive confirmation flows: `purge`, dangerous-profile, and
   root untrust shipped. Remaining: policy deletion and other sensitive
   surfaces (`docs/specs/policy.md:26`).
@@ -205,36 +186,9 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
   precedence and set tombstone preflight returns typed `SecretDeleted`;
   remaining commands still need the unified resolver
   (`docs/specs/data-model.md`, `docs/specs/runtime.md:188-216`).
-- [x] Stable typed CLI error mapping and exit codes across all command families.
-- [x] Secret-name (`^[A-Z_][A-Z0-9_]*$`) and profile-name
-  (`^[a-z][a-z0-9_-]{0,63}$`) regex validation plus `_default` reserved
-  name; reject at every editor before write.
 - [~] [70c448c4] `locket init` atomic rollback and resumable-partial-state when
   Claim: branch agent-70c448c4/init-rollback-resume, worktree .worktrees/agent-70c448c4-init-rollback-resume, scope init rollback/resume failures.
   store/keychain/recovery-envelope creation fails mid-flight.
-- [x] Dotenv import: name-level parity check (never run user app) and
-  explicit post-import confirmation to delete `.env`.
-- [x] `.env.example` Locket-managed block markers
-  (`# --- BEGIN/END LOCKET MANAGED ---`); rewrite only between markers;
-  tombstoned secrets excluded from the cross-profile union.
-- [x] `example.auto_refresh` config key wired through
-  `refresh_example_for_project_if_enabled` at all current call sites
-  (`set`/`rotate`/`rm`/`purge`/`copy`/`import`); `team accept` will hook
-  in when that command lands.
-- [x] Pre-commit hook block markers
-  (`# --- BEGIN/END LOCKET PRE-COMMIT ---`), idempotent rewrite, typed
-  confirmation when prepending to a non-Locket hook, and `HOOK_INSTALL`
-  audit row when project context is available.
-  - Spec: `docs/specs/integrations.md` Git Integration & Pre-Commit.
-  - Errors: `ConfirmationFailed` (68).
-  - Audit: `HOOK_INSTALL`.
-  - Files: `crates/locket-cli/src/commands/project/install_hooks.rs`.
-- [x] `locket scan --no-gitignore` flag and `--require-known`
-  pre-commit mode (locked → `UnlockRequired`; outside project →
-  `ProjectNotFound`).
-- [x] Store/schema coverage for the full required-tables set
-  (automation/teams/passkey/imported-audit tables + indexes/triggers,
-  with `SCHEMA_MIGRATE` audit on migrations).
 - [ ] Default high-entropy scan rule (≥20 chars, Shannon ≥4.5
   bits/char, exclude UUIDs/checksums/public ids) with project
   overrides in `locket.toml`; `policy doctor` reports non-default
@@ -293,10 +247,6 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
     (82). Tests: client receives initial state, a state change, and at
     least one heartbeat within the documented window. Depends on
     `agent-socket-server` and `agent-unlock-cache`.
-- [x] Status-stream heartbeats (`StatusEvent kind="heartbeat"`, ≥30 s,
-  monotonic `sequence`, not treated as state change).
-- [x] Process-bound grant binding via `(pid, process_start_time)` per
-  platform; PIDs are never trusted alone.
 - [ ] Replace metadata-only `agent start/status/stop/logs` with real
   agent process behavior and redacted log retention
   (`docs/specs/agent.md:99-110`).
@@ -327,8 +277,6 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
     Depends on the `Local agent daemon` item below. Surface
     `AgentUnavailable` (80) when the daemon is down and the policy declares
     `require_agent = true`.
-- [x] `ExternalEnvSource::Parent` re-injects only policy-allowed
-  parent names for `locket run`.
 - [~] External env source resolution
   (`docs/specs/runtime.md:117-118`). `::Parent` and `::File` shipped.
   Remaining subtasks:
@@ -342,8 +290,6 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
     `LOCKET_IDE_ENV_SESSION` map over the agent socket; names-only
     audit on `RUN`/`EXEC`; never persist values. Depends on the
     agent-socket-server subtask under Local agent daemon.
-- [x] Shell prompt indicator renders lock state and respects privacy
-  aliases (degrades to "stopped" when the agent is unreachable).
 - [~] [70c448c4] blocked: policy surface changes require `crates/locket-cli/src/commands/policy.rs`, currently owned by active claim agent-6e4d05db/audit-key-failures.
   Claim: branch agent-70c448c4/policy-surface, worktree .worktrees/agent-70c448c4-policy-surface.
   Policy command surface: `policy add`, `policy allow`, `policy require`,
@@ -355,8 +301,6 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
     hooks/tray actions/clients/tasks summary), `POLICY_DOCTOR`.
   - Files: `crates/locket-cli/src/policy_authoring.rs` (currently a stub),
     `crates/locket-core/src/policy/`.
-- [x] Shell command surface (`shellenv`, `hook`, `allow`, `deny`)
-  (agent-hook install and live-grant TTL tracked under the agent daemon).
 - [ ] Resolve `lk://` references through the agent
   (`docs/specs/runtime.md:123-155`). Decomposed below; later subtasks
   depend on `lk-resolve-rpc`.
@@ -378,7 +322,6 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
     (reference id, profile id, version, grant id; never the value) on
     every successful and failed resolution. Depends on
     `lk-resolve-rpc`.
-- [x] Wire Docker and Docker Compose into policy-backed CLI.
 - [~] `locket exec --all` typed-confirmation flow and `EXEC` audit
   shipped. Remaining: `locket env inspect` enhancements and env-layering /
   override-mode docs.
@@ -441,31 +384,14 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
     `argv = [...]` vs `shell = "..."` and the evaluator picks the
     right spawn path. Pre-req: `policy-parser` and
     `run-shell-policy`.
-- [x] Runtime session storage/retention primitives and runtime execution
-  recording for `exec`/`run` (doctor process-liveness classification is a
-  follow-up under doctor enhancements).
-- [x] Env layering modes distinguish `merge`/`passthrough`; explicit
-  `override` tracking drives doctor/run warnings and audit metadata.
-- [x] Conservative env allowlist
-  (`PATH HOME USER SHELL TMPDIR LANG LC_* TERM CI`) applied in `minimal`
-  mode with `LC_*` matching; `policy doctor` surfaces it.
 - [ ] Ephemeral env-file fallback for children that can't accept an env
   map: 0700 parent / 0600 file outside project tree, post-spawn delete,
   audited delivery mode, secure-erase warning when unsupported.
 - [~] Clipboard clear-after-TTL only if clipboard still contains the
   value. Wayland-aware pre-copy warning and `COPY` audit
   `unsupported_reason` shipped; background TTL clearing remains.
-- [x] `locket diff --since` resolves git revisions via direct
-  `git log -1 --format=%ct <rev>` (no shell construction).
-
 ### Security/Recovery/Team
 
-- [x] Passphrase fallback beyond OS-key-store path.
-- [x] Recovery command surfaces (`recover`, `recovery rotate`).
-- [x] Recovery-code generation, one-time display, restore, and rotation.
-- [x] Device command surfaces (`device init`, `pubkey`, `add`, `list`,
-  `remove`); local private-key persistence/recovery tracked under device
-  descriptors and sealed-bundle/team work.
 - [ ] Sealed bundle. Decomposed below; later subtasks depend on
   `bundle-container-format` (`docs/specs/team-sync-recovery.md:111-224`).
   - [ ] **subtask** — bundle-container-format: implement the versioned
@@ -636,17 +562,8 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
   - [ ] **subtask** — harden-doctor-degraded: doctor reports each
     hardening feature's status (`active`/`degraded`/`unsupported`)
     so users can see fall-backs.
-- [x] Metadata privacy validation across secret/config/policy/template/
-  team/member/device editors via the shared
-  `crates/locket-core/src/metadata.rs` validator
-  (`MetadataInvalid` 64, `MetadataLooksLikeSecret` 66).
 - [ ] Member/device revocation produces a rotation checklist for every
   profile/secret the revoked principal could access.
-- [x] Recovery-code Crockford Base32 encoding with two checksum chars
-  (detect-only; never auto-correct).
-- [x] Sealed-bundle plaintext manifest minimization: no profile, secret,
-  policy names; no member/device labels (only digest, recipients,
-  project id, schema, `created_at`, profile count).
 - [ ] `imported_audit_chains` structural verifier (monotonic sequence,
   prev-HMAC linkage, checkpoint HMAC match) used by
   `import-bundle`/`team accept` and surfaced via `audit verify`.
@@ -658,8 +575,6 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
 - [ ] `locket recover` restores Locket-managed automation-client private
   keys from the envelope; `--force` rotates intact keychain entries and
   records the override in the `RECOVER` audit row.
-- [x] Audit-chain HMAC verification recomputes each row using the row's
-  stored `schema_version`, not the binary's current version.
 - [ ] Typed `metadata_json` shape validator per audit action family
   (required fields, no unknown fields without a schema bump).
 - [ ] Audit-tx atomicity: append + data change share one SQLite
@@ -711,7 +626,6 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
 
 ### App/UI
 
-- [x] `locket-app` workspace crate scaffolded under `crates/locket-app/`.
 - [ ] Build the Tauri desktop app (`docs/specs/desktop.md:5-65`).
   Pre-req: `locket-app` workspace crate (already `[x]`).
   Decomposed below; later subtasks depend on `tauri-shell`.
@@ -742,11 +656,6 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
   `deprecated_at`, `grace_until`, pinned-reference eligibility).
   Claim: branch agent-cb2437f7/version-history-view, worktree .worktrees/agent-cb2437f7-version-history-view, scope desktop metadata descriptors.
 - [ ] Execution/session monitor view backed by `runtime_sessions`.
-- [x] Tray icon state set (Lucide-based) reflects
-  locked/unlocked/scan-warn/alert with platform-appropriate styling.
-- [x] Tray notification policy: no secret values, no secret names by default
-  (use generic "secret"/"policy"/"project" labels until the user opens the app).
-  - Spec: `docs/specs/desktop.md:94-96`.
 - [ ] Tauri hardening (`docs/specs/desktop.md`). Independent subtasks
   — pre-req: `locket-app` Tauri shell exists.
   - [ ] **subtask** — tauri-csp: restrictive Content-Security-Policy
@@ -766,16 +675,6 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
   - [ ] **subtask** — search-audit
   - [ ] **subtask** — search-scan-findings
   - [ ] **subtask** — search-devices-members
-- [x] Accessibility baseline descriptors cover keyboard navigation, focus,
-  labels, contrast, reduced motion, and post-TTL metadata scrubbing.
-- [x] Empty-state guidance for `locket init`/`team accept`/
-  `profile create dev`/`set`/`import`/`policy add`/`agent start`/
-  `device init`.
-- [x] Denial UX differentiates locked vault, missing grant, policy denial,
-  dangerous-profile, revoked device, and expired invite with distinct copy and
-  recovery affordances.
-  - Spec: `docs/specs/desktop.md` UX Requirements.
-  - Files: `crates/locket-app/ui/` error views.
 - [ ] Primary desktop views beyond version-history/execution-monitor:
   project dashboard, profile switcher, secret metadata list, secret
   editor, command-policy editor, scan results, audit log/verification,
@@ -813,25 +712,6 @@ Bugs, missing audit rows, and structural debt outside spec coverage. Each
 item is independently claimable; re-verify file:line references before
 editing — they drift. Severity: **blocker** (security/correctness),
 **important** (real defect), **nit** (cleanup).
-
-- [x] **blocker** — `import --overwrite` matched the literal string
-  `"already exists"`; now uses the typed `SecretAlreadyExists` (67)
-  across set/profile/policy/recovery callsites.
-
-- [x] **blocker** — `locket recover` now appends a `RECOVER` audit row
-  (metadata-only) after successful keychain write.
-
-- [x] **blocker** — `locket new` now appends an `INIT` audit row.
-
-- [x] **important** — `ConfigKeySpec`/`ConfigValueKind`/`CONFIG_KEY_SPECS`
-  and validators/parsers moved out of `main.rs` into
-  `commands/config/spec.rs`.
-
-- [x] **important** — `SecretAlreadyExists` (67) added to `LocketError`
-  (closed alongside the import-overwrite blocker).
-
-- [x] **important** — `EnvMap` values now wrap in `Zeroizing` so
-  decrypted secrets clear on drop.
 
 - [~] **important** — Typed error system underused: ~6 typed callers vs ~249
   `CliError::Config`.
@@ -886,27 +766,8 @@ editing — they drift. Severity: **blocker** (security/correctness),
   - Tests: per-variant exit-code regression covering at least one callsite
     per variant.
 
-- [x] **important** — `profile create` now appends a `PROFILE_CREATE`
-  audit row.
-
-- [x] **important** — `locket use` now appends a `PROFILE_CHANGE` audit
-  row with prior/new profile metadata.
-
-- [x] **important** — `*_audit_if_available` helpers no longer swallow
-  audit-key load failures; missing keys hard-fail the command.
-
-- [x] **nit** — Optional-value formatters unified on the `"-"` sentinel
-  across history/diff/audit output.
-
-- [x] **nit** — Audit-write helpers reuse the caller's store handle
-  instead of re-opening.
-
 ### Diagnostics, Distribution, and Quality Gates
 
-- [x] `locket audit verify` spec coverage.
-- [x] `locket doctor`.
-- [x] Redacted `locket agent logs`.
-- [x] `locket debug bundle --redacted`.
 - [ ] Expand tests toward spec coverage (90% line/branch gate).
   Decomposed by spec surface; subtasks are independent and may be
   claimed in parallel. Each subtask must add tests that demonstrably
@@ -980,8 +841,6 @@ editing — they drift. Severity: **blocker** (security/correctness),
     app (vault status, secrets list, reveal/copy gates) and the VS
     Code extension. Depends on `desktop-tauri-shell` and the VS Code
     extension item.
-- [x] Required fuzz targets landed under `fuzz/fuzz_targets/` (cadence
-  and sanitizer gates tracked under the fuzz tooling TODO below).
 - [~] Bench harnesses and performance gates. Local smoke/report
   scaffolding exists. Remaining: full spec fixtures, hard p95/throughput
   budgets, and `make bench`/`bench-ci`/`bench-report` PR vs release
@@ -999,17 +858,6 @@ editing — they drift. Severity: **blocker** (security/correctness),
   signing workflows for Homebrew / signed macOS pkg / Windows MSI /
   Linux package / VS Code extension
   (`docs/specs/operations.md:27-53`).
-- [x] Markdown/spec link checks via `make docs-check`.
-- [x] `agent logs` retention: JSON Lines, 1 MiB rotation, 5 files,
-  default 200 lines, `--lines` cap 10000, RFC 3339 / Unix `--since`,
-  `--follow` streaming; typed invalid-input errors and retention-boundary
-  regressions landed in `agent-bec7ddfc/agent-logs-retention`.
-- [x] Update-manifest fetch keyed only by channel/platform/arch/version
-  (no project/device/host/user/install ids); release-key rotation
-  requires a dual-signed manifest (`docs/specs/operations.md`).
-- [x] Performance reference-runner spec, required report fields, and
-  sampling rules (warmup, sample counts, p95 index, throughput formula)
-  (`docs/specs/performance.md`).
 - [ ] Cold-start budgets. Decomposed per metric; each subtask adds
   one bench plus a regression that fails the budget
   (`docs/specs/performance.md`). Depends on the perf reference-runner
@@ -1021,9 +869,6 @@ editing — they drift. Severity: **blocker** (security/correctness),
   - [ ] **subtask** — perf-agent-idle-memory: ≤50 MB agent idle RSS
     after a documented warmup window. Depends on the agent daemon
     subtasks landing first.
-- [x] Production-crate clippy denies (`unwrap_used`, `expect_used`,
-  `panic`, `todo`, `unimplemented`, `dbg_macro`, `print_stdout`,
-  `print_stderr`) plus workspace-wide `unsafe_code = "forbid"`.
 - [ ] Dependency hygiene gates: `cargo machete`/`udeps` in CI; OpenSSF
   Scorecard once public; keyless signing with transparency logs for CI
   artifacts; frontend `pnpm lint`/`typecheck`/`test`/`build` once
@@ -1080,12 +925,6 @@ editing — they drift. Severity: **blocker** (security/correctness),
     past `grace_until` returns typed `SecretVersionExpired`.
   - [ ] **subtask** — mutation-dangerous-profile: dangerous-profile
     reads emit the documented denial audit and refuse value access.
-- [x] Fuzz tooling and gates: `make fuzz-list`/`fuzz-smoke`/`fuzz`/
-  `fuzz-nightly`; PR gate ≥60 s/target on touched fuzzed paths;
-  nightly ≥15 min/target with ASan+UBSan; pre-public-release
-  ≥8 cumulative CPU-hours/target since prior release; deterministic
-  per-target resource limits and codified finding workflow
-  (`docs/specs/fuzzing.md`).
 - [ ] Bench fixtures: metadata, runtime, reference-resolution,
   staged-scan, full-scan, and Argon2 fixtures used by `make bench`
   (`docs/specs/performance.md`).
@@ -1130,7 +969,6 @@ Final audit pass before claiming full spec coverage. Each item means the
 implementation, tests, docs, diagnostics, and failure modes have been checked
 against the named spec file.
 
-- [x] `index.md`
 - [ ] `product.md`
 - [ ] `invariants.md`
 - [ ] `architecture.md`
