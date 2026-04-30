@@ -647,11 +647,8 @@ the spec already covers. Closed slices land in
 - [ ] `device init` first-run-on-machine bootstrap: creates master
   key, recovery envelope, and recovery code on a teammate clone
   (`docs/specs/team-sync-recovery.md`).
-- [~] [bec7ddfc] `locket export --sealed --recipient ... [--profile|--all-profiles]
-  [--include-audit] [--output]` command surface, default
-  `locket-bundle-<utc>.locket-bundle` filename, dangerous-profile
-  typed confirmation, and `BACKUP_EXPORT` audit row.
-  Claim: branch agent-bec7ddfc/export-dangerous-confirm, worktree .worktrees/agent-bec7ddfc-export-dangerous-confirm. Scope: surface and audit row already shipped; this slice adds the dangerous-profile typed confirmation gate (`export --sealed <profile>`) with `ConfirmationFailed` (68) on mismatch and a `BACKUP_EXPORT/DENIED` row.
+- [x] `locket export --sealed` dangerous-profile confirmation gate;
+  mismatch returns `ConfirmationFailed` (68) before any bundle is written.
 - [~] [7138f228] `locket bundle verify` non-destructive command (structural
   checks, age-decryptability probe, `BUNDLE_VERIFY` audit row,
   documented exit-code rules).

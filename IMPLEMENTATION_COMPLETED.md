@@ -117,6 +117,8 @@ Slices that have merged to `main` and verified. Open work tracked in
   `AuditMetadataTooLarge` typed error (`MetadataInvalid` 64).
 - [x] Negative-path decryption tests: 9 cases covering wrong key/nonce
   and changed AAD fields all exit `DecryptionFailed`.
+- [x] `locket export --sealed` dangerous-profile confirmation gate;
+  mismatch returns `ConfirmationFailed` (68) before any bundle is written.
 
 ## Full Spec Coverage TODO — Security/Recovery/Team
 
