@@ -67,11 +67,10 @@ skill set fits a leaf better.
 
 - [~] [4ab55ee9] branch agent-4ab55ee9/scan-severity-policy, worktree .worktrees/agent-4ab55ee9-scan-severity-policy; scan-severity-policy: project-level severity overrides and `.env` policy table.
 - [~] [90b9f58a] branch agent-90b9f58a/policy-delete-confirmation, worktree .worktrees/agent-90b9f58a-policy-delete-confirmation; Policy delete typed confirmation (`docs/specs/policy.md:26`).
-- [ ] Source-precedence and multi-source behavior across `set`,
-  `get`, `list`, `rotate`, `rm`, `purge`, `history`, `diff`, `copy`,
-  reveal/copy, and execution. Run audit + set-tombstone preflight
-  done; remaining commands need the unified resolver
-  (`docs/specs/data-model.md`, `docs/specs/runtime.md:188-216`).
+- [~] [acda32e4] branch agent-acda32e4/source-precedence-get, worktree .worktrees/agent-acda32e4-source-precedence-get; **subtask** - source-precedence-get: explicit `get --source` selection for metadata, reveal, copy, and audit.
+- [ ] Source-precedence remaining sweep across lifecycle and runtime
+  commands with unified resolver (`docs/specs/data-model.md`,
+  `docs/specs/runtime.md:188-216`).
 
 ### Runtime/DX
 
