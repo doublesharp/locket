@@ -812,10 +812,8 @@ editing — they drift. Severity: **blocker** (security/correctness),
   - [ ] **subtask** — mock-os-keychain: trait-based mock for
     `crates/locket-platform/src/keychain/` covering get/set/delete
     success and error paths, used in CLI/store tests.
-  - [~] [6e4d05db] **subtask** — mock-user-verification: extend the existing
-    Claim: branch agent-6e4d05db/mock-user-verification, worktree .worktrees/agent-6e4d05db-mock-user-verification.
-    `LocalUserVerifier` mock to cover platform-unsupported and
-    user-cancelled paths in tests.
+  - [x] **subtask** — mock-user-verification: `MemoryLocalUserVerifier`
+    covers allow, deny, platform-unsupported, and user-cancelled paths.
   - [ ] **subtask** — mock-peer-credentials: in-process socket harness
     that returns spoofable peer creds so the agent's peer-validation
     logic can be tested without root. Pre-req:
