@@ -263,6 +263,8 @@ Slices that have merged to `main` and verified. Open work tracked in
 - [x] make-test-targets: Testing Make targets are documented and guarded
   by docs-check so required coverage/test entrypoints stay exposed.
   (`docs/specs/performance.md`).
+- [x] cargo-geiger-inventory: Unsafe inventory now produces a reviewable
+  release artifact and is part of the strict quality gate.
 - [x] Production-crate clippy denies (`unwrap_used`, `expect_used`,
   `panic`, `todo`, `unimplemented`, `dbg_macro`, `print_stdout`,
   `print_stderr`) plus workspace-wide `unsafe_code = "forbid"`.
