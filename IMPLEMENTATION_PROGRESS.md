@@ -10,28 +10,54 @@ Close the remaining gaps between the local-first CLI/core baseline and full
 
 ## Work Rules
 
-There are multiple agents working so it is imperative that you maintain an agent ID file, and keep the shared task list up to date with claims. Do not remove other agent files or claims.
+Multiple agents work this list in parallel. Don't remove other agents'
+claim files or claim lines. The progress doc on `main` is the shared
+state — keep it current throughout your slice.
 
-- Keep docs and implementation in sync when implementation choices change the spec.
-- Commit coherent slices. Do not commit this progress file as part of a feature slice.
-- Do not log, print, or persist secret values in tests or diagnostics.
-- Prefer focused tests for each behavior before or alongside implementation.
-- Use parallel agents when work is independent (see Multi-Agent Coordination below).
-- This machine has 12 cores; use Cargo `-j 12` for compile/test/check/clippy where
-  supported.
-- Before marking any item here `[x]`, run `cargo fmt --all -- --check`,
-  `cargo clippy --workspace --all-targets --all-features -- -D warnings`, and the
-  workspace test suite (`cargo test --workspace --all-targets --all-features` or
-  scoped equivalents for the touched crates).
+### Slice lifecycle
+
+Every agent follows this exact ordered flow. Each step's edit to this
+doc must reach `main` before the next agent reads the file.
+
+1. **Claim an agent id** at session start (see "Claiming an agent id"
+   below). Your id is the 8-char hex name of your file under
+   `.agents/active/`.
+2. **Pick an open `[ ]` item** on `main`. Skip `[x]`. A
+   `[~] [<id>]` whose id has no live claim file (per the reaper) is
+   free to reassign.
+3. **Mark the claim on `main`.** Edit the line to
+   `[~] [<your-agent-id>]` and append a one-line note (branch,
+   worktree, scope). Land that edit on `main` before touching code,
+   so other agents see your claim.
+4. **Create the worktree and branch** (`agent-<id>/<topic>` under
+   `.worktrees/agent-<id>-<topic>`; see Worktree and branch naming).
+   Do all implementation there.
+5. **Implement and verify.** Run `cargo fmt --all -- --check`,
+   `cargo clippy --workspace --all-targets --all-features -- -D warnings`,
+   and the workspace tests (or scoped equivalents). Use
+   `cargo -j 12` (12 cores). Add focused tests alongside the change.
+6. **Merge to `main`.** Rebase onto current `main` and fast-forward.
+   Never `--no-verify`, `--no-gpg-sign`, or `git push --force` on
+   `main`. Never overwrite or revert another agent's committed work.
+7. **Close out on `main`.** In one commit on `main`:
+   - Flip the line to `[x]` and **compress the description to 1–2
+     short lines** about what shipped. Drop spec/error/audit/file
+     pointers and any claim note — those only belong on `[ ]`/`[~]`.
+   - Remove the worktree and delete the branch:
+     `git worktree remove .worktrees/agent-<id>-<topic>` then
+     `git branch -D agent-<id>/<topic>`.
+8. **Pick the next item** and repeat.
+
+### Other rules
+
+- Keep docs and implementation in sync when an implementation choice
+  changes the spec.
+- Commit coherent slices. Don't include this progress file in a
+  feature commit — its updates land separately on `main`.
+- Never log, print, or persist secret values in tests or diagnostics.
 - Don't restate spec content here. A TODO line names the work, points
-  at one spec section if non-obvious, and stops. Skip routine
+  at one spec section if non-obvious, and stops. No routine
   error/audit/file enumerations — agents can read the spec.
-- After a slice merges to `main`: flip the line to `[x]`, **compress
-  the description to 1–2 lines** about what shipped (drop spec/error/
-  audit/file pointers and any claim notes), and remove the merged
-  worktree and branch
-  (`git worktree remove .worktrees/agent-<id>-<topic>` then
-  `git branch -D agent-<id>/<topic>`).
 
 ## Definition of Done
 
@@ -557,30 +583,19 @@ editing — they drift. Severity: **blocker** (security/correctness),
   - [x] **subtask** — typed-secret-overflow: migrate `secret version overflow`
     (3 sites) to a new `LocketError::SecretVersionOverflow` variant (input or
     integrity band, per spec). Regression covers a stubbed overflow path.
-  - [~] [b67f47d6] ready: agent-b67f47d6/typed-config-values @ 5c4c3d4 — config value validators now return typed `MetadataInvalid`/`MetadataLooksLikeSecret`; per-class regressions landed.
-    **subtask** — typed-config-value-validation: migrate the per-value
-    config validators in `crates/locket-cli/src/commands/config/spec.rs`
-    (`config value must be true or false`, `invalid config duration`,
-    `config section is not a table`, `invalid stored config value for {key}`,
-    `runtime.session_secret_name_retention must be a duration or off`,
-    `updates.manifest_url must be an HTTPS URL` 3x, enum-message strings,
-    `config value looks like a secret`) to typed `MetadataInvalid` or
-    `MetadataLooksLikeSecret`. Regression per validator class.
+  - [x] **subtask** — typed-config-value-validation: config value validators
+    now return typed `MetadataInvalid`/`MetadataLooksLikeSecret`; per-class
+    regressions landed.
   - [x] **subtask** — typed-tty-confirmation: migrate the two `format!`-ed
     `{prompt} requires interactive confirmation` and `{reason} requires an
     interactive TTY` callsites to a new `LocketError::TtyRequired` variant
     (or reuse `ConfirmationFailed` if the spec treats them equivalently).
-  - [~] [b67f47d6] ready: agent-b67f47d6/typed-template-validation @ cd002be — onboarding template validators now return typed `MetadataInvalid`; focused CLI regressions landed.
-    **subtask** — typed-template-validation: migrate the
-    `commands/project/onboarding.rs` template validators (`template profile
-    name is invalid`, `template expected secret name is invalid`, `invalid
-    template command policy: {error}`, `{field} must be an array`) to typed
-    `MetadataInvalid`. Regression on at least one rejected template.
-  - [~] [b67f47d6] **subtask** — typed-residual-strings: sweep the residual long tail
-    Claim: branch agent-b67f47d6/typed-residual-strings, worktree .worktrees/agent-b67f47d6-typed-residual-strings.
-    in `crates/locket-cli/src/` (anything still as `CliError::Config(...)`
-    after the above subtasks) and either map each to an existing typed
-    variant or document the remainder as intentional generic-input failures.
+  - [x] **subtask** — typed-template-validation: onboarding template
+    validators now return typed `MetadataInvalid`; focused CLI regressions
+    landed.
+  - [x] **subtask** — typed-residual-strings: residual
+    `CliError::Config(...)` constructors under `crates/locket-cli/src` were
+    mapped to typed helpers; the CLI source sweep returns zero matches.
   - Where: `crates/locket-cli/src/` (verify scope with `grep -rn
     "CliError::Config(" crates/locket-cli/src/ | wc -l`).
   - Where: `crates/locket-cli/src/` (verify with
