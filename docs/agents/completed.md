@@ -250,6 +250,8 @@ Slices that have merged to `main` and verified. Open work tracked in
   Shows scan timestamp, locked state, and metadata-only scan errors.
 - [x] search-secrets-metadata: Adds metadata-only search to the desktop secrets view.
   Filtering honors privacy aliases and never inspects secret values.
+- [x] search-audit: Adds metadata-only search to the desktop audit log view. Filtering
+  avoids raw metadata_json and respects privacy aliases.
 
 ## Full Spec Coverage TODO — Code Health and Bug Fixes
 
