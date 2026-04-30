@@ -25,6 +25,7 @@ for my $spec (@spec_files) {
 
 check_spec_index();
 check_spec_backlinks();
+check_make_targets();
 
 my @markdown_files;
 find(
@@ -123,6 +124,27 @@ sub check_spec_backlinks {
         if ($preamble !~ /\QStart at [index.md](index.md).\E/) {
             push @errors, "$path must start with a backlink to docs/specs/index.md";
         }
+    }
+}
+
+sub check_make_targets {
+    my @required_targets = qw(test coverage coverage-html coverage-branch mutation);
+    my (%targets, %phony);
+    open my $fh, '<', 'Makefile' or die "open Makefile: $!";
+    while (my $line = <$fh>) {
+        if ($line =~ /^\.PHONY:\s+(.+?)\s*$/) {
+            $phony{$_} = 1 for split /\s+/, $1;
+            next;
+        }
+        if ($line =~ /^([A-Za-z0-9_.-]+):(?:\s|\z)/) {
+            $targets{$1} = 1;
+        }
+    }
+    close $fh;
+
+    for my $target (@required_targets) {
+        push @errors, "Makefile missing required testing target: $target" unless $targets{$target};
+        push @errors, "Makefile target must be .PHONY: $target" unless $phony{$target};
     }
 }
 

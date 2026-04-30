@@ -212,6 +212,7 @@ make fmt-check
 make clippy
 make test
 make coverage
+make coverage-html
 ```
 
 `make ci-local` is the default local quality gate. It uses `OFFLINE=1` by
