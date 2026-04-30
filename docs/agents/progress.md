@@ -66,9 +66,7 @@ skill set fits a leaf better.
 ### Near-Term CLI/Core
 
 - [~] [4ab55ee9] branch agent-4ab55ee9/scan-severity-policy, worktree .worktrees/agent-4ab55ee9-scan-severity-policy; scan-severity-policy: project-level severity overrides and `.env` policy table.
-- [ ] Destructive confirmation flows beyond `purge` /
-  dangerous-profile / root untrust: policy deletion and other
-  sensitive surfaces (`docs/specs/policy.md:26`).
+- [~] [90b9f58a] branch agent-90b9f58a/policy-delete-confirmation, worktree .worktrees/agent-90b9f58a-policy-delete-confirmation; Policy delete typed confirmation (`docs/specs/policy.md:26`).
 - [ ] Source-precedence and multi-source behavior across `set`,
   `get`, `list`, `rotate`, `rm`, `purge`, `history`, `diff`, `copy`,
   reveal/copy, and execution. Run audit + set-tombstone preflight
