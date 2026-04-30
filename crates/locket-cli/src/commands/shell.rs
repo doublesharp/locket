@@ -158,6 +158,7 @@ pub fn allow_command(context: &RuntimeContext, output: &mut impl Write) -> Resul
         "schema_version": 1,
         "action": "ALLOW_DIRECTORY",
         "status": "SUCCESS",
+        "command": "allow",
         "grant_id": &grant.grant_id,
         "project_id": resolved.config.project_id.as_str(),
         "profile_id": &profile.id,

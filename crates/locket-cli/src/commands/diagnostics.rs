@@ -144,6 +144,7 @@ impl DiagnosticReport {
             "schema_version": 1,
             "action": "DOCTOR",
             "status": if self.counts.fail == 0 { "SUCCESS" } else { "FAILED" },
+            "command": "doctor",
             "check_names": self.checks.iter().map(|check| check.name).collect::<Vec<_>>(),
             "pass_count": self.counts.pass,
             "warn_count": self.counts.warn,

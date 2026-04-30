@@ -220,6 +220,7 @@ fn write_bootstrap_audit_if_available(
         "schema_version": 1,
         "action": "BOOTSTRAP",
         "status": "SUCCESS",
+        "command": "bootstrap",
         "project_id": resolved.config.project_id.as_str(),
         "default_profile_id": profile_id,
         "generated_files": generated_files,

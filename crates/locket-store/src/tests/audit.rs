@@ -203,9 +203,27 @@ fn audited_secret_create_appends_hmac_chained_row() -> Result<(), Box<dyn Error>
 fn audit_rows_since_filters_profile_and_timestamp() -> Result<(), Box<dyn Error>> {
     let mut test_store = open_initialized_store()?;
     insert_project_profile(&test_store.store)?;
-    let metadata = json!({
+    let set_metadata = json!({
         "schema_version": 1,
+        "action": "SET",
         "status": "SUCCESS",
+        "secret_name": "DATABASE_URL",
+        "profile_id": "lk_prof_test",
+        "source": "user-local",
+    });
+    let doctor_metadata = json!({
+        "schema_version": 1,
+        "action": "DOCTOR",
+        "status": "SUCCESS",
+        "command": "doctor",
+    });
+    let rotate_metadata = json!({
+        "schema_version": 1,
+        "action": "ROTATE",
+        "status": "SUCCESS",
+        "secret_name": "DATABASE_URL",
+        "profile_id": "lk_prof_test",
+        "source": "user-local",
     });
     let set_audit = AuditWrite {
         project_id: "lk_proj_test",
@@ -214,7 +232,7 @@ fn audit_rows_since_filters_profile_and_timestamp() -> Result<(), Box<dyn Error>
         status: "SUCCESS",
         secret_name: Some("DATABASE_URL"),
         command: None,
-        metadata_json: &metadata,
+        metadata_json: &set_metadata,
         timestamp: 100,
     };
     let project_audit = AuditWrite {
@@ -224,7 +242,7 @@ fn audit_rows_since_filters_profile_and_timestamp() -> Result<(), Box<dyn Error>
         status: "SUCCESS",
         secret_name: None,
         command: Some("doctor"),
-        metadata_json: &metadata,
+        metadata_json: &doctor_metadata,
         timestamp: 200,
     };
     let rotate_audit = AuditWrite {
@@ -234,7 +252,7 @@ fn audit_rows_since_filters_profile_and_timestamp() -> Result<(), Box<dyn Error>
         status: "SUCCESS",
         secret_name: Some("DATABASE_URL"),
         command: None,
-        metadata_json: &metadata,
+        metadata_json: &rotate_metadata,
         timestamp: 300,
     };
 
@@ -383,12 +401,16 @@ fn audit_verify_flags_appended_chain_row_and_link_mutations() -> Result<(), Box<
             "action": "SET",
             "status": "SUCCESS",
             "secret_name": "DATABASE_URL",
+            "profile_id": "lk_prof_test",
+            "source": "user-local",
         });
         let rotate_metadata = json!({
             "schema_version": 1,
             "action": "ROTATE",
             "status": "SUCCESS",
             "secret_name": "DATABASE_URL",
+            "profile_id": "lk_prof_test",
+            "source": "user-local",
         });
         let set_audit = AuditWrite {
             project_id: "lk_proj_test",
@@ -451,6 +473,8 @@ fn rolled_back_transaction_leaves_no_audit_row_or_sequence_gap() -> Result<(), B
         "action": "SET",
         "status": "SUCCESS",
         "secret_name": "DATABASE_URL",
+        "profile_id": "lk_prof_test",
+        "source": "user-local",
     });
     let write = AuditWrite {
         project_id: "lk_proj_test",
@@ -502,6 +526,8 @@ fn data_change_failure_inside_audit_tx_drops_audit_row_atomically() -> Result<()
         "action": "SET",
         "status": "SUCCESS",
         "secret_name": "DATABASE_URL",
+        "profile_id": "lk_prof_test",
+        "source": "user-local",
     });
     let write = AuditWrite {
         project_id: "lk_proj_test",
@@ -567,7 +593,8 @@ fn append_audit_rejects_metadata_json_above_64_kib_cap() -> Result<(), Box<dyn s
         "schema_version": 1,
         "action": "SCAN",
         "status": "SUCCESS",
-        "filler": oversized,
+        "command": "scan",
+        "diagnostics": oversized,
     });
     let audit = AuditWrite {
         project_id: "lk_proj_test",
@@ -622,7 +649,8 @@ fn append_audit_accepts_metadata_json_at_or_below_cap() -> Result<(), Box<dyn st
         "schema_version": 1,
         "action": "SCAN",
         "status": "SUCCESS",
-        "filler": comfortable,
+        "command": "scan",
+        "diagnostics": comfortable,
     });
     let audit = AuditWrite {
         project_id: "lk_proj_test",
@@ -645,6 +673,190 @@ fn append_audit_accepts_metadata_json_at_or_below_cap() -> Result<(), Box<dyn st
 }
 
 #[test]
+fn append_audit_rejects_metadata_json_shape_mismatches() -> Result<(), Box<dyn Error>> {
+    struct Case {
+        name: &'static str,
+        metadata: serde_json::Value,
+        action: &'static str,
+        status: &'static str,
+        profile_id: Option<&'static str>,
+        secret_name: Option<&'static str>,
+        command: Option<&'static str>,
+        expected_reason: &'static str,
+    }
+
+    let cases = [
+        Case {
+            name: "non_object",
+            metadata: json!(["not", "an", "object"]),
+            action: "DOCTOR",
+            status: "SUCCESS",
+            profile_id: None,
+            secret_name: None,
+            command: None,
+            expected_reason: "metadata_json must be an object",
+        },
+        Case {
+            name: "missing_status",
+            metadata: json!({
+                "schema_version": 1,
+                "action": "DOCTOR",
+            }),
+            action: "DOCTOR",
+            status: "SUCCESS",
+            profile_id: None,
+            secret_name: None,
+            command: None,
+            expected_reason: "status must be a string",
+        },
+        Case {
+            name: "mismatched_action",
+            metadata: json!({
+                "schema_version": 1,
+                "action": "SCAN",
+                "status": "SUCCESS",
+            }),
+            action: "DOCTOR",
+            status: "SUCCESS",
+            profile_id: None,
+            secret_name: None,
+            command: None,
+            expected_reason: "action must match audit row",
+        },
+        Case {
+            name: "missing_command_mirror",
+            metadata: json!({
+                "schema_version": 1,
+                "action": "DOCTOR",
+                "status": "SUCCESS",
+            }),
+            action: "DOCTOR",
+            status: "SUCCESS",
+            profile_id: None,
+            secret_name: None,
+            command: Some("doctor"),
+            expected_reason: "command convenience column must be mirrored",
+        },
+        Case {
+            name: "null_absent_command",
+            metadata: json!({
+                "schema_version": 1,
+                "action": "DOCTOR",
+                "status": "SUCCESS",
+                "command": null,
+            }),
+            action: "DOCTOR",
+            status: "SUCCESS",
+            profile_id: None,
+            secret_name: None,
+            command: None,
+            expected_reason: "command must be omitted, not null",
+        },
+        Case {
+            name: "unknown_v1_field",
+            metadata: json!({
+                "schema_version": 1,
+                "action": "DOCTOR",
+                "status": "SUCCESS",
+                "unexpected": true,
+            }),
+            action: "DOCTOR",
+            status: "SUCCESS",
+            profile_id: None,
+            secret_name: None,
+            command: None,
+            expected_reason: "unknown field unexpected",
+        },
+        Case {
+            name: "missing_action_family_field",
+            metadata: json!({
+                "schema_version": 1,
+                "action": "SET",
+                "status": "SUCCESS",
+                "secret_name": "DATABASE_URL",
+                "profile_id": "lk_prof_test",
+            }),
+            action: "SET",
+            status: "SUCCESS",
+            profile_id: Some("lk_prof_test"),
+            secret_name: Some("DATABASE_URL"),
+            command: None,
+            expected_reason: "missing required field source",
+        },
+    ];
+
+    for case in cases {
+        let mut test_store = open_initialized_store()?;
+        insert_project_profile(&test_store.store)?;
+        let audit = AuditWrite {
+            project_id: "lk_proj_test",
+            profile_id: case.profile_id,
+            action: case.action,
+            status: case.status,
+            secret_name: case.secret_name,
+            command: case.command,
+            metadata_json: &case.metadata,
+            timestamp: 100,
+        };
+
+        let error = test_store
+            .store
+            .append_audit(&[42; 32], &audit)
+            .expect_err("invalid metadata must be rejected");
+        let StoreError::AuditMetadataInvalid { action, reason } = error else {
+            return Err(format!("{}: expected AuditMetadataInvalid", case.name).into());
+        };
+        assert_eq!(action, audit.action, "case {}", case.name);
+        assert!(
+            reason.contains(case.expected_reason),
+            "case {}: expected reason to contain {:?}, got {reason:?}",
+            case.name,
+            case.expected_reason
+        );
+        assert_eq!(
+            StoreError::AuditMetadataInvalid { action, reason }.locket_error(),
+            locket_core::LocketError::MetadataInvalid,
+            "case {}",
+            case.name
+        );
+    }
+
+    Ok(())
+}
+
+#[test]
+fn append_audit_allows_unknown_metadata_fields_after_schema_bump() -> Result<(), Box<dyn Error>> {
+    let mut test_store = open_initialized_store()?;
+    insert_project_profile(&test_store.store)?;
+    let metadata = json!({
+        "schema_version": 2,
+        "action": "DOCTOR",
+        "status": "SUCCESS",
+        "new_schema_field": "accepted by schema bump",
+    });
+    let audit = AuditWrite {
+        project_id: "lk_proj_test",
+        profile_id: None,
+        action: "DOCTOR",
+        status: "SUCCESS",
+        secret_name: None,
+        command: None,
+        metadata_json: &metadata,
+        timestamp: 100,
+    };
+
+    test_store.store.append_audit(&[42; 32], &audit)?;
+
+    let count: i64 = test_store.store.connection().query_row(
+        "SELECT COUNT(*) FROM audit_log WHERE project_id = 'lk_proj_test'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(count, 1);
+    Ok(())
+}
+
+#[test]
 fn audit_verify_fails_when_stored_schema_version_is_mutated() -> Result<(), Box<dyn Error>> {
     let mut test_store = open_initialized_store()?;
     insert_project_profile(&test_store.store)?;
@@ -653,6 +865,7 @@ fn audit_verify_fails_when_stored_schema_version_is_mutated() -> Result<(), Box<
         "schema_version": 1,
         "action": "DOCTOR",
         "status": "SUCCESS",
+        "command": "doctor",
     });
     let audit = AuditWrite {
         project_id: "lk_proj_test",

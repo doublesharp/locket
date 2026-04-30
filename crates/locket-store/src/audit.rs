@@ -5,7 +5,7 @@ use locket_core::{
     AUDIT_HMAC_LEN, AuditHmacInput, Timestamp, audit_hmac_v1_bytes, canonical_json_string,
 };
 use rusqlite::{OptionalExtension, Transaction, params};
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 use sha2::Sha256;
 
 use crate::Store;
@@ -246,6 +246,7 @@ pub fn append_audit(
     audit_key: &[u8],
     audit: &AuditWrite<'_>,
 ) -> Result<(), StoreError> {
+    validate_audit_metadata(audit)?;
     let metadata_json = canonical_json_string(Some(audit.metadata_json));
     if metadata_json.len() > AUDIT_METADATA_JSON_LIMIT {
         return Err(StoreError::AuditMetadataTooLarge {
@@ -315,6 +316,310 @@ pub fn append_audit(
 
     Ok(())
 }
+
+fn validate_audit_metadata(audit: &AuditWrite<'_>) -> Result<(), StoreError> {
+    let Some(metadata) = audit.metadata_json.as_object() else {
+        return audit_metadata_invalid(audit.action, "metadata_json must be an object");
+    };
+    validate_metadata_string(audit.action, metadata, "action", audit.action)?;
+    validate_metadata_string(audit.action, metadata, "status", audit.status)?;
+    let schema_version = validate_schema_version(audit.action, metadata)?;
+    validate_convenience_field(audit.action, metadata, "secret_name", audit.secret_name)?;
+    validate_convenience_field(audit.action, metadata, "command", audit.command)?;
+    validate_required_fields(audit.action, metadata)?;
+    if schema_version == 1 {
+        validate_known_fields(audit.action, metadata)?;
+    }
+    Ok(())
+}
+
+fn validate_schema_version(action: &str, metadata: &Map<String, Value>) -> Result<u64, StoreError> {
+    let Some(schema_version) = metadata.get("schema_version").and_then(Value::as_u64) else {
+        return audit_metadata_invalid(action, "schema_version must be an integer");
+    };
+    if schema_version == 0 {
+        return audit_metadata_invalid(action, "schema_version must be at least 1");
+    }
+    Ok(schema_version)
+}
+
+fn validate_metadata_string(
+    action: &str,
+    metadata: &Map<String, Value>,
+    field: &'static str,
+    expected: &str,
+) -> Result<(), StoreError> {
+    match metadata.get(field).and_then(Value::as_str) {
+        Some(actual) if actual == expected => Ok(()),
+        Some(_) => audit_metadata_invalid(action, format!("{field} must match audit row")),
+        None => audit_metadata_invalid(action, format!("{field} must be a string")),
+    }
+}
+
+fn validate_convenience_field(
+    action: &str,
+    metadata: &Map<String, Value>,
+    field: &'static str,
+    expected: Option<&str>,
+) -> Result<(), StoreError> {
+    match (expected, metadata.get(field)) {
+        (Some(expected), Some(Value::String(actual))) if actual == expected => Ok(()),
+        (Some(_), Some(Value::String(_))) => {
+            audit_metadata_invalid(action, format!("{field} must match audit row"))
+        }
+        (Some(_), Some(Value::Null)) => {
+            audit_metadata_invalid(action, format!("{field} must not be null"))
+        }
+        (Some(_), Some(_)) => audit_metadata_invalid(action, format!("{field} must be a string")),
+        (Some(_), None) => audit_metadata_invalid(
+            action,
+            format!("{field} convenience column must be mirrored in metadata_json"),
+        ),
+        (None, Some(Value::Null)) => {
+            audit_metadata_invalid(action, format!("{field} must be omitted, not null"))
+        }
+        (None, Some(_)) => {
+            audit_metadata_invalid(action, format!("{field} must be omitted when absent"))
+        }
+        (None, None) => Ok(()),
+    }
+}
+
+fn validate_required_fields(action: &str, metadata: &Map<String, Value>) -> Result<(), StoreError> {
+    for field in required_fields_for_action(action) {
+        if !metadata.contains_key(*field) {
+            return audit_metadata_invalid(action, format!("missing required field {field}"));
+        }
+    }
+    Ok(())
+}
+
+fn validate_known_fields(action: &str, metadata: &Map<String, Value>) -> Result<(), StoreError> {
+    for field in metadata.keys() {
+        if !KNOWN_AUDIT_METADATA_FIELDS.contains(&field.as_str()) {
+            return audit_metadata_invalid(action, format!("unknown field {field}"));
+        }
+    }
+    Ok(())
+}
+
+fn audit_metadata_invalid<T>(action: &str, reason: impl Into<String>) -> Result<T, StoreError> {
+    Err(StoreError::AuditMetadataInvalid { action: action.to_owned(), reason: reason.into() })
+}
+
+fn required_fields_for_action(action: &str) -> &'static [&'static str] {
+    match action {
+        "SET" | "ROTATE" | "PURGE" | "REVEAL" | "COPY" | "SECRET_META_UPDATE" => {
+            &["secret_name", "profile_id", "source"]
+        }
+        "SECRET_COPY" => &["secret_name", "from_profile_id", "to_profile_id"],
+        "RUN" | "RUN_POLICY" | "EXEC" => &["command"],
+        "PROFILE_CREATE" => &["project_id", "profile_id", "profile_name"],
+        "PROFILE_CHANGE" => &["operation"],
+        "DEVICE_ADD" | "DEVICE_REVOKE" => &["device_id", "fingerprint"],
+        "CLIENT_ADD" | "CLIENT_REVOKE" => &["client_id", "public_key_fingerprint"],
+        "TEAM_INIT" => &["project_id", "team_id", "team_name"],
+        "TEAM_REMOVE" => &["team_id", "member_id"],
+        "BACKUP_EXPORT" | "BACKUP_IMPORT" | "BUNDLE_VERIFY" => &["bundle_digest"],
+        _ => &[],
+    }
+}
+
+const KNOWN_AUDIT_METADATA_FIELDS: &[&str] = &[
+    "access_mode",
+    "action",
+    "active_secret_count",
+    "agent_available",
+    "all_mode",
+    "allowed_actions",
+    "allowed_policies",
+    "allowed_secret_names",
+    "arg_count",
+    "argv0",
+    "argv_program",
+    "backup_eligible",
+    "backup_state",
+    "buffer_limit_flushes",
+    "bundle_digest",
+    "cached_keys",
+    "cached_keys_cleared",
+    "check_names",
+    "checks",
+    "child_exit",
+    "child_exit_code",
+    "client_id",
+    "client_kind",
+    "client_name",
+    "clipboard_clear_supported",
+    "clipboard_supported",
+    "command",
+    "command_count",
+    "command_type",
+    "config_path_hash",
+    "config_keys",
+    "confirmation_source",
+    "counts",
+    "created_by_locket",
+    "credential_id_prefix",
+    "critical_fail_count",
+    "cwd_kind",
+    "dangerous",
+    "default_profile_id",
+    "default_profile",
+    "delivery_mode",
+    "denial_reason",
+    "deprecated_at",
+    "deprecated_version",
+    "description_updated",
+    "device_id",
+    "device_name",
+    "diagnostics",
+    "directory_grants_revoked",
+    "directory_hash",
+    "docker_context_class",
+    "env_mode",
+    "envelope_checksum_sha256",
+    "exit_code",
+    "expected_secret_count",
+    "external_env_sources",
+    "external_sources",
+    "fail_count",
+    "failure_reason",
+    "finding_counts",
+    "fingerprint",
+    "force",
+    "from_profile",
+    "from_profile_id",
+    "from_source",
+    "from_version",
+    "generated_files",
+    "grace_until",
+    "grant_scope",
+    "grant_id",
+    "helper",
+    "hook_change",
+    "hook",
+    "hook_command",
+    "hook_path_hash",
+    "hook_path_kind",
+    "include_audit",
+    "input_kind",
+    "invalid_utf8_passthrough",
+    "key_purposes_initialized",
+    "kdf_profile_id",
+    "kept_blocking_count",
+    "kept_warning_count",
+    "key",
+    "known_coverage_active",
+    "known_secret_names_redacted",
+    "known_value_coverage",
+    "live_grants_revoked",
+    "local",
+    "label",
+    "log_path_hash",
+    "metadata_only",
+    "marker_only",
+    "member_id",
+    "member_role",
+    "method",
+    "new_dangerous",
+    "new_profile_dangerous",
+    "new_profile_id",
+    "new_profile_name",
+    "operation",
+    "output_destinations",
+    "override",
+    "override_explicit",
+    "owner_updated",
+    "partial_line_flushes",
+    "pass_count",
+    "passkey_id",
+    "path_hash",
+    "path_kind",
+    "path_label",
+    "pattern_only",
+    "policy",
+    "policy_count",
+    "policy_id",
+    "prf_capable",
+    "pid_path_hash",
+    "prior_dangerous",
+    "prior_grant",
+    "prior_profile_id",
+    "prior_profile_name",
+    "prior_target_version",
+    "prior_version",
+    "profile",
+    "profile_count",
+    "profile_id",
+    "profile_name",
+    "project_config_schema",
+    "project_id",
+    "public_key_fingerprint",
+    "recipient_fingerprints",
+    "recovery_code_displayed",
+    "redact_names",
+    "redact_names_enabled",
+    "redacted_secret_names",
+    "redaction_counts_by_rule",
+    "replaced_unmanaged",
+    "require_known",
+    "required",
+    "required_update",
+    "required_secret_names",
+    "restored_entry_counts",
+    "restored_entry_kinds",
+    "revoked_at",
+    "revoked_count",
+    "result_state",
+    "root_hash",
+    "root_kind",
+    "rows_verified",
+    "schema_version",
+    "scope",
+    "secret_name",
+    "secret_name_count",
+    "secret_names",
+    "secret_sources",
+    "secrets",
+    "selected_source",
+    "selected_version",
+    "severity",
+    "socket_path_hash",
+    "skip_count",
+    "smoke_policy_configured",
+    "source",
+    "sources",
+    "status",
+    "storage",
+    "store_path_hash",
+    "stderr_chunks",
+    "stdout_chunks",
+    "suppressed_count",
+    "suppressions",
+    "tag_update_count",
+    "target_version",
+    "team_id",
+    "team_name",
+    "team_status",
+    "template_name",
+    "template_source_kind",
+    "timestamp",
+    "to_profile",
+    "to_profile_id",
+    "to_source",
+    "transports",
+    "trust_root_recorded",
+    "ttl_seconds",
+    "unsupported_reason",
+    "updated_field_count",
+    "updated_fields",
+    "user_verification",
+    "value",
+    "version",
+    "versions",
+    "warn_count",
+];
 
 impl Store {
     /// Appends one metadata-only audit row to the project audit chain.

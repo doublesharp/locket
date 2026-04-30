@@ -276,6 +276,7 @@ pub fn docker_policy_audit_metadata(
         "schema_version": 1,
         "action": "RUN",
         "status": status,
+        "command": docker_helper_command_label(prepared.helper_kind),
         "policy": prepared.policy.name,
         "helper": docker_helper_command_label(prepared.helper_kind),
         "delivery_mode": docker_delivery_mode_label(prepared.plan.delivery_mode),

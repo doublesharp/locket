@@ -69,6 +69,15 @@ pub enum StoreError {
         limit: usize,
     },
 
+    /// HMAC-covered audit metadata did not match the v1 typed shape rules.
+    #[error("audit metadata_json for action {action} is invalid: {reason}")]
+    AuditMetadataInvalid {
+        /// Action name from the rejected `AuditWrite`.
+        action: String,
+        /// Metadata-only validation reason.
+        reason: String,
+    },
+
     /// The database schema is newer than this binary can read.
     #[error(
         "database schema version {found} is newer than supported schema version {supported}; upgrade Locket"
@@ -109,9 +118,9 @@ impl StoreError {
             | Self::InvalidAuditHmacLength { .. }
             | Self::InvalidAuditKeyLength { .. }
             | Self::AuditCanonicalization(_) => LocketError::AuditIntegrityFailed,
-            Self::AuditMetadataTooLarge { .. } | Self::InviteNotFound { .. } => {
-                LocketError::MetadataInvalid
-            }
+            Self::AuditMetadataTooLarge { .. }
+            | Self::AuditMetadataInvalid { .. }
+            | Self::InviteNotFound { .. } => LocketError::MetadataInvalid,
             Self::Json(_) => LocketError::CorruptDb,
             Self::InviteReplayDetected { .. } => LocketError::ReplayDetected,
         }

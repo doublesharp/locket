@@ -204,10 +204,12 @@ fn profile_create_audit_metadata(project_id: &str, profile_id: &str, profile_nam
 }
 
 fn profile_dangerous_audit_metadata(profile: &ProfileRecord, prior: bool, new: bool) -> Value {
+    let command = if new { "profile mark-dangerous" } else { "profile clear-dangerous" };
     json!({
         "schema_version": 1,
         "action": "PROFILE_CHANGE",
         "status": "SUCCESS",
+        "command": command,
         "operation": "set_dangerous",
         "profile_id": profile.id,
         "profile_name": profile.name,

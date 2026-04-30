@@ -337,6 +337,7 @@ fn write_policy_update_audit_if_available(
         "schema_version": 1,
         "action": "POLICY_UPDATE",
         "status": "SUCCESS",
+        "command": "policy",
         "operation": operation,
         "policy": policy,
         "metadata_only": true,

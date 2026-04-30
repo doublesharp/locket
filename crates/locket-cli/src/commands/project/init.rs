@@ -567,6 +567,7 @@ fn write_init_audit(
         "schema_version": 1,
         "action": "INIT",
         "status": "SUCCESS",
+        "command": "init",
         "project_id": config.project_id.as_str(),
         "default_profile_id": profile.id,
         "generated_files": generated_files,

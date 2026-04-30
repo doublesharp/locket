@@ -165,6 +165,7 @@ fn write_trust_root_audit(
         "schema_version": 1,
         "action": "TRUST_ROOT",
         "status": "SUCCESS",
+        "command": "project",
         "operation": operation,
         "root_hash": format_hex(root_hash),
         "directory_grants_revoked": directory_grants_revoked,

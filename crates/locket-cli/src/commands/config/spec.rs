@@ -362,6 +362,7 @@ pub fn write_config_update_audit_if_available(
         "schema_version": 1,
         "action": "CONFIG_UPDATE",
         "status": "SUCCESS",
+        "command": "config",
         "operation": operation,
         "key": key,
         "value": "hidden",
