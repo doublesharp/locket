@@ -176,6 +176,12 @@ Slices that have merged to `main` and verified. Open work tracked in
   running/completed/failed/stale states and metadata-only field labels.
 - [x] `locket deny --all` revokes directory grants across all profiles
   for the project; `DENY_DIRECTORY` audit metadata echoes the deny command.
+- [x] Tauri 2 desktop shell scaffolded under `crates/locket-app/src-tauri/`
+  (`locket-desktop` binary): empty IPC surface, deny-by-default capability set,
+  release CSP byte-for-byte equal to `ReleaseWebviewPolicy::default()`, and
+  devtools gated on `cfg(debug_assertions)`. Vue 3 + Vite + TypeScript frontend
+  under `crates/locket-app/ui/` with `pnpm` build/lint/typecheck and Makefile
+  targets `app-ui-{install,check,build}` (skip when `pnpm` is missing).
 
 ## Full Spec Coverage TODO — Code Health and Bug Fixes
 
