@@ -118,6 +118,142 @@ impl MasterKeyStore for MemoryMasterKeyStore {
     }
 }
 
+/// Deterministic master-key store mock with per-operation failure injection.
+#[derive(Debug, Default)]
+pub struct MockMasterKeyStore {
+    key: Mutex<Option<(String, KeyBytes)>>,
+    failures: Mutex<MockMasterKeyStoreFailures>,
+}
+
+/// Failure mode returned by [`MockMasterKeyStore`] operations.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MockMasterKeyStoreFailure {
+    /// Return [`PlatformError::MasterKeyNotFound`].
+    MasterKeyNotFound,
+    /// Return [`PlatformError::InvalidMasterKey`].
+    InvalidMasterKey,
+    /// Return [`PlatformError::MemoryPoisoned`].
+    MemoryPoisoned,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct MockMasterKeyStoreFailures {
+    store: Option<MockMasterKeyStoreFailure>,
+    load: Option<MockMasterKeyStoreFailure>,
+    delete: Option<MockMasterKeyStoreFailure>,
+}
+
+impl MockMasterKeyStoreFailure {
+    const fn into_platform_error(self) -> PlatformError {
+        match self {
+            Self::MasterKeyNotFound => PlatformError::MasterKeyNotFound,
+            Self::InvalidMasterKey => PlatformError::InvalidMasterKey,
+            Self::MemoryPoisoned => PlatformError::MemoryPoisoned,
+        }
+    }
+}
+
+impl MockMasterKeyStore {
+    /// Configures the next and future store operations to return `failure`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PlatformError::MemoryPoisoned`] if the mock's failure state is poisoned.
+    pub fn set_store_failure(
+        &self,
+        failure: Option<MockMasterKeyStoreFailure>,
+    ) -> Result<(), PlatformError> {
+        self.failures.lock().map_err(|_| PlatformError::MemoryPoisoned)?.store = failure;
+        Ok(())
+    }
+
+    /// Configures the next and future load operations to return `failure`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PlatformError::MemoryPoisoned`] if the mock's failure state is poisoned.
+    pub fn set_load_failure(
+        &self,
+        failure: Option<MockMasterKeyStoreFailure>,
+    ) -> Result<(), PlatformError> {
+        self.failures.lock().map_err(|_| PlatformError::MemoryPoisoned)?.load = failure;
+        Ok(())
+    }
+
+    /// Configures the next and future delete operations to return `failure`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PlatformError::MemoryPoisoned`] if the mock's failure state is poisoned.
+    pub fn set_delete_failure(
+        &self,
+        failure: Option<MockMasterKeyStoreFailure>,
+    ) -> Result<(), PlatformError> {
+        self.failures.lock().map_err(|_| PlatformError::MemoryPoisoned)?.delete = failure;
+        Ok(())
+    }
+
+    fn configured_failure(
+        &self,
+        operation: impl FnOnce(&MockMasterKeyStoreFailures) -> Option<MockMasterKeyStoreFailure>,
+    ) -> Result<Option<PlatformError>, PlatformError> {
+        let failures = self.failures.lock().map_err(|_| PlatformError::MemoryPoisoned)?;
+        Ok(operation(&failures).map(MockMasterKeyStoreFailure::into_platform_error))
+    }
+}
+
+impl MasterKeyStore for MockMasterKeyStore {
+    fn store_master_key(
+        &self,
+        project_id: &str,
+        master_key: &KeyBytes,
+    ) -> Result<(), PlatformError> {
+        if let Some(error) = self.configured_failure(|failures| failures.store)? {
+            return Err(error);
+        }
+        let mut guard = self.key.lock().map_err(|_| PlatformError::MemoryPoisoned)?;
+        if let Some((_, old_key)) = guard.as_mut() {
+            old_key.zeroize();
+        }
+        *guard = Some((project_id.to_owned(), *master_key));
+        drop(guard);
+        Ok(())
+    }
+
+    fn load_master_key(&self, project_id: &str) -> Result<Zeroizing<KeyBytes>, PlatformError> {
+        if let Some(error) = self.configured_failure(|failures| failures.load)? {
+            return Err(error);
+        }
+        let loaded = {
+            let guard = self.key.lock().map_err(|_| PlatformError::MemoryPoisoned)?;
+            let Some((stored_project_id, key)) = guard.as_ref() else {
+                return Err(PlatformError::MasterKeyNotFound);
+            };
+            if stored_project_id != project_id {
+                return Err(PlatformError::MasterKeyNotFound);
+            }
+            let loaded = *key;
+            drop(guard);
+            loaded
+        };
+        Ok(Zeroizing::new(loaded))
+    }
+
+    fn delete_master_key(&self, project_id: &str) -> Result<(), PlatformError> {
+        if let Some(error) = self.configured_failure(|failures| failures.delete)? {
+            return Err(error);
+        }
+        let mut guard = self.key.lock().map_err(|_| PlatformError::MemoryPoisoned)?;
+        if guard.as_ref().is_some_and(|(stored_project_id, _)| stored_project_id == project_id)
+            && let Some((_, mut key)) = guard.take()
+        {
+            key.zeroize();
+        }
+        drop(guard);
+        Ok(())
+    }
+}
+
 pub fn master_key_entry(project_id: &str) -> Result<Entry, PlatformError> {
     Entry::new(KEYRING_SERVICE, &master_key_account(project_id)).map_err(PlatformError::Keyring)
 }

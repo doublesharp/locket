@@ -597,12 +597,12 @@ fn unlock_records_passphrase_method_when_keychain_is_unavailable()
     use std::sync::Arc;
 
     let directory = tempdir()?;
-    // Force the OS keystore to be unavailable for the entire project lifecycle so
-    // init falls back to the passphrase store and unlock loads through it.
-    let context = crate::tests::test_context_with_key_store(
-        &directory,
-        Arc::new(crate::tests::UnavailableMasterKeyStore),
-    );
+    // Force the OS keystore to fail for the entire project lifecycle so init
+    // falls back to the passphrase store and unlock loads through it.
+    let key_store = MockMasterKeyStore::default();
+    key_store.set_store_failure(Some(MockMasterKeyStoreFailure::MasterKeyNotFound))?;
+    key_store.set_load_failure(Some(MockMasterKeyStoreFailure::MasterKeyNotFound))?;
+    let context = crate::tests::test_context_with_key_store(&directory, Arc::new(key_store));
     run_with_context(
         Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
         &context,
