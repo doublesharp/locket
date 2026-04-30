@@ -13,7 +13,10 @@ mod recovery;
 mod user_verification;
 
 pub use error::PlatformError;
-pub use master_key::{KeyringMasterKeyStore, MasterKeyStore, MemoryMasterKeyStore};
+pub use master_key::{
+    KeyringMasterKeyStore, MasterKeyStore, MemoryMasterKeyStore, MockMasterKeyStore,
+    MockMasterKeyStoreFailure,
+};
 pub use passphrase::PassphraseFallbackMasterKeyStore;
 pub use process::{
     ProcessBinding, current_process_binding, process_binding_for_pid,

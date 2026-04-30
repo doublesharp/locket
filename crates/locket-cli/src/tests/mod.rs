@@ -3,7 +3,7 @@
 pub(super) use clap::Parser;
 pub(super) use locket_platform::{
     LocalUserVerifier, MasterKeyStore, MemoryLocalUserVerifier, MemoryMasterKeyStore,
-    PassphraseFallbackMasterKeyStore, PlatformError,
+    MockMasterKeyStore, MockMasterKeyStoreFailure, PassphraseFallbackMasterKeyStore, PlatformError,
 };
 pub(super) use serde_json::json;
 pub(super) use std::collections::BTreeSet;

@@ -2,10 +2,10 @@ use locket_crypto::{KEY_LEN, NONCE_LEN};
 
 use super::{
     LocalUserVerificationMethod, LocalUserVerificationRequest, LocalUserVerifier, MasterKeyStore,
-    MemoryLocalUserVerifier, MemoryMasterKeyStore, PassphraseFallbackMasterKeyStore, PlatformError,
-    ProcessBinding, RecoveryEnvelope, RecoveryEnvelopeEntry, RecoveryKdfToml,
-    UnavailableLocalUserVerifier, current_process_binding, decode_key, encode_key,
-    load_recovery_envelope, load_recovery_kdf_toml, master_key_account,
+    MemoryLocalUserVerifier, MemoryMasterKeyStore, MockMasterKeyStore, MockMasterKeyStoreFailure,
+    PassphraseFallbackMasterKeyStore, PlatformError, ProcessBinding, RecoveryEnvelope,
+    RecoveryEnvelopeEntry, RecoveryKdfToml, UnavailableLocalUserVerifier, current_process_binding,
+    decode_key, encode_key, load_recovery_envelope, load_recovery_kdf_toml, master_key_account,
     process_binding_matches_live_process, save_recovery_envelope, save_recovery_kdf_toml,
 };
 
@@ -66,6 +66,37 @@ fn memory_store_replaces_existing_project_key() -> Result<(), PlatformError> {
 
     assert!(matches!(store.load_master_key(PROJECT_ID), Err(PlatformError::MasterKeyNotFound)));
     assert_eq!(&*store.load_master_key("lk_proj_other")?, &replacement);
+    Ok(())
+}
+
+#[test]
+fn mock_keychain_covers_success_and_error_paths() -> Result<(), PlatformError> {
+    let store = MockMasterKeyStore::default();
+    let replacement = [7; KEY_LEN];
+
+    store.store_master_key(PROJECT_ID, &MASTER_KEY)?;
+    assert_eq!(&*store.load_master_key(PROJECT_ID)?, &MASTER_KEY);
+    store.store_master_key(PROJECT_ID, &replacement)?;
+    assert_eq!(&*store.load_master_key(PROJECT_ID)?, &replacement);
+
+    store.set_store_failure(Some(MockMasterKeyStoreFailure::MemoryPoisoned))?;
+    assert!(matches!(
+        store.store_master_key(PROJECT_ID, &MASTER_KEY),
+        Err(PlatformError::MemoryPoisoned)
+    ));
+    store.set_store_failure(None)?;
+
+    store.set_load_failure(Some(MockMasterKeyStoreFailure::InvalidMasterKey))?;
+    assert!(matches!(store.load_master_key(PROJECT_ID), Err(PlatformError::InvalidMasterKey)));
+    store.set_load_failure(None)?;
+
+    store.set_delete_failure(Some(MockMasterKeyStoreFailure::MemoryPoisoned))?;
+    assert!(matches!(store.delete_master_key(PROJECT_ID), Err(PlatformError::MemoryPoisoned)));
+    assert_eq!(&*store.load_master_key(PROJECT_ID)?, &replacement);
+    store.set_delete_failure(None)?;
+
+    store.delete_master_key(PROJECT_ID)?;
+    assert!(matches!(store.load_master_key(PROJECT_ID), Err(PlatformError::MasterKeyNotFound)));
     Ok(())
 }
 
