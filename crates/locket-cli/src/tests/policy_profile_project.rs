@@ -2,6 +2,7 @@
 use super::*;
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn policy_commands_update_locket_toml_without_duplicates_and_audit_metadata()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempdir()?;
