@@ -856,7 +856,7 @@ editing — they drift. Severity: **blocker** (security/correctness),
   - [x] **subtask** — e2e-greenfield-init: `locket init` →
     `device init` → `profile create dev` → `set` → `get`. Asserts
     audit chain integrity and 0600 file modes.
-  - [ ] **subtask** — e2e-dotenv-migration: `import` from `.env` →
+  - [~] [bec7ddfc] **subtask** — e2e-dotenv-migration: `import` from `.env` →
     confirmation prompt → tombstone old → emit `.env.example`. Covers
     the post-import delete-`.env` confirmation.
   - [ ] **subtask** — e2e-agent-rpc: drive the agent socket through
