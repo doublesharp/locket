@@ -139,10 +139,10 @@ skill set fits a leaf better.
   - [ ] **subtask** — vscode-ide-env-session: terminal injection of
     `LOCKET_IDE_ENV_SESSION` and the agent-socket consumer side.
     Pre-req: `vscode-agent-client`, `env-source-ide`.
-- [ ] Automation-client flows. Public metadata, allowed
-  action/policy fields, nonces, and CLI metadata are in. Remaining:
-  private-key storage and challenge-response auth
-  (`docs/specs/agent.md:62-79`).
+- [~] [acda32e4] branch agent-acda32e4/automation-private-key-storage, worktree .worktrees/agent-acda32e4-automation-private-key-storage; Automation-client private-key storage for Locket-managed clients (`docs/specs/agent.md:62-79`).
+- [ ] Automation-client challenge-response auth
+  (`docs/specs/agent.md:62-79`). Pre-req:
+  `automation-private-key-storage`.
 - [ ] Policy TOML — remaining (`docs/specs/policy.md`):
   - [ ] **subtask** — policy-ttls: `ttl` translates to a grant TTL.
     Pre-req: `agent-grant-table`.
