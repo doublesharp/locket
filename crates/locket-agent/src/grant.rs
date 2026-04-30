@@ -110,15 +110,46 @@ impl GrantTable {
         }
     }
 
-    /// Issues a fresh grant. The id is a v4 UUID encoded as a
-    /// hyphenated string. Callers are responsible for emitting the
-    /// `RequestGrant` audit row.
-    pub fn issue(&mut self, binding: GrantBinding, expires_at_unix_nanos: i128) -> GrantRecord {
-        let grant_id = uuid::Uuid::new_v4().to_string();
-        let record = GrantRecord::new(grant_id, binding, expires_at_unix_nanos);
-        self.insert(record.clone());
-        record
+    /// Returns the grant record for a given id without mutating the table.
+    #[must_use]
+    pub fn get(&self, grant_id: &str) -> Option<&GrantRecord> {
+        self.grants.get(grant_id)
     }
+
+    /// Issues a fresh grant. The id is a typed opaque `GrantId` (`lk_grant_<32 hex>`).
+    /// Callers are responsible for emitting the `RequestGrant` audit row.
+    ///
+    /// # Errors
+    ///
+    /// Returns `IdGenerationError` if the OS RNG fails.
+    pub fn issue(
+        &mut self,
+        binding: GrantBinding,
+        expires_at_unix_nanos: i128,
+    ) -> Result<GrantRecord, locket_core::id::IdGenerationError> {
+        let grant_id = locket_core::id::GrantId::generate()?;
+        let record = GrantRecord::new(grant_id.into_string(), binding, expires_at_unix_nanos);
+        self.insert(record.clone());
+        Ok(record)
+    }
+}
+
+/// Action set authorized by a live grant.
+///
+/// Spec: `docs/specs/agent.md:36-37`.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "PascalCase")]
+pub enum GrantAction {
+    /// Run a command policy.
+    RunPolicy,
+    /// Resolve an `lk://` reference.
+    ResolveReference,
+    /// Scan known secret values without persisting them.
+    ScanKnownValues,
+    /// Reveal one secret value through a gated path.
+    Reveal,
+    /// Copy one secret value through a gated path.
+    Copy,
 }
 
 /// Wire payload for `RequestGrant`.
@@ -129,7 +160,7 @@ pub struct RequestGrantPayload {
     /// Profile identifier the grant is scoped to.
     pub profile_id: String,
     /// Action set authorized by this grant.
-    pub action: String,
+    pub action: GrantAction,
     /// TTL in seconds.
     pub ttl_seconds: u64,
     /// Caller's process binding.

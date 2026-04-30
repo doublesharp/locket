@@ -367,6 +367,35 @@ async fn expire_grant_drops_already_expired_record() {
     assert!(state.grants.lock().await.is_empty());
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn expire_grant_leaves_live_grant_intact() {
+    use crate::envelope::{RequestEnvelope, ResponseEnvelope};
+    use crate::grant::{GrantBinding, GrantRecord};
+    use crate::method::AgentMethod;
+    use crate::server::{AgentSocketState, dispatch};
+    use serde_json::json;
+
+    let state = AgentSocketState::locked("test-version");
+    state.grants.lock().await.insert(GrantRecord::new(
+        "g-live",
+        GrantBinding::new(std::process::id(), "0"),
+        i128::MAX,
+    ));
+
+    let request =
+        RequestEnvelope::new("r-1", AgentMethod::ExpireGrant, json!({ "grant_id": "g-live" }));
+    let response = dispatch(&request, &state).await;
+
+    let ResponseEnvelope::Error(error) = response else {
+        unreachable!("ExpireGrant on a live grant must return an error envelope");
+    };
+    assert_eq!(error.error, "ProtocolError");
+    assert!(
+        state.grants.lock().await.get("g-live").is_some(),
+        "live grant must not be revoked by ExpireGrant"
+    );
+}
+
 #[cfg(unix)]
 mod server_tests {
     use std::os::unix::fs::PermissionsExt;

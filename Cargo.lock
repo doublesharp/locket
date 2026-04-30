@@ -2217,6 +2217,7 @@ dependencies = [
 name = "locket-agent"
 version = "0.1.0"
 dependencies = [
+ "locket-core",
  "rustix",
  "serde",
  "serde_bytes",
@@ -2224,7 +2225,6 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
- "uuid",
  "zeroize",
 ]
 

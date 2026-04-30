@@ -457,7 +457,12 @@ async fn handle_request_grant(
     let ttl_nanos = i128::from(payload.ttl_seconds).saturating_mul(1_000_000_000);
     let record = {
         let mut grants = state.grants.lock().await;
-        grants.issue(payload.binding, now.saturating_add(ttl_nanos))
+        match grants.issue(payload.binding, now.saturating_add(ttl_nanos)) {
+            Ok(record) => record,
+            Err(_) => {
+                return error_response(envelope, "ProtocolError", "failed to allocate grant id");
+            }
+        }
     };
     let response_payload = serde_json::json!({
         "grant_id": record.grant_id,
@@ -502,28 +507,33 @@ async fn handle_expire_grant(
                 return error_response(envelope, "ProtocolError", "invalid ExpireGrant payload");
             }
         };
-    let validation = {
+    let outcome = {
         let mut grants = state.grants.lock().await;
         let now = current_unix_nanos();
-        let outcome = grants.validate(&payload.grant_id, now, None);
-        if matches!(
-            outcome,
-            crate::grant::GrantValidation::Expired | crate::grant::GrantValidation::ProcessMismatch
-        ) {
-            grants.revoke(&payload.grant_id);
+        match grants.get(&payload.grant_id) {
+            None => ExpireOutcome::Unknown,
+            Some(record) if now >= record.expires_at_unix_nanos => {
+                grants.revoke(&payload.grant_id);
+                ExpireOutcome::DroppedExpired
+            }
+            Some(_) => ExpireOutcome::StillLive,
         }
-        outcome
     };
-    match validation {
-        crate::grant::GrantValidation::Expired
-        | crate::grant::GrantValidation::ProcessMismatch
-        | crate::grant::GrantValidation::Unknown => ResponseEnvelope::Success(
+    match outcome {
+        ExpireOutcome::DroppedExpired | ExpireOutcome::Unknown => ResponseEnvelope::Success(
             SuccessEnvelope::new(envelope.id.clone(), serde_json::Value::Null),
         ),
-        crate::grant::GrantValidation::Valid => {
+        ExpireOutcome::StillLive => {
             error_response(envelope, "ProtocolError", "grant is still live")
         }
     }
+}
+
+#[derive(Clone, Copy)]
+enum ExpireOutcome {
+    DroppedExpired,
+    Unknown,
+    StillLive,
 }
 
 async fn write_response(stream: &mut UnixStream, response: &ResponseEnvelope) -> bool {

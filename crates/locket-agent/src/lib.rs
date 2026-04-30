@@ -1,11 +1,5 @@
 //! Local agent and protocol types for Locket.
 
-// `uuid` (used to mint grant ids) pulls in `getrandom 0.4`, which transitively
-// brings the wasi target stack at versions that conflict with `tempfile`'s
-// older copy. The conflict only manifests on wasi targets we don't ship and
-// cannot be resolved without coordinated upgrades upstream.
-#![allow(clippy::multiple_crate_versions)]
-
 mod envelope;
 mod error;
 mod framing;
@@ -26,7 +20,8 @@ pub use envelope::{ErrorEnvelope, RequestEnvelope, ResponseEnvelope, SuccessEnve
 pub use error::ProtocolError;
 pub use framing::{decode_request_frame, decode_response_frame, encode_frame};
 pub use grant::{
-    GrantBinding, GrantIdPayload, GrantRecord, GrantTable, GrantValidation, RequestGrantPayload,
+    GrantAction, GrantBinding, GrantIdPayload, GrantRecord, GrantTable, GrantValidation,
+    RequestGrantPayload,
 };
 pub use method::{AgentMethod, UnknownMethod};
 #[cfg(unix)]

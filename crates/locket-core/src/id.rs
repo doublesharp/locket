@@ -104,6 +104,7 @@ opaque_id!(KdfProfileId, "lk_kdf_");
 opaque_id!(TeamId, "lk_team_");
 opaque_id!(MemberId, "lk_member_");
 opaque_id!(InviteId, "lk_invite_");
+opaque_id!(GrantId, "lk_grant_");
 
 /// Error returned when an opaque identifier is invalid.
 #[derive(Debug, Clone, Eq, Error, PartialEq)]
