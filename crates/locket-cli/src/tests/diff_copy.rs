@@ -201,6 +201,7 @@ fn diff_since_ignores_access_audit_rows() -> Result<(), Box<dyn std::error::Erro
 
     let copy_args = crate::GetArgs {
         key: "DATABASE_URL".to_owned(),
+        source: crate::SourceArg { source: None },
         reveal: false,
         force: false,
         copy: true,

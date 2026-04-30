@@ -121,6 +121,7 @@ fn parses_core_secret_commands() {
         ["locket", "init", "--name", "app"].as_slice(),
         &["locket", "set", "DATABASE_URL", "--source", "user-local"],
         &["locket", "import", ".env", "--source", "user-local"],
+        &["locket", "get", "DATABASE_URL", "--source", "user-local"],
         &["locket", "get", "DATABASE_URL", "--copy"],
         &["locket", "get", "DATABASE_URL", "--reveal", "--force"],
         &["locket", "rm", "DATABASE_URL"],

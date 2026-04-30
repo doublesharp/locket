@@ -61,6 +61,129 @@ fn get_reveal_returns_highest_precedence_value() -> Result<(), Box<dyn std::erro
 }
 
 #[test]
+fn get_with_explicit_source_returns_selected_source_metadata()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+
+    setup_two_source_secret(&context, "API_KEY", "user-value", "machine-value", 1_000)?;
+
+    let mut output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "get", "API_KEY", "--source", "user-local"])?,
+        &context,
+        &mut output,
+    )?;
+    let output = String::from_utf8(output)?;
+    assert!(
+        output.contains("source=user-local"),
+        "get --source must select user-local metadata: {output}"
+    );
+    assert!(
+        !output.contains("source=machine-local"),
+        "get --source must not fall back to the higher-precedence source: {output}"
+    );
+    assert!(!output.contains("user-value"));
+    assert!(!output.contains("machine-value"));
+    Ok(())
+}
+
+#[test]
+fn get_reveal_with_explicit_source_returns_selected_value() -> Result<(), Box<dyn std::error::Error>>
+{
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+
+    setup_two_source_secret(&context, "SECRET", "user-secret", "machine-secret", 1_000)?;
+
+    let mut reveal = Vec::new();
+    run_with_context(
+        Cli::try_parse_from([
+            "locket",
+            "get",
+            "SECRET",
+            "--source",
+            "user-local",
+            "--reveal",
+            "--force",
+        ])?,
+        &context,
+        &mut reveal,
+    )?;
+    assert_eq!(String::from_utf8(reveal)?, "user-secret\n");
+    Ok(())
+}
+
+#[test]
+fn get_copy_with_explicit_source_uses_selected_source_and_audit_shape()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+
+    setup_two_source_secret(&context, "SECRET", "user-secret", "machine-secret", 1_000)?;
+
+    let copy_args = crate::GetArgs {
+        key: "SECRET".to_owned(),
+        source: crate::SourceArg { source: Some(crate::SecretSourceArg::UserLocal) },
+        reveal: false,
+        force: false,
+        copy: true,
+        verify_user: false,
+    };
+    let mut copy_output = Vec::new();
+    let mut copy_stderr = Vec::new();
+    let mut clipboard = crate::MemoryClipboard::clearing_supported();
+    crate::get_command_with_clipboard_and_limit(
+        &context,
+        &mut copy_output,
+        &mut copy_stderr,
+        &copy_args,
+        |value| crate::ClipboardBackend::copy(&mut clipboard, value),
+        crate::ClipboardClearLimit::DirectCli,
+    )?;
+    assert_eq!(clipboard.value(), Some("user-secret"));
+
+    let copy_output = String::from_utf8(copy_output)?;
+    assert!(
+        copy_output.contains("source=user-local"),
+        "copy output must report selected source: {copy_output}"
+    );
+    assert!(!copy_output.contains("user-secret"));
+    assert!(!copy_output.contains("machine-secret"));
+
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let metadata: String = store.connection().query_row(
+        "SELECT metadata_json FROM audit_log WHERE action = 'COPY' ORDER BY sequence DESC LIMIT 1",
+        [],
+        |row| row.get(0),
+    )?;
+    let metadata: serde_json::Value = serde_json::from_str(&metadata)?;
+    assert_eq!(metadata["secret_name"], "SECRET");
+    assert_eq!(metadata["source"], "user-local");
+    assert_eq!(metadata["action"], "COPY");
+    assert_eq!(metadata["status"], "SUCCESS");
+    let metadata_text = metadata.to_string();
+    assert!(!metadata_text.contains("user-secret"));
+    assert!(!metadata_text.contains("machine-secret"));
+    Ok(())
+}
+
+#[test]
 fn list_shows_each_source_as_separate_entry() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempdir()?;
     let context = test_context(&directory);

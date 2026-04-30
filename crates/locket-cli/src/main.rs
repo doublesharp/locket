@@ -386,6 +386,8 @@ struct ImportArgs {
 struct GetArgs {
     /// Secret key name.
     key: String,
+    #[command(flatten)]
+    source: SourceArg,
     /// Reveal the value to stdout after policy gates.
     #[arg(long, conflicts_with = "copy")]
     reveal: bool,

@@ -9,7 +9,7 @@ use crate::runtime::error::{CliError, external_source_unavailable_error};
 use crate::runtime::user_verification::{UserVerificationAudit, require_user_verification};
 use crate::support::secret_helpers::{
     ResolvedSecret, ValueAccessAudit, decrypt_current_secret, resolve_active_secret,
-    reveal_ttl_seconds, write_value_access_audit_if_available,
+    resolve_active_secret_for_source, reveal_ttl_seconds, write_value_access_audit_if_available,
 };
 use crate::{GetArgs, access_denied_error};
 
@@ -51,7 +51,10 @@ pub fn get_command_with_clipboard_and_limit(
     copy_to_clipboard: impl FnOnce(&str) -> Result<(), String>,
     limit: ClipboardClearLimit,
 ) -> Result<(), CliError> {
-    let resolved_secret = resolve_active_secret(context, &args.key)?;
+    let resolved_secret = match args.source.source {
+        Some(source) => resolve_active_secret_for_source(context, &args.key, Some(source))?,
+        None => resolve_active_secret(context, &args.key)?,
+    };
     if args.copy {
         return get_copy_command(
             context,

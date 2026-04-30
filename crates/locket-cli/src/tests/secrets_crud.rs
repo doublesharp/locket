@@ -279,6 +279,7 @@ fn get_copy_writes_metadata_only_audit_without_value_leakage()
 
     let copy_args = crate::GetArgs {
         key: "DATABASE_URL".to_owned(),
+        source: crate::SourceArg { source: None },
         reveal: false,
         force: false,
         copy: true,
@@ -337,6 +338,7 @@ fn get_copy_wayland_limit_emits_targeted_warning_and_audit_reason()
 
     let copy_args = crate::GetArgs {
         key: "DATABASE_URL".to_owned(),
+        source: crate::SourceArg { source: None },
         reveal: false,
         force: false,
         copy: true,
@@ -387,6 +389,7 @@ fn get_copy_direct_cli_limit_records_audit_reason() -> Result<(), Box<dyn std::e
 
     let copy_args = crate::GetArgs {
         key: "DATABASE_URL".to_owned(),
+        source: crate::SourceArg { source: None },
         reveal: false,
         force: false,
         copy: true,
@@ -432,6 +435,7 @@ fn get_copy_unavailable_audits_unsupported_state_without_value_leakage()
 
     let copy_args = crate::GetArgs {
         key: "DATABASE_URL".to_owned(),
+        source: crate::SourceArg { source: None },
         reveal: false,
         force: false,
         copy: true,
@@ -493,6 +497,7 @@ fn get_copy_verify_user_denial_audits_without_decrypting_or_copying()
 
     let copy_args = crate::GetArgs {
         key: "DATABASE_URL".to_owned(),
+        source: crate::SourceArg { source: None },
         reveal: false,
         force: false,
         copy: true,
