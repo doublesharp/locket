@@ -845,7 +845,7 @@ editing — they drift. Severity: **blocker** (security/correctness),
   - [x] **subtask** — tests-audit-hmac: verify the audit chain HMAC
     recomputes against each row's stored `schema_version`; pairs with
     the existing audit-chain HMAC line in `Security/Recovery/Team`.
-  - [ ] **subtask** — tests-runtime-sessions: cover
+  - [~] [bec7ddfc] **subtask** — tests-runtime-sessions: cover
     `runtime_sessions` storage, retention, and `exec`/`run` recording.
   - [ ] **subtask** — tests-coverage-ratchet: raise the
     `make coverage-branch` gate by visible deltas after each `tests-*`
