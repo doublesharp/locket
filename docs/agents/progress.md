@@ -179,8 +179,7 @@ skill set fits a leaf better.
   - [ ] **subtask** — team-invite-accept: verify signature,
     fingerprint, expiry, replay, safety-words display. Pre-req:
     `team-invite-create`.
-  - [ ] **subtask** — team-invite-revoke: `locket team revoke-invite`.
-    Pre-req: `team-invite-create`.
+  - [~] [acda32e4] branch agent-acda32e4/team-invite-revoke, worktree .worktrees/agent-acda32e4-team-invite-revoke; **subtask** — team-invite-revoke: `locket team revoke-invite`. Pre-req: `team-invite-create`.
 - [~] [52c592db] branch agent-52c592db/team-role-authorization, worktree .worktrees/agent-52c592db-team-role-authorization; Role-based authorization for team-managed state (`docs/specs/team-sync-recovery.md:75-110`).
 - [~] [acda32e4] branch agent-acda32e4/passkey-remove-user-verification, worktree .worktrees/agent-acda32e4-passkey-remove-user-verification; **subtask** - passkey-remove-user-verification: fresh local verification before passkey removal.
 - [ ] Passkey support remaining: platform registration and PRF
