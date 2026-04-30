@@ -399,4 +399,177 @@ mod tests {
 
         assert!("override".parse::<EnvOverrideMode>().is_err());
     }
+
+    #[test]
+    fn minimal_lc_wildcard_passes_all_lc_prefixed_names() -> Result<(), EnvMergeError> {
+        let merged = merge_environment(
+            &env(&[
+                ("LC_ALL", "en_US.UTF-8"),
+                ("LC_MESSAGES", "en_US.UTF-8"),
+                ("LC_TIME", "C"),
+                ("LC_NUMERIC", "C"),
+                ("LOCALE", "not-matched"),
+            ]),
+            &["LC_*"],
+            &[],
+            &EnvMap::new(),
+            &EnvMap::new(),
+            EnvMode::Minimal,
+            EnvOverrideMode::Locket,
+        )?;
+
+        assert_eq!(merged.len(), 4);
+        assert!(merged.contains_key("LC_ALL"));
+        assert!(merged.contains_key("LC_MESSAGES"));
+        assert!(merged.contains_key("LC_TIME"));
+        assert!(merged.contains_key("LC_NUMERIC"));
+        assert!(!merged.contains_key("LOCALE"));
+        Ok(())
+    }
+
+    #[test]
+    fn lc_exact_match_does_not_match_lc_prefixed_names() -> Result<(), EnvMergeError> {
+        let merged = merge_environment(
+            &env(&[("LC", "exact"), ("LC_CTYPE", "UTF-8")]),
+            &["LC"],
+            &[],
+            &EnvMap::new(),
+            &EnvMap::new(),
+            EnvMode::Minimal,
+            EnvOverrideMode::Locket,
+        )?;
+
+        assert!(merged.contains_key("LC"));
+        assert!(!merged.contains_key("LC_CTYPE"));
+        Ok(())
+    }
+
+    #[test]
+    fn strict_with_locket_values_and_no_parent_vars() -> Result<(), EnvMergeError> {
+        let merged = merge_environment(
+            &EnvMap::new(),
+            &["PATH", "HOME"],
+            &[],
+            &EnvMap::new(),
+            &env(&[("SECRET_KEY", "value"), ("API_TOKEN", "token")]),
+            EnvMode::Strict,
+            EnvOverrideMode::Locket,
+        )?;
+
+        assert_eq!(merged.len(), 2);
+        assert_eq!(merged.get("SECRET_KEY").map(|v| v.as_str()), Some("value"));
+        assert_eq!(merged.get("API_TOKEN").map(|v| v.as_str()), Some("token"));
+        Ok(())
+    }
+
+    #[test]
+    fn merge_and_passthrough_are_equivalent_for_parent_inheritance() -> Result<(), EnvMergeError> {
+        let parent = env(&[("PATH", "/bin"), ("HOME", "/root"), ("TERM", "xterm")]);
+        let merged = merge_environment(
+            &parent,
+            &[],
+            &[],
+            &EnvMap::new(),
+            &EnvMap::new(),
+            EnvMode::Merge,
+            EnvOverrideMode::Locket,
+        )?;
+        let passthrough = merge_environment(
+            &parent,
+            &[],
+            &[],
+            &EnvMap::new(),
+            &EnvMap::new(),
+            EnvMode::Passthrough,
+            EnvOverrideMode::Locket,
+        )?;
+        assert_eq!(merged, passthrough);
+        Ok(())
+    }
+
+    #[test]
+    fn preserve_keeps_external_source_value_over_locket() -> Result<(), EnvMergeError> {
+        let merged = merge_environment(
+            &EnvMap::new(),
+            &[],
+            &[],
+            &env(&[("DATABASE_URL", "external")]),
+            &env(&[("DATABASE_URL", "locket")]),
+            EnvMode::Strict,
+            EnvOverrideMode::Preserve,
+        )?;
+
+        assert_eq!(merged.get("DATABASE_URL").map(|v| v.as_str()), Some("external"));
+        Ok(())
+    }
+
+    #[test]
+    fn error_mode_rejects_conflict_from_external_source() {
+        let result = merge_environment(
+            &EnvMap::new(),
+            &[],
+            &[],
+            &env(&[("API_KEY", "external")]),
+            &env(&[("API_KEY", "locket")]),
+            EnvMode::Strict,
+            EnvOverrideMode::Error,
+        );
+
+        assert!(matches!(result, Err(EnvMergeError::Conflict { name }) if name == "API_KEY"));
+    }
+
+    #[test]
+    fn inherit_env_extends_base_mode_without_replacing_allowlist() -> Result<(), EnvMergeError> {
+        let merged = merge_environment(
+            &env(&[("PATH", "/bin"), ("HOME", "/root"), ("MY_EXTRA", "yes")]),
+            &["PATH", "HOME"],
+            &["MY_EXTRA"],
+            &EnvMap::new(),
+            &EnvMap::new(),
+            EnvMode::Minimal,
+            EnvOverrideMode::Locket,
+        )?;
+
+        assert!(merged.contains_key("PATH"));
+        assert!(merged.contains_key("HOME"));
+        assert!(merged.contains_key("MY_EXTRA"));
+        Ok(())
+    }
+
+    #[test]
+    fn inherit_env_name_not_in_parent_is_silently_absent() -> Result<(), EnvMergeError> {
+        let merged = merge_environment(
+            &env(&[("PATH", "/bin")]),
+            &["PATH"],
+            &["DOES_NOT_EXIST"],
+            &EnvMap::new(),
+            &EnvMap::new(),
+            EnvMode::Minimal,
+            EnvOverrideMode::Locket,
+        )?;
+
+        assert!(!merged.contains_key("DOES_NOT_EXIST"));
+        assert_eq!(merged.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn minimal_safe_allowlist_does_not_pass_unmatched_names() -> Result<(), EnvMergeError> {
+        let merged = merge_environment(
+            &env(&[
+                ("SECRET_KEY", "secret"),
+                ("DATABASE_PASSWORD", "pw"),
+                ("AWS_SECRET_ACCESS_KEY", "aws"),
+            ]),
+            &["PATH", "HOME", "USER", "SHELL", "TMPDIR", "LANG", "LC_*", "TERM", "CI"],
+            &[],
+            &EnvMap::new(),
+            &EnvMap::new(),
+            EnvMode::Minimal,
+            EnvOverrideMode::Locket,
+        )?;
+
+        assert!(merged.is_empty());
+        Ok(())
+    }
 }
