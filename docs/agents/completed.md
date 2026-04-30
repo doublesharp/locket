@@ -510,6 +510,8 @@ Slices that have merged to `main` and verified. Open work tracked in
   checks the caller policy before returning values.
 - [x] vscode-status: VS Code now shows a metadata-only Locket status
   bar driven by SubscribeStatus; the agent stream path has coverage.
+- [x] recover-automation-client-keys: Recovery now restores managed
+  automation-client key entries from the envelope.
 
 ## Spec-by-Spec Completion Gates
 

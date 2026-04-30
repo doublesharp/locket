@@ -168,7 +168,6 @@ skill set fits a leaf better.
 - [ ] `locket device init --force` rekey: atomic
   `DEVICE_REVOKE`+`DEVICE_ADD` with recovery-envelope update and
   rollback on envelope failure.
-- [~] [52c592db] branch agent-52c592db/recover-automation-client-keys, worktree .worktrees/agent-52c592db-recover-automation-client-keys; `locket recover` restores Locket-managed automation-client private keys from the envelope.
 - [ ] `device init` first-run-on-machine bootstrap: master key,
   recovery envelope, and recovery code on a teammate clone
   (`docs/specs/team-sync-recovery.md`).
