@@ -65,7 +65,6 @@ skill set fits a leaf better.
 
 ### Near-Term CLI/Core
 
-- [~] [acda32e4] branch agent-acda32e4/source-precedence-sweep, worktree .worktrees/agent-acda32e4-source-precedence-sweep; Source-precedence remaining sweep across lifecycle and runtime commands with unified resolver (`docs/specs/data-model.md`, `docs/specs/runtime.md:188-216`).
 
 ### Runtime/DX
 

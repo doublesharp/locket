@@ -77,6 +77,8 @@ Slices that have merged to `main` and verified. Open work tracked in
 - [x] policy-delete-confirmation: Required typed policy-name confirmation before policy
   deletion.
 - [x] source-precedence-rm: Made rm fail closed when source selection is ambiguous.
+- [x] source-precedence-sweep: Centralized source precedence selection so lifecycle and
+  runtime callers share the same choice.
 
 ## Full Spec Coverage TODO — Runtime/DX
 
