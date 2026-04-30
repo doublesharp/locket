@@ -6,6 +6,8 @@ Slices that have merged to `main` and verified. Open work tracked in
 ## Full Spec Coverage TODO — Near-Term CLI/Core
 
 - [x] `locket init` spec coverage.
+- [x] `locket init` rolls back late resume failures across store rows,
+  recovery files, and newly created master-key material.
 - [x] `locket status` spec coverage.
 - [x] `locket emit-example` spec coverage.
 - [x] `locket completion <shell>`.

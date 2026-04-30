@@ -186,9 +186,6 @@ the spec already covers. Closed slices land in
   precedence and set tombstone preflight returns typed `SecretDeleted`;
   remaining commands still need the unified resolver
   (`docs/specs/data-model.md`, `docs/specs/runtime.md:188-216`).
-- [~] [70c448c4] `locket init` atomic rollback and resumable-partial-state when
-  Claim: branch agent-70c448c4/init-rollback-resume, worktree .worktrees/agent-70c448c4-init-rollback-resume, scope init rollback/resume failures.
-  store/keychain/recovery-envelope creation fails mid-flight.
 - [ ] Default high-entropy scan rule (≥20 chars, Shannon ≥4.5
   bits/char, exclude UUIDs/checksums/public ids) with project
   overrides in `locket.toml`; `policy doctor` reports non-default
