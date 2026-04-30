@@ -1,8 +1,9 @@
 use super::{
-    EntropyRule, FindingKind, KnownRedaction, RULE_ID_HIGH_ENTROPY, ScanFinding,
-    is_default_high_entropy_token, is_high_entropy_token, partition_inline_suppressions,
-    redact_text, redact_text_with_known_values, scan_text, scan_text_with_entropy_rule,
-    shannon_entropy,
+    EntropyRule, FindingKind, KnownRedaction, RULE_ID_ENV_FILE, RULE_ID_HIGH_ENTROPY,
+    RULE_ID_KNOWN_SECRET, RULE_ID_PROVIDER_TOKEN, ScanFinding, Severity,
+    is_default_high_entropy_token, is_high_entropy_token, is_provider_token,
+    partition_inline_suppressions, redact_text, redact_text_with_known_values, scan_text,
+    scan_text_with_entropy_rule, shannon_entropy,
 };
 
 #[test]
@@ -273,5 +274,114 @@ fn line_marker_does_not_match_next_line_marker_substring() {
 
     assert_eq!(result.kept.len(), 1);
     assert_eq!(result.kept[0].kind, FindingKind::HighEntropy);
+    assert!(result.suppressed.is_empty());
+}
+
+#[test]
+fn finding_kind_rule_ids_are_stable() {
+    assert_eq!(FindingKind::HighEntropy.rule_id(), RULE_ID_HIGH_ENTROPY);
+    assert_eq!(FindingKind::ProviderTokenPattern.rule_id(), RULE_ID_PROVIDER_TOKEN);
+    assert_eq!(FindingKind::EnvFileMarker.rule_id(), RULE_ID_ENV_FILE);
+    assert_eq!(FindingKind::KnownSecretValue.rule_id(), RULE_ID_KNOWN_SECRET);
+}
+
+#[test]
+fn finding_kind_default_severities_match_spec() {
+    assert_eq!(FindingKind::KnownSecretValue.default_severity(), Severity::Blocking);
+    assert_eq!(FindingKind::HighEntropy.default_severity(), Severity::Warning);
+    assert_eq!(FindingKind::ProviderTokenPattern.default_severity(), Severity::Warning);
+    assert_eq!(FindingKind::EnvFileMarker.default_severity(), Severity::Warning);
+}
+
+#[test]
+fn severity_as_str_produces_stable_labels() {
+    assert_eq!(Severity::Warning.as_str(), "warning");
+    assert_eq!(Severity::Blocking.as_str(), "blocking");
+    assert!(Severity::Warning < Severity::Blocking);
+}
+
+#[test]
+fn only_high_entropy_allows_inline_suppression() {
+    assert!(FindingKind::HighEntropy.allows_inline_suppression());
+    assert!(!FindingKind::ProviderTokenPattern.allows_inline_suppression());
+    assert!(!FindingKind::EnvFileMarker.allows_inline_suppression());
+    assert!(!FindingKind::KnownSecretValue.allows_inline_suppression());
+}
+
+#[test]
+fn is_provider_token_matches_all_builtin_prefixes() {
+    assert!(is_provider_token("sk_live_abc123def456"));
+    assert!(is_provider_token("sk_test_abc123def456"));
+    assert!(is_provider_token("ghp_abc123def456"));
+    assert!(is_provider_token("github_pat_abc123def456"));
+    assert!(is_provider_token("xoxb-abc123def456"));
+}
+
+#[test]
+fn is_provider_token_rejects_prefix_only_tokens() {
+    assert!(!is_provider_token("sk_live_"));
+    assert!(!is_provider_token("sk_test_"));
+    assert!(!is_provider_token("ghp_"));
+    assert!(!is_provider_token("xoxb-"));
+}
+
+#[test]
+fn is_provider_token_rejects_non_matching_tokens() {
+    assert!(!is_provider_token("AKIA1234567890ABCDEF"));
+    assert!(!is_provider_token("eyJhbGciOiJIUzI1NiJ9"));
+    assert!(!is_provider_token(""));
+}
+
+#[test]
+fn scan_text_identifies_env_file_by_filename_not_path() {
+    let findings_env = scan_text("project/.env", "plain text");
+    assert!(findings_env.iter().any(|f| f.kind == FindingKind::EnvFileMarker));
+
+    let findings_env_local = scan_text("src/.env.local", "plain text");
+    assert!(findings_env_local.iter().any(|f| f.kind == FindingKind::EnvFileMarker));
+
+    let findings_env_prod = scan_text("config/.env.production", "plain text");
+    assert!(findings_env_prod.iter().any(|f| f.kind == FindingKind::EnvFileMarker));
+
+    let findings_regular = scan_text("src/config.env", "plain text");
+    assert!(!findings_regular.iter().any(|f| f.kind == FindingKind::EnvFileMarker));
+}
+
+#[test]
+fn scan_text_with_multiple_findings_preserves_line_numbers() {
+    let provider = "sk_live_sampleTokenValue123";
+    let entropy = "Z9a$kLmN2pQx7R!sT4vW8yB3cD6eF";
+    let text = format!("line1\n{provider}\nline3\n{entropy}\n");
+    let findings = scan_text("notes.txt", &text);
+
+    let provider_finding = findings.iter().find(|f| f.kind == FindingKind::ProviderTokenPattern);
+    let entropy_finding = findings.iter().find(|f| f.kind == FindingKind::HighEntropy);
+
+    assert!(provider_finding.is_some(), "provider token finding expected");
+    assert!(entropy_finding.is_some(), "high entropy finding expected");
+    assert_eq!(provider_finding.unwrap().line, 2);
+    assert_eq!(entropy_finding.unwrap().line, 4);
+}
+
+#[test]
+fn scan_text_returns_empty_for_clean_text() {
+    let findings = scan_text("clean.rs", "let x = 42;\nlet name = \"hello world\";\n");
+    assert!(findings.is_empty());
+}
+
+#[test]
+fn shannon_entropy_increases_with_character_diversity() {
+    let low = shannon_entropy("aaaaaaaaaaaaaaaaaaaaaa");
+    let medium = shannon_entropy("ababababababababababab");
+    let high = shannon_entropy("Z9a$kLmN2pQx7R!sT4vW8yB3cD6eF");
+    assert!(low < medium);
+    assert!(medium < high);
+}
+
+#[test]
+fn suppression_result_default_is_empty() {
+    use super::SuppressionResult;
+    let result = SuppressionResult::default();
+    assert!(result.kept.is_empty());
     assert!(result.suppressed.is_empty());
 }
