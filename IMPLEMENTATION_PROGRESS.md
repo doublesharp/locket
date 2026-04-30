@@ -205,7 +205,8 @@ the spec already covers. Closed slices land in
   bits/char, exclude UUIDs/checksums/public ids) with project
   overrides in `locket.toml`; `policy doctor` reports non-default
   thresholds (`docs/specs/scan-redaction.md:24`).
-- [ ] `locket redact --stdin` streaming mode with non-UTF-8 byte
+- [~] [bec7ddfc] `locket redact --stdin` streaming mode with non-UTF-8 byte
+  Claim: branch agent-bec7ddfc/redact-stdin-bytes, worktree .worktrees/agent-bec7ddfc-redact-stdin-bytes.
   segment pass-through (warn metadata-only); pattern-only fallback
   label `lk_redacted_PATTERN_N` for matches not tied to a known id
   (`docs/specs/scan-redaction.md:43-49`).
