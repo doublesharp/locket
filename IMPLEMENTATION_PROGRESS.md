@@ -647,9 +647,8 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
   - [ ] **subtask** — search-audit
   - [ ] **subtask** — search-scan-findings
   - [ ] **subtask** — search-devices-members
-- [~] [cb2437f7] Accessibility: keyboard nav, focus states, screen-reader labels,
-  contrast, reduced motion, no post-TTL value leak via a11y metadata.
-  Claim: branch agent-cb2437f7/accessibility-baseline, worktree .worktrees/agent-cb2437f7-accessibility-baseline, scope desktop accessibility descriptors.
+- [x] Accessibility baseline descriptors cover keyboard navigation, focus,
+  labels, contrast, reduced motion, and post-TTL metadata scrubbing.
 - [x] Empty-state guidance for `locket init`/`team accept`/
   `profile create dev`/`set`/`import`/`policy add`/`agent start`/
   `device init`.
