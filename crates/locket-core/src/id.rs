@@ -101,6 +101,7 @@ opaque_id!(PasskeyId, "lk_passkey_");
 opaque_id!(SessionId, "lk_session_");
 opaque_id!(ClientId, "lk_client_");
 opaque_id!(KdfProfileId, "lk_kdf_");
+opaque_id!(TeamId, "lk_team_");
 
 /// Error returned when an opaque identifier is invalid.
 #[derive(Debug, Clone, Eq, Error, PartialEq)]

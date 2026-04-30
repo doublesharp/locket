@@ -96,6 +96,29 @@ fn pending_team_invite_record_from_row(
 }
 
 impl Store {
+    /// Inserts a team metadata row.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Sqlite`] when `SQLite` rejects the insert; in
+    /// particular, a second insert for a project the
+    /// `teams_one_per_project_idx` already covers fails with a unique-constraint
+    /// error.
+    pub fn insert_team(&self, team: &TeamRecord) -> Result<(), StoreError> {
+        self.connection.execute(
+            "INSERT INTO teams(id, project_id, name, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                team.id.as_str(),
+                team.project_id.as_str(),
+                team.name.as_str(),
+                team.created_at,
+                team.updated_at,
+            ],
+        )?;
+        Ok(())
+    }
+
     /// Returns the team metadata row for a project.
     ///
     /// # Errors

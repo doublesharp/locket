@@ -812,10 +812,18 @@ enum DeviceCommand {
     Remove(DeviceRemoveArgs),
 }
 
-#[derive(Clone, Copy, Debug, Subcommand)]
-enum TeamCommand {
+#[derive(Debug, Subcommand)]
+pub(crate) enum TeamCommand {
+    /// Initialize a team for this project.
+    Init(TeamInitArgs),
     /// List team members and pending invites.
     Members,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct TeamInitArgs {
+    /// Human-readable team name.
+    pub name: String,
 }
 
 #[derive(Debug, Args)]

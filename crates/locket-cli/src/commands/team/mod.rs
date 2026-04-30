@@ -1,4 +1,4 @@
-//! Team commands: device, client, bundle.
+//! Team commands: device, client, bundle, members.
 
 pub mod bundle;
 pub mod client;

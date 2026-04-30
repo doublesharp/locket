@@ -25,7 +25,7 @@ pub use env::{
 pub use error::{ExitCode, LocketError};
 pub use id::{
     ClientId, DeviceId, IdGenerationError, InvalidId, KdfProfileId, KeyId, PasskeyId, ProfileId,
-    ProjectId, SecretId, SessionId,
+    ProjectId, SecretId, SessionId, TeamId,
 };
 pub use metadata::{MetadataPrivacyFinding, MetadataValidationError, validate_metadata_field};
 pub use policy::{

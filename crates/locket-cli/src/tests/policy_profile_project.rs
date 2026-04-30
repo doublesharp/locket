@@ -786,3 +786,82 @@ fn shell_snippets_are_metadata_only() -> Result<(), Box<dyn std::error::Error>> 
     assert!(!install_output.contains("postgres://localhost/app"));
     Ok(())
 }
+
+#[test]
+fn team_init_writes_team_init_audit_row_and_team_record() -> Result<(), Box<dyn std::error::Error>>
+{
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+
+    let mut output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "team", "init", "platform-team"])?,
+        &context,
+        &mut output,
+    )?;
+    let output = String::from_utf8(output)?;
+    assert!(output.contains("team initialized: platform-team"));
+    assert!(output.contains("metadata_only: yes"));
+
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let project_id: String =
+        store.connection().query_row("SELECT id FROM projects LIMIT 1", [], |row| row.get(0))?;
+    let team = store.get_team_by_project(&project_id)?.ok_or("team row should exist")?;
+    assert_eq!(team.name, "platform-team");
+    assert!(team.id.starts_with("lk_team_"));
+
+    let metadata: String = store.connection().query_row(
+        "SELECT metadata_json FROM audit_log WHERE action = 'TEAM_INIT'
+         ORDER BY sequence DESC LIMIT 1",
+        [],
+        |row| row.get(0),
+    )?;
+    let metadata_json: serde_json::Value = serde_json::from_str(&metadata)?;
+    assert_eq!(metadata_json["status"], "SUCCESS");
+    assert_eq!(metadata_json["command"], "team init");
+    assert_eq!(metadata_json["team_name"], "platform-team");
+    assert_eq!(metadata_json["team_id"], team.id);
+    assert_eq!(metadata_json["project_id"], project_id);
+    Ok(())
+}
+
+#[test]
+fn team_init_rejects_already_initialized_project() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    run_with_context(
+        Cli::try_parse_from(["locket", "team", "init", "platform-team"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+
+    let result = run_with_context(
+        Cli::try_parse_from(["locket", "team", "init", "another-team"])?,
+        &context,
+        &mut Vec::new(),
+    );
+    let Err(error) = result else {
+        return Err("re-init must reject the second team".into());
+    };
+    assert_eq!(error.exit_code(), 67);
+    assert!(error.to_string().contains("team already initialized"));
+
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let team_init_count: i64 = store.connection().query_row(
+        "SELECT COUNT(*) FROM audit_log WHERE action = 'TEAM_INIT'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(team_init_count, 1, "rejected re-init must not write a second TEAM_INIT row");
+    Ok(())
+}

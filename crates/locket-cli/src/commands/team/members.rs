@@ -1,10 +1,14 @@
 use std::io::Write;
 
-use locket_store::{PendingTeamInviteRecord, TeamMemberListRecord, TeamRecord};
+use locket_core::TeamId;
+use locket_crypto::KeyPurpose;
+use locket_store::{AuditWrite, PendingTeamInviteRecord, TeamMemberListRecord, TeamRecord};
+use serde_json::json;
 
 use crate::{
-    CliError, RuntimeContext, TeamCommand, ensure_project_exists, now_unix_nanos, open_store,
-    privacy_alias, privacy_redact_names_enabled, require_project,
+    CliError, RuntimeContext, TeamCommand, TeamInitArgs, ensure_project_exists, load_project_key,
+    now_unix_nanos, open_store, privacy_alias, privacy_redact_names_enabled, require_project,
+    secret_already_exists_error,
 };
 
 pub fn team_command(
@@ -13,8 +17,64 @@ pub fn team_command(
     command: TeamCommand,
 ) -> Result<(), CliError> {
     match command {
+        TeamCommand::Init(args) => team_init_command(context, output, &args),
         TeamCommand::Members => team_members_command(context, output),
     }
+}
+
+fn team_init_command(
+    context: &RuntimeContext,
+    output: &mut impl Write,
+    args: &TeamInitArgs,
+) -> Result<(), CliError> {
+    let resolved = require_project(context)?;
+    let mut store = open_store(context)?;
+    let project_id = resolved.config.project_id.as_str();
+    ensure_project_exists(&store, project_id)?;
+
+    if let Some(existing) = store.get_team_by_project(project_id)? {
+        return Err(secret_already_exists_error(format!(
+            "team already initialized: {} ({})",
+            existing.name, existing.id
+        )));
+    }
+
+    let team_id = TeamId::generate().map_err(|_| CliError::Time)?;
+    let timestamp = now_unix_nanos()?;
+    let record = TeamRecord {
+        id: team_id.into_string(),
+        project_id: project_id.to_owned(),
+        name: args.name.clone(),
+        created_at: timestamp,
+        updated_at: timestamp,
+    };
+    store.insert_team(&record)?;
+
+    let audit_key = load_project_key(context, &store, project_id, KeyPurpose::Audit)?;
+    let metadata = json!({
+        "schema_version": 1,
+        "action": "TEAM_INIT",
+        "status": "SUCCESS",
+        "command": "team init",
+        "project_id": project_id,
+        "team_id": record.id,
+        "team_name": record.name,
+    });
+    let audit = AuditWrite {
+        project_id,
+        profile_id: None,
+        action: "TEAM_INIT",
+        status: "SUCCESS",
+        secret_name: None,
+        command: Some("team init"),
+        metadata_json: &metadata,
+        timestamp,
+    };
+    store.append_audit(audit_key.as_ref(), &audit)?;
+
+    writeln!(output, "team initialized: {} ({})", record.name, record.id)?;
+    writeln!(output, "metadata_only: yes")?;
+    Ok(())
 }
 
 fn team_members_command(context: &RuntimeContext, output: &mut impl Write) -> Result<(), CliError> {
