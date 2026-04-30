@@ -231,8 +231,7 @@ Slices 1+2 shipped (agent client, tray binding, 6 view scaffolds,
     `SubscribeStatus`; replace today's 5 s `agent_status` poll.
     Pre-req: `agent-subscribe-status`. Pairs with
     `desktop-subscribe-status`.
-  - [ ] **subtask** — tray-menu-actions: open / lock / unlock /
-    switch profile / run policy / scan, all routed through the agent.
+  - [~] [acda32e4] branch agent-acda32e4/tray-menu-actions, worktree .worktrees/agent-acda32e4-tray-menu-actions; **subtask** — tray-menu-actions: open / lock / unlock / switch profile / run policy / scan, all routed through the agent.
   - [ ] **subtask** — tray-recent-activity: bounded counts/safe
     statuses only. Source from `agent-list-audit`.
 - [ ] Desktop UI campaign — remaining slices:
