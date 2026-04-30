@@ -308,6 +308,21 @@ enum Command {
         #[command(subcommand)]
         command: RecoveryCommand,
     },
+    /// Internal: run the agent daemon serve loop. Hidden from --help.
+    ///
+    /// Spawned by `locket agent start`. Not intended for direct use.
+    #[command(name = "internal-agent-serve", hide = true)]
+    InternalAgentServe(InternalAgentServeArgs),
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct InternalAgentServeArgs {
+    /// Filesystem path the agent should bind for its Unix socket.
+    #[arg(long)]
+    pub(crate) socket: PathBuf,
+    /// Filesystem path the agent should write its PID file to.
+    #[arg(long)]
+    pub(crate) pid_file: PathBuf,
 }
 
 #[derive(Debug, Args)]
@@ -1160,6 +1175,7 @@ fn run_with_context(
         Command::Recovery { command } => {
             vault::recovery::recovery_command(context, output, command)?;
         }
+        Command::InternalAgentServe(args) => agent::run_internal_agent_serve(&args)?,
     }
 
     Ok(0)

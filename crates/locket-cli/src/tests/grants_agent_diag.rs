@@ -361,8 +361,8 @@ fn untrust_root_requires_hash_confirmation_and_revokes_directory_grants()
 }
 
 #[test]
-fn agent_commands_report_metadata_only_unavailable_state() -> Result<(), Box<dyn std::error::Error>>
-{
+fn agent_status_and_stop_report_stopped_when_no_daemon_is_running()
+-> Result<(), Box<dyn std::error::Error>> {
     let directory = tempdir()?;
     let context = test_context(&directory);
 
@@ -373,18 +373,15 @@ fn agent_commands_report_metadata_only_unavailable_state() -> Result<(), Box<dyn
         &mut status_output,
     )?;
     let status_output = String::from_utf8(status_output)?;
-    assert!(status_output.contains("agent: unavailable"));
-    assert!(status_output.contains("running: no"));
+    assert!(status_output.contains("agent: stopped"), "{status_output}");
+    assert!(status_output.contains("running: no"), "{status_output}");
+    assert!(status_output.contains("last_known_pid: -"), "{status_output}");
+    assert!(status_output.contains("socket:"), "{status_output}");
 
-    let mut start_output = Vec::new();
-    run_with_context(
-        Cli::try_parse_from(["locket", "agent", "start"])?,
-        &context,
-        &mut start_output,
-    )?;
-    let start_output = String::from_utf8(start_output)?;
-    assert!(start_output.contains("daemon not available in this build"));
-    assert!(start_output.contains("socket:"));
+    // Seed a stale pid file so `agent stop` exercises the cleanup path.
+    let pid_path = crate::agent_pid_path(&context);
+    crate::prepare_agent_log_dir(&context)?;
+    fs::write(&pid_path, "999999999\n")?;
 
     let mut stop_output = Vec::new();
     run_with_context(
@@ -392,7 +389,23 @@ fn agent_commands_report_metadata_only_unavailable_state() -> Result<(), Box<dyn
         &context,
         &mut stop_output,
     )?;
-    assert!(String::from_utf8(stop_output)?.contains("agent: stopped"));
+    let stop_output = String::from_utf8(stop_output)?;
+    assert!(stop_output.contains("agent: stopped"), "{stop_output}");
+    assert!(stop_output.contains("running: no"), "{stop_output}");
+    assert!(stop_output.contains("removed_stale_pid: yes"), "{stop_output}");
+    assert!(!pid_path.exists(), "stop should remove stale pid file");
+
+    // After stop without a pid file, the next stop reports a clean
+    // no-op without flagging removed_stale_pid.
+    let mut second_stop_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "agent", "stop"])?,
+        &context,
+        &mut second_stop_output,
+    )?;
+    let second_stop_output = String::from_utf8(second_stop_output)?;
+    assert!(second_stop_output.contains("agent: stopped"), "{second_stop_output}");
+    assert!(second_stop_output.contains("removed_stale_pid: no"), "{second_stop_output}");
 
     let mut logs_output = Vec::new();
     run_with_context(
@@ -401,8 +414,7 @@ fn agent_commands_report_metadata_only_unavailable_state() -> Result<(), Box<dyn
         &mut logs_output,
     )?;
     let logs_output = String::from_utf8(logs_output)?;
-    assert!(logs_output.contains("\"action\":\"start\""));
-    assert!(logs_output.contains("\"action\":\"stop\""));
+    assert!(logs_output.contains("\"action\":\"stop\""), "{logs_output}");
     assert!(!logs_output.contains("secret"));
 
     let mut limited_logs_output = Vec::new();
@@ -412,8 +424,7 @@ fn agent_commands_report_metadata_only_unavailable_state() -> Result<(), Box<dyn
         &mut limited_logs_output,
     )?;
     let limited_logs_output = String::from_utf8(limited_logs_output)?;
-    assert!(limited_logs_output.contains("\"action\":\"stop\""));
-    assert!(!limited_logs_output.contains("\"action\":\"start\""));
+    assert!(limited_logs_output.contains("\"action\":\"stop\""), "{limited_logs_output}");
     Ok(())
 }
 

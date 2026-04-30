@@ -401,6 +401,7 @@ pub(super) fn setup_recovery_envelope(
     Ok((kdf, envelope, code_bytes))
 }
 
+mod agent_lifecycle;
 mod ai_safe;
 mod cli_basics;
 mod cli_errors;
