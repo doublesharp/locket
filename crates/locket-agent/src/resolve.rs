@@ -871,6 +871,63 @@ mod tests {
         Ok(())
     }
 
+    fn rotate_encrypted_secret(
+        store: &mut Store,
+        version_number: u32,
+        value: &str,
+        grace_until: Option<i64>,
+        profile_secret_key: &locket_crypto::KeyBytes,
+        profile_fingerprint_key: &locket_crypto::KeyBytes,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let secret = store
+            .get_secret_by_source(PROJECT_ID, PROFILE_ID, SECRET_NAME, "user-local")?
+            .ok_or("missing secret to rotate")?;
+        let value_aad = secret_blob_aad_v1(&SecretBlobAad::new(
+            PROJECT_ID,
+            PROFILE_ID,
+            &secret.id,
+            SECRET_NAME,
+            version_number,
+        ))?;
+        let wrap_aad = key_wrap_aad_v1(&KeyWrapAad::new(
+            PROJECT_ID,
+            &secret.id,
+            Some(PROFILE_ID),
+            version_number,
+            KeyWrapPurpose::SecretDek,
+        ))?;
+        let encrypted = encrypt_secret_value_v1(profile_secret_key, value, &value_aad, &wrap_aad)?;
+        let fingerprint = secret_fingerprint_v1(profile_fingerprint_key, value)?;
+        let version = SecretVersionRecord {
+            secret_id: secret.id.clone(),
+            version: version_number,
+            source: secret.source.clone(),
+            origin: "manual".to_owned(),
+            state: "current".to_owned(),
+            created_at: 2,
+            deprecated_at: None,
+            grace_until: None,
+            purged_at: None,
+        };
+        let blob = SecretBlobRecord {
+            secret_id: secret.id.clone(),
+            version: version_number,
+            encrypted_dek: encrypted.encrypted_dek,
+            ciphertext: encrypted.ciphertext,
+            value_nonce: encrypted.value_nonce,
+            aad_schema_version: 1,
+            created_at: 2,
+        };
+        let fingerprint = SecretFingerprintRecord {
+            secret_id: secret.id.clone(),
+            version: version_number,
+            fingerprint: fingerprint.to_vec(),
+            created_at: 2,
+        };
+        store.rotate_secret(&secret, &version, &blob, &fingerprint, 2, grace_until)?;
+        Ok(())
+    }
+
     async fn unlocked_state(fixture: &ResolveFixture) -> AgentSocketState {
         let state = AgentSocketState::locked("test-version");
         state.grants.lock().await.insert(test_grant_record(i128::MAX));
@@ -1116,6 +1173,43 @@ mod tests {
         assert_eq!(audits[0]["policy"], "deny-database");
         assert_eq!(audits[0]["secret_name"], SECRET_NAME);
         assert!(audits[0].get("value").is_none());
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn handle_resolve_honors_pinned_current_version() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let fixture = build_fixture()?;
+        let version_two_value = "resolved test value v2";
+        let mut store = Store::open(&fixture.store_path)?;
+        rotate_encrypted_secret(
+            &mut store,
+            2,
+            version_two_value,
+            None,
+            &fixture.profile_secret_key,
+            &fixture.profile_fingerprint_key,
+        )?;
+
+        let unpinned = resolve_with_fixture(&fixture, "lk://dev/DATABASE_URL", 1).await?;
+        let unpinned = resolve_payload(unpinned)?;
+        assert_eq!(unpinned.version, 2);
+        assert_eq!(unpinned.value, version_two_value);
+
+        let pinned = resolve_with_fixture(&fixture, "lk://dev/DATABASE_URL@v2", 1).await?;
+        let pinned = resolve_payload(pinned)?;
+        assert_eq!(pinned.version, 2);
+        assert_eq!(pinned.value, version_two_value);
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn handle_resolve_pinned_missing_version_does_not_fallback()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let fixture = build_fixture()?;
+        let response = resolve_with_fixture(&fixture, "lk://dev/DATABASE_URL@v99", 1).await?;
+
+        assert_eq!(error_code(response)?, "SecretNotFound");
         Ok(())
     }
 
