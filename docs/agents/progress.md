@@ -484,8 +484,7 @@ Re-verify file:line references before editing — they drift. Severity:
   staged-scan, full-scan, Argon2 (`docs/specs/performance.md`).
 - [ ] PR vs release tolerance gate: 10% PR / 20% tracked-regression
   / no-tolerance release (`docs/specs/performance.md`).
-- [ ] `make coverage-html` and `make test` Make targets exposed
-  (`docs/specs/testing.md`).
+- [~] [4ab55ee9] branch agent-4ab55ee9/make-test-targets, worktree .worktrees/agent-4ab55ee9-make-test-targets; `make coverage-html` and `make test` Make targets exposed (`docs/specs/testing.md`).
 - [ ] `cargo geiger` (or equivalent) unsafe inventory before public
   release and after any crypto/IPC/platform/storage dep change
   (`docs/specs/engineering.md`).
