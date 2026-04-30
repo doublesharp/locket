@@ -288,14 +288,7 @@ the spec already covers. Closed slices land in
   streaming. Decomposed below; later subtasks depend on
   `agent-socket-server` — note the dependency on the claim line if you
   take a downstream task.
-  - [~] [7138f228] **subtask** — agent-socket-server: bind a per-user Unix domain
-    socket on Linux/macOS (and a named pipe on Windows) with 0600/equivalent
-    permissions, accept connections in a loop, decode the existing
-    length-prefixed framing, dispatch to a stub RPC handler covering
-    `Status` and `Heartbeat`. Errors: `AgentSocketInUse` (81). Tests: socket
-    is created with the right permissions, a second daemon fails closed,
-    framing round-trips. Pre-req for the other agent subtasks.
-    Claim: branch agent-7138f228/agent-socket-server, worktree .worktrees/agent-7138f228-agent-socket-server. Scope: Unix-only bind on Linux/macOS via tokio, 0600 socket + 0700 parent dir, in-process Status/Heartbeat stub handlers, second-daemon collision returns AgentSocketInUse, framing round-trip via existing locket_agent::encode_frame/decode helpers; Windows named-pipe support stays a separate `[ ]` follow-up.
+  - [x] **subtask** — agent-socket-server: Unix domain socket with 0600/0700 perms, tokio accept loop, Status/Heartbeat stub handlers, `AgentSocketInUse` on collision, framing round-trip tests.
   - [ ] **subtask** — agent-peer-validation: validate the connecting peer
     against the daemon's uid (`SO_PEERCRED` on Linux, `LOCAL_PEERPID` +
     `LOCAL_PEEREPID` on macOS, named-pipe peer SID on Windows). Reject
@@ -537,10 +530,7 @@ the spec already covers. Closed slices land in
     member metadata and pending invites with privacy aliases; locked vaults
     remain metadata-only.
   - [x] **subtask** — team-remove-member: `locket team remove` with `TEAM_REMOVE` audit and `TeamRoleDenied` typed error.
-  - [~] [aa40a4ce] **subtask** — team-revoke-device: implement `locket team
-    revoke-device`. Audit `DEVICE_REVOKE`. Errors: `TeamRoleDenied`. Depends
-    on `team-store-schema`.
-    Claim: branch agent-aa40a4ce/team-revoke-device, worktree .worktrees/agent-aa40a4ce-team-revoke-device. Scope: `locket team revoke-device <device>` command, `DEVICE_REVOKE` audit row.
+  - [x] **subtask** — team-revoke-device: `locket team revoke-device` with `DEVICE_REVOKE` audit, `TeamRoleDenied` error, idempotent for already-revoked devices.
 - [ ] Role-based authorization for team-managed state
   (`docs/specs/team-sync-recovery.md:75-110`).
 - [~] Passkey support. Metadata storage and `list`/`remove` CLI behavior exist.
@@ -609,8 +599,9 @@ the spec already covers. Closed slices land in
     screen lock, and user-session switch; emit `LOCK` audit row.
   - [x] **subtask** — harden-doctor-degraded: doctor reports
     `core_dumps` hardening status; future features added as they ship.
-- [ ] Member/device revocation produces a rotation checklist for every
+- [~] [7138f228] Member/device revocation produces a rotation checklist for every
   profile/secret the revoked principal could access.
+  Claim: branch agent-7138f228/revocation-rotation-checklist, worktree .worktrees/agent-7138f228-revocation-rotation-checklist. Scope: emit a profile-by-profile rotation checklist (count of active secrets per profile in the project) at the end of `team remove` and `team revoke-device`; metadata-only, no values. Member-to-profile scoping is approximated as "all project profiles" until invite-issued profile lists are persisted.
 - [ ] `imported_audit_chains` structural verifier (monotonic sequence,
   prev-HMAC linkage, checkpoint HMAC match) used by
   `import-bundle`/`team accept` and surfaced via `audit verify`.
@@ -631,9 +622,7 @@ the spec already covers. Closed slices land in
 - [x] Caller-side summarization: `summarize_names` helper applied to all 4 audit sites; large collections stay under 64 KiB cap.
 - [x] `recovery rotate` prints the scrollback warning after revealing
   the new code (matches `init` behavior).
-- [~] [aa40a4ce] Optional screen-clear after one-time recovery code display on
-  `init` and `recovery rotate`.
-  Claim: branch agent-aa40a4ce/recovery-screen-clear, worktree .worktrees/agent-aa40a4ce-recovery-screen-clear. Scope: emit ANSI clear to stdout when TTY after init confirmation and after rotate code display.
+- [x] Optional screen-clear after one-time recovery code display on `init` and `recovery rotate`; ANSI clear emitted only when stdout is a TTY.
 - [ ] `device init` first-run-on-machine bootstrap: creates master
   key, recovery envelope, and recovery code on a teammate clone
   (`docs/specs/team-sync-recovery.md`).
@@ -646,7 +635,6 @@ the spec already covers. Closed slices land in
   when no `Team` record exists, while still enforcing typed
   confirmations / verification / audit / source-selection rules
   (`docs/specs/team-sync-recovery.md`).
-  Claim: branch agent-aa40a4ce/solo-dev-authorization, worktree .worktrees/agent-aa40a4ce-solo-dev-authorization. Scope: tests verifying solo (no Team record) projects allow init/set/run/exec/team-members while team-only commands fail appropriately.
 - [ ] LocalUserVerifier macOS LocalAuthentication backend.
 - [ ] LocalUserVerifier Windows Hello backend.
 - [ ] LocalUserVerifier Linux Secret Service / hardware-key-presence
@@ -909,13 +897,8 @@ editing — they drift. Severity: **blocker** (security/correctness),
     fields.
   - [x] [bec7ddfc] **subtask** — proptest-lk-uri: `lk://` parser round-trip,
     fragment/query rejection, and pinned-version normalization.
-  - [~] [e7389a73] **subtask** — proptest-canonical-json: canonical JSON encoder
-    is total-ordered, idempotent, and stable across permutations.
-    Claim: branch agent-e7389a73/proptest-canonical-json, worktree .worktrees/agent-e7389a73-proptest-canonical-json.
-  - [~] [e7389a73] **subtask** — proptest-device-descriptor: descriptor codec
-    round-trip; rejects malformed `lkdev1_` payloads, version-bump
-    behavior. Depends on the descriptor codec landing.
-    Claim: branch agent-e7389a73/proptest-device-descriptor, worktree .worktrees/agent-e7389a73-proptest-device-descriptor.
+  - [x] **subtask** — proptest-canonical-json: canonical JSON encoder is total-ordered, idempotent, stable across permutations.
+  - [x] **subtask** — proptest-device-descriptor: descriptor codec round-trip; rejects malformed `lkdev1_` payloads.
   - [ ] **subtask** — proptest-bundle-manifest: plaintext-manifest
     round-trip; rejects forbidden fields (profile/secret/policy/
     member/device names). Depends on `bundle-container-format`.
