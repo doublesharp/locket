@@ -567,7 +567,7 @@ fn compose_external_env_source_uses_process_stub_without_docker()
 [commands.env_check]
 argv = ["/bin/sh", "-c", "true"]
 required_secrets = ["DATABASE_URL"]
-optional_secrets = ["LOG_LEVEL"]
+optional_secrets = ["API_KEY", "LOG_LEVEL", "PORT"]
 external_env_sources = ["compose"]
 env_mode = "strict"
 "#,
@@ -576,7 +576,7 @@ env_mode = "strict"
     let project_root = tempdir()?;
     let args = [
         "-c",
-        r#"printf '%s' '{"environment":{"DATABASE_URL":"from-compose","LOG_LEVEL":"debug","NOT_ALLOWED":"denied"}}'"#,
+        r#"printf '%s' '{"environment":{"LOG_LEVEL":"debug","PORT":5432,"NOT_ALLOWED":"denied"},"services":{"web":{"environment":{"DATABASE_URL":"from-compose"}},"worker":{"environment":["API_KEY=from-compose-array","IGNORED=denied"]}}}'"#,
     ];
     let command = crate::ComposeConfigCommand::new(Path::new("/bin/sh"), &args);
 
@@ -587,10 +587,13 @@ env_mode = "strict"
         &command,
     )?;
 
-    assert_eq!(external_env.len(), 2);
+    assert_eq!(external_env.len(), 4);
     assert_eq!(external_env.get("DATABASE_URL").map(|value| value.as_str()), Some("from-compose"));
+    assert_eq!(external_env.get("API_KEY").map(|value| value.as_str()), Some("from-compose-array"));
     assert_eq!(external_env.get("LOG_LEVEL").map(|value| value.as_str()), Some("debug"));
+    assert_eq!(external_env.get("PORT").map(|value| value.as_str()), Some("5432"));
     assert!(!external_env.contains_key("NOT_ALLOWED"));
+    assert!(!external_env.contains_key("IGNORED"));
     Ok(())
 }
 
@@ -621,10 +624,42 @@ env_mode = "strict"
     let Err(error) = result else {
         return Err("failing docker compose config stub must fail".into());
     };
-    assert_eq!(error.exit_code(), locket_core::LocketError::MetadataInvalid.exit_code());
+    assert_eq!(error.exit_code(), locket_core::LocketError::ExternalSourceUnavailable.exit_code());
     let message = error.to_string();
     assert!(message.contains("docker compose config failed"));
     assert!(!message.contains("from-compose"));
+    Ok(())
+}
+
+#[test]
+fn compose_external_env_source_reports_missing_command_with_typed_error()
+-> Result<(), Box<dyn std::error::Error>> {
+    let document = locket_core::PolicyDocument::from_toml_str(
+        r#"
+[commands.env_check]
+argv = ["/bin/sh", "-c", "true"]
+required_secrets = ["DATABASE_URL"]
+external_env_sources = ["compose"]
+env_mode = "strict"
+"#,
+    )?;
+    let policy = document.commands.get("env_check").ok_or("missing policy")?;
+    let project_root = tempdir()?;
+    let missing = project_root.path().join("missing-docker");
+    let command = crate::ComposeConfigCommand::new(&missing, &["compose", "config"]);
+
+    let result = crate::resolve_policy_external_env_with_compose_config_command(
+        policy,
+        &locket_exec::EnvMap::new(),
+        project_root.path(),
+        &command,
+    );
+
+    let Err(error) = result else {
+        return Err("missing compose config command must fail".into());
+    };
+    assert_eq!(error.exit_code(), locket_core::LocketError::ExternalSourceUnavailable.exit_code());
+    assert!(error.to_string().contains("could not be started"));
     Ok(())
 }
 
@@ -654,8 +689,8 @@ env_mode = "strict"
     let Err(error) = result else {
         return Err("invalid docker compose config JSON must fail".into());
     };
-    assert_eq!(error.exit_code(), locket_core::LocketError::MetadataInvalid.exit_code());
-    assert!(error.to_string().contains("docker compose config JSON invalid"));
+    assert_eq!(error.exit_code(), locket_core::LocketError::ExternalSourceUnavailable.exit_code());
+    assert!(error.to_string().contains("invalid JSON"));
     Ok(())
 }
 

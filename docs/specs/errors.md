@@ -33,6 +33,7 @@ Exit-code ranges:
 | Agent/automation | Agent socket in use | Verify peer/process identity; refuse if not the active trusted agent | 81 | Stop stale agent or use direct CLI mode |
 | Agent/automation | Automation client not trusted | Refuse signed client request | 82 | Register the client, fix its policy scope, or rotate/revoke the client key |
 | Agent/automation | Automation client replay detected | Refuse signed client request and leave prior authorization unchanged | 83 | Check client clock skew, rotate the client key if replay is suspected, and retry with a fresh nonce |
+| Agent/automation | External source unavailable | Refuse policy execution when a declared external environment source such as Compose cannot be resolved | 89 | Start or install the external provider, fix its configuration, and retry |
 | Storage/schema/integrity | Corrupt DB | Refuse reads/writes that require corrupt data | 90 | Restore from backup or sealed bundle; run integrity diagnostics before reuse |
 | Storage/schema/integrity | Two Locket processes writing | One writer proceeds; the other waits or returns typed storage busy error | 91 | Retry after first command exits |
 | Storage/schema/integrity | Schema newer than binary | Fail closed before opening mutable store | 92 | Upgrade Locket binary |

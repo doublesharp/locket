@@ -18,8 +18,8 @@ use crate::commands::secrets::import::{EnvImportEntry, parse_env_import};
 use crate::runtime::RuntimeContext;
 use crate::runtime::error::{
     CliError, child_exit_error, confirmation_failed_error, corrupt_db_error, exec_prepare_error,
-    metadata_invalid_error, secret_not_found_error, unimplemented_in_build_error,
-    user_verification_failed_error,
+    external_source_unavailable_error, metadata_invalid_error, secret_not_found_error,
+    unimplemented_in_build_error, user_verification_failed_error,
 };
 use crate::runtime::key_access::default_profile;
 use crate::support::secret_helpers::{
@@ -260,35 +260,17 @@ fn resolve_external_env_compose(
         .envs(parent_env.iter().map(|(name, value)| (name, value.as_str())))
         .output()
         .map_err(|error| {
-            metadata_invalid_error(format!("docker compose config could not be executed: {error}"))
+            external_source_unavailable_error(format!(
+                "ExternalSourceUnavailable: docker compose config could not be started: {error}"
+            ))
         })?;
     if !output.status.success() {
-        return Err(metadata_invalid_error(format!(
-            "docker compose config failed with status {}",
+        return Err(external_source_unavailable_error(format!(
+            "ExternalSourceUnavailable: docker compose config failed with status {}",
             output.status
         )));
     }
-    let value = serde_json::from_slice::<Value>(&output.stdout).map_err(|error| {
-        metadata_invalid_error(format!("docker compose config JSON invalid: {error}"))
-    })?;
-    let environment = value.get("environment").and_then(Value::as_object).ok_or_else(|| {
-        metadata_invalid_error("docker compose config JSON missing top-level environment map")
-    })?;
-    let allowed_names =
-        policy.allowed_secrets.iter().map(|name| name.as_str().to_owned()).collect::<BTreeSet<_>>();
-    let mut env = locket_exec::EnvMap::new();
-    for (name, value) in environment {
-        if !allowed_names.contains(name) {
-            continue;
-        }
-        let Some(value) = value.as_str() else {
-            return Err(metadata_invalid_error(format!(
-                "docker compose config environment value for {name} must be a string"
-            )));
-        };
-        env.insert(name.clone(), locket_exec::env_value(value));
-    }
-    Ok(env)
+    resolve_external_env_compose_json(policy, &output.stdout)
 }
 
 fn warn_implicit_locket_override_conflicts(
@@ -372,6 +354,72 @@ fn resolve_external_env_file(
         }
     }
     Ok(env)
+}
+
+fn resolve_external_env_compose_json(
+    policy: &CommandPolicy,
+    stdout: &[u8],
+) -> Result<locket_exec::EnvMap, CliError> {
+    let config: Value = serde_json::from_slice(stdout).map_err(|error| {
+        external_source_unavailable_error(format!(
+            "ExternalSourceUnavailable: docker compose config returned invalid JSON: {error}"
+        ))
+    })?;
+    let allowed_names =
+        policy.allowed_secrets.iter().map(|name| name.as_str().to_owned()).collect::<BTreeSet<_>>();
+    let mut env = locket_exec::EnvMap::new();
+    if let Some(environment) = config.get("environment") {
+        extend_env_from_compose_environment(&mut env, &allowed_names, environment);
+    }
+    if let Some(services) = config.get("services").and_then(Value::as_object) {
+        for service in services.values() {
+            if let Some(environment) = service.get("environment") {
+                extend_env_from_compose_environment(&mut env, &allowed_names, environment);
+            }
+        }
+    }
+    Ok(env)
+}
+
+fn extend_env_from_compose_environment(
+    env: &mut locket_exec::EnvMap,
+    allowed_names: &BTreeSet<String>,
+    environment: &Value,
+) {
+    match environment {
+        Value::Object(entries) => {
+            for (name, value) in entries {
+                if allowed_names.contains(name)
+                    && let Some(value) = compose_env_value_as_string(value)
+                {
+                    env.insert(name.clone(), locket_exec::env_value(value));
+                }
+            }
+        }
+        Value::Array(entries) => {
+            for entry in entries {
+                let Some(entry) = entry.as_str() else {
+                    continue;
+                };
+                let Some((name, value)) = entry.split_once('=') else {
+                    continue;
+                };
+                if allowed_names.contains(name) {
+                    env.insert(name.to_owned(), locket_exec::env_value(value.to_owned()));
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn compose_env_value_as_string(value: &serde_json::Value) -> Option<String> {
+    match value {
+        Value::String(value) => Some(value.clone()),
+        Value::Number(value) => Some(value.to_string()),
+        Value::Bool(value) => Some(value.to_string()),
+        Value::Null | Value::Array(_) | Value::Object(_) => None,
+    }
 }
 
 fn missing_required_secret_names<'a>(

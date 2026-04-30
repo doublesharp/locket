@@ -89,6 +89,9 @@ pub enum LocketError {
     /// Automation client replay was detected.
     #[error("automation client replay detected")]
     AutomationClientReplayDetected,
+    /// External environment source could not be resolved.
+    #[error("external source unavailable")]
+    ExternalSourceUnavailable,
     /// Update manifest signature, schema, or metadata validation failed.
     #[error("update manifest invalid")]
     UpdateManifestInvalid,
@@ -163,7 +166,7 @@ impl LocketError {
             Self::AgentSocketInUse => 81,
             Self::AutomationClientNotTrusted => 82,
             Self::AutomationClientReplayDetected => 83,
-            Self::UpdateManifestInvalid => 89,
+            Self::ExternalSourceUnavailable | Self::UpdateManifestInvalid => 89,
             Self::SecretVersionOverflow | Self::CorruptDb => 90,
             Self::StorageBusy => 91,
             Self::SchemaNewerThanBinary => 92,
@@ -228,6 +231,7 @@ mod tests {
             (LocketError::AgentSocketInUse, 81),
             (LocketError::AutomationClientNotTrusted, 82),
             (LocketError::AutomationClientReplayDetected, 83),
+            (LocketError::ExternalSourceUnavailable, 89),
             (LocketError::UpdateManifestInvalid, 89),
             (LocketError::SecretVersionOverflow, 90),
             (LocketError::CorruptDb, 90),

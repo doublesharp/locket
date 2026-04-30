@@ -149,6 +149,10 @@ pub fn scan_finding_blocked_error(message: impl Into<String>) -> CliError {
     typed_cli_error(LocketError::ScanFindingBlocked, message)
 }
 
+pub fn external_source_unavailable_error(message: impl Into<String>) -> CliError {
+    typed_cli_error(LocketError::ExternalSourceUnavailable, message)
+}
+
 pub fn metadata_invalid_error(message: impl Into<String>) -> CliError {
     typed_cli_error(LocketError::MetadataInvalid, message)
 }
