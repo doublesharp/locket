@@ -414,7 +414,7 @@ Re-verify file:line references before editing — they drift. Severity:
   package / VS Code extension (`docs/specs/operations.md:27-53`).
 - [ ] Cold-start budgets (`docs/specs/performance.md`). Each subtask
   adds one bench plus a regression that fails the budget:
-  - [ ] **subtask** — perf-passphrase-unlock: ≤300 ms cold.
+  - [~] [4ab55ee9] branch agent-4ab55ee9/perf-passphrase-unlock, worktree .worktrees/agent-4ab55ee9-perf-passphrase-unlock; **subtask** — perf-passphrase-unlock: ≤300 ms cold.
   - [ ] **subtask** — perf-recovery-envelope-unlock: ≤2 s cold.
   - [ ] **subtask** — perf-agent-idle-memory: ≤50 MB RSS after
     documented warmup. Pre-req: agent daemon subtasks.
