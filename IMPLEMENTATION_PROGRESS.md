@@ -651,8 +651,8 @@ the spec already covers. Closed slices land in
 - [ ] Status subscriptions from the agent (`SubscribeStatus`).
 - [ ] Privacy-mode rendering in desktop, tray, and editor-facing UI.
 - [ ] Audit, policy, profile, scan, and bootstrap views.
-- [~] [cb2437f7] Execution/session monitor view backed by `runtime_sessions`.
-  Claim: branch agent-cb2437f7/execution-monitor-view, worktree .worktrees/agent-cb2437f7-execution-monitor-view, scope desktop runtime-session descriptors.
+- [~] [d7d049a4] Execution/session monitor view backed by `runtime_sessions`.
+  Claim: branch agent-d7d049a4/execution-monitor-view, worktree .worktrees/agent-d7d049a4-execution-monitor-view, scope desktop runtime-session descriptors.
 - [ ] Tauri hardening (`docs/specs/desktop.md`). Independent subtasks
   — pre-req: `locket-app` Tauri shell exists.
   - [ ] **subtask** — tauri-csp: restrictive Content-Security-Policy
