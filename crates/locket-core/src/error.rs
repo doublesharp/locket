@@ -53,6 +53,9 @@ pub enum LocketError {
     /// Policy, role, profile, or command scope explicitly denied the action.
     #[error("access denied")]
     AccessDenied,
+    /// Caller's team role does not permit this team management action.
+    #[error("team role denied")]
+    TeamRoleDenied,
     /// Project root is not trusted.
     #[error("project root untrusted")]
     ProjectRootUntrusted,
@@ -165,7 +168,7 @@ impl LocketError {
             Self::SecretAlreadyExists => 67,
             Self::ConfirmationFailed | Self::TtyRequired => 68,
             Self::ScanFindingBlocked => 69,
-            Self::AccessDenied => 70,
+            Self::AccessDenied | Self::TeamRoleDenied => 70,
             Self::ProjectRootUntrusted => 71,
             Self::UnlockRequired => 72,
             Self::GrantRequired => 73,
@@ -230,6 +233,7 @@ mod tests {
     #[test]
     fn maps_authorization_exit_codes() {
         assert_eq!(LocketError::AccessDenied.exit_code(), 70);
+        assert_eq!(LocketError::TeamRoleDenied.exit_code(), 70);
         assert_eq!(LocketError::ProjectRootUntrusted.exit_code(), 71);
         assert_eq!(LocketError::UnlockRequired.exit_code(), 72);
         assert_eq!(LocketError::GrantRequired.exit_code(), 73);

@@ -145,6 +145,10 @@ pub fn access_denied_error(message: impl Into<String>) -> CliError {
     typed_cli_error(LocketError::AccessDenied, message)
 }
 
+pub fn team_role_denied_error(message: impl Into<String>) -> CliError {
+    typed_cli_error(LocketError::TeamRoleDenied, message)
+}
+
 pub fn unlock_required_error(message: impl Into<String>) -> CliError {
     typed_cli_error(LocketError::UnlockRequired, message)
 }

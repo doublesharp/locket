@@ -6,9 +6,10 @@ use locket_store::{AuditWrite, PendingTeamInviteRecord, TeamMemberListRecord, Te
 use serde_json::json;
 
 use crate::{
-    CliError, RuntimeContext, TeamCommand, TeamInitArgs, ensure_project_exists, load_project_key,
-    now_unix_nanos, open_store, privacy_alias, privacy_redact_names_enabled, require_project,
-    secret_already_exists_error,
+    CliError, RuntimeContext, TeamCommand, TeamInitArgs, TeamRemoveArgs, confirmation_failed_error,
+    ensure_project_exists, load_project_key, now_unix_nanos, open_store, privacy_alias,
+    privacy_redact_names_enabled, require_project, secret_already_exists_error,
+    secret_not_found_error, team_role_denied_error,
 };
 
 pub fn team_command(
@@ -19,6 +20,7 @@ pub fn team_command(
     match command {
         TeamCommand::Init(args) => team_init_command(context, output, &args),
         TeamCommand::Members => team_members_command(context, output),
+        TeamCommand::Remove(args) => team_remove_command(context, output, &args),
     }
 }
 
@@ -73,6 +75,84 @@ fn team_init_command(
     store.append_audit(audit_key.as_ref(), &audit)?;
 
     writeln!(output, "team initialized: {} ({})", record.name, record.id)?;
+    writeln!(output, "metadata_only: yes")?;
+    Ok(())
+}
+
+fn team_remove_command(
+    context: &RuntimeContext,
+    output: &mut impl Write,
+    args: &TeamRemoveArgs,
+) -> Result<(), CliError> {
+    let resolved = require_project(context)?;
+    let mut store = open_store(context)?;
+    let project_id = resolved.config.project_id.as_str();
+    ensure_project_exists(&store, project_id)?;
+
+    let Some(team) = store.get_team_by_project(project_id)? else {
+        return Err(team_role_denied_error("no team initialized for this project"));
+    };
+
+    let Some(member) = store.get_team_member(&team.id, &args.member)? else {
+        return Err(secret_not_found_error(format!("team member not found: {}", args.member)));
+    };
+
+    if member.removed_at.is_some() {
+        return Err(secret_not_found_error(format!(
+            "team member already removed: {}",
+            member.display_name
+        )));
+    }
+
+    // Last-owner guard: cannot remove the last remaining owner.
+    if member.role == "owner" {
+        let owner_count = store.count_active_owners(&team.id)?;
+        if owner_count <= 1 {
+            return Err(team_role_denied_error("cannot remove the last remaining owner"));
+        }
+    }
+
+    // Show metadata summary before confirmation.
+    writeln!(output, "remove member: {} ({})", member.display_name, member.role)?;
+    writeln!(output, "trusted_devices: {}", member.trusted_device_count)?;
+    writeln!(
+        output,
+        "note: a rotation checklist for accessible profiles and secrets is recommended"
+    )?;
+
+    // Typed confirmation: must type the display name exactly.
+    let confirmation = context.confirmation_reader.read_confirmation(&member.display_name)?;
+    if confirmation.trim() != member.display_name {
+        return Err(confirmation_failed_error("confirmation did not match member display name"));
+    }
+
+    let timestamp = now_unix_nanos()?;
+    store.remove_team_member(&member.id, timestamp)?;
+
+    let audit_key = load_project_key(context, &store, project_id, KeyPurpose::Audit)?;
+    let metadata = json!({
+        "schema_version": 1,
+        "action": "TEAM_REMOVE",
+        "status": "SUCCESS",
+        "command": "team remove",
+        "project_id": project_id,
+        "team_id": team.id,
+        "member_id": member.id,
+        "member_role": member.role,
+    });
+    let audit = AuditWrite {
+        project_id,
+        profile_id: None,
+        action: "TEAM_REMOVE",
+        status: "SUCCESS",
+        secret_name: None,
+        command: Some("team remove"),
+        metadata_json: &metadata,
+        timestamp,
+    };
+    store.append_audit(audit_key.as_ref(), &audit)?;
+
+    writeln!(output, "team_remove: success")?;
     writeln!(output, "metadata_only: yes")?;
     Ok(())
 }

@@ -167,6 +167,66 @@ impl Store {
         Ok(members)
     }
 
+    /// Returns the team member record for a team by display name or id.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Sqlite`] when `SQLite` cannot query the member row.
+    pub fn get_team_member(
+        &self,
+        team_id: &str,
+        name_or_id: &str,
+    ) -> Result<Option<TeamMemberListRecord>, StoreError> {
+        let mut statement = self.connection.prepare(
+            "SELECT
+               m.id,
+               m.display_name,
+               m.role,
+               COUNT(d.id) AS trusted_device_count,
+               m.joined_at,
+               m.removed_at
+             FROM team_members m
+             LEFT JOIN devices d ON d.id = m.device_id AND d.revoked_at IS NULL
+             WHERE m.team_id = ?1
+               AND (m.id = ?2 OR m.display_name = ?2)
+             GROUP BY m.id, m.display_name, m.role, m.joined_at, m.removed_at
+             LIMIT 1",
+        )?;
+        statement
+            .query_row(params![team_id, name_or_id], team_member_list_record_from_row)
+            .optional()
+            .map_err(StoreError::from)
+    }
+
+    /// Returns the count of active (non-removed) owners for a team.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Sqlite`] when `SQLite` cannot query the count.
+    pub fn count_active_owners(&self, team_id: &str) -> Result<i64, StoreError> {
+        self.connection
+            .query_row(
+                "SELECT COUNT(*) FROM team_members
+                 WHERE team_id = ?1 AND role = 'owner' AND removed_at IS NULL",
+                [team_id],
+                |row| row.get(0),
+            )
+            .map_err(StoreError::from)
+    }
+
+    /// Sets `removed_at` for a team member (soft-delete).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Sqlite`] when `SQLite` cannot update the row.
+    pub fn remove_team_member(&self, member_id: &str, removed_at: i64) -> Result<(), StoreError> {
+        self.connection.execute(
+            "UPDATE team_members SET removed_at = ?1 WHERE id = ?2 AND removed_at IS NULL",
+            params![removed_at, member_id],
+        )?;
+        Ok(())
+    }
+
     /// Lists pending, non-expired team invites for a team.
     ///
     /// # Errors

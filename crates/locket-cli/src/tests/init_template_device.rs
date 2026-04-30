@@ -718,6 +718,154 @@ fn team_members_without_team_is_metadata_only() -> Result<(), Box<dyn std::error
 }
 
 #[test]
+fn team_remove_member_sets_removed_at_and_writes_team_remove_audit()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    seed_team_members_with_two_owners(&directory)?;
+
+    let remove_context = context_with_confirmation(&context, "Alice Owner\n");
+    let mut output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "team", "remove", "Alice Owner"])?,
+        &remove_context,
+        &mut output,
+    )?;
+
+    let output = String::from_utf8(output)?;
+    assert!(output.contains("remove member: Alice Owner (owner)"));
+    assert!(output.contains("team_remove: success"));
+    assert!(output.contains("metadata_only: yes"));
+
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let removed_at: Option<i64> = store.connection().query_row(
+        "SELECT removed_at FROM team_members WHERE id = 'lk_member_owner'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert!(removed_at.is_some(), "removed_at must be set after team remove");
+
+    let metadata: String = store.connection().query_row(
+        "SELECT metadata_json FROM audit_log WHERE action = 'TEAM_REMOVE'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert!(metadata.contains("\"action\":\"TEAM_REMOVE\""));
+    assert!(metadata.contains("\"command\":\"team remove\""));
+    assert!(metadata.contains("\"member_id\":\"lk_member_owner\""));
+    assert!(metadata.contains("\"member_role\":\"owner\""));
+    Ok(())
+}
+
+#[test]
+fn team_remove_last_owner_is_rejected_with_team_role_denied()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    seed_team_members_fixture(&directory, false)?;
+
+    let remove_context = context_with_confirmation(&context, "Alice Owner\n");
+    let result = run_with_context(
+        Cli::try_parse_from(["locket", "team", "remove", "Alice Owner"])?,
+        &remove_context,
+        &mut Vec::new(),
+    );
+
+    let Err(error) = result else {
+        return Err("removing last owner must fail".into());
+    };
+    assert_eq!(error.exit_code(), 70, "TeamRoleDenied is in the authorization band");
+    assert!(error.to_string().contains("last remaining owner"));
+    Ok(())
+}
+
+#[test]
+fn team_remove_wrong_confirmation_fails_with_confirmation_failed()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    seed_team_members_with_two_owners(&directory)?;
+
+    let remove_context = context_with_confirmation(&context, "wrong name\n");
+    let result = run_with_context(
+        Cli::try_parse_from(["locket", "team", "remove", "Alice Owner"])?,
+        &remove_context,
+        &mut Vec::new(),
+    );
+
+    let Err(error) = result else {
+        return Err("wrong confirmation must fail".into());
+    };
+    assert_eq!(error.exit_code(), 68, "ConfirmationFailed is in the input band");
+    Ok(())
+}
+
+#[test]
+fn team_remove_unknown_member_fails_with_secret_not_found() -> Result<(), Box<dyn std::error::Error>>
+{
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    seed_team_members_fixture(&directory, false)?;
+
+    let result = run_with_context(
+        Cli::try_parse_from(["locket", "team", "remove", "Nonexistent Member"])?,
+        &context,
+        &mut Vec::new(),
+    );
+
+    let Err(error) = result else {
+        return Err("removing unknown member must fail".into());
+    };
+    assert_eq!(error.exit_code(), 77, "SecretNotFound is in the not-found band");
+    Ok(())
+}
+
+/// Seed two owners so the last-owner guard doesn't fire during remove tests.
+fn seed_team_members_with_two_owners(
+    directory: &tempfile::TempDir,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let project_id =
+        crate::read_project_config(&directory.path().join("locket.toml"))?.project_id.into_string();
+    store.connection().execute(
+        "INSERT INTO teams(id, project_id, name, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        ("lk_team_two", project_id.as_str(), "Two Owners", 1_i64, 2_i64),
+    )?;
+    store.connection().execute(
+        "INSERT INTO team_members(id, team_id, display_name, role, joined_at)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        ("lk_member_owner", "lk_team_two", "Alice Owner", "owner", 10_i64),
+    )?;
+    store.connection().execute(
+        "INSERT INTO team_members(id, team_id, display_name, role, joined_at)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        ("lk_member_owner2", "lk_team_two", "Bob Owner", "owner", 20_i64),
+    )?;
+    Ok(())
+}
+
+#[test]
 fn init_writes_recovery_envelope_and_metadata_only_audit() -> Result<(), Box<dyn std::error::Error>>
 {
     let directory = tempdir()?;
