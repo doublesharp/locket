@@ -197,6 +197,41 @@ impl Store {
         Ok(versions)
     }
 
+    /// Lists all version metadata for a profile joined to parent secret metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Sqlite`] when `SQLite` cannot query version rows.
+    pub fn list_secret_version_metadata_by_profile(
+        &self,
+        project_id: &str,
+        profile_id: &str,
+    ) -> Result<Vec<SecretVersionMetadataRecord>, StoreError> {
+        let mut statement = self.connection.prepare(
+            "SELECT s.id, s.project_id, s.profile_id, s.name, s.source,
+                    CASE s.source
+                      WHEN 'machine-local' THEN 3
+                      WHEN 'user-local' THEN 2
+                      WHEN 'team-managed' THEN 1
+                      ELSE 0
+                    END AS source_precedence,
+                    s.origin, s.state, s.current_version, s.last_rotated_at,
+                    v.version, v.state, v.created_at, v.deprecated_at, v.grace_until, v.purged_at
+             FROM secrets s
+             JOIN secret_versions v ON v.secret_id = s.id
+             WHERE s.project_id = ?1 AND s.profile_id = ?2
+             ORDER BY s.name,
+                      source_precedence DESC,
+                      s.source,
+                      v.version DESC",
+        )?;
+        let versions = statement
+            .query_map((project_id, profile_id), secret_version_metadata_record_from_row)?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(versions)
+    }
+
     /// Returns version metadata for a secret version.
     ///
     /// # Errors

@@ -264,6 +264,71 @@ fn rotate_secret_advances_current_and_deprecates_prior() -> Result<(), Box<dyn E
 }
 
 #[test]
+fn version_metadata_lists_profile_rows_by_source_precedence_and_version()
+-> Result<(), Box<dyn Error>> {
+    let test_store = open_initialized_store()?;
+    insert_project_profile(&test_store.store)?;
+
+    for (id, source, current_version, last_rotated_at) in [
+        ("lk_sec_team", "team-managed", 1, None),
+        ("lk_sec_machine", "machine-local", 3, Some(400)),
+        ("lk_sec_user", "user-local", 2, Some(300)),
+    ] {
+        test_store.store.connection().execute(
+            "INSERT INTO secrets(
+               id, project_id, profile_id, name, source, origin, required,
+               current_version, state, created_at, updated_at, last_rotated_at, deleted_at
+             )
+             VALUES (?1, 'lk_proj_test', 'lk_prof_test', 'DATABASE_URL', ?2, 'manual', 1,
+                     ?3, 'active', 100, 200, ?4, NULL)",
+            rusqlite::params![id, source, current_version, last_rotated_at],
+        )?;
+    }
+    for (secret_id, version, state, created_at, deprecated_at, grace_until, purged_at) in [
+        ("lk_sec_team", 1, "current", 100, None, None, None),
+        ("lk_sec_user", 1, "deprecated", 100, Some(300), Some(900), None),
+        ("lk_sec_user", 2, "current", 300, None, None, None),
+        ("lk_sec_machine", 1, "purged", 100, Some(200), None, Some(500)),
+        ("lk_sec_machine", 2, "deprecated", 200, Some(400), Some(800), None),
+        ("lk_sec_machine", 3, "current", 400, None, None, None),
+    ] {
+        test_store.store.connection().execute(
+            "INSERT INTO secret_versions(
+               secret_id, version, source, origin, state, created_at,
+               deprecated_at, grace_until, purged_at
+             )
+             VALUES (?1, ?2, (SELECT source FROM secrets WHERE id = ?1), 'manual', ?3, ?4, ?5, ?6, ?7)",
+            rusqlite::params![secret_id, version, state, created_at, deprecated_at, grace_until, purged_at],
+        )?;
+    }
+
+    let rows =
+        test_store.store.list_secret_version_metadata_by_profile("lk_proj_test", "lk_prof_test")?;
+    let ordered = rows
+        .iter()
+        .map(|row| (row.source.as_str(), row.version, row.version_state.as_str()))
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        ordered,
+        vec![
+            ("machine-local", 3, "current"),
+            ("machine-local", 2, "deprecated"),
+            ("machine-local", 1, "purged"),
+            ("user-local", 2, "current"),
+            ("user-local", 1, "deprecated"),
+            ("team-managed", 1, "current"),
+        ]
+    );
+    assert_eq!(rows[0].source_precedence, 3);
+    assert_eq!(rows[0].current_version, 3);
+    assert_eq!(rows[0].last_rotated_at, Some(400));
+    assert_eq!(rows[1].grace_until, Some(800));
+    assert_eq!(rows[2].purged_at, Some(500));
+    Ok(())
+}
+
+#[test]
 fn purge_secret_versions_removes_material_but_keeps_version_rows() -> Result<(), Box<dyn Error>> {
     let mut test_store = open_initialized_store()?;
     insert_project_profile(&test_store.store)?;

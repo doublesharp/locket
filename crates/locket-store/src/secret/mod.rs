@@ -88,6 +88,43 @@ pub struct SecretVersionRecord {
     pub purged_at: Option<i64>,
 }
 
+/// Secret version metadata joined with its parent secret.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SecretVersionMetadataRecord {
+    /// Parent secret identifier.
+    pub secret_id: String,
+    /// Parent project identifier.
+    pub project_id: String,
+    /// Parent profile identifier.
+    pub profile_id: String,
+    /// Secret name.
+    pub name: String,
+    /// Persisted secret source string.
+    pub source: String,
+    /// Numeric source precedence, with larger values winning runtime resolution.
+    pub source_precedence: u8,
+    /// Persisted secret origin string.
+    pub origin: String,
+    /// Whole-secret state.
+    pub secret_state: String,
+    /// Current version pointer on the parent secret.
+    pub current_version: u32,
+    /// Last rotation timestamp on the parent secret.
+    pub last_rotated_at: Option<i64>,
+    /// Version number.
+    pub version: u32,
+    /// Persisted version state string.
+    pub version_state: String,
+    /// Version creation timestamp.
+    pub created_at: i64,
+    /// Deprecation timestamp.
+    pub deprecated_at: Option<i64>,
+    /// Grace-window expiration timestamp.
+    pub grace_until: Option<i64>,
+    /// Purge timestamp.
+    pub purged_at: Option<i64>,
+}
+
 /// Encrypted secret value row.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SecretBlobRecord {
@@ -210,6 +247,29 @@ pub fn secret_version_record_from_row(
         deprecated_at: row.get(6)?,
         grace_until: row.get(7)?,
         purged_at: row.get(8)?,
+    })
+}
+
+pub fn secret_version_metadata_record_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<SecretVersionMetadataRecord> {
+    Ok(SecretVersionMetadataRecord {
+        secret_id: row.get(0)?,
+        project_id: row.get(1)?,
+        profile_id: row.get(2)?,
+        name: row.get(3)?,
+        source: row.get(4)?,
+        source_precedence: row.get(5)?,
+        origin: row.get(6)?,
+        secret_state: row.get(7)?,
+        current_version: row.get(8)?,
+        last_rotated_at: row.get(9)?,
+        version: row.get(10)?,
+        version_state: row.get(11)?,
+        created_at: row.get(12)?,
+        deprecated_at: row.get(13)?,
+        grace_until: row.get(14)?,
+        purged_at: row.get(15)?,
     })
 }
 

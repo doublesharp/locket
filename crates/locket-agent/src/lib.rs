@@ -23,6 +23,7 @@ mod server;
 mod status;
 mod status_stream;
 mod unlock_cache;
+mod versions;
 
 pub use envelope::{ErrorEnvelope, RequestEnvelope, ResponseEnvelope, SuccessEnvelope};
 pub use error::ProtocolError;
@@ -57,6 +58,7 @@ pub use status::{
 };
 pub use status_stream::{StatusHub, StatusSubscriber};
 pub use unlock_cache::{UnlockCache, UnlockEntry, UnlockMethod};
+pub use versions::{ListVersionsRequest, ListVersionsResponse, ListVersionsRow};
 
 /// Maximum v1 protocol message size in bytes.
 pub const DEFAULT_MAX_MESSAGE_SIZE: usize = 1024 * 1024;
