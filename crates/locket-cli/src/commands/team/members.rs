@@ -255,56 +255,115 @@ fn team_accept_command(
     output: &mut impl Write,
     args: &TeamAcceptArgs,
 ) -> Result<(), CliError> {
-    let invite_text = fs::read_to_string(&args.invite)?;
-    let invite = SignedInvite::decode(invite_text.trim()).map_err(|error| {
-        invite_signature_invalid_error(format!("invite decode failed: {error}"))
-    })?;
+    let invite = read_signed_invite(&args.invite)?;
+    let TeamAcceptPreflight { mut store, project_id, local_device } =
+        preflight_team_accept(context, &invite)?;
 
+    write_accept_summary(output, &invite)?;
+    confirm_team_accept(context, &invite)?;
+    accept_invite_with_audit(context, &mut store, &project_id, &local_device, &invite)?;
+
+    writeln!(output, "team_accept: accepted")?;
+    writeln!(output, "metadata_only: yes")?;
+    Ok(())
+}
+
+fn read_signed_invite(path: &Path) -> Result<SignedInvite, CliError> {
+    let invite_text = fs::read_to_string(path)?;
+    SignedInvite::decode(invite_text.trim())
+        .map_err(|error| invite_signature_invalid_error(format!("invite decode failed: {error}")))
+}
+
+struct TeamAcceptPreflight {
+    store: locket_store::Store,
+    project_id: String,
+    local_device: DeviceRecord,
+}
+
+fn preflight_team_accept(
+    context: &RuntimeContext,
+    invite: &SignedInvite,
+) -> Result<TeamAcceptPreflight, CliError> {
     let resolved = require_project(context)?;
     let mut store = open_store(context)?;
-    let project_id = resolved.config.project_id.as_str();
-    ensure_project_exists(&store, project_id)?;
-    if invite.payload.project_id.as_str() != project_id {
+    let project_id = resolved.config.project_id.as_str().to_owned();
+    let project_id_str = project_id.as_str();
+
+    ensure_project_exists(&store, project_id_str)?;
+    if invite.payload.project_id.as_str() != project_id_str {
         return Err(metadata_invalid_error("invite project does not match current project"));
     }
+
+    validate_invite_signature_and_expiry(context, &mut store, project_id_str, invite)?;
+    validate_invite_fingerprint_claims_with_denial(context, &mut store, project_id_str, invite)?;
+    let local_device = validate_invite_recipient(context, &mut store, project_id_str, invite)?;
+    ensure_invite_pending_with_denial(context, &mut store, project_id_str, invite)?;
+
+    Ok(TeamAcceptPreflight { store, project_id, local_device })
+}
+
+fn validate_invite_signature_and_expiry(
+    context: &RuntimeContext,
+    store: &mut locket_store::Store,
+    project_id: &str,
+    invite: &SignedInvite,
+) -> Result<(), CliError> {
     if let Err(error) = invite.verify() {
         let cli_error =
             invite_signature_invalid_error(format!("invite verification failed: {error}"));
         append_team_accept_denial(
             context,
-            &mut store,
+            store,
             project_id,
-            &invite,
+            invite,
             "signature_invalid",
             LocketError::InviteSignatureInvalid,
         )?;
         return Err(cli_error);
     }
+
     let now = now_unix_nanos()?;
     if let Err(error) = invite.check_expiry(now / NANOS_PER_SECOND) {
         let cli_error = invite_expired_error(error.to_string());
         append_team_accept_denial(
             context,
-            &mut store,
+            store,
             project_id,
-            &invite,
+            invite,
             "invite_expired",
             LocketError::InviteExpired,
         )?;
         return Err(cli_error);
     }
-    if let Err(error) = validate_invite_fingerprint_claims(&invite) {
+    Ok(())
+}
+
+fn validate_invite_fingerprint_claims_with_denial(
+    context: &RuntimeContext,
+    store: &mut locket_store::Store,
+    project_id: &str,
+    invite: &SignedInvite,
+) -> Result<(), CliError> {
+    if let Err(error) = validate_invite_fingerprint_claims(invite) {
         append_team_accept_denial(
             context,
-            &mut store,
+            store,
             project_id,
-            &invite,
+            invite,
             "fingerprint_mismatch",
             LocketError::DeviceDescriptorInvalid,
         )?;
         return Err(error);
     }
+    Ok(())
+}
 
+fn validate_invite_recipient(
+    context: &RuntimeContext,
+    store: &mut locket_store::Store,
+    project_id: &str,
+    invite: &SignedInvite,
+) -> Result<DeviceRecord, CliError> {
     let local_device = store
         .get_active_local_device(project_id)?
         .ok_or_else(|| invalid_reference_error("local device is not initialized"))?;
@@ -314,14 +373,15 @@ fn team_accept_command(
         );
         append_team_accept_denial(
             context,
-            &mut store,
+            store,
             project_id,
-            &invite,
+            invite,
             "fingerprint_mismatch",
             LocketError::DeviceDescriptorInvalid,
         )?;
         return Err(cli_error);
     }
+
     let recipient_sealing_key =
         decode_invite_key(&invite.payload.recipient_sealing_public_key, "recipient sealing key")?;
     if local_device.sealing_public_key.as_slice() != recipient_sealing_key.as_slice() {
@@ -330,34 +390,54 @@ fn team_accept_command(
         );
         append_team_accept_denial(
             context,
-            &mut store,
+            store,
             project_id,
-            &invite,
+            invite,
             "fingerprint_mismatch",
             LocketError::DeviceDescriptorInvalid,
         )?;
         return Err(cli_error);
     }
-    if let Err(error) = ensure_invite_pending(&store, project_id, invite.payload.invite_id.as_str())
+    Ok(local_device)
+}
+
+fn ensure_invite_pending_with_denial(
+    context: &RuntimeContext,
+    store: &mut locket_store::Store,
+    project_id: &str,
+    invite: &SignedInvite,
+) -> Result<(), CliError> {
+    if let Err(error) = ensure_invite_pending(store, project_id, invite.payload.invite_id.as_str())
     {
         append_team_accept_denial(
             context,
-            &mut store,
+            store,
             project_id,
-            &invite,
+            invite,
             "replay_detected",
             LocketError::ReplayDetected,
         )?;
         return Err(error);
     }
+    Ok(())
+}
 
-    write_accept_summary(output, &invite)?;
+fn confirm_team_accept(context: &RuntimeContext, invite: &SignedInvite) -> Result<(), CliError> {
     let confirmation = context.confirmation_reader.read_confirmation("team accept")?;
     if confirmation.trim_end_matches(['\r', '\n']) != invite.payload.issuer_device_fingerprint {
         return Err(confirmation_failed_error("confirmation did not match issuer fingerprint"));
     }
+    Ok(())
+}
 
-    let audit_key = load_project_key(context, &store, project_id, KeyPurpose::Audit)?;
+fn accept_invite_with_audit(
+    context: &RuntimeContext,
+    store: &mut locket_store::Store,
+    project_id: &str,
+    local_device: &DeviceRecord,
+    invite: &SignedInvite,
+) -> Result<(), CliError> {
+    let audit_key = load_project_key(context, store, project_id, KeyPurpose::Audit)?;
     let accepted_at = now_unix_nanos()?;
     let invite_id = invite.payload.invite_id.as_str();
     let metadata = json!({
@@ -391,9 +471,6 @@ fn team_accept_command(
         accepted_at,
         Some(AuditContext { key: audit_key.as_ref(), write: &audit }),
     )?;
-
-    writeln!(output, "team_accept: accepted")?;
-    writeln!(output, "metadata_only: yes")?;
     Ok(())
 }
 
