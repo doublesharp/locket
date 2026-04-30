@@ -269,6 +269,8 @@ Slices that have merged to `main` and verified. Open work tracked in
   (`docs/specs/performance.md`).
 - [x] cargo-geiger-inventory: Unsafe inventory now produces a reviewable
   release artifact and is part of the strict quality gate.
+- [x] rustsec-severity-policy: RustSec advisory checks now apply the project
+  severity policy and write a review report.
 - [x] Production-crate clippy denies (`unwrap_used`, `expect_used`,
   `panic`, `todo`, `unimplemented`, `dbg_macro`, `print_stdout`,
   `print_stderr`) plus workspace-wide `unsafe_code = "forbid"`.

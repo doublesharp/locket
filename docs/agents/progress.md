@@ -458,7 +458,6 @@ Re-verify file:line references before editing — they drift. Severity:
   staged-scan, full-scan, Argon2 (`docs/specs/performance.md`).
 - [ ] PR vs release tolerance gate: 10% PR / 20% tracked-regression
   / no-tolerance release (`docs/specs/performance.md`).
-- [~] [4ab55ee9] branch agent-4ab55ee9/rustsec-severity-policy, worktree .worktrees/agent-4ab55ee9-rustsec-severity-policy; RustSec advisory severity policy: high/critical block, medium runtime block, dev-only exception, low triage (`docs/specs/engineering.md`).
 - [~] [4ab55ee9] branch agent-4ab55ee9/supply-chain-exception-ledger, worktree .worktrees/agent-4ab55ee9-supply-chain-exception-ledger; Supply-chain exception ledger enforced by CI; no-expiration entries are invalid (`docs/specs/engineering.md`).
 - [ ] SLSA v1.2 provenance verification + Build L3 hosted-runner
   targeting (`docs/specs/operations.md`).
