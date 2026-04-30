@@ -64,9 +64,10 @@ pub(crate) use commands::scan::redact::{
 };
 #[cfg(test)]
 pub(crate) use commands::secrets::get::{
-    ClipboardBackend, ClipboardClearLimit, ClipboardClearResult, ClipboardCommand, MemoryClipboard,
-    clipboard_clear_limit, copy_secret_to_clipboard_with, get_command_with_clipboard,
-    get_command_with_clipboard_and_limit, select_clipboard_command,
+    ClipboardBackend, ClipboardClearLimit, ClipboardClearResult, ClipboardCommand,
+    ClipboardCopyStatus, MemoryClipboard, clipboard_clear_limit, copy_secret_to_clipboard_with,
+    get_command_with_clipboard, get_command_with_clipboard_and_limit,
+    get_command_with_clipboard_status_and_limit, select_clipboard_command,
 };
 #[cfg(test)]
 pub(crate) use commands::secrets::import::{EnvImportEntry, parse_env_import};
@@ -317,6 +318,12 @@ enum Command {
     /// Spawned by `locket agent start`. Not intended for direct use.
     #[command(name = "internal-agent-serve", hide = true)]
     InternalAgentServe(InternalAgentServeArgs),
+    /// Internal: clear a copied clipboard value after its TTL. Hidden from --help.
+    ///
+    /// Spawned by `locket get --copy`. The expected clipboard value is read
+    /// from stdin so it is never placed in argv or the environment.
+    #[command(name = "internal-clipboard-clear", hide = true)]
+    InternalClipboardClear(InternalClipboardClearArgs),
 }
 
 #[derive(Debug, Args)]
@@ -327,6 +334,13 @@ pub(crate) struct InternalAgentServeArgs {
     /// Filesystem path the agent should write its PID file to.
     #[arg(long)]
     pub(crate) pid_file: PathBuf,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct InternalClipboardClearArgs {
+    /// Seconds to wait before checking and clearing the clipboard.
+    #[arg(long)]
+    ttl_seconds: u64,
 }
 
 #[derive(Debug, Args)]
@@ -1220,6 +1234,9 @@ fn run_with_context(
             vault::recovery::recovery_command(context, output, command)?;
         }
         Command::InternalAgentServe(args) => agent::run_internal_agent_serve(&args)?,
+        Command::InternalClipboardClear(args) => {
+            secrets::get::run_internal_clipboard_clear(args.ttl_seconds)?;
+        }
     }
 
     Ok(0)

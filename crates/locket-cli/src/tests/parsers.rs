@@ -242,35 +242,39 @@ fn clipboard_clear_limit_classifies_environment() {
         crate::ClipboardClearLimit::WaylandSourceProcessLimited
     );
 
-    // X11 tool on x11 session.
+    // X11 tool on x11 session can read back and clear if unchanged.
     assert_eq!(
         crate::clipboard_clear_limit(Some(&XCLIP), Some("x11")),
-        crate::ClipboardClearLimit::DirectCli
+        crate::ClipboardClearLimit::Supported
     );
 
-    // pbcopy on macOS (no XDG_SESSION_TYPE).
+    // pbcopy on macOS can read back through pbpaste and clear if unchanged.
     assert_eq!(
         crate::clipboard_clear_limit(Some(&PBCOPY), None),
-        crate::ClipboardClearLimit::DirectCli
+        crate::ClipboardClearLimit::Supported
     );
 }
 
 #[test]
 fn clipboard_clear_limit_audit_reasons_are_distinct_and_stable() {
+    assert_eq!(crate::ClipboardClearLimit::Supported.audit_reason(), None);
+    assert_eq!(crate::ClipboardClearLimit::Supported.warning_text(), None);
     assert_eq!(
         crate::ClipboardClearLimit::DirectCli.audit_reason(),
-        "direct_cli_no_background_clear"
+        Some("direct_cli_no_background_clear")
     );
     assert_eq!(
         crate::ClipboardClearLimit::WaylandSourceProcessLimited.audit_reason(),
-        "wayland_source_process_limited"
+        Some("wayland_source_process_limited")
     );
     assert_ne!(
         crate::ClipboardClearLimit::DirectCli.warning_text(),
         crate::ClipboardClearLimit::WaylandSourceProcessLimited.warning_text(),
     );
     assert!(
-        crate::ClipboardClearLimit::WaylandSourceProcessLimited.warning_text().contains("Wayland")
+        crate::ClipboardClearLimit::WaylandSourceProcessLimited
+            .warning_text()
+            .is_some_and(|warning| warning.contains("Wayland"))
     );
 }
 
@@ -330,6 +334,23 @@ fn memory_clipboard_reports_unsupported_clear_without_dropping_value()
         crate::ClipboardClearResult::Unsupported
     );
     assert_eq!(clipboard.value(), Some("postgres://localhost/app"));
+    Ok(())
+}
+
+#[test]
+fn memory_clipboard_schedules_ttl_clear_only_for_original_value()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut clipboard = crate::MemoryClipboard::clearing_supported();
+
+    crate::ClipboardBackend::copy(&mut clipboard, "postgres://localhost/app")?;
+    let status = crate::ClipboardBackend::schedule_clear_after_ttl(
+        &mut clipboard,
+        "postgres://localhost/app",
+        60,
+    )?;
+
+    assert_eq!(status, crate::ClipboardCopyStatus::clearing_scheduled());
+    assert_eq!(clipboard.value(), None);
     Ok(())
 }
 

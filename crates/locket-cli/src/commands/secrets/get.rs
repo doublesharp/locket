@@ -1,8 +1,11 @@
 //! Implementation of the `locket get` command and clipboard helpers.
 
-use std::io::{self, IsTerminal, Write};
+use std::io::{self, IsTerminal, Read, Write};
 use std::path::Path;
 use std::process::{Command as ProcessCommand, Stdio};
+use std::thread;
+use std::time::Duration;
+use zeroize::Zeroize;
 
 use crate::runtime::RuntimeContext;
 use crate::runtime::error::{CliError, external_source_unavailable_error};
@@ -19,9 +22,16 @@ pub fn get_command(
     args: &GetArgs,
 ) -> Result<(), CliError> {
     let mut error_output = io::stderr();
-    get_command_with_clipboard(context, output, &mut error_output, args, copy_secret_to_clipboard)
+    get_command_with_clipboard_status(
+        context,
+        output,
+        &mut error_output,
+        args,
+        copy_secret_to_clipboard,
+    )
 }
 
+#[cfg(test)]
 pub fn get_command_with_clipboard(
     context: &RuntimeContext,
     output: &mut impl Write,
@@ -33,7 +43,67 @@ pub fn get_command_with_clipboard(
         select_clipboard_command(CLIPBOARD_COMMANDS, command_exists),
         std::env::var("XDG_SESSION_TYPE").ok().as_deref(),
     );
-    get_command_with_clipboard_and_limit(
+    get_command_with_clipboard_status_and_limit(
+        context,
+        output,
+        error_output,
+        args,
+        |value, _ttl_seconds, _limit| {
+            copy_to_clipboard(value)?;
+            Ok(ClipboardCopyStatus::clearing_unsupported(
+                ClipboardClearLimit::DirectCli
+                    .audit_reason()
+                    .expect("direct CLI unsupported reason"),
+            ))
+        },
+        limit,
+    )
+}
+
+#[cfg(test)]
+pub fn get_command_with_clipboard_and_limit(
+    context: &RuntimeContext,
+    output: &mut impl Write,
+    error_output: &mut impl Write,
+    args: &GetArgs,
+    copy_to_clipboard: impl FnOnce(&str) -> Result<(), String>,
+    limit: ClipboardClearLimit,
+) -> Result<(), CliError> {
+    get_command_with_clipboard_status_and_limit(
+        context,
+        output,
+        error_output,
+        args,
+        |value, _ttl_seconds, _limit| {
+            copy_to_clipboard(value)?;
+            Ok(ClipboardCopyStatus::clearing_unsupported(limit.audit_reason().unwrap_or_else(
+                || {
+                    ClipboardClearLimit::DirectCli
+                        .audit_reason()
+                        .expect("direct CLI unsupported reason")
+                },
+            )))
+        },
+        limit,
+    )
+}
+
+pub fn get_command_with_clipboard_status(
+    context: &RuntimeContext,
+    output: &mut impl Write,
+    error_output: &mut impl Write,
+    args: &GetArgs,
+    copy_to_clipboard: impl FnOnce(
+        &str,
+        u64,
+        ClipboardClearLimit,
+    ) -> Result<ClipboardCopyStatus, String>,
+) -> Result<(), CliError> {
+    let limit = clipboard_clear_limit(
+        select_clipboard_command(CLIPBOARD_COMMANDS, command_exists),
+        std::env::var("XDG_SESSION_TYPE").ok().as_deref(),
+    );
+    get_command_with_clipboard_status_and_limit(
         context,
         output,
         error_output,
@@ -43,12 +113,16 @@ pub fn get_command_with_clipboard(
     )
 }
 
-pub fn get_command_with_clipboard_and_limit(
+pub fn get_command_with_clipboard_status_and_limit(
     context: &RuntimeContext,
     output: &mut impl Write,
     error_output: &mut impl Write,
     args: &GetArgs,
-    copy_to_clipboard: impl FnOnce(&str) -> Result<(), String>,
+    copy_to_clipboard: impl FnOnce(
+        &str,
+        u64,
+        ClipboardClearLimit,
+    ) -> Result<ClipboardCopyStatus, String>,
     limit: ClipboardClearLimit,
 ) -> Result<(), CliError> {
     let resolved_secret = match args.source.source {
@@ -86,11 +160,17 @@ fn get_copy_command(
     error_output: &mut impl Write,
     resolved_secret: &ResolvedSecret,
     verify_user: bool,
-    copy_to_clipboard: impl FnOnce(&str) -> Result<(), String>,
+    copy_to_clipboard: impl FnOnce(
+        &str,
+        u64,
+        ClipboardClearLimit,
+    ) -> Result<ClipboardCopyStatus, String>,
     limit: ClipboardClearLimit,
 ) -> Result<(), CliError> {
     let ttl_seconds = reveal_ttl_seconds(context)?;
-    writeln!(error_output, "{}", limit.warning_text())?;
+    if let Some(warning) = limit.warning_text() {
+        writeln!(error_output, "{warning}")?;
+    }
     let user_verification = value_access_user_verification_or_audit_denial(
         context,
         resolved_secret,
@@ -101,11 +181,13 @@ fn get_copy_command(
         "clipboard",
     )?;
     let value = decrypt_current_secret(context, resolved_secret)?;
-    let result = copy_to_clipboard(value.as_str());
+    let result = copy_to_clipboard(value.as_str(), ttl_seconds, limit);
     let status = if result.is_ok() { "SUCCESS" } else { "FAILED" };
+    let clipboard_clear_supported =
+        result.as_ref().ok().map_or(Some(false), |status| Some(status.clear_supported));
     let unsupported_reason = match result.as_ref() {
         Err(error) => Some(error.as_str()),
-        Ok(()) => Some(limit.audit_reason()),
+        Ok(status) => status.unsupported_reason.as_deref(),
     };
     write_value_access_audit_if_available(&ValueAccessAudit {
         context,
@@ -116,19 +198,21 @@ fn get_copy_command(
         ttl_seconds: Some(ttl_seconds),
         force: false,
         clipboard_supported: Some(result.is_ok()),
-        clipboard_clear_supported: Some(false),
+        clipboard_clear_supported,
         unsupported_reason,
         denial_reason: None,
         user_verification,
     })?;
     result.map_err(external_source_unavailable_error)?;
+    let clear_supported = if clipboard_clear_supported == Some(true) { "yes" } else { "no" };
     writeln!(
         output,
-        "copied {} source={} version={} ttl_seconds={} clipboard_clear_supported=no metadata_only=yes",
+        "copied {} source={} version={} ttl_seconds={} clipboard_clear_supported={} metadata_only=yes",
         resolved_secret.secret.name,
         resolved_secret.secret.source,
         resolved_secret.secret.current_version,
-        ttl_seconds
+        ttl_seconds,
+        clear_supported
     )?;
     Ok(())
 }
@@ -259,6 +343,9 @@ pub const CLIPBOARD_COMMANDS: &[ClipboardCommand] = if cfg!(target_os = "macos")
 /// `clipboard_clear_supported`/`unsupported_reason` audit metadata.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ClipboardClearLimit {
+    /// The selected clipboard tool can read the current clipboard and clear it
+    /// after TTL only when the original value is still present.
+    Supported,
     /// Direct-CLI copy cannot schedule a background clearer; clearing waits
     /// on the agent path. This is the baseline limit on every platform.
     DirectCli,
@@ -271,23 +358,25 @@ pub enum ClipboardClearLimit {
 
 impl ClipboardClearLimit {
     /// Stable string used in the audit metadata `unsupported_reason` field.
-    pub const fn audit_reason(self) -> &'static str {
+    pub const fn audit_reason(self) -> Option<&'static str> {
         match self {
-            Self::DirectCli => "direct_cli_no_background_clear",
-            Self::WaylandSourceProcessLimited => "wayland_source_process_limited",
+            Self::Supported => None,
+            Self::DirectCli => Some("direct_cli_no_background_clear"),
+            Self::WaylandSourceProcessLimited => Some("wayland_source_process_limited"),
         }
     }
 
     /// Operator-facing pre-copy warning text written to stderr.
-    pub const fn warning_text(self) -> &'static str {
+    pub const fn warning_text(self) -> Option<&'static str> {
         match self {
+            Self::Supported => None,
             Self::DirectCli => {
-                "warning: clipboard TTL clearing is unsupported in this direct CLI path"
+                Some("warning: clipboard TTL clearing is unsupported in this direct CLI path")
             }
-            Self::WaylandSourceProcessLimited => {
+            Self::WaylandSourceProcessLimited => Some(
                 "warning: Wayland clipboards belong to the source process; \
-                 the value may be cleared before TTL or persist past it"
-            }
+                 the value may be cleared before TTL or persist past it",
+            ),
         }
     }
 }
@@ -307,11 +396,43 @@ pub fn clipboard_clear_limit(
     {
         return ClipboardClearLimit::WaylandSourceProcessLimited;
     }
+    if clipboard_clear_commands(command).is_some() {
+        return ClipboardClearLimit::Supported;
+    }
     ClipboardClearLimit::DirectCli
 }
 
-pub fn copy_secret_to_clipboard(value: &str) -> Result<(), String> {
-    SystemClipboard.copy(value)
+#[derive(Debug, Eq, PartialEq)]
+pub struct ClipboardCopyStatus {
+    clear_supported: bool,
+    unsupported_reason: Option<String>,
+}
+
+impl ClipboardCopyStatus {
+    #[must_use]
+    pub const fn clearing_scheduled() -> Self {
+        Self { clear_supported: true, unsupported_reason: None }
+    }
+
+    #[must_use]
+    pub fn clearing_unsupported(reason: &str) -> Self {
+        Self { clear_supported: false, unsupported_reason: Some(reason.to_owned()) }
+    }
+}
+
+pub fn copy_secret_to_clipboard(
+    value: &str,
+    ttl_seconds: u64,
+    limit: ClipboardClearLimit,
+) -> Result<ClipboardCopyStatus, String> {
+    let mut clipboard = SystemClipboard;
+    clipboard.copy(value)?;
+    if limit != ClipboardClearLimit::Supported {
+        return Ok(ClipboardCopyStatus::clearing_unsupported(
+            limit.audit_reason().unwrap_or("direct_cli_no_background_clear"),
+        ));
+    }
+    clipboard.schedule_clear_after_ttl(value, ttl_seconds)
 }
 
 pub fn copy_secret_to_clipboard_with(
@@ -351,7 +472,6 @@ pub fn select_clipboard_command(
     commands.iter().find(|command| exists(command.program))
 }
 
-#[cfg(test)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ClipboardClearResult {
     Cleared,
@@ -362,8 +482,13 @@ pub enum ClipboardClearResult {
 pub trait ClipboardBackend {
     fn copy(&mut self, value: &str) -> Result<(), String>;
 
-    #[cfg(test)]
     fn clear_if_current(&mut self, expected: &str) -> ClipboardClearResult;
+
+    fn schedule_clear_after_ttl(
+        &mut self,
+        expected: &str,
+        ttl_seconds: u64,
+    ) -> Result<ClipboardCopyStatus, String>;
 }
 
 #[cfg(test)]
@@ -409,6 +534,23 @@ impl ClipboardBackend for MemoryClipboard {
             ClipboardClearResult::Changed
         }
     }
+
+    fn schedule_clear_after_ttl(
+        &mut self,
+        expected: &str,
+        _ttl_seconds: u64,
+    ) -> Result<ClipboardCopyStatus, String> {
+        match self.clear_if_current(expected) {
+            ClipboardClearResult::Cleared | ClipboardClearResult::Changed => {
+                Ok(ClipboardCopyStatus::clearing_scheduled())
+            }
+            ClipboardClearResult::Unsupported => Ok(ClipboardCopyStatus::clearing_unsupported(
+                ClipboardClearLimit::DirectCli
+                    .audit_reason()
+                    .expect("direct CLI unsupported reason"),
+            )),
+        }
+    }
 }
 
 pub struct SystemClipboard;
@@ -418,9 +560,89 @@ impl ClipboardBackend for SystemClipboard {
         copy_secret_to_clipboard_with(value, CLIPBOARD_COMMANDS, command_exists)
     }
 
-    #[cfg(test)]
-    fn clear_if_current(&mut self, _expected: &str) -> ClipboardClearResult {
-        ClipboardClearResult::Unsupported
+    fn clear_if_current(&mut self, expected: &str) -> ClipboardClearResult {
+        let Some(command) = select_clipboard_command(CLIPBOARD_COMMANDS, command_exists) else {
+            return ClipboardClearResult::Unsupported;
+        };
+        if clipboard_clear_limit(Some(command), std::env::var("XDG_SESSION_TYPE").ok().as_deref())
+            != ClipboardClearLimit::Supported
+        {
+            return ClipboardClearResult::Unsupported;
+        }
+        let Ok(current) = read_clipboard_with(command) else {
+            return ClipboardClearResult::Unsupported;
+        };
+        if current != expected {
+            return ClipboardClearResult::Changed;
+        }
+        if copy_secret_to_clipboard_with("", CLIPBOARD_COMMANDS, command_exists).is_err() {
+            return ClipboardClearResult::Unsupported;
+        }
+        ClipboardClearResult::Cleared
+    }
+
+    fn schedule_clear_after_ttl(
+        &mut self,
+        expected: &str,
+        ttl_seconds: u64,
+    ) -> Result<ClipboardCopyStatus, String> {
+        let executable =
+            std::env::current_exe().map_err(|_| "clipboard clear helper unavailable".to_owned())?;
+        let mut child = ProcessCommand::new(executable)
+            .arg("internal-clipboard-clear")
+            .arg("--ttl-seconds")
+            .arg(ttl_seconds.to_string())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|_| "clipboard clear helper failed to start".to_owned())?;
+        {
+            let Some(mut stdin) = child.stdin.take() else {
+                return Err("clipboard clear helper stdin unavailable".to_owned());
+            };
+            stdin
+                .write_all(expected.as_bytes())
+                .map_err(|_| "clipboard clear helper rejected stdin".to_owned())?;
+        }
+        Ok(ClipboardCopyStatus::clearing_scheduled())
+    }
+}
+
+pub fn run_internal_clipboard_clear(ttl_seconds: u64) -> Result<(), CliError> {
+    let mut expected = String::new();
+    io::stdin().read_to_string(&mut expected)?;
+    thread::sleep(Duration::from_secs(ttl_seconds));
+    let mut clipboard = SystemClipboard;
+    let _result = clipboard.clear_if_current(&expected);
+    expected.zeroize();
+    Ok(())
+}
+
+fn read_clipboard_with(command: &ClipboardCommand) -> Result<String, String> {
+    let (program, args) = clipboard_clear_commands(command)
+        .ok_or_else(|| "clipboard clear unsupported".to_owned())?;
+    let output = ProcessCommand::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .map_err(|_| "clipboard read command failed to start".to_owned())?;
+    if !output.status.success() {
+        return Err("clipboard read command failed".to_owned());
+    }
+    String::from_utf8(output.stdout)
+        .map_err(|_| "clipboard read command returned non-utf8".to_owned())
+}
+
+fn clipboard_clear_commands(
+    command: &ClipboardCommand,
+) -> Option<(&'static str, &'static [&'static str])> {
+    match command.program {
+        "pbcopy" => Some(("pbpaste", &[])),
+        "xclip" => Some(("xclip", &["-selection", "clipboard", "-o"])),
+        "xsel" => Some(("xsel", &["--clipboard", "--output"])),
+        _ => None,
     }
 }
 

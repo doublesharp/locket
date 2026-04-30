@@ -288,26 +288,26 @@ fn get_copy_writes_metadata_only_audit_without_value_leakage()
     let mut copy_output = Vec::new();
     let mut copy_stderr = Vec::new();
     let mut clipboard = crate::MemoryClipboard::clearing_supported();
-    crate::get_command_with_clipboard(
+    crate::get_command_with_clipboard_status_and_limit(
         &context,
         &mut copy_output,
         &mut copy_stderr,
         &copy_args,
-        |value| crate::ClipboardBackend::copy(&mut clipboard, value),
+        |value, ttl_seconds, limit| {
+            assert_eq!(ttl_seconds, 60);
+            assert_eq!(limit, crate::ClipboardClearLimit::Supported);
+            crate::ClipboardBackend::copy(&mut clipboard, value)?;
+            crate::ClipboardBackend::schedule_clear_after_ttl(&mut clipboard, value, ttl_seconds)
+        },
+        crate::ClipboardClearLimit::Supported,
     )?;
-    assert_eq!(clipboard.value(), Some("postgres://localhost/app"));
-    assert_eq!(
-        crate::ClipboardBackend::clear_if_current(&mut clipboard, "postgres://localhost/app"),
-        crate::ClipboardClearResult::Cleared
-    );
     assert_eq!(clipboard.value(), None);
     let copy_output = String::from_utf8(copy_output)?;
     let copy_stderr = String::from_utf8(copy_stderr)?;
     assert!(copy_output.contains("metadata_only=yes"));
-    assert!(copy_output.contains("clipboard_clear_supported=no"));
+    assert!(copy_output.contains("clipboard_clear_supported=yes"));
     assert!(!copy_output.contains("postgres://localhost/app"));
-    assert!(copy_stderr.contains("clipboard TTL clearing is unsupported"));
-    assert!(!copy_output.contains("clipboard TTL clearing is unsupported"));
+    assert!(copy_stderr.is_empty());
 
     let store = locket_store::Store::open(directory.path().join("store.db"))?;
     let metadata: String = store.connection().query_row(
@@ -317,7 +317,7 @@ fn get_copy_writes_metadata_only_audit_without_value_leakage()
     )?;
     assert!(metadata.contains("\"access_mode\":\"clipboard\""));
     assert!(metadata.contains("\"ttl_seconds\":60"));
-    assert!(metadata.contains("\"clipboard_clear_supported\":false"));
+    assert!(metadata.contains("\"clipboard_clear_supported\":true"));
     assert!(metadata.contains("\"secret_name\":\"DATABASE_URL\""));
     assert!(!metadata.contains("postgres://localhost/app"));
     Ok(())
@@ -443,12 +443,13 @@ fn get_copy_unavailable_audits_unsupported_state_without_value_leakage()
     };
     let mut copy_output = Vec::new();
     let mut copy_stderr = Vec::new();
-    let result = crate::get_command_with_clipboard(
+    let result = crate::get_command_with_clipboard_and_limit(
         &context,
         &mut copy_output,
         &mut copy_stderr,
         &copy_args,
         |_value| Err("clipboard command unavailable".to_owned()),
+        crate::ClipboardClearLimit::DirectCli,
     );
     let Err(error) = result else {
         return Err("clipboard failure must return an error".into());
