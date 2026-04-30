@@ -284,8 +284,7 @@ Slices 1+2 shipped (agent client, tray binding, 6 view scaffolds,
     `agent-unlock-cache`.
   - [ ] **subtask** — desktop-versions-data: wire into
     `SecretVersionHistory.vue`. Slice 5.
-  - [ ] **subtask** — agent-list-runtime-sessions: RPC scoped to
-    active profile, with privacy aliases applied.
+  - [~] [acda32e4] branch agent-acda32e4/agent-list-runtime-sessions, worktree .worktrees/agent-acda32e4-agent-list-runtime-sessions; **subtask** — agent-list-runtime-sessions: RPC scoped to active profile, with privacy aliases applied.
   - [ ] **subtask** — desktop-execution-data: wire into
     `ExecutionMonitor.vue` + stale-session classifier. Slice 6.
   - [ ] **subtask** — agent-reveal-copy-impl: real `Reveal` / `Copy`
