@@ -217,10 +217,11 @@ the spec already covers. Closed slices land in
   `--output <file>` 0600 transcript with refuse-overwrite-without-
   `--force`; partial-line buffer cap with redact-and-warn behavior
   (`docs/specs/scan-redaction.md:72-76`).
-- [ ] `Duration` grammar parser/normalizer
+- [~] [cb2437f7] `Duration` grammar parser/normalizer
   (`^[1-9][0-9]*(s|m|h|d|w)$`, reject compound/fractional/zero/
   negative/uppercase/whitespace) used everywhere durations are read
   (`docs/specs/data-model.md:27`).
+  Claim: branch agent-cb2437f7/duration-grammar, worktree .worktrees/agent-cb2437f7-duration-grammar, scope parser usage and CLI/config regressions.
 
 ### Runtime/DX
 
@@ -559,9 +560,6 @@ the spec already covers. Closed slices land in
     socket. Pre-req: `agent-socket-server`.
   - [ ] **subtask** — harden-socket-perms: 0600/equivalent socket and
     pipe permissions; refuse to start if the bind path is wider.
-  - [~] [d7d049a4] **subtask** — harden-core-dumps: disable core dumps in the
-    agent and CLI processes that hold key material (per-platform).
-    Claim: branch agent-d7d049a4/harden-core-dumps, worktree .worktrees/agent-d7d049a4-harden-core-dumps. Scope: Unix `RLIMIT_CORE=0` + `PR_SET_DUMPABLE=0` (Linux) helper in `locket-platform`, called from CLI startup; Windows is a no-op for now with a `[ ]` follow-up.
   - [ ] **subtask** — harden-memory-lock: `mlock`/equivalent for
     unwrapped key buffers; warn on unsupported platforms.
   - [ ] **subtask** — harden-zeroize: ensure unwrapped keys/values
@@ -904,7 +902,8 @@ editing — they drift. Severity: **blocker** (security/correctness),
     that returns spoofable peer creds so the agent's peer-validation
     logic can be tested without root. Pre-req:
     `agent-peer-validation` subtask under Local agent daemon.
-  - [ ] **subtask** — mutation-deny-by-default: policy-evaluator
+  - [~] [6e4d05db] **subtask** — mutation-deny-by-default: policy-evaluator
+    Claim: branch agent-6e4d05db/mutation-deny-by-default, worktree .worktrees/agent-6e4d05db-mutation-deny-by-default.
     tests that explicitly inject permissive variants and assert
     deny-by-default still rejects.
   - [ ] **subtask** — mutation-malformed-crypto: tamper AAD/nonces
