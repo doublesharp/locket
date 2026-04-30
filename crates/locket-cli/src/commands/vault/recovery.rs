@@ -9,6 +9,7 @@ use sha2::{Digest, Sha256};
 use std::io::{self, IsTerminal, Write};
 use std::path::PathBuf;
 
+use crate::runtime::user_verification::{UserVerificationAudit, require_user_verification};
 use crate::{
     CliError, RecoverArgs, RecoveryCommand, ResolvedProject, RuntimeContext, format_hex,
     formatted_recovery_code, generate_recovery_code_bytes, generate_recovery_salt, load_master_key,
@@ -122,6 +123,7 @@ pub fn restore_from_recovery_code(
             Err(error) => return Err(CliError::Platform(error)),
         }
     }
+    let force_verification = force_recovery_user_verification(context, project_id, force)?;
 
     let salt = kdf
         .decode_salt()
@@ -154,10 +156,38 @@ pub fn restore_from_recovery_code(
     if restored == 0 {
         return Err(metadata_invalid_error("no master_key entries found in recovery envelope"));
     }
-    write_recover_audit(context, resolved, kdf, envelope, restored, force)?;
+    write_recover_audit(
+        context,
+        resolved,
+        kdf,
+        envelope,
+        restored,
+        force,
+        force_verification.as_ref(),
+    )?;
     writeln!(output, "recovered: master_key")?;
     writeln!(output, "metadata_only: yes")?;
     Ok(())
+}
+
+fn force_recovery_user_verification(
+    context: &RuntimeContext,
+    project_id: &str,
+    force: bool,
+) -> Result<Option<UserVerificationAudit>, CliError> {
+    if !force {
+        return Ok(None);
+    }
+    match context.key_store.load_master_key(project_id) {
+        Ok(_) => require_user_verification(
+            context,
+            "recover --force",
+            "Overwrite an intact recovery target",
+        )
+        .map(Some),
+        Err(locket_platform::PlatformError::MasterKeyNotFound) => Ok(None),
+        Err(error) => Err(CliError::Platform(error)),
+    }
 }
 
 fn validate_recovery_metadata(
@@ -266,6 +296,7 @@ fn write_recover_audit(
     envelope: &RecoveryEnvelope,
     restored_master_keys: usize,
     force: bool,
+    user_verification: Option<&UserVerificationAudit>,
 ) -> Result<(), CliError> {
     let timestamp = now_unix_nanos()?;
     let mut store = open_store(context)?;
@@ -273,7 +304,7 @@ fn write_recover_audit(
         load_project_key(context, &store, resolved.config.project_id.as_str(), KeyPurpose::Audit)?;
     let envelope_bytes = envelope.serialize()?;
     let envelope_checksum = format_hex(&Sha256::digest(&envelope_bytes));
-    let metadata = json!({
+    let mut metadata = json!({
         "schema_version": 1,
         "action": "RECOVER",
         "status": "SUCCESS",
@@ -287,6 +318,10 @@ fn write_recover_audit(
         },
         "force": force,
     });
+    if let Some(user_verification) = user_verification {
+        metadata["user_verification"] = serde_json::to_value(user_verification)?;
+        metadata["intact_keychain_override"] = json!(true);
+    }
     let audit = AuditWrite {
         project_id: resolved.config.project_id.as_str(),
         profile_id: None,

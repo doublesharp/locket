@@ -348,6 +348,51 @@ fn e2e_recover_force_overwrites_existing_keychain_entry_and_records_audit()
     assert!(metadata.contains("\"force\":true"));
     assert!(metadata.contains("\"action\":\"RECOVER\""));
     assert!(metadata.contains("\"status\":\"SUCCESS\""));
+    assert!(metadata.contains("\"intact_keychain_override\":true"));
+    assert!(metadata.contains("\"user_verification\""));
+    assert!(metadata.contains("\"method\":\"test\""));
+    Ok(())
+}
+
+#[test]
+fn e2e_recover_force_requires_user_verification_before_overwrite()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+
+    let mut init_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut init_output,
+    )?;
+    let init_output = String::from_utf8(init_output)?;
+    let code = recovery_code_from_output(&init_output)?.to_owned();
+    let (project_id, original_master_key) = test_project_id_and_master_key(&context)?;
+
+    let recover_context = context_with_recovery_code(&context, &format!("{code}\n"));
+    let rejecting_context =
+        context_with_user_verifier(&recover_context, Arc::new(MemoryLocalUserVerifier::denying()));
+    let mut recover_output = Vec::new();
+    let result = run_with_context(
+        Cli::try_parse_from(["locket", "recover", "--force"])?,
+        &rejecting_context,
+        &mut recover_output,
+    );
+    let Err(error) = result else {
+        return Err("recover --force must fail when user verification is denied".into());
+    };
+    assert_eq!(error.exit_code(), locket_core::LocketError::UserVerificationFailed.exit_code());
+    assert!(recover_output.is_empty());
+    assert_eq!(*context.key_store.load_master_key(&project_id)?, original_master_key);
+
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let recover_rows: i64 = store.connection().query_row(
+        "SELECT COUNT(*) FROM audit_log WHERE action = 'RECOVER'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(recover_rows, 0);
     Ok(())
 }
 
