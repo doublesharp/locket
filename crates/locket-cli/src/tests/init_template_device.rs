@@ -741,6 +741,12 @@ fn team_remove_member_sets_removed_at_and_writes_team_remove_audit()
     assert!(output.contains("remove member: Alice Owner (owner)"));
     assert!(output.contains("team_remove: success"));
     assert!(output.contains("metadata_only: yes"));
+    // Rotation checklist must surface every project profile and a total
+    // active-secret count so the operator can rotate accessible secrets.
+    assert!(output.contains("rotation_checklist:"));
+    assert!(output.contains("profile dev:"));
+    assert!(output.contains("rotate_active_secrets="));
+    assert!(output.contains("total_active_secrets="));
 
     let store = locket_store::Store::open(directory.path().join("store.db"))?;
     let removed_at: Option<i64> = store.connection().query_row(
@@ -785,6 +791,10 @@ fn team_revoke_device_sets_revoked_at_and_writes_device_revoke_audit()
     assert!(output.contains("device: revoked"));
     assert!(output.contains("device_id: lk_dev_team_owner"));
     assert!(output.contains("metadata_only: yes"));
+    // The same rotation checklist surfaces from `team revoke-device`.
+    assert!(output.contains("rotation_checklist:"));
+    assert!(output.contains("rotate_active_secrets="));
+    assert!(output.contains("total_active_secrets="));
 
     let store = locket_store::Store::open(directory.path().join("store.db"))?;
     let revoked_at: Option<i64> = store.connection().query_row(

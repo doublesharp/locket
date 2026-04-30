@@ -116,10 +116,8 @@ fn team_remove_command(
     // Show metadata summary before confirmation.
     writeln!(output, "remove member: {} ({})", member.display_name, member.role)?;
     writeln!(output, "trusted_devices: {}", member.trusted_device_count)?;
-    writeln!(
-        output,
-        "note: a rotation checklist for accessible profiles and secrets is recommended"
-    )?;
+    let redact_names = privacy_redact_names_enabled(context, false)?;
+    write_rotation_checklist(output, &store, project_id, redact_names)?;
 
     // Typed confirmation: must type the display name exactly.
     let confirmation = context.confirmation_reader.read_confirmation(&member.display_name)?;
@@ -212,10 +210,8 @@ fn team_revoke_device_command(
     writeln!(output, "device: revoked")?;
     writeln!(output, "device_id: {}", device.id)?;
     writeln!(output, "fingerprint: {}", device.fingerprint)?;
-    writeln!(
-        output,
-        "note: a rotation checklist for accessible profiles and secrets is recommended"
-    )?;
+    let redact_names = privacy_redact_names_enabled(context, false)?;
+    write_rotation_checklist(output, &store, project_id, redact_names)?;
     writeln!(output, "metadata_only: yes")?;
     Ok(())
 }
@@ -344,4 +340,56 @@ fn invite_profiles_label(invite: &PendingTeamInviteRecord, redact_names: bool) -
 
 fn optional_timestamp_label(value: Option<i64>) -> String {
     value.map_or_else(|| "-".to_owned(), |timestamp| timestamp.to_string())
+}
+
+/// Emits a metadata-only rotation checklist for every profile in the
+/// project, listing the count of active secrets that an Owner-level
+/// principal could have accessed. Member-to-profile scoping is
+/// approximated as "all project profiles" until invite-issued profile
+/// lists are persisted; the placeholder below tracks the gap.
+///
+/// Output shape (one block, never a value):
+///
+/// ```text
+/// rotation_checklist:
+///   profile <name>: rotate_active_secrets=N
+///   ...
+///   total_active_secrets=N
+///   action: rotate listed secrets in each profile and `team revoke-device` any associated devices
+///   scope_note: profile membership not yet persisted; checklist covers all project profiles
+/// ```
+fn write_rotation_checklist(
+    output: &mut impl Write,
+    store: &locket_store::Store,
+    project_id: &str,
+    redact_names: bool,
+) -> Result<(), CliError> {
+    let profiles = store.list_profiles(project_id)?;
+    writeln!(output, "rotation_checklist:")?;
+    if profiles.is_empty() {
+        writeln!(output, "  (no profiles)")?;
+        writeln!(output, "  total_active_secrets=0")?;
+        return Ok(());
+    }
+    let mut total: usize = 0;
+    for profile in &profiles {
+        let secrets = store.list_active_secrets_by_profile(project_id, &profile.id)?;
+        total = total.saturating_add(secrets.len());
+        let label = if redact_names {
+            privacy_alias("profile", &profile.id)
+        } else {
+            profile.name.clone()
+        };
+        writeln!(output, "  profile {label}: rotate_active_secrets={}", secrets.len())?;
+    }
+    writeln!(output, "  total_active_secrets={total}")?;
+    writeln!(
+        output,
+        "  action: rotate listed secrets in each profile and `team revoke-device` any associated devices"
+    )?;
+    writeln!(
+        output,
+        "  scope_note: profile membership not yet persisted; checklist covers all project profiles"
+    )?;
+    Ok(())
 }
