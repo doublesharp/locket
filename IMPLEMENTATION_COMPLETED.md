@@ -258,6 +258,10 @@ Slices that have merged to `main` and verified. Open work tracked in
 - [x] **subtask** — tests-env-merge: 9 env merge edge-case tests.
 - [x] **subtask** — tests-policy-evaluation: 14 policy evaluation tests.
 - [x] **subtask** — tests-scanner-rules: 12 scanner rule and finding metadata tests.
+- [x] **subtask** — tests-audit-hmac: 2 schema_version HMAC regression tests.
+- [x] **subtask** — tests-runtime-sessions: 5 session storage and recording tests.
+- [x] **subtask** — e2e-greenfield-init: init → device_init → profile_create → set → get E2E.
+- [x] **subtask** — e2e-dotenv-migration: import from .env with delete-confirmation E2E.
 
 - [x] `locket allow` requires trusted root; regression test confirms
   untrusted root exits 71, no `ALLOW_DIRECTORY` row written.

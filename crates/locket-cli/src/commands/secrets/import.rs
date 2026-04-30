@@ -178,21 +178,19 @@ fn write_env_delete_prompt(
         writeln!(output, "delete_env_prompt: not_applicable")?;
         return Ok(());
     }
-    let confirmation =
-        match confirmation_reader.read_confirmation("type 'delete .env' to remove the plaintext .env file") {
-            Ok(c) => {
-                writeln!(
-                    output,
-                    "delete_env_prompt: type 'delete .env' to remove the plaintext .env file"
-                )?;
-                c
-            }
-            Err(_) => {
-                writeln!(output, "delete_env_prompt: skipped_noninteractive")?;
-                writeln!(output, "delete_env: kept")?;
-                return Ok(());
-            }
-        };
+    let confirmation = if let Ok(c) = confirmation_reader
+        .read_confirmation("type 'delete .env' to remove the plaintext .env file")
+    {
+        writeln!(
+            output,
+            "delete_env_prompt: type 'delete .env' to remove the plaintext .env file"
+        )?;
+        c
+    } else {
+        writeln!(output, "delete_env_prompt: skipped_noninteractive")?;
+        writeln!(output, "delete_env: kept")?;
+        return Ok(());
+    };
     if confirmation.trim_end() == "delete .env" {
         fs::remove_file(path)?;
         writeln!(output, "delete_env: deleted")?;
