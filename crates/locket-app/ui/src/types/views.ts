@@ -64,6 +64,21 @@ export interface CommandPolicyRow {
   updatedAt: string; // ISO 8601
 }
 
+export interface DeviceMemberRow {
+  id: string;
+  kind: 'device' | 'member';
+  name: string;
+  alias?: string;
+  role?: 'owner' | 'maintainer' | 'developer' | 'viewer';
+  fingerprint?: string;
+  fingerprintAlias?: string;
+  trustedDeviceCount?: number;
+  localDevice?: boolean;
+  status: 'active' | 'revoked' | 'removed' | 'pending';
+  createdAt: string; // ISO 8601
+  lastSeenAt?: string;
+}
+
 export interface AuditLogRow {
   sequence: number;
   action: string; // e.g. 'REVEAL', 'COPY', 'RUN_POLICY'

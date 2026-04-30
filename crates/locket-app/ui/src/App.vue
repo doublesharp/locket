@@ -9,6 +9,7 @@ import { useAgent } from './composables/useAgent';
 import { useTray } from './composables/useTray';
 import AuditLog from './views/AuditLog.vue';
 import BackupRecovery from './views/BackupRecovery.vue';
+import DeviceMemberDirectory from './views/DeviceMemberDirectory.vue';
 import ExecutionMonitor from './views/ExecutionMonitor.vue';
 import PolicyEditor from './views/PolicyEditor.vue';
 import ProjectDashboard from './views/ProjectDashboard.vue';
@@ -19,6 +20,7 @@ import Settings from './views/Settings.vue';
 import type {
   AuditLogRow,
   CommandPolicyRow,
+  DeviceMemberRow,
   RuntimeSessionRow,
   ScanFindingRow,
   SecretRowMeta,
@@ -33,6 +35,7 @@ type ViewKey =
   | 'secrets'
   | 'versions'
   | 'execution'
+  | 'devices'
   | 'audit'
   | 'scan'
   | 'policies'
@@ -58,6 +61,7 @@ const navItems: ReadonlyArray<{ key: ViewKey; label: string }> = [
   { key: 'secrets', label: 'Secrets' },
   { key: 'versions', label: 'Versions' },
   { key: 'execution', label: 'Execution' },
+  { key: 'devices', label: 'Devices' },
   { key: 'audit', label: 'Audit' },
   { key: 'scan', label: 'Scan' },
   { key: 'policies', label: 'Policies' },
@@ -99,6 +103,7 @@ const profileLabel = computed<string>(() =>
 const secrets = ref<SecretRowMeta[]>([]);
 const versions = ref<VersionHistoryRow[]>([]);
 const sessions = ref<RuntimeSessionRow[]>([]);
+const deviceMembers = ref<DeviceMemberRow[]>([]);
 const auditRows = ref<AuditLogRow[]>([]);
 const findings = ref<ScanFindingRow[]>([]);
 const policies = ref<CommandPolicyRow[]>([]);
@@ -408,6 +413,12 @@ onUnmounted(() => {
         :error-message="sessionsError"
         :last-refreshed-at="sessionsLastRefreshed"
         @refresh="refreshRuntimeSessions"
+      />
+
+      <DeviceMemberDirectory
+        v-else-if="currentView === 'devices'"
+        :rows="deviceMembers"
+        :privacy-mode="settings.privacyRedactNames"
       />
 
       <AuditLog
