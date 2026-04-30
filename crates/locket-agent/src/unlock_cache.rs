@@ -26,7 +26,6 @@ pub enum UnlockMethod {
 
 /// One per-project unlock entry. The key is `Zeroizing` so it is
 /// wiped when the entry drops.
-#[derive(Debug)]
 pub struct UnlockEntry {
     /// Unwrapped key material. Wiped on drop.
     key: Zeroizing<Vec<u8>>,
@@ -36,6 +35,17 @@ pub struct UnlockEntry {
     ttl: Duration,
     /// Unlock method recorded on the corresponding audit row.
     method: UnlockMethod,
+}
+
+impl std::fmt::Debug for UnlockEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("UnlockEntry")
+            .field("key_len", &self.key.len())
+            .field("inserted_at_unix_nanos", &self.inserted_at_unix_nanos)
+            .field("ttl", &self.ttl)
+            .field("method", &self.method)
+            .finish()
+    }
 }
 
 impl UnlockEntry {
@@ -72,7 +82,8 @@ impl UnlockEntry {
 
     /// Borrows the unwrapped key bytes. Callers must not log them.
     #[must_use]
-    pub fn key_bytes(&self) -> &[u8] {
+    #[allow(dead_code)]
+    pub(crate) fn key_bytes(&self) -> &[u8] {
         &self.key
     }
 }

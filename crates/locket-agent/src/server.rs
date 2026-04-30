@@ -455,6 +455,9 @@ async fn read_one_frame(
 /// Wire payload for the `Unlock` RPC. The `key` field is bytes-as-array
 /// per the v1 spec; `serde_bytes` lets serde accept JSON byte arrays
 /// without forcing the client to base64-encode the unwrapped key.
+// TODO(task-agent-real-unlock): Replace the client-supplied `key` field
+// with an OS-keychain / passphrase / recovery-envelope unwrap performed
+// inside the agent. See docs/specs/agent.md:84.
 #[derive(serde::Deserialize)]
 struct UnlockPayload {
     project_id: String,
@@ -489,6 +492,10 @@ pub async fn dispatch(envelope: &RequestEnvelope, state: &AgentSocketState) -> R
             let payload = serde_json::to_value(snapshot).unwrap_or(serde_json::Value::Null);
             ResponseEnvelope::Success(SuccessEnvelope::new(envelope.id.clone(), payload))
         }
+        // TODO(task-agent-real-unlock): see UnlockPayload above — this arm
+        // trusts the client's key bytes; once the agent owns the unwrap path,
+        // the wire payload changes from `key` to e.g. `passphrase` /
+        // `keychain_token` and this arm performs the unwrap.
         Ok(AgentMethod::Unlock) => {
             let payload: UnlockPayload = match serde_json::from_value(envelope.payload.clone()) {
                 Ok(payload) => payload,
