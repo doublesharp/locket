@@ -636,11 +636,10 @@ the spec already covers. Closed slices land in
   (required fields, no unknown fields without a schema bump).
 - [x] Audit-tx atomicity: rollback regression tests lock in the in-tx
   invariant — no phantom row, no sequence gap on rollback.
-- [~] [7138f228] `metadata_json` ≤64 KiB per-row cap enforced at write time;
-  large `secret_names`/`redacted_secret_names` collections summarize
-  to stay under the cap (`docs/specs/audit.md`,
-  `docs/specs/data-model.md:400`).
-  Claim: branch agent-7138f228/audit-metadata-cap, worktree .worktrees/agent-7138f228-audit-metadata-cap. Scope: enforce the 64 KiB cap inside `append_audit` with a typed `MetadataInvalid` error; caller-side summarization for large `secret_names` collections is a separate `[ ]` follow-up.
+- [x] `metadata_json` ≤64 KiB per-row cap enforced at write time;
+  `AuditMetadataTooLarge` typed error (`MetadataInvalid` 64).
+- [ ] Caller-side summarization: large `secret_names`/`redacted_secret_names`
+  collections summarized before append to stay under 64 KiB cap.
 - [~] [aa40a4ce] Recovery code one-time display with scrollback warning and
   Claim: branch agent-aa40a4ce/recovery-rotate-scrollback-warning, worktree .worktrees/agent-aa40a4ce-recovery-rotate-scrollback-warning. Scope: add the scrollback warning to `recovery rotate` (init already has it). Optional screen-clear on `init`/`device init`/`recovery rotate` and `device init` recovery-bootstrap stay as separate follow-ups.
   optional screen-clear on `init`/`device init`/`recovery rotate`

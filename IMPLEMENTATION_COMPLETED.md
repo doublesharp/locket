@@ -113,6 +113,8 @@ Slices that have merged to `main` and verified. Open work tracked in
   via `validate_secret_value_str` (`MetadataInvalid` 64).
 - [x] Audit-tx atomicity: rollback regression tests lock in the in-tx
   invariant — no phantom row, no sequence gap on rollback.
+- [x] `metadata_json` ≤64 KiB per-row cap enforced at write time;
+  `AuditMetadataTooLarge` typed error (`MetadataInvalid` 64).
 
 ## Full Spec Coverage TODO — Security/Recovery/Team
 
