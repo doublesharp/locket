@@ -1,5 +1,10 @@
 //! Core policy and validation primitives for Locket.
 
+// age 0.11 transitively carries older versions of a few crates that
+// are also present elsewhere in the workspace. This is acceptable for
+// the sealed-bundle crypto boundary and cannot be resolved locally.
+#![allow(clippy::multiple_crate_versions)]
+
 pub mod audit;
 pub mod bundle;
 pub mod env;
