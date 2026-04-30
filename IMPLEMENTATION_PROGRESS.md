@@ -186,7 +186,8 @@ the spec already covers. Closed slices land in
   precedence and set tombstone preflight returns typed `SecretDeleted`;
   remaining commands still need the unified resolver
   (`docs/specs/data-model.md`, `docs/specs/runtime.md:188-216`).
-- [ ] Default high-entropy scan rule (≥20 chars, Shannon ≥4.5
+- [~] [70c448c4] Default high-entropy scan rule (≥20 chars, Shannon ≥4.5
+  Claim: branch agent-70c448c4/scan-entropy-policy, worktree .worktrees/agent-70c448c4-scan-entropy-policy.
   bits/char, exclude UUIDs/checksums/public ids) with project
   overrides in `locket.toml`; `policy doctor` reports non-default
   thresholds (`docs/specs/scan-redaction.md:24`).
