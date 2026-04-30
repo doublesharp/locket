@@ -111,6 +111,8 @@ Slices that have merged to `main` and verified. Open work tracked in
   mismatch exits `ConfirmationFailed` (68).
 - [x] `set`/`rotate`/`import` reject NUL and multiline secret values
   via `validate_secret_value_str` (`MetadataInvalid` 64).
+- [x] Audit-tx atomicity: rollback regression tests lock in the in-tx
+  invariant — no phantom row, no sequence gap on rollback.
 
 ## Full Spec Coverage TODO — Security/Recovery/Team
 
