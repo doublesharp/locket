@@ -323,8 +323,9 @@ the spec already covers. Closed slices land in
 - [~] `locket exec --all` typed-confirmation flow and `EXEC` audit
   shipped. Remaining: `locket env inspect` enhancements and env-layering /
   override-mode docs.
-- [ ] `locket exec --secret KEY` single-key injection (distinct from
+- [~] [9f2c8a1e] `locket exec --secret KEY` single-key injection (distinct from
   `--all`); writes `EXEC` row.
+  Claim: branch agent-9f2c8a1e/exec-single-secret, worktree .worktrees/agent-9f2c8a1e-exec-single-secret, scope explicit secret selection, source metadata, and focused CLI regressions.
 - [ ] On-demand agent startup: `locket exec`/`run` start the agent
   when missing; `AgentUnavailable` only after on-demand startup fails.
 - [ ] Docker active-context detection refuses remote/TCP/SSH contexts
