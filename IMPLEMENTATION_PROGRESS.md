@@ -33,10 +33,11 @@ doc must reach `main` before the next agent reads the file.
 4. **Create the worktree and branch** (`agent-<id>/<topic>` under
    `.worktrees/agent-<id>-<topic>`; see Worktree and branch naming).
    Do all implementation there.
-5. **Implement and verify.** Run `cargo fmt --all -- --check`,
-   `cargo clippy --workspace --all-targets --all-features -- -D warnings`,
-   and the workspace tests (or scoped equivalents). Use
-   `cargo -j 12` (12 cores). Add focused tests alongside the change.
+5. **Implement and quick-check.** Be optimistic — don't run the full
+   workspace battery. Add focused tests alongside the change and run
+   only the scoped tests for the touched crate(s):
+   `cargo test -p <crate> -j 12`. Skip workspace fmt/clippy/test
+   pre-merge.
 6. **Merge to `main`.** Rebase onto current `main` and fast-forward.
    Never `--no-verify`, `--no-gpg-sign`, or `git push --force` on
    `main`. Never overwrite or revert another agent's committed work.
@@ -49,7 +50,18 @@ doc must reach `main` before the next agent reads the file.
    - Remove the worktree and delete the branch:
      `git worktree remove .worktrees/agent-<id>-<topic>` then
      `git branch -D agent-<id>/<topic>`.
-8. **Pick the next item** and repeat.
+8. **Run the full battery on `main`.** After the merge commit lands,
+   run `cargo fmt --all -- --check`,
+   `cargo clippy --workspace --all-targets --all-features -- -D warnings`,
+   and `cargo test --workspace --all-targets --all-features -j 12`.
+   If anything fails:
+   - Fix forward in a tiny follow-up commit on `main` if the fix is
+     obvious (one missing import, one stale assertion).
+     - Otherwise, **revert the merge commit on `main`** (`git revert
+     <sha>` on `main`), surface the failure on the original TODO
+     line as a new `[~]` claim with notes, and let the slice owner
+     re-do it.
+9. **Pick the next item** and repeat.
 
 ### Other rules
 
@@ -943,12 +955,6 @@ editing — they drift. Severity: **blocker** (security/correctness),
   (`docs/specs/storage.md`).
 - [ ] `automation_client_nonces` opportunistic pruning during client
   auth and via `locket doctor` (`docs/specs/storage.md`).
-- [~] [cb2437f7] `runtime.session_secret_name_retention` enforcement: doctor
-  reports past-retention rows and prunes only `secret_names`; `off`
-  disables storing the field for new rows
-  (`docs/specs/storage.md:139`).
-  Claim: branch agent-cb2437f7/runtime-session-retention, worktree .worktrees/agent-cb2437f7-runtime-session-retention, scope doctor retention reporting/pruning and config-off coverage.
-
 ## Spec-by-Spec Completion Gates
 
 Do this after all the other tasks are completed.

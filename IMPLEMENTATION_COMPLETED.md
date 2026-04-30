@@ -181,6 +181,8 @@ Slices that have merged to `main` and verified. Open work tracked in
   ≥8 cumulative CPU-hours/target since prior release; deterministic
   per-target resource limits and codified finding workflow
   (`docs/specs/fuzzing.md`).
+- [x] `runtime.session_secret_name_retention`: doctor reports expired
+  runtime-session name metadata and prunes only `secret_names` on request.
 - [x] **subtask** — mock-user-verification: `MemoryLocalUserVerifier`
   covers allow, deny, platform-unsupported, and user-cancelled paths.
 - [x] **subtask** — mock-docker-compose: Compose external env
