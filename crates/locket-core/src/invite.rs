@@ -109,6 +109,31 @@ pub enum InviteVerifyError {
     InvalidSignature,
 }
 
+/// Maximum clock-skew tolerance applied to [`SignedInvite::check_expiry`].
+///
+/// Spec: `docs/specs/team-sync-recovery.md` — invite expiry comparisons
+/// honor up to 5 minutes of clock drift between issuer and accepter.
+pub const INVITE_CLOCK_SKEW_SECONDS: i64 = 5 * 60;
+
+/// Error from [`SignedInvite::check_expiry`].
+#[derive(Clone, Copy, Debug, Error, Eq, PartialEq)]
+pub enum InviteExpiryError {
+    /// `now` is more than [`INVITE_CLOCK_SKEW_SECONDS`] past
+    /// `payload.expires_at`.
+    #[error(
+        "invite expired: expires_at {expires_at} is {expired_seconds}s before now (skew tolerance {skew_seconds}s)"
+    )]
+    Expired {
+        /// `expires_at` field copied from the invite payload.
+        expires_at: i64,
+        /// `now - expires_at` in seconds (always positive when this
+        /// variant fires).
+        expired_seconds: i64,
+        /// Tolerance applied; matches [`INVITE_CLOCK_SKEW_SECONDS`].
+        skew_seconds: i64,
+    },
+}
+
 /// Compute the v1 device identity fingerprint.
 ///
 /// `SHA-256("locket-device-v1" || u16_le(signing_key_len) || signing_key
@@ -195,6 +220,32 @@ impl SignedInvite {
         message.extend_from_slice(&payload_json);
 
         verifying_key.verify(&message, &signature).map_err(|_| InviteVerifyError::InvalidSignature)
+    }
+
+    /// Reject invites whose `expires_at` is more than 5 minutes in the
+    /// past relative to `now_unix_seconds`.
+    ///
+    /// `now <= expires_at + INVITE_CLOCK_SKEW_SECONDS` succeeds. This
+    /// matches the spec's bidirectional clock-skew tolerance: clients
+    /// whose clocks are slow by up to 5 minutes still accept invites
+    /// that just expired, and clients whose clocks are fast still
+    /// accept invites the issuer claims are within the window.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InviteExpiryError::Expired`] when the invite is past
+    /// the tolerance window.
+    pub const fn check_expiry(&self, now_unix_seconds: i64) -> Result<(), InviteExpiryError> {
+        let expires_at = self.payload.expires_at;
+        let expired_seconds = now_unix_seconds.saturating_sub(expires_at);
+        if expired_seconds > INVITE_CLOCK_SKEW_SECONDS {
+            return Err(InviteExpiryError::Expired {
+                expires_at,
+                expired_seconds,
+                skew_seconds: INVITE_CLOCK_SKEW_SECONDS,
+            });
+        }
+        Ok(())
     }
 }
 
@@ -354,5 +405,57 @@ mod tests {
             serde_json::from_str::<TeamRole>("\"read_only\"").unwrap(),
             TeamRole::ReadOnly
         );
+    }
+
+    fn invite_with_expiry(expires_at: i64) -> SignedInvite {
+        let sk = make_signing_key();
+        let sealing = [0x77_u8; 32];
+        let mut payload = make_payload(&sk, &sealing);
+        payload.expires_at = expires_at;
+        sign_payload(&sk, &payload)
+    }
+
+    #[test]
+    fn check_expiry_accepts_now_before_expires_at() {
+        let invite = invite_with_expiry(2_000);
+        assert!(invite.check_expiry(1_500).is_ok());
+    }
+
+    #[test]
+    fn check_expiry_accepts_now_at_expires_at() {
+        let invite = invite_with_expiry(2_000);
+        assert!(invite.check_expiry(2_000).is_ok());
+    }
+
+    #[test]
+    fn check_expiry_accepts_full_skew_window() {
+        let invite = invite_with_expiry(2_000);
+        assert!(invite.check_expiry(2_000 + INVITE_CLOCK_SKEW_SECONDS).is_ok());
+    }
+
+    #[test]
+    fn check_expiry_rejects_one_second_past_skew_window() -> Result<(), &'static str> {
+        let invite = invite_with_expiry(2_000);
+        let outside = 2_000 + INVITE_CLOCK_SKEW_SECONDS + 1;
+        let Err(InviteExpiryError::Expired { expires_at, expired_seconds, skew_seconds }) =
+            invite.check_expiry(outside)
+        else {
+            return Err("expected Expired");
+        };
+        assert_eq!(expires_at, 2_000);
+        assert_eq!(expired_seconds, INVITE_CLOCK_SKEW_SECONDS + 1);
+        assert_eq!(skew_seconds, INVITE_CLOCK_SKEW_SECONDS);
+        Ok(())
+    }
+
+    #[test]
+    fn invite_clock_skew_seconds_matches_spec_5_minutes() {
+        assert_eq!(INVITE_CLOCK_SKEW_SECONDS, 300);
+    }
+
+    #[test]
+    fn check_expiry_handles_now_far_in_the_future_without_overflow() {
+        let invite = invite_with_expiry(0);
+        assert!(matches!(invite.check_expiry(i64::MAX), Err(InviteExpiryError::Expired { .. })));
     }
 }
