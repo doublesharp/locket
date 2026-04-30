@@ -288,7 +288,8 @@ fn rotate_with_explicit_source_rotates_only_that_source() -> Result<(), Box<dyn 
 }
 
 #[test]
-fn rm_without_source_defaults_to_user_local() -> Result<(), Box<dyn std::error::Error>> {
+fn rm_without_source_requires_explicit_source_when_multiple_sources_exist()
+-> Result<(), Box<dyn std::error::Error>> {
     let directory = tempdir()?;
     let context = test_context(&directory);
     run_with_context(
@@ -299,6 +300,47 @@ fn rm_without_source_defaults_to_user_local() -> Result<(), Box<dyn std::error::
 
     setup_two_source_secret(&context, "CREDENTIAL", "user-cred", "machine-cred", 1_000)?;
 
+    let result = run_with_context(
+        Cli::try_parse_from(["locket", "rm", "CREDENTIAL"])?,
+        &context,
+        &mut Vec::new(),
+    );
+    assert_error_contains(result, "pass --source");
+
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let project_id: String =
+        store.connection().query_row("SELECT id FROM projects LIMIT 1", [], |row| row.get(0))?;
+    let profile_id: String =
+        store.connection().query_row("SELECT id FROM profiles LIMIT 1", [], |row| row.get(0))?;
+    assert!(
+        store.get_active_secret(&project_id, &profile_id, "CREDENTIAL", "user-local")?.is_some()
+    );
+    assert!(
+        store.get_active_secret(&project_id, &profile_id, "CREDENTIAL", "machine-local")?.is_some()
+    );
+    let delete_count: i64 = store.connection().query_row(
+        "SELECT COUNT(*) FROM audit_log WHERE action = 'DELETE'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(delete_count, 0);
+    Ok(())
+}
+
+#[test]
+fn rm_without_source_targets_the_only_active_source() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+
+    let ml_args =
+        test_secret_write_args_for_source("CREDENTIAL", crate::SecretSourceArg::MachineLocal);
+    crate::set_secret_value(&context, &ml_args, "machine-cred", "manual", 1_000)?;
+
     let mut rm_output = Vec::new();
     run_with_context(
         Cli::try_parse_from(["locket", "rm", "CREDENTIAL"])?,
@@ -307,21 +349,21 @@ fn rm_without_source_defaults_to_user_local() -> Result<(), Box<dyn std::error::
     )?;
     let rm_output = String::from_utf8(rm_output)?;
     assert!(
-        rm_output.contains("user-local"),
-        "rm without --source must target user-local by default: {rm_output}"
+        rm_output.contains("machine-local"),
+        "rm without --source must report the selected source: {rm_output}"
     );
 
-    // machine-local remains, so get still works
-    let mut get_output = Vec::new();
-    run_with_context(
-        Cli::try_parse_from(["locket", "get", "CREDENTIAL"])?,
-        &context,
-        &mut get_output,
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let metadata: String = store.connection().query_row(
+        "SELECT metadata_json FROM audit_log WHERE action = 'DELETE' ORDER BY sequence DESC LIMIT 1",
+        [],
+        |row| row.get(0),
     )?;
-    assert!(
-        String::from_utf8(get_output)?.contains("source=machine-local"),
-        "machine-local must survive rm of user-local"
-    );
+    let metadata: serde_json::Value = serde_json::from_str(&metadata)?;
+    assert_eq!(metadata["secret_name"], "CREDENTIAL");
+    assert_eq!(metadata["source"], "machine-local");
+    assert_eq!(metadata["action"], "DELETE");
+    assert_eq!(metadata["status"], "SUCCESS");
     Ok(())
 }
 
