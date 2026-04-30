@@ -590,8 +590,9 @@ the spec already covers. Closed slices land in
   - [ ] **subtask** — harden-peer-cred: peer credential validation
     (`SO_PEERCRED`/`LOCAL_PEERCRED`/named-pipe SID) on the agent
     socket. Pre-req: `agent-socket-server`.
-  - [ ] **subtask** — harden-socket-perms: 0600/equivalent socket and
+  - [~] [e7389a73] **subtask** — harden-socket-perms: 0600/equivalent socket and
     pipe permissions; refuse to start if the bind path is wider.
+    Claim: branch agent-e7389a73/harden-socket-perms, worktree .worktrees/agent-e7389a73-harden-socket-perms. Scope: refuse to bind when an existing parent dir or socket path is wider than 0o700/0o600.
   - [x] **subtask** — harden-memory-lock: `mlockall` at CLI startup;
     graceful `Degraded` on `RLIMIT_MEMLOCK` limit; `Unsupported` on macOS/Windows.
   - [x] **subtask** — harden-zeroize: `Zeroizing` wrappers at all key/value owner sites; recovery envelope return value wrapped.
