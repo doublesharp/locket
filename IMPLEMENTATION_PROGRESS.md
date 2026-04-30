@@ -280,11 +280,7 @@ the spec already covers. Closed slices land in
   precedence and set tombstone preflight returns typed `SecretDeleted`;
   remaining commands still need the unified resolver
   (`docs/specs/data-model.md`, `docs/specs/runtime.md:188-216`).
-- [~] [70c448c4] `locket ai-safe --pattern-only` degraded locked-vault mode and
-  Claim: branch agent-70c448c4/ai-safe-pattern-output, worktree .worktrees/agent-70c448c4-ai-safe-pattern-output, scope pattern-only execution, transcript file safety, and partial-line cap.
-  `--output <file>` 0600 transcript with refuse-overwrite-without-
-  `--force`; partial-line buffer cap with redact-and-warn behavior
-  (`docs/specs/scan-redaction.md:72-76`).
+- [x] `locket ai-safe --pattern-only` degraded locked-vault mode, `--output <file>` 0600 transcript with refuse-overwrite-without-`--force`, and partial-line buffer cap with redact-and-warn behavior.
 ### Runtime/DX
 
 - [ ] Local agent daemon (`docs/specs/agent.md`): socket/pipe server,
@@ -948,7 +944,7 @@ editing — they drift. Severity: **blocker** (security/correctness),
     that returns spoofable peer creds so the agent's peer-validation
     logic can be tested without root. Pre-req:
     `agent-peer-validation` subtask under Local agent daemon.
-  - [~] [bec7ddfc] **subtask** — mutation-malformed-crypto: tamper AAD/nonces
+  - [x] [bec7ddfc] **subtask** — mutation-malformed-crypto: tamper AAD/nonces
     and replay automation-client nonces; assert typed
     `IntegrityFailure`/`ReplayDetected` paths.
   - [x] **subtask** — mutation-locked-vault-scan: locked vault scan
