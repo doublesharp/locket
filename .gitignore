@@ -28,3 +28,7 @@
 *.redacted-debug.tar
 *.lcov
 /.worktrees
+
+# Multi-agent coordination state — local only, never committed.
+/.agents
+/.ready
