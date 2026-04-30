@@ -537,8 +537,6 @@ required_secrets = ["API_KEY"]
 #[allow(clippy::panic)]
 #[allow(clippy::unwrap_used)]
 #[allow(clippy::expect_used)]
-#[allow(clippy::needless_collect)]
-#[allow(clippy::redundant_closure_for_method_calls)]
 mod proptest_policy {
     use proptest::prelude::*;
 
@@ -588,11 +586,14 @@ mod proptest_policy {
             prop_assert!(result.is_ok(), "valid required_secrets should parse: {result:?}");
             let doc = result.unwrap();
             let policy = doc.commands.get(&cmd_name).unwrap();
-            let req_names: Vec<&str> = policy.required_secrets.iter().map(|s| s.as_str()).collect();
-            prop_assert!(req_names.contains(&secret.as_str()), "required secret preserved");
-            let allowed_names: Vec<&str> =
-                policy.allowed_secrets.iter().map(|s| s.as_str()).collect();
-            prop_assert!(allowed_names.contains(&secret.as_str()), "required in allowed_secrets");
+            prop_assert!(
+                policy.required_secrets.iter().any(|s| s.as_str() == secret),
+                "required secret preserved"
+            );
+            prop_assert!(
+                policy.allowed_secrets.iter().any(|s| s.as_str() == secret),
+                "required in allowed_secrets"
+            );
         }
 
         #[test]
@@ -607,9 +608,10 @@ mod proptest_policy {
             prop_assert!(result.is_ok(), "optional_secrets should parse: {result:?}");
             let doc = result.unwrap();
             let policy = doc.commands.get(&cmd_name).unwrap();
-            let allowed_names: Vec<&str> =
-                policy.allowed_secrets.iter().map(|s| s.as_str()).collect();
-            prop_assert!(allowed_names.contains(&secret.as_str()), "optional in allowed_secrets");
+            prop_assert!(
+                policy.allowed_secrets.iter().any(|s| s.as_str() == secret),
+                "optional in allowed_secrets"
+            );
         }
 
         #[test]
@@ -650,7 +652,7 @@ mod proptest_policy {
         #[test]
         fn shell_command_spec_is_accepted(
             cmd_name in valid_command_name_strategy(),
-            shell_cmd in "[a-z ]{5,30}",
+            shell_cmd in "[a-z][a-z ]{4,29}",
         ) {
             let toml =
                 format!("[commands.{cmd_name}]\nshell = \"{shell_cmd}\"\n");

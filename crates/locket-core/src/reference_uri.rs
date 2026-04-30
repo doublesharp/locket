@@ -436,7 +436,6 @@ mod tests {
 #[allow(clippy::panic)]
 #[allow(clippy::unwrap_used)]
 #[allow(clippy::expect_used)]
-#[allow(clippy::redundant_closure_for_method_calls)]
 mod proptest_lk_uri {
     use proptest::prelude::*;
 
@@ -487,7 +486,7 @@ mod proptest_lk_uri {
             prop_assert!(parsed.is_ok(), "pinned uri should parse: {parsed:?}");
             let parsed = parsed.unwrap();
             prop_assert_eq!(
-                parsed.version().map(|v| v.get()),
+                parsed.version().map(super::SecretVersion::get),
                 Some(version),
                 "version preserved"
             );
