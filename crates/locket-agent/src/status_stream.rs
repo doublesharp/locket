@@ -125,7 +125,8 @@ mod tests {
         let hub = StatusHub::new(StatusPayload::locked("test-version"));
         let mut subscriber = hub.subscribe().await;
 
-        let Some(initial) = subscriber.next_event().await else {
+        let Some(initial) = subscriber.next_event_with_heartbeat(Duration::from_millis(20)).await
+        else {
             unreachable!("initial event must be available");
         };
         assert!(initial.is_state_change());
@@ -159,5 +160,49 @@ mod tests {
             unreachable!("b must observe published status");
         };
         assert_eq!(from_b.status.lock_state, LockState::Unlocked);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn subscriber_interleaves_state_changes_and_heartbeats() {
+        let hub = StatusHub::new(StatusPayload::locked("v"));
+        let mut subscriber = hub.subscribe().await;
+
+        let Some(initial) = subscriber.next_event_with_heartbeat(Duration::from_millis(20)).await
+        else {
+            unreachable!("initial status event must arrive");
+        };
+        assert_eq!(initial.sequence, 1);
+        assert!(initial.is_state_change());
+        assert_eq!(initial.status.lock_state, LockState::Locked);
+
+        let Some(first_heartbeat) =
+            subscriber.next_event_with_heartbeat(Duration::from_millis(20)).await
+        else {
+            unreachable!("heartbeat event must arrive");
+        };
+        assert_eq!(first_heartbeat.sequence, 2);
+        assert!(first_heartbeat.is_heartbeat());
+        assert_eq!(first_heartbeat.status.lock_state, LockState::Locked);
+
+        let mut unlocked = StatusPayload::locked("v");
+        unlocked.lock_state = LockState::Unlocked;
+        hub.publish(unlocked).await;
+
+        let Some(changed) = subscriber.next_event_with_heartbeat(Duration::from_millis(20)).await
+        else {
+            unreachable!("published state-change event must arrive");
+        };
+        assert_eq!(changed.sequence, 3);
+        assert!(changed.is_state_change());
+        assert_eq!(changed.status.lock_state, LockState::Unlocked);
+
+        let Some(second_heartbeat) =
+            subscriber.next_event_with_heartbeat(Duration::from_millis(20)).await
+        else {
+            unreachable!("heartbeat after state change must arrive");
+        };
+        assert_eq!(second_heartbeat.sequence, 4);
+        assert!(second_heartbeat.is_heartbeat());
+        assert_eq!(second_heartbeat.status.lock_state, LockState::Unlocked);
     }
 }
