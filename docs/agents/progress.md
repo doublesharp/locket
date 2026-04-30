@@ -65,9 +65,7 @@ skill set fits a leaf better.
 
 ### Near-Term CLI/Core
 
-- [ ] Scan ignore/suppression: inline markers, `SCAN`/`SUPPRESSED`
-  rows, and per-rule severity shipped. Remaining: project-level
-  severity overrides and `.env` policy table.
+- [~] [4ab55ee9] branch agent-4ab55ee9/scan-severity-policy, worktree .worktrees/agent-4ab55ee9-scan-severity-policy; scan-severity-policy: project-level severity overrides and `.env` policy table.
 - [ ] Destructive confirmation flows beyond `purge` /
   dangerous-profile / root untrust: policy deletion and other
   sensitive surfaces (`docs/specs/policy.md:26`).
