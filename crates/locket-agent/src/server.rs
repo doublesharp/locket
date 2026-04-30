@@ -221,6 +221,8 @@ pub struct AgentSocketState {
     pub grants: Arc<Mutex<crate::grant::GrantTable>>,
     /// Metadata-only runtime session snapshots used by desktop views.
     pub runtime_sessions: Arc<Mutex<Vec<crate::runtime_sessions::RuntimeSessionSnapshot>>>,
+    /// Metadata-only saved command policy snapshots used by desktop views.
+    pub command_policies: Arc<Mutex<Vec<crate::policies::CommandPolicySnapshot>>>,
     /// Server-side fan-out hub for `SubscribeStatus` streams.
     pub status_hub: StatusHub,
     /// Test hook overriding the heartbeat cadence so unit tests can run
@@ -257,6 +259,7 @@ impl AgentSocketState {
             unlock_cache: Arc::new(Mutex::new(crate::unlock_cache::UnlockCache::default())),
             grants: Arc::new(Mutex::new(crate::grant::GrantTable::default())),
             runtime_sessions: Arc::new(Mutex::new(Vec::new())),
+            command_policies: Arc::new(Mutex::new(Vec::new())),
             status_hub,
             #[cfg(test)]
             test_heartbeat_interval: Arc::new(Mutex::new(None)),
@@ -282,6 +285,7 @@ impl AgentSocketState {
             unlock_cache: cache,
             grants: Arc::new(Mutex::new(crate::grant::GrantTable::default())),
             runtime_sessions: Arc::new(Mutex::new(Vec::new())),
+            command_policies: Arc::new(Mutex::new(Vec::new())),
             status_hub,
             test_heartbeat_interval: Arc::new(Mutex::new(None)),
             peer_credential_validator: Arc::new(crate::peer_cred::validate_peer_stream),
@@ -315,6 +319,15 @@ impl AgentSocketState {
         sessions: Vec<crate::runtime_sessions::RuntimeSessionSnapshot>,
     ) {
         *self.runtime_sessions.lock().await = sessions;
+    }
+
+    /// Test-only seed for metadata-only command policy snapshots.
+    #[cfg(test)]
+    pub async fn set_command_policies_for_tests(
+        &self,
+        policies: Vec<crate::policies::CommandPolicySnapshot>,
+    ) {
+        *self.command_policies.lock().await = policies;
     }
 
     /// Builds the metadata-only `Status` payload from the current
@@ -593,6 +606,7 @@ pub async fn dispatch(envelope: &RequestEnvelope, state: &AgentSocketState) -> R
         Ok(AgentMethod::Copy) => crate::reveal::handle_copy(envelope),
         Ok(AgentMethod::ScanKnownValues) => crate::scan::handle_scan(envelope),
         Ok(AgentMethod::ListRuntimeSessions) => handle_list_runtime_sessions(envelope, state).await,
+        Ok(AgentMethod::ListPolicies) => handle_list_policies(envelope, state).await,
         Ok(AgentMethod::ResolveReference) => crate::resolve::handle_resolve(envelope),
         Ok(AgentMethod::PrepareExec) => crate::prepare_exec::handle_prepare_exec(envelope),
         Ok(method) => ResponseEnvelope::Error(ErrorEnvelope::new(
@@ -608,6 +622,22 @@ pub async fn dispatch(envelope: &RequestEnvelope, state: &AgentSocketState) -> R
             false,
         )),
     }
+}
+
+async fn handle_list_policies(
+    envelope: &RequestEnvelope,
+    state: &AgentSocketState,
+) -> ResponseEnvelope {
+    let request: crate::policies::ListPoliciesRequest =
+        match serde_json::from_value(envelope.payload.clone()) {
+            Ok(request) => request,
+            Err(_) => return crate::policies::invalid_payload_response(envelope),
+        };
+    let response = {
+        let policies = state.command_policies.lock().await;
+        crate::policies::list_policies_response(&request, &policies)
+    };
+    crate::policies::success_response(envelope, response)
 }
 
 async fn handle_list_runtime_sessions(

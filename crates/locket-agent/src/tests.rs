@@ -39,6 +39,7 @@ fn agent_methods_round_trip_through_wire_names() -> Result<(), UnknownMethod> {
         AgentMethod::PrepareExec,
         AgentMethod::ScanKnownValues,
         AgentMethod::ListRuntimeSessions,
+        AgentMethod::ListPolicies,
         AgentMethod::Reveal,
         AgentMethod::Copy,
         AgentMethod::SubscribeStatus,
@@ -467,6 +468,118 @@ async fn malformed_list_runtime_sessions_payload_returns_protocol_error() {
     };
     assert_eq!(error.error, "ProtocolError");
     assert!(state.runtime_sessions.lock().await.is_empty());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn list_policies_filters_project_and_applies_aliases() {
+    use crate::CommandPolicySnapshot;
+    use crate::envelope::{RequestEnvelope, ResponseEnvelope};
+    use crate::method::AgentMethod;
+    use crate::server::{AgentSocketState, dispatch};
+    use serde_json::json;
+
+    let state = AgentSocketState::locked("test-version");
+    state
+        .set_command_policies_for_tests(vec![
+            CommandPolicySnapshot {
+                project_id: "project-main".to_owned(),
+                name: "deploy-prod".to_owned(),
+                command_kind: "argv".to_owned(),
+                command_preview: "pnpm deploy".to_owned(),
+                required_secrets: vec!["DATABASE_URL".to_owned()],
+                optional_secrets: vec!["OPENAI_API_KEY".to_owned()],
+                allowed_secrets: vec!["DATABASE_URL".to_owned(), "OPENAI_API_KEY".to_owned()],
+                confirm: true,
+                require_user_verification: true,
+                allow_remote_docker: false,
+                ttl_seconds: 300,
+                env_mode: "minimal".to_owned(),
+                override_mode: "locket".to_owned(),
+                updated_at_unix_nanos: 1_700_000_000,
+            },
+            CommandPolicySnapshot {
+                project_id: "project-main".to_owned(),
+                name: "build".to_owned(),
+                command_kind: "shell".to_owned(),
+                command_preview: "pnpm build".to_owned(),
+                required_secrets: Vec::new(),
+                optional_secrets: Vec::new(),
+                allowed_secrets: Vec::new(),
+                confirm: false,
+                require_user_verification: false,
+                allow_remote_docker: false,
+                ttl_seconds: 900,
+                env_mode: "strict".to_owned(),
+                override_mode: "preserve".to_owned(),
+                updated_at_unix_nanos: 1_700_000_100,
+            },
+            CommandPolicySnapshot {
+                project_id: "project-other".to_owned(),
+                name: "other-project-policy".to_owned(),
+                command_kind: "argv".to_owned(),
+                command_preview: "ignored".to_owned(),
+                required_secrets: vec!["OTHER_SECRET".to_owned()],
+                optional_secrets: Vec::new(),
+                allowed_secrets: vec!["OTHER_SECRET".to_owned()],
+                confirm: false,
+                require_user_verification: false,
+                allow_remote_docker: false,
+                ttl_seconds: 900,
+                env_mode: "minimal".to_owned(),
+                override_mode: "locket".to_owned(),
+                updated_at_unix_nanos: 1_700_000_200,
+            },
+        ])
+        .await;
+
+    let request = RequestEnvelope::new(
+        "req-policies",
+        AgentMethod::ListPolicies,
+        json!({
+            "project_id": "project-main",
+            "privacy_redact_names": true,
+        }),
+    );
+    let ResponseEnvelope::Success(success) = dispatch(&request, &state).await else {
+        unreachable!("valid ListPolicies payload must succeed");
+    };
+    let rendered = success.payload().to_string();
+    assert!(!rendered.contains("deploy-prod"));
+    assert!(!rendered.contains("DATABASE_URL"));
+    assert!(!rendered.contains("OPENAI_API_KEY"));
+    assert!(!rendered.contains("other-project-policy"));
+
+    let rows = success.payload().get("rows").and_then(serde_json::Value::as_array).unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0]["command_kind"], "shell");
+    assert!(rows[0]["name"].as_str().unwrap().starts_with("policy-"));
+    assert_eq!(rows[1]["command_kind"], "argv");
+    assert_eq!(rows[1]["ttl_seconds"], 300);
+    assert_eq!(rows[1]["confirm"], true);
+    assert!(rows[1]["required_secrets"][0].as_str().unwrap().starts_with("secret-"));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn malformed_list_policies_payload_returns_protocol_error() {
+    use crate::envelope::{RequestEnvelope, ResponseEnvelope};
+    use crate::method::AgentMethod;
+    use crate::server::{AgentSocketState, dispatch};
+    use serde_json::json;
+
+    let state = AgentSocketState::locked("test-version");
+    let request = RequestEnvelope::new(
+        "req-policies",
+        AgentMethod::ListPolicies,
+        json!({
+            "project_id": "project-main",
+        }),
+    );
+
+    let ResponseEnvelope::Error(error) = dispatch(&request, &state).await else {
+        unreachable!("malformed ListPolicies payload must fail");
+    };
+    assert_eq!(error.error, "ProtocolError");
+    assert!(state.command_policies.lock().await.is_empty());
 }
 
 #[tokio::test(flavor = "current_thread")]

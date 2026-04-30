@@ -11,6 +11,7 @@ mod grant;
 mod method;
 #[cfg(unix)]
 mod peer_cred;
+mod policies;
 mod prepare_exec;
 mod resolve;
 mod reveal;
@@ -32,6 +33,9 @@ pub use grant::{
 pub use method::{AgentMethod, UnknownMethod};
 #[cfg(unix)]
 pub use peer_cred::{current_process_uid, validate_peer_stream, validate_peer_uid};
+pub use policies::{
+    CommandPolicyRow, CommandPolicySnapshot, ListPoliciesRequest, ListPoliciesResponse,
+};
 pub use prepare_exec::{PrepareExecRequest, PrepareExecResponse};
 pub use resolve::{ResolveRequest, ResolveResponse};
 pub use reveal::{CopyRequest, CopyResponse, RevealRequest, RevealResponse};
