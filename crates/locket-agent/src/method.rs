@@ -39,6 +39,8 @@ pub enum AgentMethod {
     Copy,
     /// Verify the local audit HMAC chain.
     VerifyAudit,
+    /// List metadata-only audit rows.
+    ListAudit,
     /// Subscribe to metadata-only status events.
     SubscribeStatus,
     /// Cancel a status subscription.
@@ -72,6 +74,7 @@ impl AgentMethod {
             Self::Reveal => "Reveal",
             Self::Copy => "Copy",
             Self::VerifyAudit => "VerifyAudit",
+            Self::ListAudit => "ListAudit",
             Self::SubscribeStatus => "SubscribeStatus",
             Self::CancelSubscription => "CancelSubscription",
             Self::ClientHello => "ClientHello",
@@ -102,6 +105,7 @@ impl FromStr for AgentMethod {
             "Reveal" => Ok(Self::Reveal),
             "Copy" => Ok(Self::Copy),
             "VerifyAudit" => Ok(Self::VerifyAudit),
+            "ListAudit" => Ok(Self::ListAudit),
             "SubscribeStatus" => Ok(Self::SubscribeStatus),
             "CancelSubscription" => Ok(Self::CancelSubscription),
             "ClientHello" => Ok(Self::ClientHello),

@@ -24,8 +24,9 @@ mod secret;
 mod team;
 
 pub use audit::{
-    AUDIT_METADATA_JSON_LIMIT, AuditChainVerification, AuditContext, AuditLogRecord, AuditWrite,
-    ImportedAuditChainRow, ImportedAuditChainVerification, verify_imported_audit_chain_structure,
+    AUDIT_METADATA_JSON_LIMIT, AuditChainVerification, AuditContext, AuditListFilter,
+    AuditLogRecord, AuditWrite, ImportedAuditChainRow, ImportedAuditChainVerification,
+    verify_imported_audit_chain_structure,
 };
 pub use device::DeviceRecord;
 pub use error::StoreError;

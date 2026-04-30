@@ -4,8 +4,8 @@
 #![allow(clippy::panic)]
 
 use super::{
-    AgentMethod, DEFAULT_MAX_MESSAGE_SIZE, ErrorEnvelope, ListSecretsResponse, LockState,
-    PROTOCOL_VERSION, ProtocolError, RequestEnvelope, ResponseEnvelope,
+    AgentMethod, DEFAULT_MAX_MESSAGE_SIZE, ErrorEnvelope, ListAuditResponse, ListSecretsResponse,
+    LockState, PROTOCOL_VERSION, ProtocolError, RequestEnvelope, ResponseEnvelope,
     STATUS_HEARTBEAT_INTERVAL_SECS, StatusEvent, StatusEventKind, StatusEventSequence,
     StatusPayload, SuccessEnvelope, UnknownMethod, VerifyAuditResponse, decode_request_frame,
     decode_response_frame, encode_frame,
@@ -41,6 +41,7 @@ fn agent_methods_round_trip_through_wire_names() -> Result<(), UnknownMethod> {
         AgentMethod::ScanKnownValues,
         AgentMethod::ListRuntimeSessions,
         AgentMethod::ListPolicies,
+        AgentMethod::ListAudit,
         AgentMethod::Reveal,
         AgentMethod::Copy,
         AgentMethod::VerifyAudit,
@@ -235,6 +236,166 @@ async fn malformed_verify_audit_payload_returns_protocol_error() {
         panic!("malformed VerifyAudit payload must fail");
     };
     assert_eq!(error.error, "ProtocolError");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn list_audit_returns_filtered_metadata_and_chain_status()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::server::{AgentSocketState, dispatch};
+    use locket_store::{AuditWrite, Store};
+
+    let directory = tempfile::tempdir()?;
+    let store_path = directory.path().join("store.db");
+    let mut store = Store::open(&store_path)?;
+    store.initialize_schema()?;
+    store.connection().execute(
+        "INSERT INTO projects(id, name, created_at) VALUES ('lk_proj_test', 'test', 1)",
+        [],
+    )?;
+    store.connection().execute(
+        "INSERT INTO profiles(id, project_id, name, dangerous, created_at)
+         VALUES ('lk_prof_test', 'lk_proj_test', 'default', 0, 1)",
+        [],
+    )?;
+    for (timestamp, action, secret_name) in
+        [(100, "SET", "DATABASE_URL"), (200, "COPY", "DATABASE_URL"), (300, "ROTATE", "API_TOKEN")]
+    {
+        let metadata = json!({
+            "schema_version": 1,
+            "action": action,
+            "status": "SUCCESS",
+            "profile_id": "lk_prof_test",
+            "secret_name": secret_name,
+            "source": "user-local",
+            "command": "dev",
+        });
+        store.append_audit(
+            &[7; 32],
+            &AuditWrite {
+                project_id: "lk_proj_test",
+                profile_id: Some("lk_prof_test"),
+                action,
+                status: "SUCCESS",
+                secret_name: Some(secret_name),
+                command: Some("dev"),
+                metadata_json: &metadata,
+                timestamp,
+            },
+        )?;
+    }
+
+    let state = AgentSocketState::locked("test-version");
+    let unlock = RequestEnvelope::new(
+        "unlock",
+        AgentMethod::Unlock,
+        json!({
+            "project_id": "lk_proj_test",
+            "key": [7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
+                    7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7],
+            "ttl_seconds": 30,
+            "method": "Passphrase"
+        }),
+    );
+    assert!(matches!(dispatch(&unlock, &state).await, ResponseEnvelope::Success(_)));
+
+    let request = RequestEnvelope::new(
+        "audit",
+        AgentMethod::ListAudit,
+        json!({
+            "store_path": store_path,
+            "project_id": "lk_proj_test",
+            "profile_id": "lk_prof_test",
+            "action": "COPY",
+            "status": "SUCCESS",
+            "since_unix_nanos": 150,
+            "limit": 10,
+            "redact_names": true
+        }),
+    );
+    let response = dispatch(&request, &state).await;
+    let ResponseEnvelope::Success(success) = response else {
+        panic!("ListAudit should succeed");
+    };
+    let payload: ListAuditResponse = serde_json::from_value(success.payload)?;
+
+    assert_eq!(payload.rows.len(), 1);
+    assert_eq!(payload.rows[0].sequence, 2);
+    assert_eq!(payload.rows[0].action, "COPY");
+    assert_ne!(payload.rows[0].profile_id.as_deref(), Some("lk_prof_test"));
+    assert_ne!(payload.rows[0].secret_name.as_deref(), Some("DATABASE_URL"));
+    assert_ne!(payload.rows[0].command.as_deref(), Some("dev"));
+    assert_eq!(payload.chain_status.hmac_ok, Some(true));
+    assert_eq!(payload.chain_status.first_break_sequence, None);
+    assert_eq!(payload.chain_status.rows_verified, 3);
+    assert!(!payload.chain_status.locked);
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn list_audit_is_locked_safe_but_skips_hmac_status() -> Result<(), Box<dyn std::error::Error>>
+{
+    use crate::server::{AgentSocketState, dispatch};
+    use locket_store::{AuditWrite, Store};
+
+    let directory = tempfile::tempdir()?;
+    let store_path = directory.path().join("store.db");
+    let mut store = Store::open(&store_path)?;
+    store.initialize_schema()?;
+    store.connection().execute(
+        "INSERT INTO projects(id, name, created_at) VALUES ('lk_proj_test', 'test', 1)",
+        [],
+    )?;
+    store.connection().execute(
+        "INSERT INTO profiles(id, project_id, name, dangerous, created_at)
+         VALUES ('lk_prof_test', 'lk_proj_test', 'default', 0, 1)",
+        [],
+    )?;
+    let metadata = json!({
+        "schema_version": 1,
+        "action": "SET",
+        "status": "SUCCESS",
+        "profile_id": "lk_prof_test",
+        "secret_name": "DATABASE_URL",
+        "source": "user-local",
+    });
+    store.append_audit(
+        &[7; 32],
+        &AuditWrite {
+            project_id: "lk_proj_test",
+            profile_id: Some("lk_prof_test"),
+            action: "SET",
+            status: "SUCCESS",
+            secret_name: Some("DATABASE_URL"),
+            command: None,
+            metadata_json: &metadata,
+            timestamp: 100,
+        },
+    )?;
+
+    let state = AgentSocketState::locked("test-version");
+    let request = RequestEnvelope::new(
+        "audit",
+        AgentMethod::ListAudit,
+        json!({
+            "store_path": store_path,
+            "project_id": "lk_proj_test",
+            "limit": 10,
+            "redact_names": false
+        }),
+    );
+    let response = dispatch(&request, &state).await;
+    let ResponseEnvelope::Success(success) = response else {
+        panic!("ListAudit should succeed while locked");
+    };
+    let payload: ListAuditResponse = serde_json::from_value(success.payload)?;
+
+    assert_eq!(payload.rows.len(), 1);
+    assert_eq!(payload.rows[0].secret_name.as_deref(), Some("DATABASE_URL"));
+    assert_eq!(payload.chain_status.hmac_ok, None);
+    assert_eq!(payload.chain_status.first_break_sequence, None);
+    assert_eq!(payload.chain_status.rows_verified, 0);
+    assert!(payload.chain_status.locked);
+    Ok(())
 }
 
 #[tokio::test(flavor = "current_thread")]

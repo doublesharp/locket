@@ -5,6 +5,7 @@
 #![allow(clippy::multiple_crate_versions)]
 
 mod audit_verify;
+mod audit;
 mod envelope;
 mod error;
 mod framing;
@@ -26,6 +27,7 @@ mod status_stream;
 mod unlock_cache;
 mod versions;
 
+pub use audit::{AuditChainStatus, ListAuditRequest, ListAuditResponse, ListAuditRow};
 pub use audit_verify::{VerifyAuditRequest, VerifyAuditResponse};
 pub use envelope::{ErrorEnvelope, RequestEnvelope, ResponseEnvelope, SuccessEnvelope};
 pub use error::ProtocolError;

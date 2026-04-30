@@ -58,6 +58,23 @@ pub struct AuditLogRecord {
     pub command: Option<String>,
 }
 
+/// Filters for metadata-only audit log reads.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct AuditListFilter {
+    /// Optional project profile filter.
+    pub profile_id: Option<String>,
+    /// Optional audit action filter.
+    pub action: Option<String>,
+    /// Optional audit status filter.
+    pub status: Option<String>,
+    /// Optional inclusive lower timestamp bound.
+    pub since_unix_nanos: Option<i64>,
+    /// Optional inclusive upper timestamp bound.
+    pub until_unix_nanos: Option<i64>,
+    /// Maximum number of rows to return from the end of the matching range.
+    pub limit: u32,
+}
+
 /// Stored row material for structural verification of an imported audit chain.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ImportedAuditChainRow {
@@ -769,6 +786,49 @@ impl Store {
         )?;
         let rows = statement
             .query_map((project_id, profile_id, since), audit_log_record_from_row)?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// Lists metadata-only audit rows for a project using optional filters.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Sqlite`] when `SQLite` cannot query audit rows.
+    pub fn list_audit_rows_filtered(
+        &self,
+        project_id: &str,
+        filter: &AuditListFilter,
+    ) -> Result<Vec<AuditLogRecord>, StoreError> {
+        let mut statement = self.connection.prepare(
+            "SELECT sequence, timestamp, profile_id, action, status, secret_name, command
+             FROM (
+               SELECT sequence, timestamp, profile_id, action, status, secret_name, command
+               FROM audit_log
+               WHERE project_id = ?1
+                 AND (?2 IS NULL OR profile_id = ?2)
+                 AND (?3 IS NULL OR action = ?3)
+                 AND (?4 IS NULL OR status = ?4)
+                 AND (?5 IS NULL OR timestamp >= ?5)
+                 AND (?6 IS NULL OR timestamp <= ?6)
+               ORDER BY sequence DESC
+               LIMIT ?7
+             )
+             ORDER BY sequence",
+        )?;
+        let rows = statement
+            .query_map(
+                params![
+                    project_id,
+                    filter.profile_id.as_deref(),
+                    filter.action.as_deref(),
+                    filter.status.as_deref(),
+                    filter.since_unix_nanos,
+                    filter.until_unix_nanos,
+                    filter.limit,
+                ],
+                audit_log_record_from_row,
+            )?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(rows)
     }
