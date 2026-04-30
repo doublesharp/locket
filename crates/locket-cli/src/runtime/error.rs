@@ -125,6 +125,10 @@ pub fn policy_not_found_error(message: impl Into<String>) -> CliError {
     typed_cli_error(LocketError::PolicyNotFound, message)
 }
 
+pub fn invalid_policy_error(message: impl Into<String>) -> CliError {
+    typed_cli_error(LocketError::InvalidPolicy, message)
+}
+
 pub fn confirmation_failed_error(message: impl Into<String>) -> CliError {
     typed_cli_error(LocketError::ConfirmationFailed, message)
 }

@@ -23,6 +23,9 @@ pub enum LocketError {
     /// Policy validation could not complete without an agent or unlocked vault.
     #[error("policy validation incomplete")]
     PolicyValidationIncomplete,
+    /// Policy TOML is structurally invalid (parse, type, or value error).
+    #[error("invalid policy")]
+    InvalidPolicy,
     /// Referenced command policy or automation-client policy binding was not found.
     #[error("policy not found")]
     PolicyNotFound,
@@ -148,7 +151,7 @@ impl LocketError {
             | Self::InvalidProfileName
             | Self::PolicyNotFound
             | Self::ProjectNotFound => 64,
-            Self::PolicyValidationIncomplete => 65,
+            Self::PolicyValidationIncomplete | Self::InvalidPolicy => 65,
             Self::EnvironmentConflict | Self::MetadataLooksLikeSecret => 66,
             Self::SecretAlreadyExists => 67,
             Self::ConfirmationFailed | Self::TtyRequired => 68,
@@ -202,6 +205,7 @@ mod tests {
         assert_eq!(LocketError::PolicyNotFound.exit_code(), 64);
         assert_eq!(LocketError::ProjectNotFound.exit_code(), 64);
         assert_eq!(LocketError::PolicyValidationIncomplete.exit_code(), 65);
+        assert_eq!(LocketError::InvalidPolicy.exit_code(), 65);
         assert_eq!(LocketError::EnvironmentConflict.exit_code(), 66);
         assert_eq!(LocketError::MetadataInvalid.exit_code(), 64);
         assert_eq!(LocketError::MetadataLooksLikeSecret.exit_code(), 66);
