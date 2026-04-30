@@ -289,7 +289,7 @@ Slices 1+2 shipped (agent client, tray binding, 6 view scaffolds,
     `desktop-reveal-modal`, `desktop-clipboard-copy`. Slice 8.
   - [~] [52c592db] branch agent-52c592db/desktop-tray-notifications, worktree .worktrees/agent-52c592db-desktop-tray-notifications; **subtask** — desktop-tray-notifications: route the four `TrayNotificationKind` cases via `passive_notification`; honor DND. Names and values never leak.
   - [~] [90b9f58a] branch agent-90b9f58a/agent-list-audit, worktree .worktrees/agent-90b9f58a-agent-list-audit; **subtask** — agent-list-audit: filtered metadata-only audit log RPC with chain status.
-  - [ ] **subtask** — agent-verify-audit: RPC returning a structural
+  - [~] [52c592db] branch agent-52c592db/agent-verify-audit, worktree .worktrees/agent-52c592db-agent-verify-audit; **subtask** — agent-verify-audit: RPC returning a structural
     HMAC check result. Used by audit-view "Verify".
   - [ ] **subtask** — desktop-audit-data: wire `agent-list-audit` +
     `agent-verify-audit` into `AuditLog.vue`. Slice 9.
