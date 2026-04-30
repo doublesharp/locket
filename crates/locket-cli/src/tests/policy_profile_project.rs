@@ -89,22 +89,50 @@ fn policy_commands_update_locket_toml_without_duplicates_and_audit_metadata()
             .contains("warning: policy dev uses implicit override=locket; set override explicitly")
     );
 
+    let mut rejected_delete_output = Vec::new();
     assert_error_contains(
         run_with_context(
             Cli::try_parse_from(["locket", "policy", "delete", "dev"])?,
             &context,
-            &mut Vec::new(),
+            &mut rejected_delete_output,
         ),
-        "--yes",
+        "confirmation did not match policy name",
     );
+    let rejected_delete_output = String::from_utf8(rejected_delete_output)?;
+    assert!(rejected_delete_output.contains("metadata_only: yes"));
+    assert!(rejected_delete_output.contains("type 'dev' to confirm policy delete"));
+    let policy_text = std::fs::read_to_string(directory.path().join("locket.toml"))?;
+    let document = locket_core::PolicyDocument::from_toml_str(&policy_text)?;
+    assert!(document.commands.contains_key("dev"));
+
+    let confirm_context = context_with_confirmation(&context, "dev\n");
+    let mut delete_output = Vec::new();
     run_with_context(
-        Cli::try_parse_from(["locket", "policy", "delete", "dev", "--yes"])?,
-        &context,
-        &mut Vec::new(),
+        Cli::try_parse_from(["locket", "policy", "delete", "dev"])?,
+        &confirm_context,
+        &mut delete_output,
     )?;
+    let delete_output = String::from_utf8(delete_output)?;
+    assert!(delete_output.contains("policy_delete: dev"));
+    assert!(delete_output.contains("affected_shell_hooks:"));
+    assert!(delete_output.contains("affected_tray_actions:"));
+    assert!(delete_output.contains("affected_automation_clients:"));
+    assert!(delete_output.contains("affected_vscode_tasks:"));
+    assert!(!delete_output.contains("pnpm"));
     let policy_text = std::fs::read_to_string(directory.path().join("locket.toml"))?;
     let document = locket_core::PolicyDocument::from_toml_str(&policy_text)?;
     assert!(!document.commands.contains_key("dev"));
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let delete_metadata: String = store.connection().query_row(
+        "SELECT metadata_json FROM audit_log
+         WHERE action = 'POLICY_UPDATE' AND command = 'policy'
+         ORDER BY sequence DESC LIMIT 1",
+        [],
+        |row| row.get(0),
+    )?;
+    assert!(delete_metadata.contains("\"operation\":\"delete\""));
+    assert!(delete_metadata.contains("\"metadata_only\":true"));
+    assert!(!delete_metadata.contains("pnpm"));
     Ok(())
 }
 
@@ -252,7 +280,7 @@ fn missing_policy_commands_exit_with_policy_not_found() -> Result<(), Box<dyn st
     assert!(error.to_string().contains("command policy not found: missing"));
 
     let delete_result = run_with_context(
-        Cli::try_parse_from(["locket", "policy", "delete", "missing", "--yes"])?,
+        Cli::try_parse_from(["locket", "policy", "delete", "missing"])?,
         &context,
         &mut Vec::new(),
     );

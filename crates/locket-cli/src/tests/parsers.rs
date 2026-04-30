@@ -365,7 +365,7 @@ fn parses_profile_project_and_agent_commands() {
         &["locket", "policy", "add", "dev", "--", "pnpm", "dev"],
         &["locket", "policy", "allow", "dev", "DATABASE_URL"],
         &["locket", "policy", "require", "dev", "API_KEY"],
-        &["locket", "policy", "delete", "dev", "--yes"],
+        &["locket", "policy", "delete", "dev"],
         &["locket", "policy", "doctor"],
         &["locket", "team", "revoke-invite", "lk_invite_test"],
     ] {

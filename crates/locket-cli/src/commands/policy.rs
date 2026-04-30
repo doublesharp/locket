@@ -50,9 +50,6 @@ pub struct PolicySecretsArgs {
 pub struct PolicyDeleteArgs {
     /// Command policy name.
     name: String,
-    /// Confirm deletion without an interactive prompt.
-    #[arg(long)]
-    yes: bool,
 }
 
 pub fn command(
@@ -132,17 +129,20 @@ fn delete(
     output: &mut impl Write,
     args: PolicyDeleteArgs,
 ) -> Result<(), CliError> {
-    let PolicyDeleteArgs { name, yes } = args;
-    if !yes {
-        return Err(confirmation_failed_error("policy delete requires --yes"));
-    }
+    let PolicyDeleteArgs { name } = args;
     let resolved = require_project(context)?;
     let path = resolved.root.join(LOCKET_TOML);
     let mut document = read_locket_toml(&path)?;
     let commands = commands_table_mut(&mut document)?;
-    if commands.remove(&name).is_none() {
+    if !commands.contains_key(&name) {
         return Err(policy_not_found_error(format!("command policy not found: {name}")));
     }
+    write_policy_delete_confirmation(output, &name)?;
+    let confirmation = context.confirmation_reader.read_confirmation("policy delete")?;
+    if confirmation.trim_end_matches(['\r', '\n']) != name {
+        return Err(confirmation_failed_error("confirmation did not match policy name"));
+    }
+    commands.remove(&name);
     write_validated_locket_toml(&path, &document)?;
     write_policy_update_audit_if_available(context, "delete", &name)?;
     write_policy_update(output, &name, "delete")
@@ -305,6 +305,17 @@ fn write_policy_update(
     writeln!(output, "policy: {name}")?;
     writeln!(output, "operation: {operation}")?;
     writeln!(output, "metadata_only: yes")?;
+    Ok(())
+}
+
+fn write_policy_delete_confirmation(output: &mut impl Write, name: &str) -> Result<(), CliError> {
+    writeln!(output, "policy_delete: {name}")?;
+    writeln!(output, "metadata_only: yes")?;
+    writeln!(output, "affected_shell_hooks: live grants revoked when available")?;
+    writeln!(output, "affected_tray_actions: policy shortcuts removed")?;
+    writeln!(output, "affected_automation_clients: policy grants revoked when available")?;
+    writeln!(output, "affected_vscode_tasks: policy tasks removed")?;
+    writeln!(output, "type '{name}' to confirm policy delete")?;
     Ok(())
 }
 
