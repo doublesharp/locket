@@ -16,6 +16,7 @@
 // stays quiet for crates referenced only via path lookups in other tests
 // or by the surrounding lib crate.
 use locket_agent as _;
+use locket_core as _;
 use serde as _;
 use serde_json as _;
 use tauri as _;

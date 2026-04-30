@@ -13,6 +13,7 @@
 // Pull all dev-deps in so `unused_crate_dependencies` stays quiet for
 // crates the rest of the test references via paths/macros only.
 use locket_app as _;
+use locket_core as _;
 use serde as _;
 use serde_json as _;
 use tauri as _;
@@ -37,8 +38,15 @@ async fn fetch_status_returns_unavailable_when_socket_missing() {
     let result = fetch_status(&socket_path).await;
     let err = result.expect_err("missing socket must fail");
     match err {
-        AgentClientError::Unavailable { reason, socket_path: returned } => {
+        AgentClientError::Unavailable {
+            reason,
+            display_reason,
+            next_action,
+            socket_path: returned,
+        } => {
             assert!(reason.contains("not found"), "reason was {reason}");
+            assert_eq!(display_reason, "The local agent is unavailable.");
+            assert_eq!(next_action, "Run locket agent start, then retry.");
             assert_eq!(returned, socket_path.display().to_string());
         }
         other => panic!("expected Unavailable, got {other:?}"),

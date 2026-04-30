@@ -25,6 +25,16 @@ export type AgentStatusResult =
 
 export type AgentResult<T> = { ok: true; value: T } | { ok: false; error: AgentClientError };
 
+function tauriUnavailableError(): AgentClientError {
+  return {
+    kind: 'unavailable',
+    reason: 'desktop shell not running inside a Tauri webview',
+    display_reason: 'The local agent is unavailable.',
+    next_action: 'Run locket agent start, then retry.',
+    socket_path: '',
+  };
+}
+
 /**
  * Issue a single `Status` request to the agent.
  *
@@ -37,11 +47,7 @@ export async function fetchStatus(): Promise<AgentStatusResult> {
   if (!isTauri()) {
     return {
       ok: false,
-      error: {
-        kind: 'unavailable',
-        reason: 'desktop shell not running inside a Tauri webview',
-        socket_path: '',
-      },
+      error: tauriUnavailableError(),
     };
   }
   try {
@@ -69,11 +75,7 @@ async function callTyped<T>(
   if (!isTauri()) {
     return {
       ok: false,
-      error: {
-        kind: 'unavailable',
-        reason: 'desktop shell not running inside a Tauri webview',
-        socket_path: '',
-      },
+      error: tauriUnavailableError(),
     };
   }
   try {

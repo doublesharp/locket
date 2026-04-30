@@ -15,6 +15,7 @@
 // Pull dev-deps into the integration test target so `unused_crate_dependencies`
 // stays quiet for crates referenced only via path lookups below.
 use locket_agent as _;
+use locket_core as _;
 use locket_desktop_lib as _;
 use serde as _;
 use tauri as _;

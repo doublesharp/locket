@@ -16,6 +16,8 @@ export type AgentClientError =
   | {
       kind: 'unavailable';
       reason: string;
+      display_reason: string;
+      next_action: string;
       socket_path: string;
     }
   | {
@@ -26,6 +28,8 @@ export type AgentClientError =
       kind: 'rejected';
       code: string;
       message: string;
+      display_reason: string;
+      next_action: string;
       retryable: boolean;
     };
 

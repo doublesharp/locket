@@ -37,7 +37,7 @@ pub use env::{
     EnvMap, EnvMergeError, EnvMode, EnvOverrideMode, EnvValue, InvalidEnvMode,
     InvalidEnvOverrideMode, env_value, merge_environment,
 };
-pub use error::{ExitCode, LocketError};
+pub use error::{ErrorDisplayCopy, ExitCode, LocketError};
 pub use id::{
     ClientId, DeviceId, IdGenerationError, InvalidId, InviteId, KdfProfileId, KeyId, MemberId,
     PasskeyId, ProfileId, ProjectId, SecretId, SessionId, TeamId,

@@ -12,6 +12,7 @@ use locket_agent::{
     AgentMethod, DEFAULT_MAX_MESSAGE_SIZE, ProtocolError, RequestEnvelope, ResponseEnvelope,
     StatusPayload, decode_response_frame, encode_frame,
 };
+use locket_core::{ErrorDisplayCopy, LocketError};
 use serde::{Serialize, de::DeserializeOwned};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
@@ -44,6 +45,10 @@ pub enum AgentClientError {
     Unavailable {
         /// Short reason — daemon offline, socket missing, refused, timed-out.
         reason: String,
+        /// Shared typed-error reason shown across UI surfaces.
+        display_reason: String,
+        /// Shared typed-error recovery action shown across UI surfaces.
+        next_action: String,
         /// Path that was attempted, for diagnostics.
         socket_path: String,
     },
@@ -60,6 +65,10 @@ pub enum AgentClientError {
         code: String,
         /// Redacted safe message.
         message: String,
+        /// Shared typed-error reason when the code maps to `LocketError`.
+        display_reason: String,
+        /// Shared typed-error recovery action when the code maps to `LocketError`.
+        next_action: String,
         /// Whether the client may retry the request unchanged.
         retryable: bool,
     },
@@ -67,7 +76,13 @@ pub enum AgentClientError {
 
 impl AgentClientError {
     fn unavailable(reason: impl Into<String>, socket_path: &Path) -> Self {
-        Self::Unavailable { reason: reason.into(), socket_path: socket_path.display().to_string() }
+        let copy = LocketError::AgentUnavailable.display_copy();
+        Self::Unavailable {
+            reason: reason.into(),
+            display_reason: copy.reason.to_owned(),
+            next_action: copy.next_action.to_owned(),
+            socket_path: socket_path.display().to_string(),
+        }
     }
 }
 
@@ -212,12 +227,24 @@ fn decode_payload<R: DeserializeOwned>(response: ResponseEnvelope) -> Result<R, 
                 }
             })
         }
-        ResponseEnvelope::Error(error) => Err(AgentClientError::Rejected {
-            code: error.error,
-            message: error.message,
-            retryable: error.retryable,
-        }),
+        ResponseEnvelope::Error(error) => {
+            let copy = display_copy_for_agent_code(&error.error).unwrap_or(ErrorDisplayCopy {
+                reason: "The agent rejected the request.",
+                next_action: "See the agent logs for details.",
+            });
+            Err(AgentClientError::Rejected {
+                code: error.error,
+                message: error.message,
+                display_reason: copy.reason.to_owned(),
+                next_action: copy.next_action.to_owned(),
+                retryable: error.retryable,
+            })
+        }
     }
+}
+
+fn display_copy_for_agent_code(code: &str) -> Option<ErrorDisplayCopy> {
+    LocketError::from_code_name(code).map(|error| error.display_copy())
 }
 
 fn new_request_id() -> String {
@@ -232,3 +259,16 @@ fn new_request_id() -> String {
 // test runner. The integration tests in `tests/agent_client.rs`
 // exercise the live socket path end-to-end and cover the
 // daemon-offline failure mode.
+
+#[cfg(test)]
+mod tests {
+    use super::display_copy_for_agent_code;
+
+    #[test]
+    fn agent_error_codes_use_shared_locket_error_copy() {
+        let copy = display_copy_for_agent_code("UnlockRequired").expect("known typed error");
+        assert_eq!(copy.reason, "The vault is locked.");
+        assert_eq!(copy.next_action, "Run locket unlock or approve an agent unlock prompt.");
+        assert!(display_copy_for_agent_code("ProtocolError").is_none());
+    }
+}

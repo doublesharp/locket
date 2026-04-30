@@ -25,11 +25,11 @@ const heading = computed<string>(() => {
 const detail = computed<string>(() => {
   switch (props.error.kind) {
     case 'unavailable':
-      return props.error.reason;
+      return props.error.display_reason;
     case 'protocol':
       return props.error.reason;
     case 'rejected':
-      return `${props.error.code}: ${props.error.message}`;
+      return props.error.display_reason || `${props.error.code}: ${props.error.message}`;
     default:
       return '';
   }
@@ -38,11 +38,11 @@ const detail = computed<string>(() => {
 const nextAction = computed<string>(() => {
   switch (props.error.kind) {
     case 'unavailable':
-      return 'Run `locket agent start` from a terminal, then retry.';
+      return props.error.next_action;
     case 'protocol':
       return 'Restart the agent. If the problem persists, file an issue.';
     case 'rejected':
-      return 'See the agent logs for details.';
+      return props.error.next_action;
     default:
       return '';
   }

@@ -10,6 +10,7 @@
 // explicitly so the lint stays quiet without disabling it.
 use locket_agent as _;
 use locket_app as _;
+use locket_core as _;
 use serde as _;
 use serde_json as _;
 #[cfg(test)]
