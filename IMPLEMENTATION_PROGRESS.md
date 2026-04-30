@@ -871,9 +871,10 @@ editing — they drift. Severity: **blocker** (security/correctness),
   - [ ] **subtask** — e2e-docker-compose: `locket exec` and
     `locket run` against a stub `docker compose`, names-only audit,
     refusal of remote contexts.
-  - [ ] **subtask** — e2e-recovery-roundtrip: `init` → record code →
+  - [~] [aa40a4ce] **subtask** — e2e-recovery-roundtrip: `init` → record code →
     `recover` → `recovery rotate`. Covers refusal-when-keychain-valid
     and `--force` audit override.
+    Claim: branch agent-aa40a4ce/e2e-recovery-roundtrip, worktree .worktrees/agent-aa40a4ce-e2e-recovery-roundtrip. Scope: integration test covering full recovery flow end to end.
   - [ ] **subtask** — e2e-team-invite-accept: `team init` →
     `team invite` → `team accept` (signature + safety-words display)
     → `team revoke-invite` failure path. Depends on the team-* and
@@ -990,7 +991,7 @@ Do this after all the other tasks are completed.
 
 Final audit pass before claiming full spec coverage. Each item means the
 implementation, tests, docs, diagnostics, and failure modes have been checked
-against the named spec file.
+against the named spec file. Add missing items as tasks in this file.
 
 - [ ] `product.md`
 - [ ] `invariants.md`
