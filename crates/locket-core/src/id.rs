@@ -102,6 +102,8 @@ opaque_id!(SessionId, "lk_session_");
 opaque_id!(ClientId, "lk_client_");
 opaque_id!(KdfProfileId, "lk_kdf_");
 opaque_id!(TeamId, "lk_team_");
+opaque_id!(MemberId, "lk_member_");
+opaque_id!(InviteId, "lk_invite_");
 
 /// Error returned when an opaque identifier is invalid.
 #[derive(Debug, Clone, Eq, Error, PartialEq)]
@@ -148,8 +150,8 @@ mod tests {
     use std::collections::HashSet;
 
     use super::{
-        ClientId, DeviceId, KdfProfileId, KeyId, PasskeyId, ProfileId, ProjectId, SecretId,
-        SessionId,
+        ClientId, DeviceId, InviteId, KdfProfileId, KeyId, MemberId, PasskeyId, ProfileId,
+        ProjectId, SecretId, SessionId,
     };
 
     #[test]
@@ -163,6 +165,8 @@ mod tests {
         assert!(SessionId::new("lk_session_shell").is_ok());
         assert!(ClientId::new("lk_client_ci").is_ok());
         assert!(KdfProfileId::new("lk_kdf_argon2id").is_ok());
+        assert!(MemberId::new("lk_member_alice").is_ok());
+        assert!(InviteId::new("lk_invite_abc").is_ok());
     }
 
     #[test]

@@ -137,6 +137,15 @@ pub enum LocketError {
     /// Device has been revoked.
     #[error("device revoked")]
     DeviceRevoked,
+    /// Invite replay was detected (invite id already accepted).
+    #[error("invite replay detected")]
+    ReplayDetected,
+    /// Device descriptor is structurally invalid or has a mismatched fingerprint.
+    #[error("device descriptor invalid")]
+    DeviceDescriptorInvalid,
+    /// Invite signature is invalid or was not produced by the claimed issuer key.
+    #[error("invite signature invalid")]
+    InviteSignatureInvalid,
 }
 
 impl LocketError {
@@ -181,7 +190,10 @@ impl LocketError {
             Self::BundleVerificationFailed => 110,
             Self::InviteExpired => 111,
             Self::TeamBundleConflict => 112,
-            Self::DeviceRevoked => 113,
+            Self::DeviceRevoked
+            | Self::ReplayDetected
+            | Self::DeviceDescriptorInvalid => 113,
+            Self::InviteSignatureInvalid => 114,
         }
     }
 }
@@ -250,6 +262,9 @@ mod tests {
             (LocketError::InviteExpired, 111),
             (LocketError::TeamBundleConflict, 112),
             (LocketError::DeviceRevoked, 113),
+            (LocketError::ReplayDetected, 113),
+            (LocketError::DeviceDescriptorInvalid, 113),
+            (LocketError::InviteSignatureInvalid, 114),
             (LocketError::TtyRequired, 68),
         ];
 
@@ -274,6 +289,9 @@ mod tests {
             (LocketError::SecretAlreadyExists, "secret already exists"),
             (LocketError::UnrecoverableVault, "vault unrecoverable"),
             (LocketError::DeviceRevoked, "device revoked"),
+            (LocketError::ReplayDetected, "invite replay detected"),
+            (LocketError::DeviceDescriptorInvalid, "device descriptor invalid"),
+            (LocketError::InviteSignatureInvalid, "invite signature invalid"),
             (LocketError::ConfirmationFailed, "confirmation did not match"),
             (LocketError::TtyRequired, "interactive TTY required"),
             (LocketError::SecretNotFound, "secret not found"),

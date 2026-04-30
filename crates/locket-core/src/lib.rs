@@ -4,6 +4,7 @@ pub mod audit;
 pub mod env;
 pub mod error;
 pub mod id;
+pub mod invite;
 pub mod metadata;
 pub mod policy;
 pub mod profile_name;
@@ -24,8 +25,12 @@ pub use env::{
 };
 pub use error::{ExitCode, LocketError};
 pub use id::{
-    ClientId, DeviceId, IdGenerationError, InvalidId, KdfProfileId, KeyId, PasskeyId, ProfileId,
-    ProjectId, SecretId, SessionId, TeamId,
+    ClientId, DeviceId, IdGenerationError, InvalidId, InviteId, KdfProfileId, KeyId, MemberId,
+    PasskeyId, ProfileId, ProjectId, SecretId, SessionId, TeamId,
+};
+pub use invite::{
+    INVITE_PREFIX, InviteDecodeError, InviteEncodeError, InvitePayload, InviteVerifyError,
+    SignedInvite, TeamRole, device_fingerprint_v1, fingerprint_hex,
 };
 pub use metadata::{MetadataPrivacyFinding, MetadataValidationError, validate_metadata_field};
 pub use policy::{
