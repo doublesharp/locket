@@ -128,8 +128,7 @@ skill set fits a leaf better.
   - [ ] **subtask** — lk-resolve-audit: write `RESOLVE_REFERENCE`
     rows on every resolution (success and failure).
 - [~] [90b9f58a] branch agent-90b9f58a/env-inspect-layers, worktree .worktrees/agent-90b9f58a-env-inspect-layers; `locket env inspect` external-layer and override decisions (`docs/specs/runtime.md:67-77`).
-- [ ] On-demand agent startup: `locket exec`/`run` start the agent
-  when missing; `AgentUnavailable` only after on-demand startup fails.
+- [~] [90b9f58a] branch agent-90b9f58a/on-demand-agent-startup, worktree .worktrees/agent-90b9f58a-on-demand-agent-startup; On-demand agent startup for `locket exec`/`run` (`docs/specs/agent.md`, `docs/specs/runtime.md`).
 - [ ] VS Code extension backed by the local agent
   (`docs/specs/integrations.md:39-65`). Extension never writes audit
   directly. All subtasks depend on `vscode-ext-scaffold` (shipped).
