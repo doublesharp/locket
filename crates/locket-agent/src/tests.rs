@@ -818,13 +818,7 @@ mod server_tests {
         let socket_path = directory.path().join("agent.sock");
         let config = AgentSocketConfig::new(socket_path.clone(), "0.0.0-test");
         let listener = bind_socket_listener(&config)?;
-        // Spoof a daemon UID that cannot match the live test process
-        // UID so the live UnixStream::peer_cred() lookup yields a
-        // mismatch. This drives the rejection path without needing
-        // sudo or a second user account.
-        let phantom_daemon_uid =
-            crate::peer_cred::current_process_uid().wrapping_add(1).wrapping_add(0xDEAD);
-        let state = AgentSocketState::with_daemon_uid("0.0.0-test", phantom_daemon_uid);
+        let state = AgentSocketState::with_daemon_uid("0.0.0-test", 1000).with_test_peer_uid(1001);
 
         let server_state = state.clone();
         let server = tokio::spawn(async move {
@@ -867,6 +861,55 @@ mod server_tests {
             ),
             "expected ConnectionOutcome::Rejected with PeerCredentialDenied, got {outcome:?}"
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn handle_connection_accepts_spoofed_same_user_peer()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        tighten_directory(directory.path())?;
+        let socket_path = directory.path().join("agent.sock");
+        let config = AgentSocketConfig::new(socket_path.clone(), "0.0.0-test");
+        let listener = bind_socket_listener(&config)?;
+        let state = AgentSocketState::with_daemon_uid(config.agent_version.clone(), 1000)
+            .with_test_peer_uid(1000);
+
+        let server_state = state.clone();
+        let server = tokio::spawn(async move {
+            let (stream, _) = match listener.accept().await {
+                Ok(pair) => pair,
+                Err(error) => return Err(error),
+            };
+            Ok(handle_connection(stream, server_state).await)
+        });
+
+        let mut client = UnixStream::connect(&socket_path).await?;
+        let request = RequestEnvelope::new("req-1", AgentMethod::Status, Value::Null);
+        let frame = encode_frame(&request, DEFAULT_MAX_MESSAGE_SIZE)?;
+        client.write_all(&frame).await?;
+        client.flush().await?;
+
+        let mut buffer = Vec::new();
+        let mut chunk = [0_u8; 1024];
+        let response = loop {
+            let read = client.read(&mut chunk).await?;
+            buffer.extend_from_slice(&chunk[..read]);
+            if let Ok((response, _)) = decode_response_frame(&buffer, DEFAULT_MAX_MESSAGE_SIZE) {
+                break response;
+            }
+            if read == 0 {
+                return Err("server closed before sending a response".into());
+            }
+        };
+        let ResponseEnvelope::Success(success) = response else {
+            return Err(format!("expected Status success, got {response:?}").into());
+        };
+        assert_eq!(success.id, "req-1");
+
+        drop(client);
+        let outcome = server.await??;
+        assert_eq!(outcome, ConnectionOutcome::PeerClosed);
         Ok(())
     }
 

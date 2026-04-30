@@ -223,6 +223,11 @@ pub struct AgentSocketState {
     /// with millisecond cadence rather than 30-second waits.
     #[cfg(test)]
     pub test_heartbeat_interval: Arc<Mutex<Option<std::time::Duration>>>,
+    /// Test hook that lets socket tests inject spoofed peer UIDs
+    /// without requiring root or a second local user.
+    #[cfg(test)]
+    peer_credential_validator:
+        Arc<dyn Fn(&UnixStream, u32) -> Result<(), SocketServerError> + Send + Sync>,
 }
 
 impl AgentSocketState {
@@ -252,6 +257,8 @@ impl AgentSocketState {
             status_hub,
             #[cfg(test)]
             test_heartbeat_interval: Arc::new(Mutex::new(None)),
+            #[cfg(test)]
+            peer_credential_validator: Arc::new(crate::peer_cred::validate_peer_stream),
         }
     }
 
@@ -274,7 +281,20 @@ impl AgentSocketState {
             runtime_sessions: Arc::new(Mutex::new(Vec::new())),
             status_hub,
             test_heartbeat_interval: Arc::new(Mutex::new(None)),
+            peer_credential_validator: Arc::new(crate::peer_cred::validate_peer_stream),
         }
+    }
+
+    /// Test-only override for peer credential validation. The live
+    /// socket is still used, but the peer UID passed into the policy is
+    /// supplied by the test so cross-user outcomes are deterministic.
+    #[cfg(test)]
+    #[must_use]
+    pub fn with_test_peer_uid(mut self, peer_uid: u32) -> Self {
+        self.peer_credential_validator = Arc::new(move |_stream, daemon_uid| {
+            crate::peer_cred::validate_peer_uid(peer_uid, daemon_uid)
+        });
+        self
     }
 
     /// Test-only override for the heartbeat cadence. Setting this
@@ -367,7 +387,7 @@ pub async fn handle_connection(
     mut stream: UnixStream,
     state: AgentSocketState,
 ) -> ConnectionOutcome {
-    if let Err(error) = crate::peer_cred::validate_peer_stream(&stream, state.daemon_uid) {
+    if let Err(error) = validate_connection_peer(&stream, &state) {
         return ConnectionOutcome::Rejected { reason: error };
     }
     let mut buffer = Vec::with_capacity(4 * 1024);
@@ -385,6 +405,20 @@ pub async fn handle_connection(
             }
             Err(_) => return ConnectionOutcome::Errored,
         }
+    }
+}
+
+fn validate_connection_peer(
+    stream: &UnixStream,
+    state: &AgentSocketState,
+) -> Result<(), SocketServerError> {
+    #[cfg(test)]
+    {
+        (state.peer_credential_validator)(stream, state.daemon_uid)
+    }
+    #[cfg(not(test))]
+    {
+        crate::peer_cred::validate_peer_stream(stream, state.daemon_uid)
     }
 }
 
