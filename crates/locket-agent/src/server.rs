@@ -210,6 +210,10 @@ pub struct AgentSocketState {
     /// by `Lock`. Status responses derive `lock_state` and
     /// `unlock_ttl_seconds` from the live entries here.
     pub unlock_cache: Arc<Mutex<crate::unlock_cache::UnlockCache>>,
+    /// Live process-bound grant records. `RequestGrant` inserts new
+    /// rows, `RevokeGrant` and `ExpireGrant` remove them, and
+    /// `Status` responses surface `live_grant_count` from this table.
+    pub grants: Arc<Mutex<crate::grant::GrantTable>>,
 }
 
 impl AgentSocketState {
@@ -232,6 +236,7 @@ impl AgentSocketState {
             agent_version: agent_version.into(),
             daemon_uid,
             unlock_cache: Arc::new(Mutex::new(crate::unlock_cache::UnlockCache::default())),
+            grants: Arc::new(Mutex::new(crate::grant::GrantTable::default())),
         }
     }
 
@@ -244,7 +249,12 @@ impl AgentSocketState {
         daemon_uid: u32,
         cache: Arc<Mutex<crate::unlock_cache::UnlockCache>>,
     ) -> Self {
-        Self { agent_version: agent_version.into(), daemon_uid, unlock_cache: cache }
+        Self {
+            agent_version: agent_version.into(),
+            daemon_uid,
+            unlock_cache: cache,
+            grants: Arc::new(Mutex::new(crate::grant::GrantTable::default())),
+        }
     }
 
     /// Builds the metadata-only `Status` payload from the current
@@ -253,11 +263,15 @@ impl AgentSocketState {
     /// `Locked` whenever no live entry remains.
     pub async fn status_snapshot(&self, now_unix_nanos: i128) -> StatusPayload {
         let summary = collect_live_summary(&self.unlock_cache, now_unix_nanos).await;
+        let grant_count = {
+            let grants = self.grants.lock().await;
+            grants.len()
+        };
         StatusPayload {
             lock_state: if summary.any_live { LockState::Unlocked } else { LockState::Locked },
             project_id: None,
             profile_name: None,
-            live_grant_count: 0,
+            live_grant_count: u32::try_from(grant_count).unwrap_or(u32::MAX),
             agent_version: self.agent_version.clone(),
             unlock_ttl_seconds: summary.max_remaining_seconds,
         }
@@ -405,6 +419,9 @@ pub async fn dispatch(envelope: &RequestEnvelope, state: &AgentSocketState) -> R
                 serde_json::Value::Null,
             ))
         }
+        Ok(AgentMethod::RequestGrant) => handle_request_grant(envelope, state).await,
+        Ok(AgentMethod::RevokeGrant) => handle_revoke_grant(envelope, state).await,
+        Ok(AgentMethod::ExpireGrant) => handle_expire_grant(envelope, state).await,
         Ok(AgentMethod::Reveal) => crate::reveal::handle_reveal(envelope),
         Ok(AgentMethod::Copy) => crate::reveal::handle_copy(envelope),
         Ok(AgentMethod::ScanKnownValues) => crate::scan::handle_scan(envelope),
@@ -422,6 +439,90 @@ pub async fn dispatch(envelope: &RequestEnvelope, state: &AgentSocketState) -> R
             "unknown agent method",
             false,
         )),
+    }
+}
+
+async fn handle_request_grant(
+    envelope: &RequestEnvelope,
+    state: &AgentSocketState,
+) -> ResponseEnvelope {
+    let payload: crate::grant::RequestGrantPayload =
+        match serde_json::from_value(envelope.payload.clone()) {
+            Ok(payload) => payload,
+            Err(_) => {
+                return error_response(envelope, "ProtocolError", "invalid RequestGrant payload");
+            }
+        };
+    let now = current_unix_nanos();
+    let ttl_nanos = i128::from(payload.ttl_seconds).saturating_mul(1_000_000_000);
+    let record = {
+        let mut grants = state.grants.lock().await;
+        grants.issue(payload.binding, now.saturating_add(ttl_nanos))
+    };
+    let response_payload = serde_json::json!({
+        "grant_id": record.grant_id,
+        "expires_at_unix_nanos": record.expires_at_unix_nanos.to_string(),
+    });
+    ResponseEnvelope::Success(SuccessEnvelope::new(envelope.id.clone(), response_payload))
+}
+
+async fn handle_revoke_grant(
+    envelope: &RequestEnvelope,
+    state: &AgentSocketState,
+) -> ResponseEnvelope {
+    let payload: crate::grant::GrantIdPayload =
+        match serde_json::from_value(envelope.payload.clone()) {
+            Ok(payload) => payload,
+            Err(_) => {
+                return error_response(envelope, "ProtocolError", "invalid RevokeGrant payload");
+            }
+        };
+    let removed = {
+        let mut grants = state.grants.lock().await;
+        grants.revoke(&payload.grant_id)
+    };
+    if removed.is_some() {
+        ResponseEnvelope::Success(SuccessEnvelope::new(
+            envelope.id.clone(),
+            serde_json::Value::Null,
+        ))
+    } else {
+        error_response(envelope, "GrantRequired", "grant not found")
+    }
+}
+
+async fn handle_expire_grant(
+    envelope: &RequestEnvelope,
+    state: &AgentSocketState,
+) -> ResponseEnvelope {
+    let payload: crate::grant::GrantIdPayload =
+        match serde_json::from_value(envelope.payload.clone()) {
+            Ok(payload) => payload,
+            Err(_) => {
+                return error_response(envelope, "ProtocolError", "invalid ExpireGrant payload");
+            }
+        };
+    let validation = {
+        let mut grants = state.grants.lock().await;
+        let now = current_unix_nanos();
+        let outcome = grants.validate(&payload.grant_id, now, None);
+        if matches!(
+            outcome,
+            crate::grant::GrantValidation::Expired | crate::grant::GrantValidation::ProcessMismatch
+        ) {
+            grants.revoke(&payload.grant_id);
+        }
+        outcome
+    };
+    match validation {
+        crate::grant::GrantValidation::Expired
+        | crate::grant::GrantValidation::ProcessMismatch
+        | crate::grant::GrantValidation::Unknown => ResponseEnvelope::Success(
+            SuccessEnvelope::new(envelope.id.clone(), serde_json::Value::Null),
+        ),
+        crate::grant::GrantValidation::Valid => {
+            error_response(envelope, "ProtocolError", "grant is still live")
+        }
     }
 }
 

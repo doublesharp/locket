@@ -283,6 +283,90 @@ async fn unlock_then_lock_round_trip() {
     assert!(cleared, "Lock must clear every cache entry");
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn request_grant_returns_id_bound_to_caller_process() {
+    use crate::envelope::{RequestEnvelope, ResponseEnvelope};
+    use crate::method::AgentMethod;
+    use crate::server::{AgentSocketState, dispatch};
+    use serde_json::json;
+
+    let state = AgentSocketState::locked("test-version");
+    let request = RequestEnvelope::new(
+        "req-1",
+        AgentMethod::RequestGrant,
+        json!({
+            "project_id": "p-1",
+            "profile_id": "prof-1",
+            "action": "RunPolicy",
+            "ttl_seconds": 30,
+            "binding": {
+                "pid": std::process::id(),
+                "process_start_time": "0"
+            }
+        }),
+    );
+    let response = dispatch(&request, &state).await;
+
+    let ResponseEnvelope::Success(success) = response else {
+        unreachable!("expected success envelope");
+    };
+    let grant_id = success.payload.get("grant_id").and_then(|v| v.as_str()).unwrap_or_default();
+    assert!(!grant_id.is_empty(), "grant id must not be empty");
+    assert_eq!(state.grants.lock().await.len(), 1);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn revoke_grant_drops_record_and_unknown_returns_grant_required() {
+    use crate::envelope::{RequestEnvelope, ResponseEnvelope};
+    use crate::grant::{GrantBinding, GrantRecord};
+    use crate::method::AgentMethod;
+    use crate::server::{AgentSocketState, dispatch};
+    use serde_json::json;
+
+    let state = AgentSocketState::locked("test-version");
+    state.grants.lock().await.insert(GrantRecord::new(
+        "g-1",
+        GrantBinding::new(std::process::id(), "0"),
+        i128::MAX,
+    ));
+
+    let revoke =
+        RequestEnvelope::new("r-1", AgentMethod::RevokeGrant, json!({ "grant_id": "g-1" }));
+    let response = dispatch(&revoke, &state).await;
+    assert!(matches!(response, ResponseEnvelope::Success(_)));
+    assert!(state.grants.lock().await.is_empty());
+
+    let revoke_missing =
+        RequestEnvelope::new("r-2", AgentMethod::RevokeGrant, json!({ "grant_id": "missing" }));
+    let response = dispatch(&revoke_missing, &state).await;
+    let ResponseEnvelope::Error(error) = response else {
+        unreachable!("expected error envelope for unknown grant");
+    };
+    assert_eq!(error.error, "GrantRequired");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn expire_grant_drops_already_expired_record() {
+    use crate::envelope::{RequestEnvelope, ResponseEnvelope};
+    use crate::grant::{GrantBinding, GrantRecord};
+    use crate::method::AgentMethod;
+    use crate::server::{AgentSocketState, dispatch};
+    use serde_json::json;
+
+    let state = AgentSocketState::locked("test-version");
+    state.grants.lock().await.insert(GrantRecord::new(
+        "g-2",
+        GrantBinding::new(std::process::id(), "0"),
+        1,
+    ));
+
+    let request =
+        RequestEnvelope::new("r-1", AgentMethod::ExpireGrant, json!({ "grant_id": "g-2" }));
+    let response = dispatch(&request, &state).await;
+    assert!(matches!(response, ResponseEnvelope::Success(_)));
+    assert!(state.grants.lock().await.is_empty());
+}
+
 #[cfg(unix)]
 mod server_tests {
     use std::os::unix::fs::PermissionsExt;
