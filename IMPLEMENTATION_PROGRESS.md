@@ -376,9 +376,8 @@ the spec already covers. Closed slices land in
   - [ ] **subtask** — policy-deny-default: evaluator denies by
     default; only explicit allow/require entries pass. Pre-req:
     `policy-parser`.
-  - [x] **subtask** — policy-required-secrets: required missing returns `InvalidPolicy` (65).
-    secret semantics — required missing → `InvalidPolicy`. Pre-req:
-    `policy-parser`.
+  - [x] **subtask** — policy-required-secrets: required missing returns
+    `InvalidPolicy` (65).
   - [ ] **subtask** — policy-confirm: `confirm = true` enforced via
     `RuntimeContext::confirmation_reader`. Pre-req: `policy-parser`.
   - [ ] **subtask** — policy-user-verification:
