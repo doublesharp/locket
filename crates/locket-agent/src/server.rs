@@ -24,6 +24,7 @@ use crate::envelope::{ErrorEnvelope, RequestEnvelope, ResponseEnvelope, SuccessE
 use crate::framing::{decode_request_frame, encode_frame};
 use crate::method::AgentMethod;
 use crate::status::{LockState, StatusPayload};
+use crate::status_stream::StatusHub;
 
 /// Permissions for a freshly bound agent socket — owner-only.
 const SOCKET_PERMISSIONS_MODE: u32 = 0o600;
@@ -214,6 +215,12 @@ pub struct AgentSocketState {
     /// rows, `RevokeGrant` and `ExpireGrant` remove them, and
     /// `Status` responses surface `live_grant_count` from this table.
     pub grants: Arc<Mutex<crate::grant::GrantTable>>,
+    /// Server-side fan-out hub for `SubscribeStatus` streams.
+    pub status_hub: StatusHub,
+    /// Test hook overriding the heartbeat cadence so unit tests can run
+    /// with millisecond cadence rather than 30-second waits.
+    #[cfg(test)]
+    pub test_heartbeat_interval: Arc<Mutex<Option<std::time::Duration>>>,
 }
 
 impl AgentSocketState {
@@ -232,11 +239,16 @@ impl AgentSocketState {
     /// running as a different user.
     #[must_use]
     pub fn with_daemon_uid(agent_version: impl Into<String>, daemon_uid: u32) -> Self {
+        let agent_version = agent_version.into();
+        let status_hub = StatusHub::new(StatusPayload::locked(agent_version.clone()));
         Self {
-            agent_version: agent_version.into(),
+            agent_version,
             daemon_uid,
             unlock_cache: Arc::new(Mutex::new(crate::unlock_cache::UnlockCache::default())),
             grants: Arc::new(Mutex::new(crate::grant::GrantTable::default())),
+            status_hub,
+            #[cfg(test)]
+            test_heartbeat_interval: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -249,12 +261,24 @@ impl AgentSocketState {
         daemon_uid: u32,
         cache: Arc<Mutex<crate::unlock_cache::UnlockCache>>,
     ) -> Self {
+        let agent_version = agent_version.into();
+        let status_hub = StatusHub::new(StatusPayload::locked(agent_version.clone()));
         Self {
-            agent_version: agent_version.into(),
+            agent_version,
             daemon_uid,
             unlock_cache: cache,
             grants: Arc::new(Mutex::new(crate::grant::GrantTable::default())),
+            status_hub,
+            test_heartbeat_interval: Arc::new(Mutex::new(None)),
         }
+    }
+
+    /// Test-only override for the heartbeat cadence. Setting this
+    /// before a `SubscribeStatus` connection is accepted lets unit
+    /// tests run with millisecond cadence rather than 30-second waits.
+    #[cfg(test)]
+    pub async fn set_test_heartbeat_interval(&self, interval: std::time::Duration) {
+        *self.test_heartbeat_interval.lock().await = Some(interval);
     }
 
     /// Builds the metadata-only `Status` payload from the current
@@ -328,12 +352,84 @@ pub async fn handle_connection(
         match read_one_frame(&mut stream, &mut buffer).await {
             Ok(None) => return ConnectionOutcome::PeerClosed,
             Ok(Some(envelope)) => {
+                if matches!(envelope.method(), Ok(AgentMethod::SubscribeStatus)) {
+                    return stream_status(stream, state, envelope.id.clone(), buffer).await;
+                }
                 let response = dispatch(&envelope, &state).await;
                 if !write_response(&mut stream, &response).await {
                     return ConnectionOutcome::Errored;
                 }
             }
             Err(_) => return ConnectionOutcome::Errored,
+        }
+    }
+}
+
+/// Streams metadata-only status events for the lifetime of a
+/// `SubscribeStatus` request.
+///
+/// Reads from the peer in parallel with the hub: the only request
+/// allowed mid-stream is `CancelSubscription`, which closes the
+/// connection cleanly. Any other framed request is answered with a
+/// redacted `ProtocolError` and then the connection is dropped.
+async fn stream_status(
+    mut stream: UnixStream,
+    state: AgentSocketState,
+    request_id: String,
+    initial_buffer: Vec<u8>,
+) -> ConnectionOutcome {
+    let mut subscriber = state.status_hub.subscribe().await;
+    #[cfg(test)]
+    let heartbeat =
+        state.test_heartbeat_interval.lock().await.unwrap_or(std::time::Duration::from_secs(
+            crate::status::STATUS_HEARTBEAT_INTERVAL_SECS,
+        ));
+    #[cfg(not(test))]
+    let heartbeat = std::time::Duration::from_secs(crate::status::STATUS_HEARTBEAT_INTERVAL_SECS);
+
+    let mut buffer = initial_buffer;
+    loop {
+        // Drain any already-buffered frames before blocking on the
+        // socket. A peer can send `CancelSubscription` immediately
+        // after `SubscribeStatus`, in which case it would already be
+        // sitting in `buffer`.
+        if let Ok((envelope, consumed)) = decode_request_frame(&buffer, DEFAULT_MAX_MESSAGE_SIZE) {
+            buffer.drain(..consumed);
+            if matches!(envelope.method(), Ok(AgentMethod::CancelSubscription)) {
+                return ConnectionOutcome::PeerClosed;
+            }
+            let response = error_response(
+                &envelope,
+                "ProtocolError",
+                "only CancelSubscription is allowed mid-stream",
+            );
+            let _ = write_response(&mut stream, &response).await;
+            return ConnectionOutcome::Errored;
+        }
+
+        tokio::select! {
+            event = subscriber.next_event_with_heartbeat(heartbeat) => {
+                let Some(event) = event else { return ConnectionOutcome::Errored; };
+                let Ok(payload) = serde_json::to_value(&event) else {
+                    return ConnectionOutcome::Errored;
+                };
+                let response = ResponseEnvelope::Success(SuccessEnvelope::new(
+                    request_id.clone(),
+                    payload,
+                ));
+                if !write_response(&mut stream, &response).await {
+                    return ConnectionOutcome::Errored;
+                }
+            }
+            read = stream.read_buf(&mut buffer) => {
+                match read {
+                    Ok(0) => return ConnectionOutcome::PeerClosed,
+                    Ok(_) => {
+                        // Loop will attempt decode at the top.
+                    }
+                    Err(_) => return ConnectionOutcome::Errored,
+                }
+            }
         }
     }
 }

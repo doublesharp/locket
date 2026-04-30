@@ -722,4 +722,133 @@ mod server_tests {
         assert_eq!(outcome, ConnectionOutcome::PeerClosed);
         Ok(())
     }
+
+    /// Reads a single response frame from the client socket, growing
+    /// `buffer` as needed. Returns `None` when the server closes the
+    /// connection without sending a frame.
+    async fn read_one_response_frame(
+        client: &mut UnixStream,
+        buffer: &mut Vec<u8>,
+    ) -> Result<Option<ResponseEnvelope>, Box<dyn std::error::Error>> {
+        loop {
+            if let Ok((response, consumed)) =
+                decode_response_frame(buffer, DEFAULT_MAX_MESSAGE_SIZE)
+            {
+                buffer.drain(..consumed);
+                return Ok(Some(response));
+            }
+            let mut chunk = [0_u8; 256];
+            let read = client.read(&mut chunk).await?;
+            if read == 0 {
+                return Ok(None);
+            }
+            buffer.extend_from_slice(&chunk[..read]);
+        }
+    }
+
+    #[tokio::test]
+    async fn subscribe_status_writes_initial_event_then_heartbeat_over_socket()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::time::Duration;
+
+        let directory = tempdir()?;
+        tighten_directory(directory.path())?;
+        let socket_path = directory.path().join("agent.sock");
+        let config = AgentSocketConfig::new(socket_path.clone(), "test-version");
+        let listener = bind_socket_listener(&config)?;
+        let state = AgentSocketState::locked(config.agent_version.clone());
+        state.set_test_heartbeat_interval(Duration::from_millis(20)).await;
+
+        let server_state = state.clone();
+        let server = tokio::spawn(async move {
+            let (stream, _) = match listener.accept().await {
+                Ok(pair) => pair,
+                Err(error) => return Err(error),
+            };
+            Ok(handle_connection(stream, server_state).await)
+        });
+
+        let mut client = UnixStream::connect(&socket_path).await?;
+        let request =
+            RequestEnvelope::new("sub-1", AgentMethod::SubscribeStatus, serde_json::json!({}));
+        let frame = encode_frame(&request, DEFAULT_MAX_MESSAGE_SIZE)?;
+        client.write_all(&frame).await?;
+        client.flush().await?;
+
+        let mut buffer = Vec::new();
+        let Some(initial) = read_one_response_frame(&mut client, &mut buffer).await? else {
+            return Err("server closed before sending the initial status event".into());
+        };
+        let ResponseEnvelope::Success(initial_success) = initial else {
+            return Err(format!("expected initial Success, got {initial:?}").into());
+        };
+        assert_eq!(initial_success.id, "sub-1");
+        let initial_kind =
+            initial_success.payload().get("kind").and_then(Value::as_str).unwrap_or_default();
+        assert_eq!(initial_kind, "status");
+
+        let Some(heartbeat) = read_one_response_frame(&mut client, &mut buffer).await? else {
+            return Err("server closed before sending a heartbeat".into());
+        };
+        let ResponseEnvelope::Success(heartbeat_success) = heartbeat else {
+            return Err(format!("expected heartbeat Success, got {heartbeat:?}").into());
+        };
+        let heartbeat_kind =
+            heartbeat_success.payload().get("kind").and_then(Value::as_str).unwrap_or_default();
+        assert_eq!(heartbeat_kind, "heartbeat");
+
+        drop(client);
+        let _ = server.await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn cancel_subscription_closes_stream_cleanly() -> Result<(), Box<dyn std::error::Error>> {
+        use std::time::Duration;
+
+        let directory = tempdir()?;
+        tighten_directory(directory.path())?;
+        let socket_path = directory.path().join("agent.sock");
+        let config = AgentSocketConfig::new(socket_path.clone(), "v");
+        let listener = bind_socket_listener(&config)?;
+        let state = AgentSocketState::locked(config.agent_version.clone());
+        // Long heartbeat so the test does not race a heartbeat against
+        // the cancel response — we want the cancel itself to drive the
+        // close.
+        state.set_test_heartbeat_interval(Duration::from_secs(60)).await;
+
+        let server_state = state.clone();
+        let server = tokio::spawn(async move {
+            let (stream, _) = match listener.accept().await {
+                Ok(pair) => pair,
+                Err(error) => return Err(error),
+            };
+            Ok(handle_connection(stream, server_state).await)
+        });
+
+        let mut client = UnixStream::connect(&socket_path).await?;
+        let subscribe = encode_frame(
+            &RequestEnvelope::new("s-1", AgentMethod::SubscribeStatus, serde_json::json!({})),
+            DEFAULT_MAX_MESSAGE_SIZE,
+        )?;
+        client.write_all(&subscribe).await?;
+        client.flush().await?;
+
+        let mut buffer = Vec::new();
+        let Some(_initial) = read_one_response_frame(&mut client, &mut buffer).await? else {
+            return Err("server closed before sending the initial status event".into());
+        };
+
+        let cancel = encode_frame(
+            &RequestEnvelope::new("s-1", AgentMethod::CancelSubscription, serde_json::json!({})),
+            DEFAULT_MAX_MESSAGE_SIZE,
+        )?;
+        client.write_all(&cancel).await?;
+        client.flush().await?;
+        drop(client);
+
+        let outcome = server.await??;
+        assert_eq!(outcome, ConnectionOutcome::PeerClosed);
+        Ok(())
+    }
 }

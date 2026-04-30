@@ -14,6 +14,7 @@ mod scan;
 #[cfg(unix)]
 mod server;
 mod status;
+mod status_stream;
 mod unlock_cache;
 
 pub use envelope::{ErrorEnvelope, RequestEnvelope, ResponseEnvelope, SuccessEnvelope};
@@ -39,6 +40,7 @@ pub use status::{
     LockState, STATUS_HEARTBEAT_INTERVAL_SECS, StatusEvent, StatusEventKind, StatusEventSequence,
     StatusPayload,
 };
+pub use status_stream::{StatusHub, StatusSubscriber};
 pub use unlock_cache::{UnlockCache, UnlockEntry, UnlockMethod};
 
 /// Maximum v1 protocol message size in bytes.

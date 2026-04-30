@@ -67,6 +67,12 @@ impl SuccessEnvelope {
     pub fn new(id: impl Into<String>, payload: Value) -> Self {
         Self { v: PROTOCOL_VERSION, id: id.into(), ok: true, payload }
     }
+
+    /// Borrows the payload value.
+    #[must_use]
+    pub const fn payload(&self) -> &Value {
+        &self.payload
+    }
 }
 
 /// Error response envelope.
