@@ -212,6 +212,8 @@ Slices that have merged to `main` and verified. Open work tracked in
   `lk://` reference completion for supported local file types.
 - [x] desktop-project-dashboard-view: The desktop app now opens on a
   project dashboard with status, health, and navigation into detail views.
+- [x] tauri-capabilities-per-view: Desktop Tauri commands now have explicit
+  app-local capability coverage.
 
 ## Full Spec Coverage TODO — Code Health and Bug Fixes
 
