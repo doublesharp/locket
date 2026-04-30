@@ -840,7 +840,7 @@ editing — they drift. Severity: **blocker** (security/correctness),
     resolver across `set`, `get`, `list`, `rotate`, `rm`, `purge`,
     `history`, `diff`, `copy`, reveal/copy, and execution. Pairs with
     the source-precedence item under `Near-Term CLI/Core`.
-  - [~] [bec7ddfc] **subtask** — tests-scanner-rules: cover `crates/locket-scan/`
+  - [x] **subtask** — tests-scanner-rules: cover `crates/locket-scan/`
     rule matching, severity overrides, suppression markers, and the
     `--require-known` pre-commit mode.
   - [ ] **subtask** — tests-audit-hmac: verify the audit chain HMAC
