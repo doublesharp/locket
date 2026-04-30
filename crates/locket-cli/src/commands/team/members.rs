@@ -1,30 +1,16 @@
-use std::collections::BTreeSet;
-use std::fs;
-use std::io::{self, Write};
-use std::path::{Path, PathBuf};
+use std::io::Write;
 
-use data_encoding::BASE64URL_NOPAD;
-use ed25519_dalek::SigningKey;
-use locket_core::{InviteId, InvitePayload, MemberId, ProjectId, SignedInvite, TeamId, TeamRole};
-use locket_crypto::{KeyPurpose, generate_key};
-use locket_store::{
-    AuditContext, AuditWrite, PendingTeamInviteRecord, TeamInviteRecord, TeamMemberListRecord,
-    TeamRecord,
-};
+use locket_core::TeamId;
+use locket_crypto::KeyPurpose;
+use locket_store::{AuditWrite, PendingTeamInviteRecord, TeamMemberListRecord, TeamRecord};
 use serde_json::json;
 
-use super::device;
-use crate::support::time::NANOS_PER_SECOND;
 use crate::{
-    CliError, RuntimeContext, TeamCommand, TeamInitArgs, TeamInviteArgs, TeamRemoveArgs,
-    TeamRevokeDeviceArgs, TeamRoleArg, confirmation_failed_error, ensure_project_exists,
-    invalid_reference_error, load_project_key, metadata_invalid_error, now_unix_nanos, open_store,
-    privacy_alias, privacy_redact_names_enabled, profile_not_found_error, require_project,
-    secret_already_exists_error, secret_not_found_error, set_user_only_file_options,
-    set_user_only_file_permissions, team_role_denied_error, unix_nanos_to_rfc3339,
+    CliError, RuntimeContext, TeamCommand, TeamInitArgs, TeamRemoveArgs, TeamRevokeDeviceArgs,
+    confirmation_failed_error, ensure_project_exists, invalid_reference_error, load_project_key,
+    now_unix_nanos, open_store, privacy_alias, privacy_redact_names_enabled, require_project,
+    secret_already_exists_error, secret_not_found_error, team_role_denied_error,
 };
-
-const DEFAULT_INVITE_TTL_SECONDS: i64 = 7 * 24 * 60 * 60;
 
 pub fn team_command(
     context: &RuntimeContext,
@@ -33,7 +19,6 @@ pub fn team_command(
 ) -> Result<(), CliError> {
     match command {
         TeamCommand::Init(args) => team_init_command(context, output, &args),
-        TeamCommand::Invite(args) => team_invite_command(context, output, &args),
         TeamCommand::Members => team_members_command(context, output),
         TeamCommand::Remove(args) => team_remove_command(context, output, &args),
         TeamCommand::RevokeDevice(args) => team_revoke_device_command(context, output, &args),
@@ -67,17 +52,6 @@ fn team_init_command(
         updated_at: timestamp,
     };
     store.insert_team(&record)?;
-    if let Some(local_device) = store.get_active_local_device(project_id)? {
-        let member_id = MemberId::generate().map_err(|_| CliError::Time)?.into_string();
-        store.insert_team_member(
-            &member_id,
-            &record.id,
-            Some(&local_device.id),
-            &local_device.name,
-            "owner",
-            timestamp,
-        )?;
-    }
 
     let audit_key = load_project_key(context, &store, project_id, KeyPurpose::Audit)?;
     let metadata = json!({
@@ -102,146 +76,6 @@ fn team_init_command(
     store.append_audit(audit_key.as_ref(), &audit)?;
 
     writeln!(output, "team initialized: {} ({})", record.name, record.id)?;
-    writeln!(output, "metadata_only: yes")?;
-    Ok(())
-}
-
-fn team_invite_command(
-    context: &RuntimeContext,
-    output: &mut impl Write,
-    args: &TeamInviteArgs,
-) -> Result<(), CliError> {
-    validate_invitee_name(&args.name)?;
-    let resolved = require_project(context)?;
-    let mut store = open_store(context)?;
-    let project_id = resolved.config.project_id.as_str();
-    ensure_project_exists(&store, project_id)?;
-
-    let Some(team) = store.get_team_by_project(project_id)? else {
-        return Err(team_role_denied_error("no team initialized for this project"));
-    };
-    let local_device = store
-        .get_active_local_device(project_id)?
-        .ok_or_else(|| invalid_reference_error("local device is not initialized"))?;
-    let issuer = store
-        .get_team_member_by_device(&team.id, &local_device.id)?
-        .ok_or_else(|| team_role_denied_error("local device is not a team member"))?;
-    let invite_role = role_from_arg(args.role);
-    let role_label = role_label(args.role);
-    if !can_issue_role(&issuer.role, args.role) {
-        return Err(team_role_denied_error("team role cannot issue this invite"));
-    }
-
-    let recipient = decode_recipient_device(&args.device)?;
-    if recipient.fingerprint == local_device.fingerprint {
-        return Err(metadata_invalid_error("recipient device must differ from issuer device"));
-    }
-    let profiles = validate_invite_profiles(&store, project_id, &args.profiles)?;
-    confirm_dangerous_profiles(context, output, &store, project_id, &profiles)?;
-
-    let created_at = now_unix_nanos()?;
-    let expires_at = created_at
-        .checked_add(
-            DEFAULT_INVITE_TTL_SECONDS.checked_mul(NANOS_PER_SECOND).ok_or(CliError::Time)?,
-        )
-        .ok_or(CliError::Time)?;
-    let invite_id = InviteId::generate().map_err(|_| CliError::Time)?;
-    let nonce_bytes = invite_nonce()?;
-    let signing_key = signing_key_from_device(&local_device.signing_public_key)?;
-    let issuer_signing_public_key = signing_key.verifying_key().to_bytes();
-    let issuer_sealing_public_key = local_device
-        .sealing_public_key
-        .as_slice()
-        .try_into()
-        .map_err(|_| metadata_invalid_error("issuer sealing key must be 32 bytes"))?;
-    let issuer_fingerprint =
-        device::device_fingerprint_hex(&issuer_signing_public_key, &issuer_sealing_public_key);
-    let payload = InvitePayload {
-        v: 1,
-        invite_id: invite_id.clone(),
-        project_id: ProjectId::new(project_id.to_owned())
-            .map_err(|_| metadata_invalid_error("project id is invalid"))?,
-        issuer_member_id: MemberId::new(issuer.id.clone())
-            .map_err(|_| metadata_invalid_error("issuer member id is invalid"))?,
-        issuer_signing_public_key: BASE64URL_NOPAD.encode(&issuer_signing_public_key),
-        issuer_sealing_public_key: BASE64URL_NOPAD.encode(&issuer_sealing_public_key),
-        issuer_device_fingerprint: issuer_fingerprint.clone(),
-        recipient_device_fingerprint: recipient.fingerprint.clone(),
-        recipient_sealing_public_key: BASE64URL_NOPAD.encode(&recipient.sealing_public_key),
-        role: invite_role,
-        profiles: profiles.clone(),
-        expires_at: expires_at / NANOS_PER_SECOND,
-        nonce: BASE64URL_NOPAD.encode(&nonce_bytes),
-    };
-    let signed_invite = SignedInvite::sign(&signing_key, payload)
-        .map_err(|error| metadata_invalid_error(format!("invite signing failed: {error}")))?;
-    let encoded_invite = signed_invite
-        .encode()
-        .map_err(|error| metadata_invalid_error(format!("invite encoding failed: {error}")))?;
-    let output_path =
-        args.output.clone().unwrap_or_else(|| default_invite_output_path(context, created_at));
-    ensure_invite_output_available(&output_path)?;
-
-    let audit_key = load_project_key(context, &store, project_id, KeyPurpose::Audit)?;
-    write_invite_file(&output_path, &encoded_invite)?;
-    let invite_record = TeamInviteRecord {
-        id: invite_id.into_string(),
-        team_id: team.id.clone(),
-        issuer_member_id: issuer.id.clone(),
-        recipient_device_fingerprint: recipient.fingerprint.clone(),
-        role: role_label.to_owned(),
-        profiles: profiles.clone(),
-        nonce: nonce_bytes.to_vec(),
-        created_at,
-        expires_at,
-    };
-    let metadata = json!({
-        "schema_version": 1,
-        "action": "TEAM_INVITE",
-        "status": "SUCCESS",
-        "command": "team invite",
-        "project_id": project_id,
-        "team_id": team.id,
-        "invite_id": invite_record.id,
-        "issuer_member_id": issuer.id,
-        "issuer_device_id": local_device.id,
-        "issuer_device_fingerprint": issuer_fingerprint,
-        "recipient_device_fingerprint": invite_record.recipient_device_fingerprint,
-        "role": invite_record.role,
-        "profiles": invite_record.profiles,
-        "expires_at": invite_record.expires_at,
-        "output_path_kind": output_path_kind(&output_path, context),
-    });
-    let audit = AuditWrite {
-        project_id,
-        profile_id: None,
-        action: "TEAM_INVITE",
-        status: "SUCCESS",
-        secret_name: None,
-        command: Some("team invite"),
-        metadata_json: &metadata,
-        timestamp: created_at,
-    };
-    if let Err(error) = store.insert_team_invite(
-        &invite_record,
-        Some(AuditContext { key: audit_key.as_ref(), write: &audit }),
-    ) {
-        let _ignored = fs::remove_file(&output_path);
-        return Err(error.into());
-    }
-
-    let redact_names = privacy_redact_names_enabled(context, false)?;
-    writeln!(output, "team_invite: created")?;
-    writeln!(output, "invite_id: {}", invite_id_label_from_str(&invite_record.id, redact_names))?;
-    writeln!(
-        output,
-        "recipient_fingerprint: {}",
-        device_fingerprint_label(&invite_record.recipient_device_fingerprint, redact_names)
-    )?;
-    writeln!(output, "role: {}", invite_record.role)?;
-    writeln!(output, "profiles: {}", profiles_label(&invite_record.profiles, redact_names))?;
-    writeln!(output, "expires_at: {}", format_invite_expiry(invite_record.expires_at))?;
-    writeln!(output, "output: {}", output_path.display())?;
     writeln!(output, "metadata_only: yes")?;
     Ok(())
 }
@@ -456,186 +290,6 @@ fn write_pending_invites(
         )?;
     }
     Ok(())
-}
-
-struct RecipientDevice {
-    fingerprint: String,
-    sealing_public_key: [u8; 32],
-}
-
-fn decode_recipient_device(value: &str) -> Result<RecipientDevice, CliError> {
-    let descriptor = device::decode_device_descriptor(value)?;
-    let signing_public_key = device::decode_descriptor_key(&descriptor.signing_public_key_ed25519)?;
-    let sealing_public_key = device::decode_descriptor_key(&descriptor.sealing_public_key_x25519)?;
-    let fingerprint = device::device_fingerprint_hex(&signing_public_key, &sealing_public_key);
-    if fingerprint != descriptor.fingerprint_sha256 {
-        return Err(metadata_invalid_error("recipient device descriptor fingerprint mismatch"));
-    }
-    Ok(RecipientDevice { fingerprint, sealing_public_key })
-}
-
-fn validate_invite_profiles(
-    store: &locket_store::Store,
-    project_id: &str,
-    profile_names: &[String],
-) -> Result<Vec<String>, CliError> {
-    let mut unique = BTreeSet::new();
-    for name in profile_names {
-        if name.trim().is_empty() || name.chars().any(char::is_control) {
-            return Err(metadata_invalid_error("invalid invite profile name"));
-        }
-        let Some(profile) = store.get_profile_by_name(project_id, name)? else {
-            return Err(profile_not_found_error(format!("profile not found: {name}")));
-        };
-        unique.insert(profile.name);
-    }
-    Ok(unique.into_iter().collect())
-}
-
-fn confirm_dangerous_profiles(
-    context: &RuntimeContext,
-    output: &mut impl Write,
-    store: &locket_store::Store,
-    project_id: &str,
-    profiles: &[String],
-) -> Result<(), CliError> {
-    let mut dangerous = Vec::new();
-    for profile_name in profiles {
-        if let Some(profile) = store.get_profile_by_name(project_id, profile_name)?
-            && profile.dangerous
-        {
-            dangerous.push(profile.name);
-        }
-    }
-    if dangerous.is_empty() {
-        return Ok(());
-    }
-    let names = dangerous.join(",");
-    writeln!(output, "dangerous_profiles: {names}")?;
-    writeln!(output, "metadata_only: yes")?;
-    writeln!(output, "type 'team invite {names}' to confirm dangerous profile invite")?;
-    let confirmation = context.confirmation_reader.read_confirmation("team invite")?;
-    if confirmation.trim_end_matches(['\r', '\n']) != format!("team invite {names}") {
-        return Err(confirmation_failed_error(
-            "confirmation did not match dangerous profile invite scope",
-        ));
-    }
-    Ok(())
-}
-
-fn validate_invitee_name(name: &str) -> Result<(), CliError> {
-    if name.trim().is_empty() || name.len() > 80 || name.chars().any(char::is_control) {
-        return Err(metadata_invalid_error("invalid invitee name"));
-    }
-    Ok(())
-}
-
-fn role_from_arg(role: TeamRoleArg) -> TeamRole {
-    match role {
-        TeamRoleArg::Owner => TeamRole::Owner,
-        TeamRoleArg::Maintainer => TeamRole::Maintainer,
-        TeamRoleArg::Developer => TeamRole::Developer,
-        TeamRoleArg::ReadOnly => TeamRole::ReadOnly,
-    }
-}
-
-fn role_label(role: TeamRoleArg) -> &'static str {
-    match role {
-        TeamRoleArg::Owner => "owner",
-        TeamRoleArg::Maintainer => "maintainer",
-        TeamRoleArg::Developer => "developer",
-        TeamRoleArg::ReadOnly => "read-only",
-    }
-}
-
-fn can_issue_role(issuer_role: &str, invite_role: TeamRoleArg) -> bool {
-    match issuer_role {
-        "owner" => true,
-        "maintainer" => matches!(invite_role, TeamRoleArg::Developer | TeamRoleArg::ReadOnly),
-        _ => false,
-    }
-}
-
-fn invite_nonce() -> Result<[u8; 24], CliError> {
-    let random = generate_key()?;
-    let mut nonce = [0_u8; 24];
-    nonce.copy_from_slice(&random[..24]);
-    Ok(nonce)
-}
-
-fn signing_key_from_device(bytes: &[u8]) -> Result<SigningKey, CliError> {
-    let seed: [u8; 32] = bytes
-        .try_into()
-        .map_err(|_| metadata_invalid_error("issuer signing key must be 32 bytes"))?;
-    Ok(SigningKey::from_bytes(&seed))
-}
-
-fn default_invite_output_path(context: &RuntimeContext, timestamp: i64) -> PathBuf {
-    let rendered = unix_nanos_to_rfc3339(timestamp)
-        .map(|value| value.replace(':', "-"))
-        .unwrap_or_else(|| timestamp.to_string());
-    context.cwd.join(format!("locket-invite-{rendered}.locket-invite"))
-}
-
-fn ensure_invite_output_available(path: &Path) -> Result<(), CliError> {
-    if path.exists() {
-        return Err(invalid_reference_error("invite output already exists"));
-    }
-    Ok(())
-}
-
-fn write_invite_file(path: &Path, encoded_invite: &str) -> Result<(), CliError> {
-    let mut options = fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    set_user_only_file_options(&mut options);
-    let mut file = options.open(path).map_err(|error| {
-        if error.kind() == io::ErrorKind::AlreadyExists {
-            invalid_reference_error("invite output already exists")
-        } else {
-            CliError::Io(error)
-        }
-    })?;
-    file.write_all(encoded_invite.as_bytes())?;
-    file.write_all(b"\n")?;
-    set_user_only_file_permissions(path)?;
-    Ok(())
-}
-
-fn output_path_kind(path: &Path, context: &RuntimeContext) -> &'static str {
-    if path.parent().is_some_and(|parent| parent == context.cwd) {
-        "current_directory"
-    } else if path.is_absolute() {
-        "absolute"
-    } else {
-        "relative"
-    }
-}
-
-fn format_invite_expiry(timestamp: i64) -> String {
-    unix_nanos_to_rfc3339(timestamp).unwrap_or_else(|| timestamp.to_string())
-}
-
-fn invite_id_label_from_str(invite_id: &str, redact_names: bool) -> String {
-    if redact_names { privacy_alias("invite", invite_id) } else { invite_id.to_owned() }
-}
-
-fn device_fingerprint_label(fingerprint: &str, redact_names: bool) -> String {
-    if redact_names { privacy_alias("device", fingerprint) } else { fingerprint.to_owned() }
-}
-
-fn profiles_label(profiles: &[String], redact_names: bool) -> String {
-    if profiles.is_empty() {
-        return "-".to_owned();
-    }
-    profiles
-        .iter()
-        .map(
-            |profile| {
-                if redact_names { privacy_alias("profile", profile) } else { profile.clone() }
-            },
-        )
-        .collect::<Vec<_>>()
-        .join(",")
 }
 
 fn team_name_label(team: &TeamRecord, redact_names: bool) -> String {

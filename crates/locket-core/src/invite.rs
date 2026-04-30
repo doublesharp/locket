@@ -3,7 +3,7 @@
 //! Spec: `docs/specs/team-sync-recovery.md`, "Team invite trust ceremony".
 
 use data_encoding::BASE64URL_NOPAD;
-use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -163,23 +163,6 @@ pub fn fingerprint_hex(fingerprint: &[u8; 32]) -> String {
 }
 
 impl SignedInvite {
-    /// Sign an invite payload with the issuer device signing key.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`InviteEncodeError::Serialize`] if payload serialization fails.
-    pub fn sign(
-        signing_key: &SigningKey,
-        payload: InvitePayload,
-    ) -> Result<Self, InviteEncodeError> {
-        let payload_json = serde_json::to_vec(&payload)?;
-        let mut message = Vec::with_capacity(INVITE_DOMAIN.len() + payload_json.len());
-        message.extend_from_slice(INVITE_DOMAIN);
-        message.extend_from_slice(&payload_json);
-        let signature: Signature = signing_key.sign(&message);
-        Ok(Self { payload, signature: BASE64URL_NOPAD.encode(&signature.to_bytes()) })
-    }
-
     /// Encode to `lkinvite1_<base64url-json>`.
     ///
     /// # Errors

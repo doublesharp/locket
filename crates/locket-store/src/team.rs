@@ -4,7 +4,6 @@ use rusqlite::types::Type;
 use rusqlite::{OptionalExtension, params};
 
 use crate::Store;
-use crate::audit::{AuditContext, append_optional_audit};
 use crate::error::StoreError;
 
 /// Team metadata row.
@@ -50,29 +49,6 @@ pub struct PendingTeamInviteRecord {
     pub profiles: Vec<String>,
     /// Recipient device fingerprint metadata.
     pub recipient_device_fingerprint: String,
-    /// Creation timestamp in nanoseconds since the Unix epoch.
-    pub created_at: i64,
-    /// Expiration timestamp in nanoseconds since the Unix epoch.
-    pub expires_at: i64,
-}
-
-/// Pending invite row to insert into `team_invites`.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct TeamInviteRecord {
-    /// Invite identifier.
-    pub id: String,
-    /// Parent team identifier.
-    pub team_id: String,
-    /// Team member issuing the invite.
-    pub issuer_member_id: String,
-    /// Recipient device fingerprint.
-    pub recipient_device_fingerprint: String,
-    /// Granted role label.
-    pub role: String,
-    /// Profile names included in the invite metadata.
-    pub profiles: Vec<String>,
-    /// 24-byte random nonce.
-    pub nonce: Vec<u8>,
     /// Creation timestamp in nanoseconds since the Unix epoch.
     pub created_at: i64,
     /// Expiration timestamp in nanoseconds since the Unix epoch.
@@ -238,60 +214,6 @@ impl Store {
             .map_err(StoreError::from)
     }
 
-    /// Returns the active team member row associated with a device.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`StoreError::Sqlite`] when `SQLite` cannot query the member row.
-    pub fn get_team_member_by_device(
-        &self,
-        team_id: &str,
-        device_id: &str,
-    ) -> Result<Option<TeamMemberListRecord>, StoreError> {
-        let mut statement = self.connection.prepare(
-            "SELECT
-               m.id,
-               m.display_name,
-               m.role,
-               COUNT(d.id) AS trusted_device_count,
-               m.joined_at,
-               m.removed_at
-             FROM team_members m
-             LEFT JOIN devices d ON d.id = m.device_id AND d.revoked_at IS NULL
-             WHERE m.team_id = ?1
-               AND m.device_id = ?2
-               AND m.removed_at IS NULL
-             GROUP BY m.id, m.display_name, m.role, m.joined_at, m.removed_at
-             LIMIT 1",
-        )?;
-        statement
-            .query_row(params![team_id, device_id], team_member_list_record_from_row)
-            .optional()
-            .map_err(StoreError::from)
-    }
-
-    /// Inserts an active team member row.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`StoreError::Sqlite`] when `SQLite` rejects the insert.
-    pub fn insert_team_member(
-        &self,
-        member_id: &str,
-        team_id: &str,
-        device_id: Option<&str>,
-        display_name: &str,
-        role: &str,
-        joined_at: i64,
-    ) -> Result<(), StoreError> {
-        self.connection.execute(
-            "INSERT INTO team_members(id, team_id, device_id, display_name, role, joined_at, removed_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL)",
-            params![member_id, team_id, device_id, display_name, role, joined_at],
-        )?;
-        Ok(())
-    }
-
     /// Sets `removed_at` for a team member (soft-delete).
     ///
     /// # Errors
@@ -302,42 +224,6 @@ impl Store {
             "UPDATE team_members SET removed_at = ?1 WHERE id = ?2 AND removed_at IS NULL",
             params![removed_at, member_id],
         )?;
-        Ok(())
-    }
-
-    /// Inserts a pending invite and optional audit row in one transaction.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`StoreError`] when `SQLite` rejects the insert, JSON
-    /// serialization fails, or audit append fails.
-    pub fn insert_team_invite(
-        &mut self,
-        invite: &TeamInviteRecord,
-        audit: Option<AuditContext<'_>>,
-    ) -> Result<(), StoreError> {
-        let profiles_json = serde_json::to_string(&invite.profiles)?;
-        let transaction = self.connection.transaction()?;
-        transaction.execute(
-            "INSERT INTO team_invites(
-               id, team_id, issuer_member_id, recipient_device_fingerprint, role, profiles_json,
-               nonce, created_at, expires_at, accepted_at, revoked_at
-             )
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, NULL)",
-            params![
-                invite.id.as_str(),
-                invite.team_id.as_str(),
-                invite.issuer_member_id.as_str(),
-                invite.recipient_device_fingerprint.as_str(),
-                invite.role.as_str(),
-                profiles_json.as_str(),
-                invite.nonce.as_slice(),
-                invite.created_at,
-                invite.expires_at,
-            ],
-        )?;
-        append_optional_audit(&transaction, audit)?;
-        transaction.commit()?;
         Ok(())
     }
 

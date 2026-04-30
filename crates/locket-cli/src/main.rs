@@ -834,8 +834,6 @@ enum DeviceCommand {
 pub(crate) enum TeamCommand {
     /// Initialize a team for this project.
     Init(TeamInitArgs),
-    /// Create a signed team invite for a recipient device.
-    Invite(TeamInviteArgs),
     /// List team members and pending invites.
     Members,
     /// Remove a member from the team.
@@ -849,33 +847,6 @@ pub(crate) enum TeamCommand {
 pub(crate) struct TeamInitArgs {
     /// Human-readable team name.
     pub name: String,
-}
-
-#[derive(Debug, Args)]
-pub(crate) struct TeamInviteArgs {
-    /// Human-readable recipient name.
-    pub name: String,
-    /// Recipient device descriptor emitted by `locket device pubkey`.
-    #[arg(long)]
-    pub device: String,
-    /// Profile name to include in the invite. May be repeated.
-    #[arg(long = "profile", required = true)]
-    pub profiles: Vec<String>,
-    /// Role to grant when the invite is accepted.
-    #[arg(long, value_enum)]
-    pub role: TeamRoleArg,
-    /// Write the invite file to this path.
-    #[arg(long)]
-    pub output: Option<PathBuf>,
-}
-
-#[derive(Clone, Copy, Debug, ValueEnum)]
-pub(crate) enum TeamRoleArg {
-    Owner,
-    Maintainer,
-    Developer,
-    #[value(name = "read-only", alias = "read_only")]
-    ReadOnly,
 }
 
 #[derive(Debug, Args)]
