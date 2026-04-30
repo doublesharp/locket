@@ -176,6 +176,8 @@ Slices that have merged to `main` and verified. Open work tracked in
   relying party metadata.
 - [x] device-force-user-verification: Forced local device rekey now requires fresh user
   verification before it can proceed.
+- [x] recovery-user-verification: Forced recovery override now requires fresh user
+  verification before overwriting intact keychain state.
 
 ## Full Spec Coverage TODO — App/UI
 
