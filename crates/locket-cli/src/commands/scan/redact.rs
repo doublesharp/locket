@@ -25,16 +25,6 @@ pub fn redact_command(
     output: &mut impl Write,
     args: &RedactArgs,
 ) -> Result<(), CliError> {
-    let input = if args.stdin {
-        let mut input = String::new();
-        io::stdin().read_to_string(&mut input)?;
-        input
-    } else if let Some(file) = args.file.as_deref() {
-        fs::read_to_string(absolutize(&context.cwd, Path::new(file)))?
-    } else {
-        return Err(invalid_reference_error("redact requires a file path or --stdin"));
-    };
-
     let redact_names_enabled =
         privacy_redact_names_enabled(context, args.redact_names.redact_names)?;
     let project = resolve_project(&context.cwd)?;
@@ -45,8 +35,20 @@ pub fn redact_command(
         args.require_known,
         now_unix_nanos()?,
     )?;
-    let result = redact_input(&input, &coverage.redactions);
-    write!(output, "{}", result.text)?;
+    let (result, invalid_utf8_passthrough) = if args.stdin {
+        let mut input = Vec::new();
+        io::stdin().read_to_end(&mut input)?;
+        let redacted = redact_stdin_bytes(&input, &coverage.redactions);
+        output.write_all(&redacted.bytes)?;
+        (redacted.result, redacted.invalid_utf8_passthrough)
+    } else if let Some(file) = args.file.as_deref() {
+        let input = fs::read_to_string(absolutize(&context.cwd, Path::new(file)))?;
+        let result = redact_input(&input, &coverage.redactions);
+        write!(output, "{}", result.text)?;
+        (result, false)
+    } else {
+        return Err(invalid_reference_error("redact requires a file path or --stdin"));
+    };
 
     if !coverage.known_coverage_active {
         let mut stderr = io::stderr();
@@ -59,8 +61,22 @@ pub fn redact_command(
             );
         }
     }
+    if invalid_utf8_passthrough {
+        let mut stderr = io::stderr();
+        let _ignored = writeln!(
+            stderr,
+            "locket: redact stdin passed non-UTF-8 byte segment(s) through unchanged"
+        );
+    }
 
-    write_redact_audit_if_available(context, project.as_ref(), args, &coverage, &result)?;
+    write_redact_audit_if_available(
+        context,
+        project.as_ref(),
+        args,
+        &coverage,
+        &result,
+        invalid_utf8_passthrough,
+    )?;
     Ok(())
 }
 
@@ -124,6 +140,7 @@ fn write_redact_audit_if_available(
     args: &RedactArgs,
     coverage: &RedactCoverage,
     result: &locket_scan::RedactionResult,
+    invalid_utf8_passthrough: bool,
 ) -> Result<(), CliError> {
     let Some(project) = project else { return Ok(()) };
     let mut store = open_store(context)?;
@@ -150,6 +167,7 @@ fn write_redact_audit_if_available(
         "redact_names_enabled": coverage.redact_names_enabled,
         "redaction_counts_by_rule": counts_by_rule,
         "known_secret_names_redacted": coverage.known_secret_names,
+        "invalid_utf8_passthrough": invalid_utf8_passthrough,
     });
     let audit = AuditWrite {
         project_id: project.config.project_id.as_str(),
@@ -186,6 +204,105 @@ fn redact_input(
         .map(|entry| KnownRedaction { value: entry.value.as_str(), marker: entry.marker.as_str() })
         .collect::<Vec<_>>();
     redact_text_with_known_values(input, &known_values)
+}
+
+pub struct RedactedBytes {
+    pub bytes: Vec<u8>,
+    pub result: locket_scan::RedactionResult,
+    pub invalid_utf8_passthrough: bool,
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn redact_stdin_bytes(
+    input: &[u8],
+    known_redactions: &[KnownSecretRedaction],
+) -> RedactedBytes {
+    let mut bytes = Vec::with_capacity(input.len());
+    let mut counts = BTreeMap::<FindingKind, usize>::new();
+    let mut invalid_utf8_passthrough = false;
+    let mut remaining = input;
+    let mut pattern_index = 1_usize;
+
+    while !remaining.is_empty() {
+        match std::str::from_utf8(remaining) {
+            Ok(text) => {
+                append_redacted_stdin_text(
+                    text,
+                    known_redactions,
+                    &mut bytes,
+                    &mut counts,
+                    &mut pattern_index,
+                );
+                break;
+            }
+            Err(error) => {
+                let valid_up_to = error.valid_up_to();
+                if valid_up_to > 0 {
+                    if let Ok(text) = std::str::from_utf8(&remaining[..valid_up_to]) {
+                        append_redacted_stdin_text(
+                            text,
+                            known_redactions,
+                            &mut bytes,
+                            &mut counts,
+                            &mut pattern_index,
+                        );
+                    } else {
+                        bytes.extend_from_slice(&remaining[..valid_up_to]);
+                    }
+                }
+                let invalid_len = error.error_len().unwrap_or(remaining.len() - valid_up_to);
+                bytes.extend_from_slice(&remaining[valid_up_to..valid_up_to + invalid_len]);
+                invalid_utf8_passthrough = true;
+                remaining = &remaining[valid_up_to + invalid_len..];
+            }
+        }
+    }
+
+    let text = String::from_utf8_lossy(&bytes).into_owned();
+    RedactedBytes {
+        bytes,
+        result: locket_scan::RedactionResult { text, counts },
+        invalid_utf8_passthrough,
+    }
+}
+
+fn append_redacted_stdin_text(
+    text: &str,
+    known_redactions: &[KnownSecretRedaction],
+    bytes: &mut Vec<u8>,
+    counts: &mut BTreeMap<FindingKind, usize>,
+    pattern_index: &mut usize,
+) {
+    let mut result = redact_input(text, known_redactions);
+    result.text = localize_pattern_markers(&result.text, pattern_index);
+    bytes.extend_from_slice(result.text.as_bytes());
+    for (kind, count) in result.counts {
+        *counts.entry(kind).or_default() += count;
+    }
+}
+
+fn localize_pattern_markers(text: &str, pattern_index: &mut usize) -> String {
+    let markers = ["lk_redacted_PROVIDER_TOKEN", "lk_redacted_HIGH_ENTROPY"];
+    let mut output = String::with_capacity(text.len());
+    let mut cursor = 0;
+    while cursor < text.len() {
+        let next = markers
+            .iter()
+            .filter_map(|marker| {
+                text[cursor..].find(marker).map(|offset| (cursor + offset, *marker))
+            })
+            .min_by_key(|(index, _)| *index);
+        let Some((index, marker)) = next else {
+            output.push_str(&text[cursor..]);
+            break;
+        };
+        output.push_str(&text[cursor..index]);
+        output.push_str("lk_redacted_PATTERN_");
+        output.push_str(&pattern_index.to_string());
+        *pattern_index += 1;
+        cursor = index + marker.len();
+    }
+    output
 }
 
 pub fn ai_safe_command(

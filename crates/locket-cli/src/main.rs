@@ -56,7 +56,7 @@ pub(crate) use commands::scan::context::privacy_redact_names_enabled;
 #[cfg(test)]
 pub(crate) use commands::scan::redact::{
     AiSafeRawChunk, AiSafeStream, AiSafeStreamRedactor, KnownSecretRedaction,
-    collect_redaction_values_for_redact,
+    collect_redaction_values_for_redact, redact_stdin_bytes,
 };
 #[cfg(test)]
 pub(crate) use commands::secrets::get::{

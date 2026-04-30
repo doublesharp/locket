@@ -501,6 +501,33 @@ fn redact_names_uses_privacy_alias_for_known_values() -> Result<(), Box<dyn std:
 }
 
 #[test]
+fn redact_stdin_bytes_passes_invalid_utf8_and_localizes_pattern_markers() {
+    let redactions = vec![crate::KnownSecretRedaction {
+        value: zeroize::Zeroizing::new("known-secret-value".to_owned()),
+        marker: "lk_redacted_DATABASE_URL".to_owned(),
+        secret_name: Some("DATABASE_URL".to_owned()),
+    }];
+    let input =
+        b"known=known-secret-value\nprovider=ghp_sampleTokenValue1234567890\nbad=\xff\xfe\n";
+
+    let redacted = crate::redact_stdin_bytes(input, &redactions);
+
+    assert!(redacted.invalid_utf8_passthrough);
+    assert!(redacted.bytes.windows(2).any(|window| window == b"\xff\xfe"));
+    let text = String::from_utf8_lossy(&redacted.bytes);
+    assert!(text.contains("known=lk_redacted_DATABASE_URL"));
+    assert!(text.contains("provider=lk_redacted_PATTERN_1"));
+    assert!(!text.contains("known-secret-value"));
+    assert!(!text.contains("ghp_sampleTokenValue1234567890"));
+    assert!(!text.contains("lk_redacted_PROVIDER_TOKEN"));
+    assert_eq!(redacted.result.counts.get(&locket_scan::FindingKind::KnownSecretValue), Some(&1));
+    assert_eq!(
+        redacted.result.counts.get(&locket_scan::FindingKind::ProviderTokenPattern),
+        Some(&1)
+    );
+}
+
+#[test]
 fn redact_writes_audit_row_with_counts_and_names() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempdir()?;
     let context = test_context(&directory);
