@@ -260,6 +260,74 @@ pub struct VersionHistoryFieldDescriptor {
     pub timestamp: bool,
 }
 
+/// Runtime-session states rendered by the desktop execution monitor.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExecutionMonitorState {
+    /// Session has no completion metadata yet.
+    Running,
+    /// Session completed with exit status zero.
+    Completed,
+    /// Session completed with a non-zero or signal-derived exit status.
+    Failed,
+    /// Session is incomplete but its process binding no longer resolves.
+    Stale,
+}
+
+/// Metadata fields rendered by the desktop execution monitor.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExecutionMonitorField {
+    /// Runtime session identifier.
+    SessionId,
+    /// Profile identifier or alias.
+    Profile,
+    /// Command policy name or alias.
+    Policy,
+    /// Runtime process id and process-start binding.
+    ProcessBinding,
+    /// Session start timestamp.
+    StartedAt,
+    /// Session end timestamp.
+    EndedAt,
+    /// Child process exit status.
+    ExitStatus,
+    /// Count of retained secret names, never values.
+    SecretNameCount,
+    /// Spawn and completion audit sequence links.
+    AuditSequences,
+}
+
+/// Metadata-only state descriptor for execution monitor rows.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ExecutionMonitorStateDescriptor {
+    /// State represented by this descriptor.
+    pub state: ExecutionMonitorState,
+    /// Stable display label.
+    pub label: &'static str,
+    /// Whether the row represents an active runtime session.
+    pub active: bool,
+    /// Whether the state should render as a warning.
+    pub warning: bool,
+}
+
+/// Metadata-only field descriptor for execution monitor columns.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ExecutionMonitorFieldDescriptor {
+    /// Field represented by this descriptor.
+    pub field: ExecutionMonitorField,
+    /// Stable implementation key for the UI column.
+    pub key: &'static str,
+    /// Safe column label.
+    pub label: &'static str,
+    /// Backing `runtime_sessions` column or derived expression.
+    pub source: &'static str,
+    /// Privacy alias kind to apply when `privacy.redact_names` is enabled.
+    pub privacy_alias_kind: Option<&'static str>,
+    /// Whether the field is a timestamp.
+    pub timestamp: bool,
+    /// Whether this field is guaranteed to be names/counts only.
+    pub metadata_only: bool,
+}
+
 impl DenialReason {
     /// Return the desktop denial view descriptor for this reason.
     #[must_use]
@@ -323,6 +391,71 @@ impl VersionHistoryField {
             }
         };
         VersionHistoryFieldDescriptor { field: self, key, label, timestamp }
+    }
+}
+
+impl ExecutionMonitorState {
+    /// Return the desktop descriptor for this execution monitor state.
+    #[must_use]
+    pub const fn descriptor(self) -> ExecutionMonitorStateDescriptor {
+        let (label, active, warning) = match self {
+            Self::Running => ("running", true, false),
+            Self::Completed => ("completed", false, false),
+            Self::Failed => ("failed", false, true),
+            Self::Stale => ("stale", false, true),
+        };
+        ExecutionMonitorStateDescriptor { state: self, label, active, warning }
+    }
+}
+
+impl ExecutionMonitorField {
+    /// Return the desktop descriptor for this execution monitor field.
+    #[must_use]
+    pub const fn descriptor(self) -> ExecutionMonitorFieldDescriptor {
+        let (key, label, source, privacy_alias_kind, timestamp) = match self {
+            Self::SessionId => ("session-id", "Session", "runtime_sessions.id", None, false),
+            Self::Profile => {
+                ("profile", "Profile", "runtime_sessions.profile_id", Some("profile"), false)
+            }
+            Self::Policy => {
+                ("policy", "Policy", "runtime_sessions.policy_name", Some("policy"), false)
+            }
+            Self::ProcessBinding => (
+                "process-binding",
+                "Process",
+                "runtime_sessions.process_id + runtime_sessions.process_start_time",
+                None,
+                false,
+            ),
+            Self::StartedAt => ("started-at", "Started", "runtime_sessions.started_at", None, true),
+            Self::EndedAt => ("ended-at", "Ended", "runtime_sessions.ended_at", None, true),
+            Self::ExitStatus => {
+                ("exit-status", "Exit", "runtime_sessions.exit_status", None, false)
+            }
+            Self::SecretNameCount => (
+                "secret-name-count",
+                "Secrets",
+                "runtime_sessions.secret_names_json count",
+                None,
+                false,
+            ),
+            Self::AuditSequences => (
+                "audit-sequences",
+                "Audit",
+                "runtime_sessions.spawn_audit_sequence + runtime_sessions.completion_audit_sequence",
+                None,
+                false,
+            ),
+        };
+        ExecutionMonitorFieldDescriptor {
+            field: self,
+            key,
+            label,
+            source,
+            privacy_alias_kind,
+            timestamp,
+            metadata_only: true,
+        }
     }
 }
 
@@ -633,6 +766,45 @@ pub fn version_history_field_descriptors() -> Vec<VersionHistoryFieldDescriptor>
     version_history_fields().iter().map(|field| field.descriptor()).collect()
 }
 
+/// All execution monitor states in desktop spec order.
+#[must_use]
+pub const fn execution_monitor_states() -> &'static [ExecutionMonitorState] {
+    &[
+        ExecutionMonitorState::Running,
+        ExecutionMonitorState::Completed,
+        ExecutionMonitorState::Failed,
+        ExecutionMonitorState::Stale,
+    ]
+}
+
+/// Return all execution monitor state descriptors in spec order.
+#[must_use]
+pub fn execution_monitor_state_descriptors() -> Vec<ExecutionMonitorStateDescriptor> {
+    execution_monitor_states().iter().map(|state| state.descriptor()).collect()
+}
+
+/// All execution monitor fields backed by `runtime_sessions`.
+#[must_use]
+pub const fn execution_monitor_fields() -> &'static [ExecutionMonitorField] {
+    &[
+        ExecutionMonitorField::SessionId,
+        ExecutionMonitorField::Profile,
+        ExecutionMonitorField::Policy,
+        ExecutionMonitorField::ProcessBinding,
+        ExecutionMonitorField::StartedAt,
+        ExecutionMonitorField::EndedAt,
+        ExecutionMonitorField::ExitStatus,
+        ExecutionMonitorField::SecretNameCount,
+        ExecutionMonitorField::AuditSequences,
+    ]
+}
+
+/// Return all execution monitor field descriptors in spec order.
+#[must_use]
+pub fn execution_monitor_field_descriptors() -> Vec<ExecutionMonitorFieldDescriptor> {
+    execution_monitor_fields().iter().map(|field| field.descriptor()).collect()
+}
+
 fn scan_notification_body(finding_count: Option<u32>) -> String {
     match finding_count {
         Some(1) => "1 scan warning needs attention.".to_owned(),
@@ -644,12 +816,15 @@ fn scan_notification_body(finding_count: Option<u32>) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        AccessibilityRequirement, CapabilityAccess, DenialReason, EmptyState, ReleaseWebviewPolicy,
-        TrayIconAssetStyle, TrayIconState, TrayNotificationContext, TrayNotificationKind,
-        VersionHistoryField, VersionHistoryState, accessibility_descriptors,
-        accessibility_requirements, denial_reasons, denial_ux_descriptors, empty_state_descriptors,
-        empty_states, primary_views, tray_icon_asset_styles_for_os, tray_icon_descriptors,
-        tray_icon_states, version_history_field_descriptors, version_history_fields,
+        AccessibilityRequirement, CapabilityAccess, DenialReason, EmptyState,
+        ExecutionMonitorField, ReleaseWebviewPolicy, TrayIconAssetStyle, TrayIconState,
+        TrayNotificationContext, TrayNotificationKind, VersionHistoryField, VersionHistoryState,
+        accessibility_descriptors, accessibility_requirements, denial_reasons,
+        denial_ux_descriptors, empty_state_descriptors, empty_states,
+        execution_monitor_field_descriptors, execution_monitor_fields,
+        execution_monitor_state_descriptors, execution_monitor_states, primary_views,
+        tray_icon_asset_styles_for_os, tray_icon_descriptors, tray_icon_states,
+        version_history_field_descriptors, version_history_fields,
         version_history_state_descriptors, version_history_states,
     };
 
@@ -932,6 +1107,67 @@ mod tests {
         for descriptor in descriptors {
             assert_eq!(descriptor, descriptor.field.descriptor());
             let rendered = format!("{} {}", descriptor.key, descriptor.label);
+            assert!(!rendered.contains("DATABASE_URL"));
+            assert!(!rendered.contains("postgres://"));
+            assert!(!rendered.contains("secret value"));
+        }
+    }
+
+    #[test]
+    fn execution_monitor_states_cover_running_completed_and_warning_rows() {
+        let descriptors = execution_monitor_state_descriptors();
+
+        assert_eq!(descriptors.len(), execution_monitor_states().len());
+        assert_eq!(descriptors[0].label, "running");
+        assert!(descriptors[0].active);
+        assert_eq!(descriptors[1].label, "completed");
+        assert!(!descriptors[1].warning);
+        assert_eq!(descriptors[2].label, "failed");
+        assert!(descriptors[2].warning);
+        assert_eq!(descriptors[3].label, "stale");
+        assert!(descriptors[3].warning);
+
+        for descriptor in descriptors {
+            assert_eq!(descriptor, descriptor.state.descriptor());
+            assert!(!descriptor.label.contains("DATABASE_URL"));
+            assert!(!descriptor.label.contains("postgres://"));
+        }
+    }
+
+    #[test]
+    fn execution_monitor_fields_are_backed_by_runtime_sessions_metadata() {
+        let descriptors = execution_monitor_field_descriptors();
+
+        assert_eq!(
+            execution_monitor_fields(),
+            &[
+                ExecutionMonitorField::SessionId,
+                ExecutionMonitorField::Profile,
+                ExecutionMonitorField::Policy,
+                ExecutionMonitorField::ProcessBinding,
+                ExecutionMonitorField::StartedAt,
+                ExecutionMonitorField::EndedAt,
+                ExecutionMonitorField::ExitStatus,
+                ExecutionMonitorField::SecretNameCount,
+                ExecutionMonitorField::AuditSequences,
+            ]
+        );
+        assert_eq!(descriptors.len(), execution_monitor_fields().len());
+        assert_eq!(descriptors[1].privacy_alias_kind, Some("profile"));
+        assert_eq!(descriptors[2].privacy_alias_kind, Some("policy"));
+        assert!(descriptors[4].timestamp);
+        assert!(descriptors[5].timestamp);
+        assert!(descriptors.iter().all(|descriptor| descriptor.metadata_only));
+        assert!(
+            descriptors.iter().all(|descriptor| descriptor.source.contains("runtime_sessions"))
+        );
+
+        for descriptor in descriptors {
+            assert_eq!(descriptor, descriptor.field.descriptor());
+            let rendered = format!(
+                "{} {} {} {:?}",
+                descriptor.key, descriptor.label, descriptor.source, descriptor.privacy_alias_kind
+            );
             assert!(!rendered.contains("DATABASE_URL"));
             assert!(!rendered.contains("postgres://"));
             assert!(!rendered.contains("secret value"));
