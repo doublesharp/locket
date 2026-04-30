@@ -398,8 +398,9 @@ the spec already covers. Closed slices land in
   (`docs/specs/integrations.md:39-65`). Extension never writes audit
   directly; everything goes through agent RPCs. Decomposed below;
   later subtasks depend on `vscode-ext-scaffold`.
-  - [ ] **subtask** — vscode-ext-scaffold: `extensions/vscode/`
+  - [~] [7138f228] **subtask** — vscode-ext-scaffold: `extensions/vscode/`
     (out-of-tree TS) project skeleton with build/lint/test scripts.
+    Claim: branch agent-7138f228/vscode-ext-scaffold, worktree .worktrees/agent-7138f228-vscode-ext-scaffold. Scope: `extensions/vscode/` skeleton (`package.json`, `tsconfig.json`, `.eslintrc.cjs`, `.gitignore`, `README.md`, empty `src/extension.ts`); no extension behavior yet.
   - [ ] **subtask** — vscode-agent-client: TypeScript client that
     speaks the agent socket protocol; surface
     `AgentUnavailable`/`ProtocolError` distinctly. Pre-req:
