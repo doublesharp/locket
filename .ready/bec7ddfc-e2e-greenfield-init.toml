@@ -1,0 +1,6 @@
+id = "bec7ddfc"
+topic = "e2e-greenfield-init"
+branch = "agent-bec7ddfc/e2e-greenfield-init"
+sha = "b9747d6c859f81c043105f926822b94c259a6313"
+worktree = "/Users/justin/Workspaces/0xdoublesharp/locket/.worktrees/agent-bec7ddfc-e2e-greenfield-init"
+ready_at = "2026-04-30T03:17:08Z"
