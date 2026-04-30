@@ -254,6 +254,9 @@ Slices that have merged to `main` and verified. Open work tracked in
 - [x] **subtask** — tests-typed-errors: per-variant exit-code regression
   for all `LocketError` variants.
 
+- [x] `locket allow` requires trusted root; regression test confirms
+  untrusted root exits 71, no `ALLOW_DIRECTORY` row written.
+
 ## Spec-by-Spec Completion Gates
 
 - [x] `index.md`
