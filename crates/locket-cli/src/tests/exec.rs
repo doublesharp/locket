@@ -441,7 +441,9 @@ env_mode = "strict"
     .into_iter()
     .collect::<locket_exec::EnvMap>();
 
-    let external_env = crate::resolve_policy_external_env(policy, &parent_env)?;
+    let project_root = tempdir()?;
+    let external_env =
+        crate::resolve_policy_external_env(policy, &parent_env, project_root.path())?;
     assert_eq!(external_env.len(), 2);
     assert_eq!(external_env.get("PARENT_ALLOWED").map(|value| value.as_str()), Some("from-parent"));
     assert_eq!(
@@ -466,6 +468,94 @@ env_mode = "strict"
         Some("also-parent")
     );
     assert!(!prepared.env.contains_key("PARENT_DENIED"));
+    Ok(())
+}
+
+#[test]
+fn file_external_env_source_loads_only_policy_allowed_names()
+-> Result<(), Box<dyn std::error::Error>> {
+    let document = locket_core::PolicyDocument::from_toml_str(
+        r#"
+[commands.env_check]
+argv = ["/bin/sh", "-c", "true"]
+required_secrets = ["DATABASE_URL"]
+optional_secrets = ["LOG_LEVEL"]
+external_env_sources = [{ file = ".env.local" }]
+env_mode = "strict"
+"#,
+    )?;
+    let policy = document.commands.get("env_check").ok_or("missing policy")?;
+    let project_root = tempdir()?;
+    std::fs::write(
+        project_root.path().join(".env.local"),
+        "DATABASE_URL=postgres://localhost/app\nLOG_LEVEL=debug\nNOT_ALLOWED=denied\n",
+    )?;
+    let parent_env = locket_exec::EnvMap::new();
+
+    let external_env =
+        crate::resolve_policy_external_env(policy, &parent_env, project_root.path())?;
+    assert_eq!(external_env.len(), 2);
+    assert_eq!(
+        external_env.get("DATABASE_URL").map(|value| value.as_str()),
+        Some("postgres://localhost/app")
+    );
+    assert_eq!(external_env.get("LOG_LEVEL").map(|value| value.as_str()), Some("debug"));
+    assert!(!external_env.contains_key("NOT_ALLOWED"));
+    Ok(())
+}
+
+#[test]
+fn file_external_env_source_rejects_absolute_path() -> Result<(), Box<dyn std::error::Error>> {
+    let document = locket_core::PolicyDocument::from_toml_str(
+        r#"
+[commands.env_check]
+argv = ["/bin/sh", "-c", "true"]
+required_secrets = ["DATABASE_URL"]
+external_env_sources = [{ file = "/etc/passwd" }]
+env_mode = "strict"
+"#,
+    )?;
+    let policy = document.commands.get("env_check").ok_or("missing policy")?;
+    let project_root = tempdir()?;
+
+    let result = crate::resolve_policy_external_env(
+        policy,
+        &locket_exec::EnvMap::new(),
+        project_root.path(),
+    );
+    let Err(error) = result else {
+        return Err("absolute external env file paths must be rejected".into());
+    };
+    assert_eq!(error.exit_code(), locket_core::LocketError::MetadataInvalid.exit_code());
+    Ok(())
+}
+
+#[test]
+fn file_external_env_source_rejects_paths_outside_project_root()
+-> Result<(), Box<dyn std::error::Error>> {
+    let document = locket_core::PolicyDocument::from_toml_str(
+        r#"
+[commands.env_check]
+argv = ["/bin/sh", "-c", "true"]
+required_secrets = ["DATABASE_URL"]
+external_env_sources = [{ file = "../escape.env" }]
+env_mode = "strict"
+"#,
+    )?;
+    let policy = document.commands.get("env_check").ok_or("missing policy")?;
+    let outside = tempdir()?;
+    std::fs::write(outside.path().join("escape.env"), "DATABASE_URL=postgres://escape\n")?;
+    let project_root = tempdir_in(outside.path())?;
+
+    let result = crate::resolve_policy_external_env(
+        policy,
+        &locket_exec::EnvMap::new(),
+        project_root.path(),
+    );
+    let Err(error) = result else {
+        return Err("external env paths outside the project root must be rejected".into());
+    };
+    assert_eq!(error.exit_code(), locket_core::LocketError::MetadataInvalid.exit_code());
     Ok(())
 }
 

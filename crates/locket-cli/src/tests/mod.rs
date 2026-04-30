@@ -13,7 +13,7 @@ pub(super) use std::io::{Read, Write};
 pub(super) use std::path::{Path, PathBuf};
 pub(super) use std::process::Command as TestCommand;
 pub(super) use std::sync::Arc;
-pub(super) use tempfile::tempdir;
+pub(super) use tempfile::{tempdir, tempdir_in};
 
 pub(super) use super::{Cli, RuntimeContext, run_with_context};
 

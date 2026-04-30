@@ -2,16 +2,18 @@
 //! shared with the `exec` command.
 
 use std::collections::BTreeSet;
+use std::fs;
 use std::io::Write;
 use std::path::Path;
 use std::process::ExitStatus;
 use std::str::FromStr;
 
-use locket_core::{CommandPolicy, CommandSpec, ExternalEnvSource, SessionId};
+use locket_core::{CommandPolicy, CommandSpec, ExternalEnvSource, SecretName, SessionId};
 use locket_platform::{LocalUserVerificationRequest, PlatformError};
 use locket_store::{ProfileRecord, RuntimeSessionRecord, RuntimeSessionSecretNameRetention, Store};
 
 use crate::commands::config::spec::{config_get_value, read_user_config};
+use crate::commands::secrets::import::{EnvImportEntry, parse_env_import};
 use crate::runtime::RuntimeContext;
 use crate::runtime::error::{
     CliError, child_exit_error, confirmation_failed_error, corrupt_db_error, exec_prepare_error,
@@ -144,7 +146,7 @@ fn prepare_policy_execution(
     let parent_env = std::env::vars()
         .map(|(name, value)| (name, locket_exec::env_value(value)))
         .collect::<locket_exec::EnvMap>();
-    let external_env = resolve_policy_external_env(policy, &parent_env)?;
+    let external_env = resolve_policy_external_env(policy, &parent_env, &resolved.root)?;
     let missing_required = missing_required_secret_names(&selections, &external_env);
     if !missing_required.is_empty() {
         return Err(secret_not_found_error(format!(
@@ -185,6 +187,7 @@ fn prepare_policy_execution(
 pub fn resolve_policy_external_env(
     policy: &CommandPolicy,
     parent_env: &locket_exec::EnvMap,
+    project_root: &Path,
 ) -> Result<locket_exec::EnvMap, CliError> {
     let mut external_env = locket_exec::EnvMap::new();
     for source in &policy.external_env_sources {
@@ -192,10 +195,13 @@ pub fn resolve_policy_external_env(
             ExternalEnvSource::Parent => {
                 external_env.extend(locket_exec::resolve_parent_external_env(
                     parent_env,
-                    policy.allowed_secrets.iter().map(locket_core::SecretName::as_str),
+                    policy.allowed_secrets.iter().map(SecretName::as_str),
                 ));
             }
-            ExternalEnvSource::File(_) | ExternalEnvSource::Compose | ExternalEnvSource::Ide => {
+            ExternalEnvSource::File(path) => {
+                external_env.extend(resolve_external_env_file(path, project_root, policy)?);
+            }
+            ExternalEnvSource::Compose | ExternalEnvSource::Ide => {
                 return Err(unimplemented_in_build_error(
                     "external env source is not wired in this build",
                 ));
@@ -240,6 +246,52 @@ fn warn_implicit_locket_override_conflicts(
         conflicts.into_iter().collect::<Vec<_>>().join(", ")
     )?;
     Ok(())
+}
+
+fn resolve_external_env_file(
+    declared_path: &Path,
+    project_root: &Path,
+    policy: &CommandPolicy,
+) -> Result<locket_exec::EnvMap, CliError> {
+    if declared_path.is_absolute() {
+        return Err(metadata_invalid_error(format!(
+            "external env file {} must be a project-relative path",
+            declared_path.display()
+        )));
+    }
+
+    let canonical_root = project_root.canonicalize().map_err(|error| {
+        metadata_invalid_error(format!(
+            "could not canonicalize project root {}: {error}",
+            project_root.display()
+        ))
+    })?;
+    let candidate = project_root.join(declared_path);
+    let canonical_candidate = candidate.canonicalize().map_err(|error| {
+        metadata_invalid_error(format!(
+            "external env file {} could not be opened: {error}",
+            declared_path.display()
+        ))
+    })?;
+    if !canonical_candidate.starts_with(&canonical_root) {
+        return Err(metadata_invalid_error(format!(
+            "external env file {} resolves outside the project root",
+            declared_path.display()
+        )));
+    }
+
+    let allowed_names =
+        policy.allowed_secrets.iter().map(|name| name.as_str().to_owned()).collect::<BTreeSet<_>>();
+    let contents = fs::read_to_string(&canonical_candidate)?;
+    let mut env = locket_exec::EnvMap::new();
+    for entry in parse_env_import(&contents) {
+        if let EnvImportEntry::Secret { key, value } = entry
+            && allowed_names.contains(&key)
+        {
+            env.insert(key, locket_exec::env_value(value));
+        }
+    }
+    Ok(env)
 }
 
 fn missing_required_secret_names<'a>(
