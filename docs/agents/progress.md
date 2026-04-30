@@ -305,7 +305,6 @@ Slices 1+2 shipped (agent client, tray binding, 6 view scaffolds,
 - [ ] Cross-surface error-text parity: CLI / UI / tray / shell /
   VS Code show the same reason and next action per typed error
   (`docs/specs/desktop.md`).
-  - [~] [acda32e4] branch agent-acda32e4/error-copy-table, worktree .worktrees/agent-acda32e4-error-copy-table; **subtask** — error-copy-table: shared typed-error display copy with coverage regression.
 - [~] [90b9f58a] branch agent-90b9f58a/vscode-reveal-webview, worktree .worktrees/agent-90b9f58a-vscode-reveal-webview; VS Code gated reveal webview with short-lived data (`docs/specs/integrations.md:50-51`).
 
 ### Code Health and Bug Fixes

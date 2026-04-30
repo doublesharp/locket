@@ -275,6 +275,8 @@ Slices that have merged to `main` and verified. Open work tracked in
   permission regressions.
 - [x] tray-icons-real: Tray icons are now generated as visible template and light/dark
   raster assets.
+- [x] error-copy-table: Typed error display copy is now shared across shell, UI, and
+  tray clients.
 
 ## Full Spec Coverage TODO — Code Health and Bug Fixes
 
