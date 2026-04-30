@@ -450,7 +450,7 @@ the spec already covers. Closed slices land in
 
 - [ ] Sealed bundle. Decomposed below; later subtasks depend on
   `bundle-container-format` (`docs/specs/team-sync-recovery.md:111-224`).
-  - [ ] **subtask** — bundle-container-format: implement the versioned
+  - [~] [e7389a73] **subtask** — bundle-container-format: implement the versioned
     container (magic header, schema version, plaintext-minimal
     manifest, encrypted-payload section) plus a writer/reader pair.
     Manifest minimization is enforced in code (no profile/secret/
@@ -458,6 +458,7 @@ the spec already covers. Closed slices land in
     (110). Tests: round-trip a synthetic container; rejects unknown
     schema, oversized manifest, and disallowed manifest fields.
     Pre-req for all other bundle subtasks.
+    Claim: branch agent-e7389a73/bundle-container-format, worktree .worktrees/agent-e7389a73-bundle-container-format.
   - [ ] **subtask** — bundle-age-encryption: integrate `age`/`rage`
     library for the encrypted payload with multi-recipient support.
     Errors: `BundleVerificationFailed` (110) on AAD/auth-tag failure.
