@@ -1585,6 +1585,7 @@ fn assert_metadata_invalid<T>(
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn team_invite_creates_signed_file_pending_row_and_audit() -> Result<(), Box<dyn std::error::Error>>
 {
     let directory = tempdir()?;
