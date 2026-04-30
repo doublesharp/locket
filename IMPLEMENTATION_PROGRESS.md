@@ -833,10 +833,8 @@ editing — they drift. Severity: **blocker** (security/correctness),
     paths, `SCHEMA_MIGRATE` audit on every step, and rollback on
     failure in `crates/locket-store/`.
     Claim: branch agent-e7389a73/tests-store-migrations, worktree .worktrees/agent-e7389a73-tests-store-migrations.
-  - [~] [bec7ddfc] **subtask** — tests-typed-errors: a per-variant exit-code
-    regression covering at least one callsite per `LocketError`
-    variant in `crates/locket-core/src/error.rs`.
-    Claim: branch agent-bec7ddfc/tests-typed-errors, worktree .worktrees/agent-bec7ddfc-tests-typed-errors. Scope: add direct exit-code asserts for the variants missing dedicated coverage in `tests/cli_errors.rs`.
+  - [x] **subtask** — tests-typed-errors: per-variant exit-code
+    regression for all `LocketError` variants.
   - [ ] **subtask** — tests-source-precedence: cover the unified
     resolver across `set`, `get`, `list`, `rotate`, `rm`, `purge`,
     `history`, `diff`, `copy`, reveal/copy, and execution. Pairs with
@@ -844,7 +842,7 @@ editing — they drift. Severity: **blocker** (security/correctness),
   - [x] **subtask** — tests-scanner-rules: cover `crates/locket-scan/`
     rule matching, severity overrides, suppression markers, and the
     `--require-known` pre-commit mode.
-  - [ ] **subtask** — tests-audit-hmac: verify the audit chain HMAC
+  - [~] [bec7ddfc] **subtask** — tests-audit-hmac: verify the audit chain HMAC
     recomputes against each row's stored `schema_version`; pairs with
     the existing audit-chain HMAC line in `Security/Recovery/Team`.
   - [ ] **subtask** — tests-runtime-sessions: cover
