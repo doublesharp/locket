@@ -160,3 +160,106 @@ fn runtime_session_retention_uses_duration_grammar() -> Result<(), Box<dyn Error
     }
     Ok(())
 }
+
+#[test]
+fn runtime_session_without_policy_name_stores_and_retrieves_none() -> Result<(), Box<dyn Error>> {
+    let test_store = open_initialized_store()?;
+    insert_project_profile(&test_store.store)?;
+
+    let mut session = test_runtime_session("lk_sess_no_policy", 100);
+    session.policy_name = None;
+    test_store.store.insert_runtime_session(&session)?;
+
+    let incomplete = test_store.store.list_incomplete_runtime_sessions("lk_proj_test")?;
+    assert_eq!(incomplete.len(), 1);
+    assert!(incomplete[0].policy_name.is_none());
+    Ok(())
+}
+
+#[test]
+fn mark_completed_with_no_exit_status_records_signal_termination() -> Result<(), Box<dyn Error>> {
+    let test_store = open_initialized_store()?;
+    insert_project_profile(&test_store.store)?;
+
+    let session = test_runtime_session("lk_sess_signal", 100);
+    test_store.store.insert_runtime_session(&session)?;
+
+    let updated = test_store
+        .store
+        .mark_runtime_session_completed("lk_sess_signal", 200, None, None)?;
+    assert!(updated);
+
+    let incomplete = test_store.store.list_incomplete_runtime_sessions("lk_proj_test")?;
+    assert!(incomplete.is_empty());
+
+    let exit_status: Option<i32> = test_store.store.connection().query_row(
+        "SELECT exit_status FROM runtime_sessions WHERE id = 'lk_sess_signal'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert!(exit_status.is_none());
+    Ok(())
+}
+
+#[test]
+fn list_incomplete_returns_empty_after_all_sessions_completed() -> Result<(), Box<dyn Error>> {
+    let test_store = open_initialized_store()?;
+    insert_project_profile(&test_store.store)?;
+
+    let s1 = test_runtime_session("lk_sess_a", 100);
+    let s2 = test_runtime_session("lk_sess_b", 200);
+    test_store.store.insert_runtime_session(&s1)?;
+    test_store.store.insert_runtime_session(&s2)?;
+
+    test_store.store.mark_runtime_session_completed("lk_sess_a", 150, Some(0), Some(1))?;
+    test_store.store.mark_runtime_session_completed("lk_sess_b", 250, Some(0), Some(2))?;
+
+    assert!(test_store.store.list_incomplete_runtime_sessions("lk_proj_test")?.is_empty());
+    Ok(())
+}
+
+#[test]
+fn list_expired_secret_names_applies_time_cutoff() -> Result<(), Box<dyn Error>> {
+    let test_store = open_initialized_store()?;
+    insert_project_profile(&test_store.store)?;
+
+    let mut old_session = test_runtime_session("lk_sess_old", 100);
+    old_session.secret_names = vec!["OLD_SECRET".to_owned()];
+    let mut new_session = test_runtime_session("lk_sess_new", 1000);
+    new_session.secret_names = vec!["NEW_SECRET".to_owned()];
+    test_store.store.insert_runtime_session(&old_session)?;
+    test_store.store.insert_runtime_session(&new_session)?;
+
+    let expired_at_500 =
+        test_store.store.list_runtime_sessions_with_expired_secret_names("lk_proj_test", 500)?;
+    assert_eq!(expired_at_500.len(), 1);
+    assert_eq!(expired_at_500[0].id, "lk_sess_old");
+
+    let expired_at_2000 =
+        test_store.store.list_runtime_sessions_with_expired_secret_names("lk_proj_test", 2000)?;
+    assert_eq!(expired_at_2000.len(), 2);
+    Ok(())
+}
+
+#[test]
+fn spawn_and_completion_audit_sequences_are_preserved() -> Result<(), Box<dyn Error>> {
+    let test_store = open_initialized_store()?;
+    insert_project_profile(&test_store.store)?;
+
+    let mut session = test_runtime_session("lk_sess_seq", 100);
+    session.spawn_audit_sequence = Some(7);
+    session.completion_audit_sequence = None;
+    test_store.store.insert_runtime_session(&session)?;
+
+    test_store.store.mark_runtime_session_completed("lk_sess_seq", 200, Some(0), Some(8))?;
+
+    let (spawn_seq, completion_seq) = test_store.store.connection().query_row(
+        "SELECT spawn_audit_sequence, completion_audit_sequence
+         FROM runtime_sessions WHERE id = 'lk_sess_seq'",
+        [],
+        |row| Ok((row.get::<_, u64>(0)?, row.get::<_, u64>(1)?)),
+    )?;
+    assert_eq!(spawn_seq, 7);
+    assert_eq!(completion_seq, 8);
+    Ok(())
+}
