@@ -620,8 +620,9 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
 - [ ] Status subscriptions from the agent (`SubscribeStatus`).
 - [ ] Privacy-mode rendering in desktop, tray, and editor-facing UI.
 - [ ] Audit, policy, profile, scan, and bootstrap views.
-- [ ] Secret version history view (current/deprecated/purged with
+- [~] [cb2437f7] Secret version history view (current/deprecated/purged with
   `deprecated_at`, `grace_until`, pinned-reference eligibility).
+  Claim: branch agent-cb2437f7/version-history-view, worktree .worktrees/agent-cb2437f7-version-history-view, scope desktop metadata descriptors.
 - [ ] Execution/session monitor view backed by `runtime_sessions`.
 - [x] Tray icon state set (Lucide-based) reflects
   locked/unlocked/scan-warn/alert with platform-appropriate styling.
