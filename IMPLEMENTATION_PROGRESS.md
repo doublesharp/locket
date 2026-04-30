@@ -539,9 +539,10 @@ the spec already covers. Closed slices land in
   - [x] **subtask** — team-members-list: `locket team members` lists
     member metadata and pending invites with privacy aliases; locked vaults
     remain metadata-only.
-  - [ ] **subtask** — team-remove-member: implement `locket team remove`.
+  - [~] [aa40a4ce] **subtask** — team-remove-member: implement `locket team remove`.
     Audit `TEAM_REMOVE`. Errors: `TeamRoleDenied`. Depends on
     `team-store-schema`.
+    Claim: branch agent-aa40a4ce/team-remove-member, worktree .worktrees/agent-aa40a4ce-team-remove-member. Scope: `locket team remove <member>` command, `TEAM_REMOVE` audit row, `TeamRoleDenied` typed error.
   - [ ] **subtask** — team-revoke-device: implement `locket team
     revoke-device`. Audit `DEVICE_REVOKE`. Errors: `TeamRoleDenied`. Depends
     on `team-store-schema`.
