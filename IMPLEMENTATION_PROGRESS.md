@@ -510,10 +510,9 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
   audit, scan findings, devices, members (never reveals values).
 - [ ] Accessibility: keyboard nav, focus states, screen-reader labels,
   contrast, reduced motion, no post-TTL value leak via a11y metadata.
-- [~] [4efea70d] Empty-state guidance for `locket init`/`team accept`/
+- [x] Empty-state guidance for `locket init`/`team accept`/
   `profile create dev`/`set`/`import`/`policy add`/`agent start`/
   `device init`.
-  Claim: branch agent-4efea70d/empty-state-guidance, worktree .worktrees/agent-4efea70d-empty-state-guidance.
 - [x] Denial UX differentiates locked vault, missing grant, policy denial,
   dangerous-profile, revoked device, and expired invite with distinct copy and
   recovery affordances.
