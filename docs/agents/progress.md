@@ -289,7 +289,7 @@ Slices 1+2 shipped (agent client, tray binding, 6 view scaffolds,
     `desktop-reveal-modal`, `desktop-clipboard-copy`. Slice 8.
   - [~] [52c592db] branch agent-52c592db/desktop-tray-notifications, worktree .worktrees/agent-52c592db-desktop-tray-notifications; **subtask** — desktop-tray-notifications: route the four `TrayNotificationKind` cases via `passive_notification`; honor DND. Names and values never leak.
   - [~] [90b9f58a] branch agent-90b9f58a/agent-list-audit, worktree .worktrees/agent-90b9f58a-agent-list-audit; **subtask** — agent-list-audit: filtered metadata-only audit log RPC with chain status.
-  - [~] [52c592db] branch agent-52c592db/agent-verify-audit, worktree .worktrees/agent-52c592db-agent-verify-audit; **subtask** — agent-verify-audit: RPC returning a structural
+  - [ ] **subtask** — agent-verify-audit: RPC returning a structural
     HMAC check result. Used by audit-view "Verify".
   - [ ] **subtask** — desktop-audit-data: wire `agent-list-audit` +
     `agent-verify-audit` into `AuditLog.vue`. Slice 9.
@@ -297,9 +297,7 @@ Slices 1+2 shipped (agent client, tray binding, 6 view scaffolds,
     Pre-req: `agent-unlock-cache` (matching) + `locket-scan`
     (pattern/entropy fallback). Emit `SCAN` rows.
   - [~] [52c592db] branch agent-52c592db/desktop-scan-data, worktree .worktrees/agent-52c592db-desktop-scan-data; **subtask** — desktop-scan-data: wire into `ScanResults.vue` + rescan trigger. Slice 10.
-  - [ ] **subtask** — agent-config-read-write: RPCs for
-    `privacy.redact_names`, `unlock_ttl_seconds`, verification
-    policy, dangerous-profile flag. Writes emit `CONFIG_UPDATE`.
+  - [~] [90b9f58a] branch agent-90b9f58a/agent-config-read-write, worktree .worktrees/agent-90b9f58a-agent-config-read-write; **subtask** — agent-config-read-write: settings RPCs for privacy, unlock TTL, verification policy, and dangerous-profile.
   - [ ] **subtask** — desktop-settings-data: wire into `Settings.vue`;
     propagate `privacy.redact_names` reactively. Slice 11.
   - [~] [90b9f58a] branch agent-90b9f58a/agent-list-policies, worktree .worktrees/agent-90b9f58a-agent-list-policies; **subtask** — agent-list-policies: metadata-only saved policy RPC.
