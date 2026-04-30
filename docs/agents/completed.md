@@ -102,6 +102,8 @@ Slices that have merged to `main` and verified. Open work tracked in
   allowlist via `merge_environment` in `crates/locket-core/src/env.rs`.
 - [x] `lk://` parser rejects `?source=imported` with typed
   `InvalidReferenceUri::ImportedSource`; regression covers it.
+- [x] vscode-agent-client: VS Code extension now has a typed local agent
+  socket client covering framed RPCs, status calls, and status streams.
 - [x] `get --reveal` requires a TTY unless `--force` is passed;
   noninteractive denials write a `REVEAL/DENIED` audit row and
   successful reveals echo `force=true` in metadata.
