@@ -329,8 +329,7 @@ Slices 1+2 shipped (agent client, tray binding, 6 view scaffolds,
     secret with a value from the webview's secure input. Emits
     `SET` / `ROTATE`. Pre-req: `agent-unlock-cache`,
     `agent-grant-table`.
-- [ ] Tauri hardening. Empty deny-by-default baseline shipped with
-  `tauri-shell`. Remaining (`docs/specs/desktop.md`):
+- [~] [acda32e4] branch agent-acda32e4/tauri-permission-guard, worktree .worktrees/agent-acda32e4-tauri-permission-guard; Tauri capability and permission guard for the release desktop shell.
 - [ ] Search/filter UI (`docs/specs/desktop.md`). Each subtask
   renders one surface; never exposes values; pre-req is the
   relevant view's data RPC.
