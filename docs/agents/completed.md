@@ -210,6 +210,8 @@ Slices that have merged to `main` and verified. Open work tracked in
   `eslint-config-prettier` aligns the two; `pnpm-lock.yaml` is committed.
 - [x] vscode-reference-completion: The VS Code extension now registers
   `lk://` reference completion for supported local file types.
+- [x] desktop-project-dashboard-view: The desktop app now opens on a
+  project dashboard with status, health, and navigation into detail views.
 
 ## Full Spec Coverage TODO — Code Health and Bug Fixes
 

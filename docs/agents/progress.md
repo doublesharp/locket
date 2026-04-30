@@ -345,7 +345,6 @@ Slices 1+2 shipped (agent client, tray binding, 6 view scaffolds,
   - [ ] **subtask** — desktop-team-invite-view: invite
     issue/accept/revoke + member/device removal. Pre-req:
     `team-invite-*`, invite-ceremony subtasks.
-  - [~] [52c592db] branch agent-52c592db/desktop-project-dashboard-view, worktree .worktrees/agent-52c592db-desktop-project-dashboard-view; **subtask** — desktop-project-dashboard-view: aggregator over existing RPCs.
   - [ ] **subtask** — desktop-profile-switcher-view: switch profile +
     dangerous-profile typed confirmation. Pre-req:
     `agent-set-active-profile`.
