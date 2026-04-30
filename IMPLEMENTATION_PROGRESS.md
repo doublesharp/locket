@@ -401,9 +401,8 @@ the spec already covers. Closed slices land in
   override-mode docs.
 - [ ] On-demand agent startup: `locket exec`/`run` start the agent
   when missing; `AgentUnavailable` only after on-demand startup fails.
-- [~] [7138f228] Docker active-context detection refuses remote/TCP/SSH contexts
+- [x] Docker active-context detection refuses remote/TCP/SSH contexts
   unless `allow_remote_docker = true` and a typed confirmation passes.
-  Claim: branch agent-7138f228/docker-remote-confirmation, worktree .worktrees/agent-7138f228-docker-remote-confirmation. Scope: add typed-string confirmation gate for remote Docker endpoints when `allow_remote_docker = true`; preserve existing default-deny path; typed `ConfirmationFailed` (68) on mismatch with audit denial.
 - [ ] VS Code extension backed by the local agent
   (`docs/specs/integrations.md:39-65`). Extension never writes audit
   directly; everything goes through agent RPCs. Decomposed below;

@@ -106,6 +106,9 @@ Slices that have merged to `main` and verified. Open work tracked in
 - [x] `locket exec --secret KEY` single-key injection records selected
   source metadata in `EXEC` audit rows and fails typed pre-spawn when
   the vault is locked.
+- [x] Docker active-context detection refuses remote/TCP/SSH contexts
+  unless `allow_remote_docker = true`; typed confirmation required;
+  mismatch exits `ConfirmationFailed` (68).
 
 ## Full Spec Coverage TODO — Security/Recovery/Team
 
