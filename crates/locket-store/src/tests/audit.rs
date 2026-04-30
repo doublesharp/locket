@@ -256,3 +256,86 @@ fn audit_verify_reports_first_break_without_appending_success() -> Result<(), Bo
 
     Ok(())
 }
+
+#[test]
+fn audit_verify_flags_appended_chain_row_and_link_mutations() -> Result<(), Box<dyn Error>> {
+    for (case, mutation_sql, expected_sequence, expected_reason) in [
+        (
+            "row_hmac",
+            "UPDATE audit_log SET status = 'FAILED'
+             WHERE project_id = 'lk_proj_test' AND sequence = 2",
+            2,
+            "row hmac mismatch",
+        ),
+        (
+            "previous_hmac",
+            "UPDATE audit_log SET previous_hmac = zeroblob(32)
+             WHERE project_id = 'lk_proj_test' AND sequence = 2",
+            2,
+            "previous_hmac mismatch",
+        ),
+    ] {
+        let mut test_store = open_initialized_store()?;
+        insert_project_profile(&test_store.store)?;
+        let set_metadata = json!({
+            "schema_version": 1,
+            "action": "SET",
+            "status": "SUCCESS",
+            "secret_name": "DATABASE_URL",
+        });
+        let rotate_metadata = json!({
+            "schema_version": 1,
+            "action": "ROTATE",
+            "status": "SUCCESS",
+            "secret_name": "DATABASE_URL",
+        });
+        let set_audit = AuditWrite {
+            project_id: "lk_proj_test",
+            profile_id: Some("lk_prof_test"),
+            action: "SET",
+            status: "SUCCESS",
+            secret_name: Some("DATABASE_URL"),
+            command: None,
+            metadata_json: &set_metadata,
+            timestamp: 100,
+        };
+        let rotate_audit = AuditWrite {
+            project_id: "lk_proj_test",
+            profile_id: Some("lk_prof_test"),
+            action: "ROTATE",
+            status: "SUCCESS",
+            secret_name: Some("DATABASE_URL"),
+            command: None,
+            metadata_json: &rotate_metadata,
+            timestamp: 200,
+        };
+
+        test_store.store.append_audit(&[42; 32], &set_audit)?;
+        test_store.store.append_audit(&[42; 32], &rotate_audit)?;
+        test_store.store.connection().execute(mutation_sql, [])?;
+
+        match test_store.store.verify_audit_chain_and_append("lk_proj_test", &[42; 32], 300) {
+            Err(StoreError::AuditIntegrity { sequence, reason }) => {
+                assert_eq!(sequence, expected_sequence, "case {case}");
+                assert_eq!(reason, expected_reason, "case {case}");
+            }
+            Ok(verified) => {
+                return Err(format!(
+                    "{case}: tampered chain unexpectedly verified {verified} rows"
+                )
+                .into());
+            }
+            Err(other) => {
+                return Err(format!("{case}: expected audit integrity error, got {other}").into());
+            }
+        }
+        let audit_rows = test_store.store.connection().query_row(
+            "SELECT COUNT(*) FROM audit_log WHERE project_id = 'lk_proj_test'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )?;
+        assert_eq!(audit_rows, 2, "case {case}");
+    }
+
+    Ok(())
+}
