@@ -9,7 +9,7 @@ use sha2::{Digest, Sha256};
 /// Wire payload for the `ListSecrets` RPC.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ListSecretsRequest {
-    /// SQLite store path to read.
+    /// `SQLite` store path to read.
     pub store_path: PathBuf,
     /// Project id whose active-profile rows are listed.
     pub project_id: String,

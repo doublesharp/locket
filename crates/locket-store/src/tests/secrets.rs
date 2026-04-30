@@ -82,7 +82,7 @@ fn active_secret_metadata_uses_source_precedence_ordering() -> Result<(), Box<dy
             ("DATABASE_URL", "team-managed", 1),
         ]
     );
-    assert_eq!(rows[0].required, true);
+    assert!(rows[0].required);
     assert_eq!(rows[1].current_version, 3);
     assert_eq!(rows[1].last_rotated_at, Some(300));
     Ok(())

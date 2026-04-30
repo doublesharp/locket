@@ -42,7 +42,7 @@ pub fn initialize_schema(connection: &mut Connection) -> Result<(), StoreError> 
     Ok(())
 }
 
-pub(crate) fn current_schema_version(connection: &Connection) -> Result<Option<i64>, StoreError> {
+pub fn current_schema_version(connection: &Connection) -> Result<Option<i64>, StoreError> {
     let migrations_exists = connection
         .query_row(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'",

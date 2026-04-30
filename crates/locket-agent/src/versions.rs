@@ -9,7 +9,7 @@ use sha2::{Digest, Sha256};
 /// Wire payload for the `ListVersions` RPC.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ListVersionsRequest {
-    /// SQLite store path to read.
+    /// `SQLite` store path to read.
     pub store_path: PathBuf,
     /// Project id whose active-profile rows are listed.
     pub project_id: String,
@@ -82,8 +82,8 @@ pub fn list_versions(request: &ListVersionsRequest) -> Result<ListVersionsRespon
     let rows = store
         .list_secret_version_metadata_by_profile(&request.project_id, &request.profile_id)?
         .into_iter()
-        .filter(|row| request.secret_name.as_ref().map_or(true, |name| row.name == *name))
-        .filter(|row| request.source.as_ref().map_or(true, |source| row.source == *source))
+        .filter(|row| request.secret_name.as_ref().is_none_or(|name| row.name == *name))
+        .filter(|row| request.source.as_ref().is_none_or(|source| row.source == *source))
         .map(|row| {
             let eligible = version_resolves_at(
                 &row.version_state,

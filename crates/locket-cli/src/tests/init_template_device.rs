@@ -1148,7 +1148,7 @@ fn team_revoke_device_already_revoked_is_idempotent() -> Result<(), Box<dyn std:
         crate::read_project_config(&directory.path().join("locket.toml"))?.project_id.into_string();
     store.insert_device(&crate::DeviceRecord {
         id: "lk_dev_revoked_remote".to_owned(),
-        project_id: project_id.clone(),
+        project_id,
         name: "revoked remote".to_owned(),
         signing_public_key: vec![11; 32],
         sealing_public_key: vec![12; 32],

@@ -50,11 +50,7 @@ pub fn get_command_with_clipboard(
         args,
         |value, _ttl_seconds, _limit| {
             copy_to_clipboard(value)?;
-            Ok(ClipboardCopyStatus::clearing_unsupported(
-                ClipboardClearLimit::DirectCli
-                    .audit_reason()
-                    .expect("direct CLI unsupported reason"),
-            ))
+            Ok(ClipboardCopyStatus::clearing_unsupported("direct_cli_no_background_clear"))
         },
         limit,
     )
@@ -76,13 +72,9 @@ pub fn get_command_with_clipboard_and_limit(
         args,
         |value, _ttl_seconds, _limit| {
             copy_to_clipboard(value)?;
-            Ok(ClipboardCopyStatus::clearing_unsupported(limit.audit_reason().unwrap_or_else(
-                || {
-                    ClipboardClearLimit::DirectCli
-                        .audit_reason()
-                        .expect("direct CLI unsupported reason")
-                },
-            )))
+            Ok(ClipboardCopyStatus::clearing_unsupported(
+                limit.audit_reason().unwrap_or("direct_cli_no_background_clear"),
+            ))
         },
         limit,
     )
@@ -544,11 +536,9 @@ impl ClipboardBackend for MemoryClipboard {
             ClipboardClearResult::Cleared | ClipboardClearResult::Changed => {
                 Ok(ClipboardCopyStatus::clearing_scheduled())
             }
-            ClipboardClearResult::Unsupported => Ok(ClipboardCopyStatus::clearing_unsupported(
-                ClipboardClearLimit::DirectCli
-                    .audit_reason()
-                    .expect("direct CLI unsupported reason"),
-            )),
+            ClipboardClearResult::Unsupported => {
+                Ok(ClipboardCopyStatus::clearing_unsupported("direct_cli_no_background_clear"))
+            }
         }
     }
 }

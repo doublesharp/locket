@@ -223,6 +223,11 @@ fn hmac_vec_to_array(sequence: u64, value: Vec<u8>) -> Result<[u8; AUDIT_HMAC_LE
 ///
 /// The source project's audit key is never exported in sealed bundles, so this
 /// check verifies only structural continuity and the final checkpoint match.
+///
+/// # Errors
+///
+/// Returns [`StoreError::AuditIntegrity`] when the imported rows are reordered,
+/// have gaps, break previous-HMAC linkage, or do not match the checkpoint.
 pub fn verify_imported_audit_chain_structure(
     rows: &[ImportedAuditChainRow],
     checkpoint_sequence: u64,

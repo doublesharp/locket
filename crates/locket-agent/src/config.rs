@@ -114,6 +114,7 @@ pub struct AgentConfigSettings {
 }
 
 /// Effective user-verification gate values.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct EffectiveUserVerificationSettings {
     /// Effective `unlock` gate.
@@ -178,9 +179,10 @@ impl ConfigRpcError {
     fn error_name(&self) -> &'static str {
         match self {
             Self::Protocol(_) => "ProtocolError",
-            Self::MetadataInvalid(_) | Self::TomlDeserialize(_) | Self::TomlSerialize(_) => {
-                "MetadataInvalid"
-            }
+            Self::MetadataInvalid(_)
+            | Self::Io(_)
+            | Self::TomlDeserialize(_)
+            | Self::TomlSerialize(_) => "MetadataInvalid",
             Self::UnlockRequired => "UnlockRequired",
             Self::ProfileNotFound => "ProfileNotFound",
             Self::Store(error) => match error.locket_error() {
@@ -190,7 +192,6 @@ impl ConfigRpcError {
                 locket_core::LocketError::MetadataInvalid => "MetadataInvalid",
                 _ => "CorruptDb",
             },
-            Self::Io(_) => "MetadataInvalid",
         }
     }
 }
@@ -355,7 +356,9 @@ async fn audit_key_for_project(
     let Some(entry) = cache.lookup(project_id, now_unix_nanos) else {
         return Err(ConfigRpcError::UnlockRequired);
     };
-    Ok(entry.key_bytes().to_vec())
+    let key_bytes = entry.key_bytes().to_vec();
+    drop(cache);
+    Ok(key_bytes)
 }
 
 fn push_bool_patch(
@@ -566,6 +569,8 @@ fn privacy_alias(kind: &str, id: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::expect_used, clippy::panic)]
+
     use std::time::Duration;
 
     use locket_store::Store;

@@ -76,7 +76,7 @@ pub fn command(
         PolicyCommand::Allow(args) => allow(context, output, args),
         PolicyCommand::Require(args) => require(context, output, args),
         PolicyCommand::Delete(args) => delete(context, output, args),
-        PolicyCommand::Edit(args) => edit(context, output, args),
+        PolicyCommand::Edit(args) => edit(context, output, &args),
         PolicyCommand::Doctor => doctor(context, output),
     }
 }
@@ -187,7 +187,7 @@ fn delete(
 fn edit(
     context: &RuntimeContext,
     output: &mut impl Write,
-    args: PolicyEditArgs,
+    args: &PolicyEditArgs,
 ) -> Result<(), CliError> {
     let resolved = require_project(context)?;
     let path = resolved.root.join(LOCKET_TOML);

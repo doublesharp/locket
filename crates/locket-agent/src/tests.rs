@@ -469,7 +469,7 @@ async fn list_secrets_returns_metadata_ordered_by_source_precedence()
             ("DATABASE_URL", "team-managed", 1),
         ]
     );
-    assert_eq!(payload.rows[0].required, true);
+    assert!(payload.rows[0].required);
     assert_eq!(payload.rows[1].current_version, 3);
     Ok(())
 }

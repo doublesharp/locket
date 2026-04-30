@@ -58,14 +58,13 @@ fn agent_start_command(context: &RuntimeContext, output: &mut impl Write) -> Res
 }
 
 #[cfg(not(test))]
-pub(crate) fn ensure_agent_running_for_execution(context: &RuntimeContext) -> Result<(), CliError> {
+pub fn ensure_agent_running_for_execution(context: &RuntimeContext) -> Result<(), CliError> {
     ensure_agent_running_with_launcher(context, &ProcessAgentDaemonLauncher).map(|_| ())
 }
 
 #[cfg(test)]
-pub(crate) fn ensure_agent_running_for_execution(
-    _context: &RuntimeContext,
-) -> Result<(), CliError> {
+#[allow(clippy::missing_const_for_fn, clippy::unnecessary_wraps)]
+pub fn ensure_agent_running_for_execution(_context: &RuntimeContext) -> Result<(), CliError> {
     // `cargo test` runs the libtest harness as `current_exe()`, so the
     // production spawn path cannot exec `internal-agent-serve`. The startup
     // state machine itself is covered below with an injectable launcher.
@@ -117,10 +116,8 @@ fn ensure_agent_running_with_launcher(
     // If the pid file is missing or stale but the socket owner still
     // answers trusted status requests, preserve the live daemon and
     // keep start idempotent instead of unlinking its socket.
-    if socket_path.exists() {
-        if launcher.status_snapshot(&socket_path).is_ok() {
-            return Ok(AgentStartupReport { started: false, pid: None });
-        }
+    if socket_path.exists() && launcher.status_snapshot(&socket_path).is_ok() {
+        return Ok(AgentStartupReport { started: false, pid: None });
     }
 
     // Best-effort cleanup of stale pid/socket files. The daemon may have
@@ -759,8 +756,9 @@ mod tests {
         let context = temp_context(&directory);
         let launcher = FakeLauncher::status_failing();
 
-        let error = ensure_agent_running_with_launcher(&context, &launcher)
-            .expect_err("unreachable agent must fail closed");
+        let Err(error) = ensure_agent_running_with_launcher(&context, &launcher) else {
+            return Err("unreachable agent must fail closed".into());
+        };
         assert_eq!(launcher.spawn_calls(), 1);
         let CliError::Typed { kind, message } = error else {
             return Err("expected typed AgentUnavailable".into());

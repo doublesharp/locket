@@ -14,7 +14,7 @@ const DEFAULT_LIST_AUDIT_ROWS: u32 = 100;
 /// Wire payload for the `ListAudit` RPC.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ListAuditRequest {
-    /// SQLite store path to read.
+    /// `SQLite` store path to read.
     pub store_path: PathBuf,
     /// Project id whose audit chain is listed.
     pub project_id: String,

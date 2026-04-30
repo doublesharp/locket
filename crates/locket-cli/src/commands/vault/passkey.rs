@@ -114,7 +114,7 @@ fn passkey_remove_command(
         &mut store,
         &resolved,
         &credential,
-        &user_verification,
+        user_verification,
         timestamp,
     )?;
     writeln!(output, "passkey: revoked")?;
@@ -141,7 +141,7 @@ fn write_passkey_remove_audit_if_available(
     store: &mut Store,
     resolved: &ResolvedProject,
     credential: &PasskeyCredentialRecord,
-    user_verification: &UserVerificationAudit,
+    user_verification: UserVerificationAudit,
     timestamp: i64,
 ) -> Result<(), CliError> {
     let audit_key =
