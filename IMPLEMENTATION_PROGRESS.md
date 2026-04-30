@@ -891,7 +891,8 @@ editing — they drift. Severity: **blocker** (security/correctness),
     member/device names). Depends on `bundle-container-format`.
 - [ ] Cross-platform test mocks and mutation tests
   (`docs/specs/testing.md`). Subtasks are independent — pick any:
-  - [ ] **subtask** — mock-os-keychain: trait-based mock for
+  - [~] [6e4d05db] **subtask** — mock-os-keychain: trait-based mock for
+    Claim: branch agent-6e4d05db/mock-os-keychain, worktree .worktrees/agent-6e4d05db-mock-os-keychain.
     `crates/locket-platform/src/keychain/` covering get/set/delete
     success and error paths, used in CLI/store tests.
   - [ ] **subtask** — mock-peer-credentials: in-process socket harness
