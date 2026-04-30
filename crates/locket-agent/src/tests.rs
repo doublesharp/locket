@@ -25,6 +25,7 @@ fn agent_methods_round_trip_through_wire_names() -> Result<(), UnknownMethod> {
         AgentMethod::ResolveReference,
         AgentMethod::PrepareExec,
         AgentMethod::ScanKnownValues,
+        AgentMethod::ListRuntimeSessions,
         AgentMethod::Reveal,
         AgentMethod::Copy,
         AgentMethod::SubscribeStatus,
@@ -351,6 +352,113 @@ async fn malformed_unlock_payload_returns_protocol_error() {
     };
     assert_eq!(error.error, "ProtocolError");
     assert!(state.unlock_cache.lock().await.is_empty());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn list_runtime_sessions_filters_profile_and_applies_aliases() {
+    use crate::RuntimeSessionSnapshot;
+    use crate::envelope::{RequestEnvelope, ResponseEnvelope};
+    use crate::method::AgentMethod;
+    use crate::server::{AgentSocketState, dispatch};
+    use serde_json::json;
+
+    let state = AgentSocketState::locked("test-version");
+    state
+        .set_runtime_sessions_for_tests(vec![
+            RuntimeSessionSnapshot {
+                session_id: "sess-old".to_owned(),
+                project_id: "project-main".to_owned(),
+                profile_id: "profile-prod".to_owned(),
+                policy_name: Some("deploy-prod".to_owned()),
+                process_id: 101,
+                process_start_time: 1_700_000_000,
+                started_at: 1_700_000_100,
+                ended_at: Some(1_700_000_500),
+                exit_status: Some(0),
+                secret_name_count: 2,
+                spawn_audit_sequence: Some(7),
+                completion_audit_sequence: Some(8),
+            },
+            RuntimeSessionSnapshot {
+                session_id: "sess-new".to_owned(),
+                project_id: "project-main".to_owned(),
+                profile_id: "profile-prod".to_owned(),
+                policy_name: Some("deploy-prod".to_owned()),
+                process_id: 202,
+                process_start_time: 1_700_001_000,
+                started_at: 1_700_001_100,
+                ended_at: None,
+                exit_status: None,
+                secret_name_count: 1,
+                spawn_audit_sequence: Some(9),
+                completion_audit_sequence: None,
+            },
+            RuntimeSessionSnapshot {
+                session_id: "sess-other-profile".to_owned(),
+                project_id: "project-main".to_owned(),
+                profile_id: "profile-dev".to_owned(),
+                policy_name: Some("deploy-prod".to_owned()),
+                process_id: 303,
+                process_start_time: 1_700_002_000,
+                started_at: 1_700_002_100,
+                ended_at: None,
+                exit_status: None,
+                secret_name_count: 3,
+                spawn_audit_sequence: Some(10),
+                completion_audit_sequence: None,
+            },
+        ])
+        .await;
+
+    let request = RequestEnvelope::new(
+        "req-runtime",
+        AgentMethod::ListRuntimeSessions,
+        json!({
+            "project_id": "project-main",
+            "profile_id": "profile-prod",
+            "privacy_redact_names": true,
+        }),
+    );
+    let ResponseEnvelope::Success(success) = dispatch(&request, &state).await else {
+        unreachable!("valid ListRuntimeSessions payload must succeed");
+    };
+    let rendered = success.payload().to_string();
+    assert!(!rendered.contains("profile-prod"));
+    assert!(!rendered.contains("deploy-prod"));
+    assert!(!rendered.contains("sess-other-profile"));
+
+    let rows = success.payload().get("rows").and_then(serde_json::Value::as_array).unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0]["session_id"], "sess-new");
+    assert_eq!(rows[0]["state"], "running");
+    assert_eq!(rows[0]["secret_name_count"], 1);
+    assert!(rows[0]["profile"].as_str().unwrap().starts_with("profile-"));
+    assert!(rows[0]["policy"].as_str().unwrap().starts_with("policy-"));
+    assert_eq!(rows[1]["session_id"], "sess-old");
+    assert_eq!(rows[1]["state"], "completed");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn malformed_list_runtime_sessions_payload_returns_protocol_error() {
+    use crate::envelope::{RequestEnvelope, ResponseEnvelope};
+    use crate::method::AgentMethod;
+    use crate::server::{AgentSocketState, dispatch};
+    use serde_json::json;
+
+    let state = AgentSocketState::locked("test-version");
+    let request = RequestEnvelope::new(
+        "req-runtime",
+        AgentMethod::ListRuntimeSessions,
+        json!({
+            "project_id": "project-main",
+        }),
+    );
+
+    let ResponseEnvelope::Error(error) = dispatch(&request, &state).await else {
+        unreachable!("malformed ListRuntimeSessions payload must fail");
+    };
+    assert_eq!(error.error, "ProtocolError");
+    assert!(state.runtime_sessions.lock().await.is_empty());
 }
 
 #[tokio::test(flavor = "current_thread")]

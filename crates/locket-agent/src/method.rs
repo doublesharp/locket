@@ -29,6 +29,8 @@ pub enum AgentMethod {
     PrepareExec,
     /// Provide known-value scan matching.
     ScanKnownValues,
+    /// List metadata-only runtime session rows.
+    ListRuntimeSessions,
     /// Reveal one secret value through a gated path.
     Reveal,
     /// Copy one secret value through a gated path.
@@ -57,6 +59,7 @@ impl AgentMethod {
             Self::ResolveReference => "ResolveReference",
             Self::PrepareExec => "PrepareExec",
             Self::ScanKnownValues => "ScanKnownValues",
+            Self::ListRuntimeSessions => "ListRuntimeSessions",
             Self::Reveal => "Reveal",
             Self::Copy => "Copy",
             Self::SubscribeStatus => "SubscribeStatus",
@@ -82,6 +85,7 @@ impl FromStr for AgentMethod {
             "ResolveReference" => Ok(Self::ResolveReference),
             "PrepareExec" => Ok(Self::PrepareExec),
             "ScanKnownValues" => Ok(Self::ScanKnownValues),
+            "ListRuntimeSessions" => Ok(Self::ListRuntimeSessions),
             "Reveal" => Ok(Self::Reveal),
             "Copy" => Ok(Self::Copy),
             "SubscribeStatus" => Ok(Self::SubscribeStatus),

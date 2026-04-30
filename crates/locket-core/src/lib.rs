@@ -13,6 +13,7 @@ pub mod id;
 pub mod invite;
 pub mod metadata;
 pub mod policy;
+pub mod privacy;
 pub mod profile_name;
 pub mod project;
 pub mod reference_uri;
@@ -50,6 +51,7 @@ pub use policy::{
     CommandPolicy, CommandSpec, ExternalEnvSource, MAX_COMMAND_POLICY_TTL_SECONDS, PolicyDocument,
     PolicyParseError,
 };
+pub use privacy::privacy_alias;
 pub use profile_name::{InvalidProfileName, MAX_PROFILE_NAME_LEN, ProfileName};
 pub use project::{PROJECT_CONFIG_SCHEMA_VERSION, ProjectConfig};
 pub use reference_uri::{

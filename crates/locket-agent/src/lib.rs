@@ -14,6 +14,7 @@ mod peer_cred;
 mod prepare_exec;
 mod resolve;
 mod reveal;
+mod runtime_sessions;
 mod scan;
 #[cfg(unix)]
 mod server;
@@ -34,6 +35,10 @@ pub use peer_cred::{current_process_uid, validate_peer_stream, validate_peer_uid
 pub use prepare_exec::{PrepareExecRequest, PrepareExecResponse};
 pub use resolve::{ResolveRequest, ResolveResponse};
 pub use reveal::{CopyRequest, CopyResponse, RevealRequest, RevealResponse};
+pub use runtime_sessions::{
+    ListRuntimeSessionsRequest, ListRuntimeSessionsResponse, RuntimeSessionRow,
+    RuntimeSessionSnapshot, RuntimeSessionState,
+};
 pub use scan::{ScanFinding, ScanRequest, ScanResponse};
 #[cfg(unix)]
 pub use server::{

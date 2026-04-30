@@ -215,6 +215,8 @@ pub struct AgentSocketState {
     /// rows, `RevokeGrant` and `ExpireGrant` remove them, and
     /// `Status` responses surface `live_grant_count` from this table.
     pub grants: Arc<Mutex<crate::grant::GrantTable>>,
+    /// Metadata-only runtime session snapshots used by desktop views.
+    pub runtime_sessions: Arc<Mutex<Vec<crate::runtime_sessions::RuntimeSessionSnapshot>>>,
     /// Server-side fan-out hub for `SubscribeStatus` streams.
     pub status_hub: StatusHub,
     /// Test hook overriding the heartbeat cadence so unit tests can run
@@ -246,6 +248,7 @@ impl AgentSocketState {
             daemon_uid,
             unlock_cache: Arc::new(Mutex::new(crate::unlock_cache::UnlockCache::default())),
             grants: Arc::new(Mutex::new(crate::grant::GrantTable::default())),
+            runtime_sessions: Arc::new(Mutex::new(Vec::new())),
             status_hub,
             #[cfg(test)]
             test_heartbeat_interval: Arc::new(Mutex::new(None)),
@@ -268,6 +271,7 @@ impl AgentSocketState {
             daemon_uid,
             unlock_cache: cache,
             grants: Arc::new(Mutex::new(crate::grant::GrantTable::default())),
+            runtime_sessions: Arc::new(Mutex::new(Vec::new())),
             status_hub,
             test_heartbeat_interval: Arc::new(Mutex::new(None)),
         }
@@ -279,6 +283,15 @@ impl AgentSocketState {
     #[cfg(test)]
     pub async fn set_test_heartbeat_interval(&self, interval: std::time::Duration) {
         *self.test_heartbeat_interval.lock().await = Some(interval);
+    }
+
+    /// Test-only seed for metadata-only runtime session snapshots.
+    #[cfg(test)]
+    pub async fn set_runtime_sessions_for_tests(
+        &self,
+        sessions: Vec<crate::runtime_sessions::RuntimeSessionSnapshot>,
+    ) {
+        *self.runtime_sessions.lock().await = sessions;
     }
 
     /// Builds the metadata-only `Status` payload from the current
@@ -542,6 +555,7 @@ pub async fn dispatch(envelope: &RequestEnvelope, state: &AgentSocketState) -> R
         Ok(AgentMethod::Reveal) => crate::reveal::handle_reveal(envelope),
         Ok(AgentMethod::Copy) => crate::reveal::handle_copy(envelope),
         Ok(AgentMethod::ScanKnownValues) => crate::scan::handle_scan(envelope),
+        Ok(AgentMethod::ListRuntimeSessions) => handle_list_runtime_sessions(envelope, state).await,
         Ok(AgentMethod::ResolveReference) => crate::resolve::handle_resolve(envelope),
         Ok(AgentMethod::PrepareExec) => crate::prepare_exec::handle_prepare_exec(envelope),
         Ok(method) => ResponseEnvelope::Error(ErrorEnvelope::new(
@@ -557,6 +571,20 @@ pub async fn dispatch(envelope: &RequestEnvelope, state: &AgentSocketState) -> R
             false,
         )),
     }
+}
+
+async fn handle_list_runtime_sessions(
+    envelope: &RequestEnvelope,
+    state: &AgentSocketState,
+) -> ResponseEnvelope {
+    let request: crate::runtime_sessions::ListRuntimeSessionsRequest =
+        match serde_json::from_value(envelope.payload.clone()) {
+            Ok(request) => request,
+            Err(_) => return crate::runtime_sessions::invalid_payload_response(envelope),
+        };
+    let sessions = state.runtime_sessions.lock().await;
+    let response = crate::runtime_sessions::list_runtime_sessions_response(&request, &sessions);
+    crate::runtime_sessions::success_response(envelope, response)
 }
 
 async fn handle_request_grant(
