@@ -903,8 +903,9 @@ editing — they drift. Severity: **blocker** (security/correctness),
 - [ ] RustSec advisory severity policy: high/critical block,
   medium runtime block, dev-only exception, low triage
   (`docs/specs/engineering.md`).
-- [ ] Markdown lint alongside `make docs-check`
+- [~] [cb2437f7] Markdown lint alongside `make docs-check`
   (`docs/specs/engineering.md`).
+  Claim: branch agent-cb2437f7/markdown-lint-docs-check, worktree .worktrees/agent-cb2437f7-markdown-lint-docs-check, scope basic local markdown lint integrated with docs-check.
 - [ ] Supply-chain exception ledger (package, version, reason,
   compensating controls, owner, expiration) enforced by CI;
   no-expiration entries are invalid (`docs/specs/engineering.md`).
