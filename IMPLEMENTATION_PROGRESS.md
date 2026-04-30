@@ -563,9 +563,10 @@ the spec already covers. Closed slices land in
   - [ ] **subtask** — invite-accept-display: `team accept` displays
     issuer fingerprint + PGP safety words and requires typed
     confirmation before applying. Pre-req: `invite-codec`.
-  - [ ] **subtask** — invite-replay-protect: track accepted invite
+  - [~] [e7389a73] **subtask** — invite-replay-protect: track accepted invite
     ids; reject second use with `ReplayDetected` (113). Pre-req:
     `invite-codec`.
+    Claim: branch agent-e7389a73/invite-replay-protect, worktree .worktrees/agent-e7389a73-invite-replay-protect. Scope: Store::mark_invite_accepted helper that flips team_invites.accepted_at and returns InviteReplayDetected on second use; pure-store, no consumer wiring (consumers land in team-invite-accept).
   - [~] [7138f228] **subtask** — invite-clock-skew: 5-minute clock-skew tolerance
     on expiry; outside → `InviteExpired`. Pre-req: `invite-codec`.
     Claim: branch agent-7138f228/invite-clock-skew, worktree .worktrees/agent-7138f228-invite-clock-skew. Scope: `SignedInvite::check_expiry(now_unix_seconds)` helper that accepts up to 5 min past `expires_at`; pure-core, no consumer wiring (consumers land in `invite-accept-display`/`team-invite-accept`).
