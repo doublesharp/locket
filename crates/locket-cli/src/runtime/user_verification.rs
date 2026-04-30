@@ -4,10 +4,13 @@ use locket_core::LocketError;
 use locket_platform::{LocalUserVerificationMethod, LocalUserVerificationRequest};
 use serde::Serialize;
 
+use crate::commands::config::spec::{
+    config_get_value, read_user_config, validate_config_key, validate_stored_config_value,
+};
 use crate::runtime::RuntimeContext;
 use crate::runtime::error::{CliError, typed_cli_error};
 
-#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize)]
 pub struct UserVerificationAudit {
     pub required: bool,
     pub satisfied: bool,
@@ -47,4 +50,29 @@ pub fn require_user_verification(
             )
         })?;
     Ok(UserVerificationAudit::satisfied(verification.method))
+}
+
+pub fn configured_user_verification(
+    context: &RuntimeContext,
+    config_key: &'static str,
+    action: &'static str,
+    reason: impl Into<String>,
+) -> Result<UserVerificationAudit, CliError> {
+    if !user_verification_required(context, config_key)? {
+        return Ok(UserVerificationAudit::not_required());
+    }
+    require_user_verification(context, action, reason)
+}
+
+fn user_verification_required(
+    context: &RuntimeContext,
+    config_key: &'static str,
+) -> Result<bool, CliError> {
+    let spec = validate_config_key(config_key)?;
+    let config = read_user_config(context)?;
+    let Some(value) = config_get_value(&config, config_key) else {
+        return Ok(false);
+    };
+    validate_stored_config_value(spec, value)?;
+    Ok(value.as_bool().unwrap_or(false))
 }

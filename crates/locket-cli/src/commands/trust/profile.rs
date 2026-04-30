@@ -7,6 +7,7 @@ use locket_crypto::KeyPurpose;
 use locket_store::{AuditWrite, ProfileRecord, Store};
 use serde_json::{Value, json};
 
+use crate::runtime::user_verification::{UserVerificationAudit, configured_user_verification};
 use crate::{
     CliError, LOCKET_TOML, ProfileCommand, ProfileNameArgs, RuntimeContext,
     confirmation_failed_error, format_hex, initialize_profile_keys, invalid_profile_name_error,
@@ -125,11 +126,18 @@ fn set_profile_dangerous(
     }
 
     confirm_profile_dangerous_change(context, output, &profile, dangerous)?;
+    let user_verification = configured_user_verification(
+        context,
+        "user_verification_required_for.dangerous_profile_switch",
+        if dangerous { "profile mark-dangerous" } else { "profile clear-dangerous" },
+        format!("change dangerous flag for profile {}", profile.name),
+    )?;
 
     store.set_profile_dangerous(project_id, profile_name.as_str(), dangerous)?;
 
     let timestamp = now_unix_nanos()?;
-    let metadata = profile_dangerous_audit_metadata(&profile, prior_dangerous, dangerous);
+    let metadata =
+        profile_dangerous_audit_metadata(&profile, prior_dangerous, dangerous, user_verification);
     let audit_key = load_project_key(context, &store, project_id, KeyPurpose::Audit)?;
     let audit = AuditWrite {
         project_id,
@@ -203,7 +211,12 @@ fn profile_create_audit_metadata(project_id: &str, profile_id: &str, profile_nam
     })
 }
 
-fn profile_dangerous_audit_metadata(profile: &ProfileRecord, prior: bool, new: bool) -> Value {
+fn profile_dangerous_audit_metadata(
+    profile: &ProfileRecord,
+    prior: bool,
+    new: bool,
+    user_verification: UserVerificationAudit,
+) -> Value {
     let command = if new { "profile mark-dangerous" } else { "profile clear-dangerous" };
     json!({
         "schema_version": 1,
@@ -215,6 +228,7 @@ fn profile_dangerous_audit_metadata(profile: &ProfileRecord, prior: bool, new: b
         "profile_name": profile.name,
         "prior_dangerous": prior,
         "new_dangerous": new,
+        "user_verification": user_verification,
     })
 }
 
@@ -257,12 +271,27 @@ pub fn use_profile_command(
             return Err(confirmation_failed_error("confirmation did not match"));
         }
     }
+    let user_verification = if new_profile.dangerous {
+        configured_user_verification(
+            context,
+            "user_verification_required_for.dangerous_profile_switch",
+            "use dangerous profile",
+            format!("switch to dangerous profile {}", new_profile.name),
+        )?
+    } else {
+        UserVerificationAudit::not_required()
+    };
 
     let timestamp = now_unix_nanos()?;
     let root_hash = format_hex(&root_hash(&resolved.root)?);
     let audit_key = load_project_key(context, &store, &project_id, KeyPurpose::Audit)?;
-    let metadata =
-        profile_use_audit_metadata(&project_id, &prior_profile, &new_profile, root_hash.as_str());
+    let metadata = profile_use_audit_metadata(
+        &project_id,
+        &prior_profile,
+        &new_profile,
+        root_hash.as_str(),
+        user_verification,
+    );
     resolved.config.default_profile = profile_name;
     write_project_config(&resolved.root.join(LOCKET_TOML), &resolved.config)?;
 
@@ -287,6 +316,7 @@ fn profile_use_audit_metadata(
     prior_profile: &ProfileRecord,
     new_profile: &ProfileRecord,
     root_hash: &str,
+    user_verification: UserVerificationAudit,
 ) -> Value {
     json!({
         "schema_version": 1,
@@ -301,5 +331,6 @@ fn profile_use_audit_metadata(
         "new_profile_name": new_profile.name,
         "new_profile_dangerous": new_profile.dangerous,
         "root_hash": root_hash,
+        "user_verification": user_verification,
     })
 }

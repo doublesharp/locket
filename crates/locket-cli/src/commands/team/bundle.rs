@@ -18,6 +18,7 @@ use sha2::{Digest, Sha256};
 
 use super::device;
 use crate::runtime::key_access::load_profile_key;
+use crate::runtime::user_verification::{UserVerificationAudit, configured_user_verification};
 use crate::{
     BundleCommand, BundleVerifyArgs, CliError, ExportArgs, ImportBundleArgs, LOCKET_TOML,
     ResolvedProject, RuntimeContext, bundle_verification_error, command_type,
@@ -172,7 +173,7 @@ pub fn export_bundle_command(
     let recipient_fingerprints =
         recipients.iter().map(|recipient| recipient.fingerprint.clone()).collect::<Vec<_>>();
     let selected_profiles = selected_bundle_profiles(&store, &resolved, args)?;
-    confirm_dangerous_profile_export(context, output, &selected_profiles)?;
+    let user_verification = confirm_dangerous_profile_export(context, output, &selected_profiles)?;
     let timestamp = now_unix_nanos()?;
     let payload =
         bundle_payload(context, &store, &resolved, &selected_profiles, args.include_audit)?;
@@ -218,6 +219,7 @@ pub fn export_bundle_command(
             path_kind: output_path_kind(&output_path, context),
             timestamp,
             include_audit_requested: None,
+            user_verification,
         },
     )?;
 
@@ -269,6 +271,7 @@ pub fn import_bundle_command(
             path_kind: "input",
             timestamp: now_unix_nanos()?,
             include_audit_requested: Some(args.include_audit),
+            user_verification: UserVerificationAudit::not_required(),
         },
     )?;
 
@@ -344,11 +347,11 @@ fn confirm_dangerous_profile_export(
     context: &RuntimeContext,
     output: &mut impl Write,
     profiles: &[ProfileRecord],
-) -> Result<(), CliError> {
+) -> Result<UserVerificationAudit, CliError> {
     let dangerous: Vec<&str> =
         profiles.iter().filter(|p| p.dangerous).map(|p| p.name.as_str()).collect();
     if dangerous.is_empty() {
-        return Ok(());
+        return Ok(UserVerificationAudit::not_required());
     }
     let names = dangerous.join(",");
     writeln!(output, "dangerous_profiles: {names}")?;
@@ -361,7 +364,12 @@ fn confirm_dangerous_profile_export(
             "confirmation did not match dangerous bundle export scope",
         ));
     }
-    Ok(())
+    configured_user_verification(
+        context,
+        "user_verification_required_for.dangerous_profile_switch",
+        "export dangerous profile",
+        format!("export dangerous profiles {names}"),
+    )
 }
 
 fn bundle_payload(
@@ -593,6 +601,7 @@ struct BundleAuditRequest<'a> {
     path_kind: &'static str,
     timestamp: i64,
     include_audit_requested: Option<bool>,
+    user_verification: UserVerificationAudit,
 }
 
 trait BundleAuditSubject {
@@ -761,6 +770,10 @@ fn write_bundle_audit_if_available(
     if let Some(include_audit_requested) = request.include_audit_requested {
         metadata.insert("include_audit_requested".to_owned(), Value::from(include_audit_requested));
     }
+    metadata.insert(
+        "user_verification".to_owned(),
+        serde_json::to_value(&request.user_verification)?,
+    );
     let metadata = Value::Object(metadata);
     let audit = AuditWrite {
         project_id: request.resolved.config.project_id.as_str(),

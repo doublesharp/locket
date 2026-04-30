@@ -8,7 +8,9 @@ use sha2::{Digest, Sha256};
 use std::io::Write;
 
 use crate::runtime::error::corrupt_db_error;
-use crate::runtime::user_verification::{UserVerificationAudit, require_user_verification};
+use crate::runtime::user_verification::{
+    UserVerificationAudit, configured_user_verification, require_user_verification,
+};
 use crate::{
     CliError, DeviceAddArgs, DeviceCommand, DeviceInitArgs, DeviceListArgs, DeviceRemoveArgs,
     RuntimeContext, access_denied_error, ensure_project_exists, format_hex,
@@ -41,7 +43,7 @@ fn device_init_command(
     ensure_project_exists(&store, project_id)?;
     let timestamp = now_unix_nanos()?;
 
-    let force_verification = if let Some(existing) = store.get_active_local_device(project_id)? {
+    let user_verification = if let Some(existing) = store.get_active_local_device(project_id)? {
         if !args.force {
             writeln!(output, "device: already initialized")?;
             writeln!(output, "device_id: {}", existing.id)?;
@@ -59,13 +61,17 @@ fn device_init_command(
             "DEVICE_REVOKE",
             "device init --force",
             &existing,
-            Some(&verification),
+            verification,
         )?;
-        Some(verification)
+        verification
     } else {
-        None
+        configured_user_verification(
+            context,
+            "user_verification_required_for.device_register",
+            "device init",
+            "register a local device",
+        )?
     };
-
     let device = generate_local_device_record(project_id, timestamp)?;
     store.insert_device(&device)?;
     write_device_audit_if_available(
@@ -75,7 +81,7 @@ fn device_init_command(
         "DEVICE_ADD",
         "device init",
         &device,
-        force_verification.as_ref(),
+        user_verification,
     )?;
     let descriptor = encode_device_descriptor(&device)?;
 
@@ -127,6 +133,12 @@ fn device_add_command(
     if fingerprint != descriptor.fingerprint_sha256 {
         return Err(metadata_invalid_error("device descriptor fingerprint mismatch"));
     }
+    let user_verification = configured_user_verification(
+        context,
+        "user_verification_required_for.device_register",
+        "device add",
+        format!("register device {}", args.name),
+    )?;
     let device = DeviceRecord {
         id: descriptor.device_id,
         project_id: project_id.to_owned(),
@@ -148,7 +160,7 @@ fn device_add_command(
         "DEVICE_ADD",
         "device add",
         &device,
-        None,
+        user_verification,
     )?;
 
     writeln!(output, "device: added")?;
@@ -216,7 +228,7 @@ fn device_remove_command(
         "DEVICE_REVOKE",
         "device remove",
         &device,
-        None,
+        UserVerificationAudit::not_required(),
     )?;
     writeln!(output, "device: revoked")?;
     writeln!(output, "device_id: {}", device.id)?;
@@ -341,10 +353,10 @@ fn write_device_audit_if_available(
     action: &'static str,
     command: &'static str,
     device: &DeviceRecord,
-    user_verification: Option<&UserVerificationAudit>,
+    user_verification: UserVerificationAudit,
 ) -> Result<(), CliError> {
     let audit_key = load_project_key(context, store, project_id, KeyPurpose::Audit)?;
-    let mut metadata = json!({
+    let metadata = json!({
         "schema_version": 1,
         "action": action,
         "status": "SUCCESS",
@@ -353,10 +365,8 @@ fn write_device_audit_if_available(
         "device_name": device.name,
         "fingerprint": device.fingerprint,
         "local": device.local,
+        "user_verification": user_verification,
     });
-    if let Some(user_verification) = user_verification {
-        metadata["user_verification"] = serde_json::to_value(user_verification)?;
-    }
     let audit = AuditWrite {
         project_id,
         profile_id: None,

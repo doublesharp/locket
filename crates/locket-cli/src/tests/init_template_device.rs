@@ -597,6 +597,121 @@ fn device_commands_initialize_describe_add_list_and_revoke_metadata_only()
 }
 
 #[test]
+fn device_registration_honors_configured_user_verification()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    run_with_context(
+        Cli::try_parse_from([
+            "locket",
+            "config",
+            "set",
+            "user_verification_required_for.device_register",
+            "true",
+        ])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+
+    let denied_context =
+        context_with_user_verifier(&context, Arc::new(MemoryLocalUserVerifier::denying()));
+    let result = run_with_context(
+        Cli::try_parse_from(["locket", "device", "init"])?,
+        &denied_context,
+        &mut Vec::new(),
+    );
+    let Err(error) = result else {
+        return Err("denied user verification must reject device init".into());
+    };
+    assert_eq!(error.exit_code(), locket_core::LocketError::UserVerificationFailed.exit_code());
+
+    let store = crate::open_store(&context)?;
+    let project_id: String =
+        store.connection().query_row("SELECT id FROM projects LIMIT 1", [], |row| row.get(0))?;
+    assert!(store.get_active_local_device(&project_id)?.is_none());
+    let device_add_count: i64 = store.connection().query_row(
+        "SELECT COUNT(*) FROM audit_log WHERE action = 'DEVICE_ADD'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(device_add_count, 0);
+
+    run_with_context(
+        Cli::try_parse_from(["locket", "device", "init"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    let metadata: String = store.connection().query_row(
+        "SELECT metadata_json FROM audit_log WHERE action = 'DEVICE_ADD' AND command = 'device init'
+         ORDER BY sequence DESC LIMIT 1",
+        [],
+        |row| row.get(0),
+    )?;
+    let metadata: serde_json::Value = serde_json::from_str(&metadata)?;
+    assert_eq!(metadata["user_verification"]["required"], json!(true));
+    assert_eq!(metadata["user_verification"]["satisfied"], json!(true));
+    assert_eq!(metadata["user_verification"]["method"], json!("test"));
+
+    let remote_device = crate::DeviceRecord {
+        id: "lk_dev_remote_verified".to_owned(),
+        project_id: "lk_proj_external".to_owned(),
+        name: "remote".to_owned(),
+        signing_public_key: vec![7; 32],
+        sealing_public_key: vec![8; 32],
+        fingerprint: crate::device_fingerprint_hex(&[7; 32], &[8; 32]),
+        safety_words: vec!["amber".to_owned(), "basil".to_owned(), "cedar".to_owned()],
+        local: false,
+        created_at: 1,
+        last_seen_at: None,
+        revoked_at: None,
+    };
+    let remote_descriptor = crate::encode_device_descriptor(&remote_device)?;
+    let denied_add = run_with_context(
+        Cli::try_parse_from([
+            "locket",
+            "device",
+            "add",
+            "teammate-laptop",
+            "--device",
+            &remote_descriptor,
+        ])?,
+        &denied_context,
+        &mut Vec::new(),
+    );
+    assert_error_contains(denied_add, "local user verification failed");
+    assert!(store.find_device(&project_id, "teammate-laptop")?.is_none());
+
+    run_with_context(
+        Cli::try_parse_from([
+            "locket",
+            "device",
+            "add",
+            "teammate-laptop",
+            "--device",
+            &remote_descriptor,
+        ])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    let metadata: String = store.connection().query_row(
+        "SELECT metadata_json FROM audit_log WHERE action = 'DEVICE_ADD' AND command = 'device add'
+         ORDER BY sequence DESC LIMIT 1",
+        [],
+        |row| row.get(0),
+    )?;
+    let metadata: serde_json::Value = serde_json::from_str(&metadata)?;
+    assert_eq!(metadata["user_verification"]["required"], json!(true));
+    assert_eq!(metadata["user_verification"]["satisfied"], json!(true));
+    assert_eq!(metadata["user_verification"]["method"], json!("test"));
+    Ok(())
+}
+
+#[test]
 fn team_members_lists_members_and_pending_invites_metadata_only()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempdir()?;

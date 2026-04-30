@@ -491,6 +491,93 @@ fn bundle_verify_rejects_unsupported_schema_as_config_error()
 }
 
 #[test]
+fn dangerous_profile_bundle_export_honors_configured_user_verification()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    run_with_context(Cli::try_parse_from(["locket", "device", "init"])?, &context, &mut Vec::new())?;
+    run_with_context(
+        Cli::try_parse_from(["locket", "profile", "mark-dangerous", "dev"])?,
+        &context_with_confirmation(&context, "dev\n"),
+        &mut Vec::new(),
+    )?;
+    run_with_context(
+        Cli::try_parse_from([
+            "locket",
+            "config",
+            "set",
+            "user_verification_required_for.dangerous_profile_switch",
+            "true",
+        ])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+
+    let store = crate::open_store(&context)?;
+    let descriptor = store
+        .get_active_local_device(
+            crate::read_project_config(&directory.path().join("locket.toml"))?.project_id.as_str(),
+        )?
+        .map(|device| crate::encode_device_descriptor(&device))
+        .transpose()?
+        .ok_or("missing local device")?;
+    let bundle_path = directory.path().join("dangerous.locket-bundle");
+    let denied_context = context_with_user_verifier(
+        &context_with_confirmation(&context, "export --sealed dev\n"),
+        Arc::new(MemoryLocalUserVerifier::denying()),
+    );
+    let denied = run_with_context(
+        Cli::try_parse_from([
+            "locket",
+            "export",
+            "--sealed",
+            "--recipient",
+            &descriptor,
+            "--profile",
+            "dev",
+            "--output",
+            bundle_path.to_str().ok_or("utf8 path")?,
+        ])?,
+        &denied_context,
+        &mut Vec::new(),
+    );
+    assert_error_contains(denied, "local user verification failed");
+    assert!(!bundle_path.exists());
+
+    run_with_context(
+        Cli::try_parse_from([
+            "locket",
+            "export",
+            "--sealed",
+            "--recipient",
+            &descriptor,
+            "--profile",
+            "dev",
+            "--output",
+            bundle_path.to_str().ok_or("utf8 path")?,
+        ])?,
+        &context_with_confirmation(&context, "export --sealed dev\n"),
+        &mut Vec::new(),
+    )?;
+    let metadata: String = store.connection().query_row(
+        "SELECT metadata_json FROM audit_log WHERE action = 'BACKUP_EXPORT'
+         ORDER BY sequence DESC LIMIT 1",
+        [],
+        |row| row.get(0),
+    )?;
+    let metadata: serde_json::Value = serde_json::from_str(&metadata)?;
+    assert_eq!(metadata["user_verification"]["required"], json!(true));
+    assert_eq!(metadata["user_verification"]["satisfied"], json!(true));
+    assert_eq!(metadata["user_verification"]["method"], json!("test"));
+    Ok(())
+}
+
+#[test]
 fn bundle_verify_rejects_tampered_digest() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempdir()?;
     let context = test_context(&directory);

@@ -771,6 +771,69 @@ fn profile_mark_dangerous_rejects_wrong_typed_confirmation()
 }
 
 #[test]
+fn profile_mark_dangerous_honors_configured_user_verification()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let key_store: Arc<dyn MasterKeyStore + Send + Sync> =
+        Arc::new(MemoryMasterKeyStore::default());
+    let context = test_context_with_key_store(&directory, Arc::clone(&key_store));
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    run_with_context(
+        Cli::try_parse_from([
+            "locket",
+            "config",
+            "set",
+            "user_verification_required_for.dangerous_profile_switch",
+            "true",
+        ])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+
+    let denied_context = context_with_user_verifier(
+        &test_context_with_key_store_and_confirmation(&directory, Arc::clone(&key_store), "dev\n"),
+        Arc::new(MemoryLocalUserVerifier::denying()),
+    );
+    let result = run_with_context(
+        Cli::try_parse_from(["locket", "profile", "mark-dangerous", "dev"])?,
+        &denied_context,
+        &mut Vec::new(),
+    );
+    let Err(error) = result else {
+        return Err("denied user verification must reject dangerous flag change".into());
+    };
+    assert_eq!(error.exit_code(), locket_core::LocketError::UserVerificationFailed.exit_code());
+    let store = crate::open_store(&denied_context)?;
+    let project_id: String =
+        store.connection().query_row("SELECT id FROM projects LIMIT 1", [], |row| row.get(0))?;
+    let profile = store.get_profile_by_name(&project_id, "dev")?.ok_or("profile missing")?;
+    assert!(!profile.dangerous);
+
+    let verified_context =
+        test_context_with_key_store_and_confirmation(&directory, Arc::clone(&key_store), "dev\n");
+    run_with_context(
+        Cli::try_parse_from(["locket", "profile", "mark-dangerous", "dev"])?,
+        &verified_context,
+        &mut Vec::new(),
+    )?;
+    let metadata: String = store.connection().query_row(
+        "SELECT metadata_json FROM audit_log WHERE action = 'PROFILE_CHANGE'
+         ORDER BY sequence DESC LIMIT 1",
+        [],
+        |row| row.get(0),
+    )?;
+    let metadata: serde_json::Value = serde_json::from_str(&metadata)?;
+    assert_eq!(metadata["user_verification"]["required"], json!(true));
+    assert_eq!(metadata["user_verification"]["satisfied"], json!(true));
+    assert_eq!(metadata["user_verification"]["method"], json!("test"));
+    Ok(())
+}
+
+#[test]
 fn profile_clear_dangerous_requires_clear_prefix_in_confirmation()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempdir()?;
@@ -1293,6 +1356,77 @@ fn use_dangerous_profile_succeeds_with_correct_confirmation()
     assert!(metadata.contains("\"new_profile_dangerous\":true"));
     assert!(metadata.contains("\"new_profile_name\":\"prod\""));
     assert!(metadata.contains("\"prior_profile_name\":\"dev\""));
+    Ok(())
+}
+
+#[test]
+fn use_dangerous_profile_honors_configured_user_verification()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let key_store: Arc<dyn MasterKeyStore + Send + Sync> =
+        Arc::new(MemoryMasterKeyStore::default());
+    let context = test_context_with_key_store(&directory, Arc::clone(&key_store));
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    run_with_context(
+        Cli::try_parse_from(["locket", "profile", "create", "prod"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    run_with_context(
+        Cli::try_parse_from(["locket", "profile", "mark-dangerous", "prod"])?,
+        &test_context_with_key_store_and_confirmation(&directory, Arc::clone(&key_store), "prod\n"),
+        &mut Vec::new(),
+    )?;
+    run_with_context(
+        Cli::try_parse_from([
+            "locket",
+            "config",
+            "set",
+            "user_verification_required_for.dangerous_profile_switch",
+            "true",
+        ])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+
+    let denied_context = context_with_user_verifier(
+        &test_context_with_key_store_and_confirmation(&directory, Arc::clone(&key_store), "prod\n"),
+        Arc::new(MemoryLocalUserVerifier::denying()),
+    );
+    let result = run_with_context(
+        Cli::try_parse_from(["locket", "use", "prod"])?,
+        &denied_context,
+        &mut Vec::new(),
+    );
+    let Err(error) = result else {
+        return Err("denied user verification must reject dangerous profile switch".into());
+    };
+    assert_eq!(error.exit_code(), locket_core::LocketError::UserVerificationFailed.exit_code());
+    let config = crate::read_project_config(&directory.path().join("locket.toml"))?;
+    assert_eq!(config.default_profile.as_str(), "dev");
+
+    let verified_context =
+        test_context_with_key_store_and_confirmation(&directory, Arc::clone(&key_store), "prod\n");
+    run_with_context(
+        Cli::try_parse_from(["locket", "use", "prod"])?,
+        &verified_context,
+        &mut Vec::new(),
+    )?;
+    let store = crate::open_store(&verified_context)?;
+    let metadata: String = store.connection().query_row(
+        "SELECT metadata_json FROM audit_log WHERE action = 'PROFILE_CHANGE' AND command = 'use'
+         ORDER BY sequence DESC LIMIT 1",
+        [],
+        |row| row.get(0),
+    )?;
+    let metadata: serde_json::Value = serde_json::from_str(&metadata)?;
+    assert_eq!(metadata["user_verification"]["required"], json!(true));
+    assert_eq!(metadata["user_verification"]["satisfied"], json!(true));
+    assert_eq!(metadata["user_verification"]["method"], json!("test"));
     Ok(())
 }
 
