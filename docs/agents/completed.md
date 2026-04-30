@@ -155,6 +155,8 @@ Slices that have merged to `main` and verified. Open work tracked in
   stored `schema_version`, not the binary's current version.
 - [x] Core-dump suppression helper disables Unix `RLIMIT_CORE` and Linux
   dumpability before CLI secret-bearing work starts.
+- [x] team-invite-create: Team invite creation now writes a signed invite
+  file and records pending invite metadata with metadata-only audit coverage.
 
 ## Full Spec Coverage TODO — App/UI
 
