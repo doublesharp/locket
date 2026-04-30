@@ -947,7 +947,7 @@ editing — they drift. Severity: **blocker** (security/correctness),
     that returns spoofable peer creds so the agent's peer-validation
     logic can be tested without root. Pre-req:
     `agent-peer-validation` subtask under Local agent daemon.
-  - [ ] **subtask** — mutation-malformed-crypto: tamper AAD/nonces
+  - [~] [bec7ddfc] **subtask** — mutation-malformed-crypto: tamper AAD/nonces
     and replay automation-client nonces; assert typed
     `IntegrityFailure`/`ReplayDetected` paths.
   - [x] **subtask** — mutation-locked-vault-scan: locked vault scan
