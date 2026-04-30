@@ -107,8 +107,7 @@ skill set fits a leaf better.
   - [ ] **subtask** — lk-resolve-grace: in-grace versions resolve
     with metadata-only warning audit; reject after grace. Pre-req:
     `lk-resolve-pinned-version`.
-  - [ ] **subtask** — lk-resolve-audit: write `RESOLVE_REFERENCE`
-    rows on every resolution (success and failure).
+  - [~] [52c592db] branch agent-52c592db/lk-resolve-audit, worktree .worktrees/agent-52c592db-lk-resolve-audit; **subtask** — lk-resolve-audit: write `RESOLVE_REFERENCE` rows on every resolution (success and failure).
 - [ ] VS Code extension backed by the local agent
   (`docs/specs/integrations.md:39-65`). Extension never writes audit
   directly. All subtasks depend on `vscode-ext-scaffold` (shipped).
