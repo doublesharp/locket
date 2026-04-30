@@ -208,10 +208,12 @@ skill set fits a leaf better.
 - [ ] Audit coverage for denials. Reveal/copy denial rows shipped.
   Remaining sweep: dangerous-profile reads, locked-vault refusals
   (needs degraded-audit mechanism), role denials, grant denials.
-- [ ] Local user verification gates. `LocalUserVerifier` and
+- [~] Local user verification gates. `LocalUserVerifier` and
   `require_user_verification` shipped; `get --reveal/--copy
-  --verify-user` enforces. Remaining sweep: `unlock`, `recovery`,
-  team/device, dangerous-profile actions.
+  --verify-user` enforces. Remaining:
+  - [~] [acda32e4] branch agent-acda32e4/device-force-user-verification, worktree .worktrees/agent-acda32e4-device-force-user-verification; **subtask** — device-force-user-verification: require local user verification before forced local device rekey.
+  - [ ] **subtask** — recovery-user-verification: fresh local user verification for recovery override flows.
+  - [ ] **subtask** — team-dangerous-user-verification: verification sweep for team/device dangerous-profile actions.
 - [ ] Privacy-mode rendering across status, context, redaction
   labels, debug bundles via `privacy_alias` /
   `privacy_redact_names_enabled`; tray/desktop/editor renderers
