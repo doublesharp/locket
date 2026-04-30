@@ -494,10 +494,27 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
 - [~] Privacy-mode rendering across status, context, redaction labels,
   and debug bundles via `privacy_alias`/`privacy_redact_names_enabled`;
   tray/desktop/editor renderers pending until those crates exist.
-- [ ] Agent/process hardening: peer credential validation, narrow
-  socket/pipe permissions, core-dump suppression, memory locking,
-  zeroization, sleep/session-switch locking, degraded-hardening
-  reporting via doctor.
+- [ ] Agent/process hardening (`docs/specs/agent.md`,
+  `docs/specs/operations.md`). Subtasks are largely independent;
+  `harden-peer-cred` and `harden-socket-perms` are pre-reqs for the
+  agent daemon listening on real connections.
+  - [ ] **subtask** — harden-peer-cred: peer credential validation
+    (`SO_PEERCRED`/`LOCAL_PEERCRED`/named-pipe SID) on the agent
+    socket. Pre-req: `agent-socket-server`.
+  - [ ] **subtask** — harden-socket-perms: 0600/equivalent socket and
+    pipe permissions; refuse to start if the bind path is wider.
+  - [ ] **subtask** — harden-core-dumps: disable core dumps in the
+    agent and CLI processes that hold key material (per-platform).
+  - [ ] **subtask** — harden-memory-lock: `mlock`/equivalent for
+    unwrapped key buffers; warn on unsupported platforms.
+  - [ ] **subtask** — harden-zeroize: ensure unwrapped keys/values
+    are wrapped in `Zeroizing`/equivalent at every owner; audit
+    sites that haven't been migrated.
+  - [ ] **subtask** — harden-session-lock: lock on system sleep,
+    screen lock, and user-session switch; emit `LOCK` audit row.
+  - [ ] **subtask** — harden-doctor-degraded: doctor reports each
+    hardening feature's status (`active`/`degraded`/`unsupported`)
+    so users can see fall-backs.
 - [x] Metadata privacy validation across secret/config/policy/template/
   team/member/device editors via the shared
   `crates/locket-core/src/metadata.rs` validator
