@@ -14,8 +14,13 @@
 
 // Pull dev-deps into the integration test target so `unused_crate_dependencies`
 // stays quiet for crates referenced only via path lookups below.
+use locket_agent as _;
 use locket_desktop_lib as _;
+use serde as _;
 use tauri as _;
+use tempfile as _;
+use thiserror as _;
+use tokio as _;
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -110,22 +115,48 @@ fn capability_file_denies_default_and_lists_no_broad_permissions() {
 }
 
 #[test]
-fn lib_registers_no_commands_and_keeps_devtools_debug_only() {
+fn lib_registers_only_explicitly_listed_commands_and_devtools_debug_only() {
     let path = crate_root().join("src/lib.rs");
     let source = fs::read_to_string(&path).expect("read src/lib.rs");
 
+    // Every Tauri command must be listed in exactly one `generate_handler!`
+    // invocation, never registered by reflection or magic. This pins the
+    // "every command explicitly scoped" invariant from desktop.md without
+    // having to enumerate the (growing) set of commands here.
+    let handler_marker = "tauri::generate_handler![";
     assert!(
-        source.contains("tauri::generate_handler![]"),
-        "src/lib.rs must register an empty IPC surface",
+        source.contains(handler_marker),
+        "src/lib.rs must register commands via tauri::generate_handler!",
+    );
+    let occurrences = source.matches(handler_marker).count();
+    assert_eq!(
+        occurrences, 1,
+        "src/lib.rs must register commands through exactly one generate_handler! call",
     );
 
-    // Look for the command attribute on non-doc-comment lines only.
+    // Every #[tauri::command] in the source must appear inside the handler
+    // list. We approximate this by counting #[tauri::command] occurrences on
+    // non-doc-comment lines and asserting each named handler appears once
+    // inside the brackets.
     let attribute_marker = "#[tauri::command";
-    let registered_command = source
+    let attribute_count = source
         .lines()
         .filter(|line| !line.trim_start().starts_with("//"))
-        .any(|line| line.contains(attribute_marker));
-    assert!(!registered_command, "tauri-shell slice must not register any tauri command handlers",);
+        .filter(|line| line.contains(attribute_marker))
+        .count();
+    let handler_section = source
+        .split_once(handler_marker)
+        .and_then(|(_, after)| after.split_once(']'))
+        .map(|(inside, _)| inside)
+        .expect("could not isolate generate_handler! contents");
+    let listed: std::collections::BTreeSet<&str> =
+        handler_section.split(',').map(str::trim).filter(|name| !name.is_empty()).collect();
+    assert_eq!(
+        listed.len(),
+        attribute_count,
+        "every #[tauri::command] in src/lib.rs must be listed in generate_handler!: \
+         attributes={attribute_count} listed={listed:?}",
+    );
 
     // open_devtools may exist but must be gated behind cfg(debug_assertions).
     if source.contains("open_devtools") {

@@ -2274,10 +2274,15 @@ dependencies = [
 name = "locket-desktop"
 version = "0.1.0"
 dependencies = [
+ "locket-agent",
  "locket-app",
+ "serde",
  "serde_json",
  "tauri",
  "tauri-build",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
 ]
 
 [[package]]

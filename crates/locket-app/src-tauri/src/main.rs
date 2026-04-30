@@ -5,11 +5,18 @@
 
 #![cfg_attr(all(not(debug_assertions), target_os = "windows"), windows_subsystem = "windows")]
 
-// Test-only dev-deps would otherwise trigger `unused_crate_dependencies` here.
+// Runtime + test deps consumed only via the lib crate trip
+// `unused_crate_dependencies` at the bin boundary; pull each in
+// explicitly so the lint stays quiet without disabling it.
+use locket_agent as _;
 #[cfg(test)]
 use locket_app as _;
-#[cfg(test)]
+use serde as _;
 use serde_json as _;
+#[cfg(test)]
+use tempfile as _;
+use thiserror as _;
+use tokio as _;
 
 fn main() -> tauri::Result<()> {
     locket_desktop_lib::run()

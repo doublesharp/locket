@@ -1,15 +1,41 @@
 <script setup lang="ts">
-// Empty shell. Real views (project dashboard, profile switcher, secret
-// metadata list, etc.) land in their own slices on top of this shell.
-// No agent IPC, no reveal/copy, no remote content.
+import { computed } from 'vue';
+
+import AgentUnavailableBanner from './components/AgentUnavailableBanner.vue';
+import { useAgent } from './composables/useAgent';
+
+const { status, error, loading } = useAgent();
+
+const lockLabel = computed<string>(() => {
+  if (loading.value && status.value === null && error.value === null) {
+    return 'Connecting to agent…';
+  }
+  if (status.value === null) {
+    return 'Vault status unavailable';
+  }
+  switch (status.value.lock_state) {
+    case 'unlocked':
+      return 'Vault unlocked';
+    case 'locked':
+      return 'Vault locked';
+    case 'unknown':
+      return 'Vault status unknown';
+    default:
+      return 'Vault status unknown';
+  }
+});
 </script>
 
 <template>
   <main class="locket-shell">
     <header class="locket-shell__header">
       <h1>Locket</h1>
-      <p class="locket-shell__state">vault status: pending agent connection</p>
+      <p class="locket-shell__state">
+        {{ lockLabel }}
+      </p>
     </header>
+
+    <AgentUnavailableBanner v-if="error" :error="error" />
   </main>
 </template>
 
@@ -28,9 +54,11 @@ body {
 .locket-shell {
   min-height: 100vh;
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
   padding: 2rem;
+  gap: 1.5rem;
 }
 
 .locket-shell__header {
