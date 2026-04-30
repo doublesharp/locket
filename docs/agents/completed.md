@@ -194,6 +194,7 @@ Slices that have merged to `main` and verified. Open work tracked in
 - [x] team-invite-revoke: Added local-first team invite revocation.
 - [x] passkey-remove-user-verification: Required local verification before passkey
   removal.
+- [x] invite-issue: Team invite creation now prints the issuing device fingerprint.
 
 ## Full Spec Coverage TODO — App/UI
 
