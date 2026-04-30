@@ -363,8 +363,22 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
   shipped. Remaining: `locket env inspect` enhancements and env-layering /
   override-mode docs.
 - [ ] VS Code extension backed by the local agent
-  (`docs/specs/integrations.md:39-65`); extension never writes audit
-  directly.
+  (`docs/specs/integrations.md:39-65`). Extension never writes audit
+  directly; everything goes through agent RPCs. Decomposed below;
+  later subtasks depend on `vscode-ext-scaffold`.
+  - [ ] **subtask** — vscode-ext-scaffold: `extensions/vscode/`
+    (out-of-tree TS) project skeleton with build/lint/test scripts.
+  - [ ] **subtask** — vscode-agent-client: TypeScript client that
+    speaks the agent socket protocol; surface
+    `AgentUnavailable`/`ProtocolError` distinctly. Pre-req:
+    `vscode-ext-scaffold`, `agent-socket-server`.
+  - [ ] **subtask** — vscode-status: status-bar element subscribed
+    to `SubscribeStatus`. Pre-req: `vscode-agent-client`,
+    `agent-subscribe-status`.
+  - [ ] **subtask** — vscode-ide-env-session: terminal injection of
+    `LOCKET_IDE_ENV_SESSION` and the agent-socket consumer side
+    that resolves it. Pre-req: `vscode-agent-client`,
+    `env-source-ide` subtask.
 - [~] Automation-client flows. Public metadata storage, allowed
   action/policy fields, nonce primitives, and CLI metadata are in.
   Remaining: private-key storage and challenge-response authentication
