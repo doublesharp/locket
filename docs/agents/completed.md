@@ -127,6 +127,8 @@ Slices that have merged to `main` and verified. Open work tracked in
   the bundle's project matches the cwd; unknown-project stays metadata-only.
 - [x] supply-chain-exception-ledger: Supply-chain exceptions now have a checked ledger
   and fail the gate when missing or expired.
+- [x] env-inspect-layers: Environment inspection now reports resolved external layers
+  and final metadata-only decisions. External file values stay out of command output.
 
 ## Full Spec Coverage TODO — Security/Recovery/Team
 
