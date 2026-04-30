@@ -95,6 +95,184 @@ fn recovery_restore_recovers_master_key_from_envelope() -> Result<(), Box<dyn st
 }
 
 #[test]
+fn recovery_restore_recovers_managed_automation_client_keys()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let automation_keys = Arc::new(MemoryAutomationClientKeyStore::default());
+    let mut context = test_context(&directory);
+    context.automation_client_key_store = automation_keys.clone();
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    run_with_context(
+        Cli::try_parse_from(["locket", "policy", "add", "ci", "--", "cargo", "test"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+
+    let resolved = crate::require_project(&context)?;
+    let (project_id, master_key) = test_project_id_and_master_key(&context)?;
+    let (kdf, mut envelope, code_bytes) =
+        setup_recovery_envelope(&context, &project_id, &master_key)?;
+    let salt = kdf.decode_salt()?;
+    let unwrap_root =
+        locket_crypto::derive_recovery_key_v1(&code_bytes, &salt, kdf.to_crypto_params())?;
+    let os_client_id = "lk_client_recover_os";
+    let file_client_id = "lk_client_recover_file";
+    let revoked_client_id = "lk_client_recover_revoked";
+    let os_client_key = [41_u8; locket_crypto::KEY_LEN];
+    let file_client_key = [42_u8; locket_crypto::KEY_LEN];
+    let revoked_client_key = [43_u8; locket_crypto::KEY_LEN];
+    envelope.entries.push(crate::seal_recovery_envelope_entry(
+        &unwrap_root,
+        &kdf.kdf_profile_id,
+        "automation_client_private_key",
+        os_client_id,
+        &os_client_key,
+    )?);
+    envelope.entries.push(crate::seal_recovery_envelope_entry(
+        &unwrap_root,
+        &kdf.kdf_profile_id,
+        "automation_client_private_key",
+        file_client_id,
+        &file_client_key,
+    )?);
+    envelope.entries.push(crate::seal_recovery_envelope_entry(
+        &unwrap_root,
+        &kdf.kdf_profile_id,
+        "automation_client_private_key",
+        revoked_client_id,
+        &revoked_client_key,
+    )?);
+
+    let mut store = locket_store::Store::open(directory.path().join("store.db"))?;
+    insert_recovery_automation_client(
+        &mut store,
+        &project_id,
+        os_client_id,
+        "managed_os",
+        "os-keychain",
+        None,
+    )?;
+    insert_recovery_automation_client(
+        &mut store,
+        &project_id,
+        file_client_id,
+        "managed_file",
+        "wrapped-local-file",
+        None,
+    )?;
+    insert_recovery_automation_client(
+        &mut store,
+        &project_id,
+        revoked_client_id,
+        "managed_revoked",
+        "os-keychain",
+        Some(10_000),
+    )?;
+    drop(store);
+
+    context.key_store.delete_master_key(&project_id)?;
+    let mut recover_output = Vec::new();
+    crate::restore_from_recovery_code(
+        &context,
+        &mut recover_output,
+        &resolved,
+        &kdf,
+        &envelope,
+        &code_bytes,
+        false,
+    )?;
+
+    assert_eq!(*context.key_store.load_master_key(&project_id)?, master_key);
+    assert_eq!(automation_keys.load_client_key(os_client_id)?.as_deref(), Some(&os_client_key));
+    assert_eq!(automation_keys.load_client_key(revoked_client_id)?.as_deref(), None);
+    let key_file =
+        directory.path().join("automation-clients").join(format!("{file_client_id}.key"));
+    let key_file_text = fs::read_to_string(&key_file)?;
+    assert!(key_file_text.contains("wrapped_private_key"));
+    assert!(!key_file_text.contains("private_key_material"));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        assert_eq!(fs::metadata(&key_file)?.permissions().mode() & 0o777, 0o600);
+    }
+    let recover_output = String::from_utf8(recover_output)?;
+    assert!(recover_output.contains("recovered: master_key"));
+    assert!(recover_output.contains("recovered: automation_client_private_keys=2 skipped=1"));
+
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let metadata: String = store.connection().query_row(
+        "SELECT metadata_json FROM audit_log WHERE action = 'RECOVER' ORDER BY sequence DESC LIMIT 1",
+        [],
+        |row| row.get(0),
+    )?;
+    let metadata: serde_json::Value = serde_json::from_str(&metadata)?;
+    assert_eq!(
+        metadata["restored_entry_kinds"],
+        serde_json::json!(["master_key", "automation_client_private_key"])
+    );
+    assert_eq!(metadata["restored_entry_counts"]["master_key"], 1);
+    assert_eq!(metadata["restored_entry_counts"]["automation_client_private_key"], 2);
+    assert_eq!(metadata["restored_entry_counts"]["automation_client_private_key_skipped"], 1);
+    Ok(())
+}
+
+fn insert_recovery_automation_client(
+    store: &mut locket_store::Store,
+    project_id: &str,
+    client_id: &str,
+    name: &str,
+    storage: &str,
+    revoked_at: Option<i64>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let client = locket_store::AutomationClientRecord {
+        id: client_id.to_owned(),
+        project_id: project_id.to_owned(),
+        name: name.to_owned(),
+        public_key: vec![7; 32],
+        fingerprint: format!("fingerprint-{client_id}"),
+        storage: storage.to_owned(),
+        allowed_actions: vec!["run-policy".to_owned()],
+        allowed_policies: vec!["ci".to_owned()],
+        created_at: 1_000,
+        last_used_at: None,
+        revoked_at,
+    };
+    let keychain_service =
+        (storage == "os-keychain").then(|| "dev.0xdoublesharp.locket".to_owned());
+    let keychain_account =
+        (storage == "os-keychain").then(|| format!("automation-client:{client_id}"));
+    let local_path_hash = (storage == "wrapped-local-file").then(|| "path-hash".to_owned());
+    let metadata_json = match local_path_hash.as_deref() {
+        Some(path_hash) => serde_json::json!({
+            "schema_version": 1,
+            "storage": storage,
+            "local_path_hash": path_hash,
+        }),
+        None => serde_json::json!({
+            "schema_version": 1,
+            "storage": storage,
+        }),
+    };
+    let reference = locket_store::AutomationClientPrivateKeyRefRecord {
+        client_id: client_id.to_owned(),
+        storage: storage.to_owned(),
+        keychain_service,
+        keychain_account,
+        local_path_hash: local_path_hash.clone(),
+        metadata_json: metadata_json.to_string(),
+        created_at: 1_000,
+        updated_at: 1_000,
+    };
+    store.insert_automation_client_with_private_key_ref(&client, Some(&reference))?;
+    Ok(())
+}
+
+#[test]
 fn recovery_restore_validation_failure_writes_no_recover_audit()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempdir()?;

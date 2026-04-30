@@ -1,7 +1,9 @@
-use locket_crypto::{KeyPurpose, derive_recovery_key_v1, open_recovery_entry_v1};
+use data_encoding::BASE64URL_NOPAD;
+use locket_crypto::{KeyPurpose, derive_recovery_key_v1, open_recovery_entry_v1, wrap_dek_v1};
 use locket_platform::{
     RecoveryEnvelope, RecoveryEnvelopeEntry, RecoveryKdfToml, load_recovery_envelope,
-    load_recovery_kdf_toml, save_recovery_envelope, save_recovery_kdf_toml,
+    load_recovery_kdf_toml, save_recovery_envelope, save_recovery_kdf_toml, secure_directory,
+    write_user_only_file,
 };
 use locket_store::AuditWrite;
 use serde_json::json;
@@ -16,6 +18,9 @@ use crate::{
     load_project_key, metadata_invalid_error, now_unix_nanos, open_store, recovery_code_decode,
     require_project, seal_recovery_envelope_entry,
 };
+
+const AUTOMATION_CLIENT_PRIVATE_KEY_ENTRY_KIND: &str = "automation_client_private_key";
+const AUTOMATION_CLIENT_PRIVATE_KEY_PREFIX: &str = "automation_client_private_key:";
 
 pub fn recover_command(
     context: &RuntimeContext,
@@ -129,7 +134,7 @@ pub fn restore_from_recovery_code(
         .decode_salt()
         .map_err(|error| metadata_invalid_error(format!("recovery kdf salt: {error}")))?;
     let unwrap_root = derive_recovery_key_v1(code_bytes, &salt, kdf.to_crypto_params())?;
-    let mut restored = 0usize;
+    let mut restored = RecoveryRestoreSummary::default();
     for entry in &envelope.entries {
         if entry.entry_kind != "master_key" {
             continue;
@@ -151,23 +156,192 @@ pub fn restore_from_recovery_code(
         let mut master_key = zeroize::Zeroizing::new([0_u8; locket_crypto::KEY_LEN]);
         master_key.copy_from_slice(&plaintext);
         context.key_store.store_master_key(project_id, &master_key)?;
-        restored += 1;
+        restored.master_keys += 1;
     }
-    if restored == 0 {
+    if restored.master_keys == 0 {
         return Err(metadata_invalid_error("no master_key entries found in recovery envelope"));
     }
+    restore_automation_client_private_keys(
+        context,
+        resolved,
+        kdf,
+        envelope,
+        &unwrap_root,
+        &mut restored,
+    )?;
     write_recover_audit(
         context,
         resolved,
         kdf,
         envelope,
-        restored,
+        &restored,
         force,
         force_verification.as_ref(),
     )?;
     writeln!(output, "recovered: master_key")?;
+    if restored.automation_client_private_keys > 0
+        || restored.skipped_automation_client_private_keys > 0
+    {
+        writeln!(
+            output,
+            "recovered: automation_client_private_keys={} skipped={}",
+            restored.automation_client_private_keys,
+            restored.skipped_automation_client_private_keys
+        )?;
+    }
     writeln!(output, "metadata_only: yes")?;
     Ok(())
+}
+
+#[derive(Default)]
+struct RecoveryRestoreSummary {
+    master_keys: usize,
+    automation_client_private_keys: usize,
+    skipped_automation_client_private_keys: usize,
+}
+
+fn restore_automation_client_private_keys(
+    context: &RuntimeContext,
+    resolved: &ResolvedProject,
+    kdf: &RecoveryKdfToml,
+    envelope: &RecoveryEnvelope,
+    unwrap_root: &locket_crypto::KeyBytes,
+    restored: &mut RecoveryRestoreSummary,
+) -> Result<(), CliError> {
+    let project_id = resolved.config.project_id.as_str();
+    let store = open_store(context)?;
+    for entry in &envelope.entries {
+        let Some(client_id) = automation_client_id_from_recovery_entry(entry) else {
+            continue;
+        };
+        let Some(client) = store.get_automation_client(project_id, client_id)? else {
+            restored.skipped_automation_client_private_keys += 1;
+            continue;
+        };
+        if client.revoked_at.is_some() {
+            restored.skipped_automation_client_private_keys += 1;
+            continue;
+        }
+        let Some(reference) = store.get_automation_client_private_key_ref(&client.id)? else {
+            restored.skipped_automation_client_private_keys += 1;
+            continue;
+        };
+        let plaintext = match open_recovery_entry_v1(
+            unwrap_root,
+            &kdf.kdf_profile_id,
+            &entry.entry_kind,
+            &entry.entry_id,
+            &entry.nonce,
+            &entry.ciphertext,
+        ) {
+            Ok(plaintext) => plaintext,
+            Err(_) => {
+                restored.skipped_automation_client_private_keys += 1;
+                continue;
+            }
+        };
+        if plaintext.len() != locket_crypto::KEY_LEN {
+            restored.skipped_automation_client_private_keys += 1;
+            continue;
+        }
+        let mut private_key = zeroize::Zeroizing::new([0_u8; locket_crypto::KEY_LEN]);
+        private_key.copy_from_slice(&plaintext);
+        if restore_automation_client_private_key(
+            context,
+            &store,
+            resolved,
+            &reference,
+            &private_key,
+        )
+        .is_ok()
+        {
+            restored.automation_client_private_keys += 1;
+        } else {
+            restored.skipped_automation_client_private_keys += 1;
+        }
+    }
+    Ok(())
+}
+
+fn automation_client_id_from_recovery_entry(entry: &RecoveryEnvelopeEntry) -> Option<&str> {
+    if entry.entry_kind == AUTOMATION_CLIENT_PRIVATE_KEY_ENTRY_KIND {
+        return Some(entry.entry_id.as_str());
+    }
+    entry.entry_kind.strip_prefix(AUTOMATION_CLIENT_PRIVATE_KEY_PREFIX)
+}
+
+fn restore_automation_client_private_key(
+    context: &RuntimeContext,
+    store: &locket_store::Store,
+    resolved: &ResolvedProject,
+    reference: &locket_store::AutomationClientPrivateKeyRefRecord,
+    private_key: &locket_crypto::KeyBytes,
+) -> Result<(), CliError> {
+    match reference.storage.as_str() {
+        "os-keychain" => {
+            context
+                .automation_client_key_store
+                .store_client_key(&reference.client_id, private_key)?;
+            Ok(())
+        }
+        "wrapped-local-file" => restore_wrapped_local_client_key(
+            context,
+            store,
+            resolved,
+            &reference.client_id,
+            private_key,
+        ),
+        _ => Err(metadata_invalid_error("unsupported automation client private-key storage")),
+    }
+}
+
+fn restore_wrapped_local_client_key(
+    context: &RuntimeContext,
+    store: &locket_store::Store,
+    resolved: &ResolvedProject,
+    client_id: &str,
+    private_key: &locket_crypto::KeyBytes,
+) -> Result<(), CliError> {
+    let path = automation_client_key_path(context, client_id)?;
+    let parent = path.parent().ok_or_else(|| crate::corrupt_db_error("invalid client key path"))?;
+    secure_directory(parent)?;
+    let project_key = load_project_key(
+        context,
+        store,
+        resolved.config.project_id.as_str(),
+        KeyPurpose::ProjectMetadata,
+    )?;
+    let aad = automation_client_private_key_aad(resolved.config.project_id.as_str(), client_id);
+    let wrapped_key = wrap_dek_v1(&project_key, private_key, &aad)?;
+    let file = json!({
+        "schema_version": 1,
+        "algorithm": "xchacha20poly1305-key-wrap-v1",
+        "project_id": resolved.config.project_id.as_str(),
+        "client_id": client_id,
+        "wrapped_private_key": BASE64URL_NOPAD.encode(&wrapped_key),
+    });
+    let contents = serde_json::to_vec_pretty(&file)?;
+    write_user_only_file(&path, &contents)?;
+    Ok(())
+}
+
+fn automation_client_key_path(
+    context: &RuntimeContext,
+    client_id: &str,
+) -> Result<PathBuf, CliError> {
+    let parent = context.store_path.parent().ok_or_else(|| {
+        crate::corrupt_db_error("could not resolve automation client key directory")
+    })?;
+    Ok(parent.join("automation-clients").join(format!("{client_id}.key")))
+}
+
+fn automation_client_private_key_aad(project_id: &str, client_id: &str) -> Vec<u8> {
+    let mut aad = Vec::new();
+    aad.extend_from_slice(b"locket-automation-client-private-key-v1");
+    aad.extend_from_slice(project_id.as_bytes());
+    aad.push(0);
+    aad.extend_from_slice(client_id.as_bytes());
+    aad
 }
 
 fn force_recovery_user_verification(
@@ -294,7 +468,7 @@ fn write_recover_audit(
     resolved: &ResolvedProject,
     kdf: &RecoveryKdfToml,
     envelope: &RecoveryEnvelope,
-    restored_master_keys: usize,
+    restored: &RecoveryRestoreSummary,
     force: bool,
     user_verification: Option<&UserVerificationAudit>,
 ) -> Result<(), CliError> {
@@ -304,6 +478,10 @@ fn write_recover_audit(
         load_project_key(context, &store, resolved.config.project_id.as_str(), KeyPurpose::Audit)?;
     let envelope_bytes = envelope.serialize()?;
     let envelope_checksum = format_hex(&Sha256::digest(&envelope_bytes));
+    let mut restored_entry_kinds = vec!["master_key"];
+    if restored.automation_client_private_keys > 0 {
+        restored_entry_kinds.push("automation_client_private_key");
+    }
     let mut metadata = json!({
         "schema_version": 1,
         "action": "RECOVER",
@@ -312,9 +490,11 @@ fn write_recover_audit(
         "project_id": resolved.config.project_id.as_str(),
         "kdf_profile_id": &kdf.kdf_profile_id,
         "envelope_checksum_sha256": envelope_checksum,
-        "restored_entry_kinds": ["master_key"],
+        "restored_entry_kinds": restored_entry_kinds,
         "restored_entry_counts": {
-            "master_key": restored_master_keys,
+            "master_key": restored.master_keys,
+            "automation_client_private_key": restored.automation_client_private_keys,
+            "automation_client_private_key_skipped": restored.skipped_automation_client_private_keys,
         },
         "force": force,
     });
