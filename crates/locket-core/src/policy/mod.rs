@@ -283,4 +283,255 @@ ttl = "{value}"
             );
         }
     }
+
+    #[test]
+    fn rejects_missing_command_spec() {
+        let result = PolicyDocument::from_toml_str(
+            r#"[commands.dev]
+required_secrets = ["DATABASE_URL"]
+"#,
+        );
+        assert_eq!(
+            result,
+            Err(PolicyParseError::MissingCommandSpec { command: "dev".to_owned() })
+        );
+    }
+
+    #[test]
+    fn rejects_empty_shell_string() {
+        let result = PolicyDocument::from_toml_str(
+            r#"[commands.dev]
+shell = "   "
+"#,
+        );
+        assert_eq!(result, Err(PolicyParseError::EmptyShell { command: "dev".to_owned() }));
+    }
+
+    #[test]
+    fn rejects_invalid_env_mode() {
+        let result = PolicyDocument::from_toml_str(
+            r#"[commands.dev]
+argv = ["pnpm"]
+env_mode = "garbage"
+"#,
+        );
+        assert_eq!(
+            result,
+            Err(PolicyParseError::InvalidEnvMode {
+                command: "dev".to_owned(),
+                value: "garbage".to_owned(),
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_override_behavior() {
+        let result = PolicyDocument::from_toml_str(
+            r#"[commands.dev]
+argv = ["pnpm"]
+override = "garbage"
+"#,
+        );
+        assert_eq!(
+            result,
+            Err(PolicyParseError::InvalidOverrideBehavior {
+                command: "dev".to_owned(),
+                value: "garbage".to_owned(),
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_external_env_source_string() {
+        let result = PolicyDocument::from_toml_str(
+            r#"[commands.dev]
+argv = ["pnpm"]
+external_env_sources = ["ftp"]
+"#,
+        );
+        assert_eq!(
+            result,
+            Err(PolicyParseError::InvalidExternalEnvSource {
+                command: "dev".to_owned(),
+                value: "ftp".to_owned(),
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_empty_external_env_file_path() {
+        let result = PolicyDocument::from_toml_str(
+            r#"[commands.dev]
+argv = ["pnpm"]
+external_env_sources = [{ file = "" }]
+"#,
+        );
+        assert_eq!(
+            result,
+            Err(PolicyParseError::EmptyExternalEnvFile { command: "dev".to_owned() })
+        );
+    }
+
+    #[test]
+    fn allowed_secrets_is_sorted_union_of_required_and_optional() -> Result<(), Box<dyn Error>> {
+        let document = PolicyDocument::from_toml_str(
+            r#"[commands.api]
+argv = ["pnpm", "dev"]
+required_secrets = ["ZEBRA_KEY", "API_TOKEN"]
+optional_secrets = ["OPENAI_KEY", "BETA_FLAG"]
+"#,
+        )?;
+        let policy = document.commands.get("api").ok_or("missing api policy")?;
+        assert_eq!(
+            policy.allowed_secrets.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            ["API_TOKEN", "BETA_FLAG", "OPENAI_KEY", "ZEBRA_KEY"]
+        );
+        assert_eq!(
+            policy.required_secrets.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            ["ZEBRA_KEY", "API_TOKEN"]
+        );
+        assert_eq!(
+            policy.optional_secrets.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            ["OPENAI_KEY", "BETA_FLAG"]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn optional_secrets_absent_from_required_are_still_allowed() -> Result<(), Box<dyn Error>> {
+        let document = PolicyDocument::from_toml_str(
+            r#"[commands.api]
+argv = ["server"]
+required_secrets = ["DB_URL"]
+optional_secrets = ["REDIS_URL"]
+"#,
+        )?;
+        let policy = document.commands.get("api").ok_or("missing api")?;
+        let allowed: Vec<_> = policy.allowed_secrets.iter().map(ToString::to_string).collect();
+        assert!(allowed.contains(&"DB_URL".to_owned()));
+        assert!(allowed.contains(&"REDIS_URL".to_owned()));
+        assert_eq!(policy.required_secrets.len(), 1);
+        assert_eq!(policy.optional_secrets.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn confirm_and_require_user_verification_explicit_false_differ_from_absent()
+    -> Result<(), Box<dyn Error>> {
+        let document_absent = PolicyDocument::from_toml_str(
+            r#"[commands.api]
+argv = ["server"]
+"#,
+        )?;
+        let document_explicit = PolicyDocument::from_toml_str(
+            r#"[commands.api]
+argv = ["server"]
+confirm = false
+require_user_verification = false
+"#,
+        )?;
+        let policy_absent = document_absent.commands.get("api").ok_or("missing")?;
+        let policy_explicit = document_explicit.commands.get("api").ok_or("missing")?;
+        assert!(!policy_absent.confirm);
+        assert!(!policy_absent.require_user_verification);
+        assert!(!policy_explicit.confirm);
+        assert!(!policy_explicit.require_user_verification);
+        Ok(())
+    }
+
+    #[test]
+    fn confirm_true_with_require_user_verification_true_parses() -> Result<(), Box<dyn Error>> {
+        let document = PolicyDocument::from_toml_str(
+            r#"[commands.deploy]
+shell = "pnpm deploy"
+required_secrets = ["DEPLOY_TOKEN"]
+confirm = true
+require_user_verification = true
+"#,
+        )?;
+        let policy = document.commands.get("deploy").ok_or("missing deploy")?;
+        assert!(policy.confirm);
+        assert!(policy.require_user_verification);
+        Ok(())
+    }
+
+    #[test]
+    fn ttl_at_exact_maximum_is_accepted() -> Result<(), Box<dyn Error>> {
+        let max_hours = MAX_COMMAND_POLICY_TTL_SECONDS / 3600;
+        let document = PolicyDocument::from_toml_str(&format!(
+            r#"[commands.dev]
+argv = ["pnpm"]
+ttl = "{max_hours}h"
+"#
+        ))?;
+        let policy = document.commands.get("dev").ok_or("missing dev")?;
+        assert_eq!(policy.ttl.as_secs(), MAX_COMMAND_POLICY_TTL_SECONDS);
+        Ok(())
+    }
+
+    #[test]
+    fn document_with_no_commands_section_parses_empty() -> Result<(), Box<dyn Error>> {
+        let document = PolicyDocument::from_toml_str(
+            r#"
+schema_version = 1
+name = "empty"
+"#,
+        )?;
+        assert!(document.commands.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn document_with_multiple_commands_parses_all() -> Result<(), Box<dyn Error>> {
+        let document = PolicyDocument::from_toml_str(
+            r#"
+[commands.dev]
+argv = ["pnpm", "dev"]
+required_secrets = ["DATABASE_URL"]
+
+[commands.test]
+argv = ["pnpm", "test"]
+optional_secrets = ["TEST_API_KEY"]
+
+[commands.deploy]
+shell = "pnpm deploy"
+required_secrets = ["NPM_TOKEN", "DEPLOY_KEY"]
+confirm = true
+"#,
+        )?;
+        assert_eq!(document.commands.len(), 3);
+        let dev = document.commands.get("dev").ok_or("missing dev")?;
+        assert_eq!(dev.required_secrets.len(), 1);
+        let test = document.commands.get("test").ok_or("missing test")?;
+        assert_eq!(test.optional_secrets.len(), 1);
+        assert!(test.required_secrets.is_empty());
+        let deploy = document.commands.get("deploy").ok_or("missing deploy")?;
+        assert!(deploy.confirm);
+        assert_eq!(deploy.required_secrets.len(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn from_str_impl_is_equivalent_to_from_toml_str() -> Result<(), Box<dyn Error>> {
+        let input = r#"[commands.api]
+argv = ["node", "server.js"]
+required_secrets = ["API_KEY"]
+"#;
+        let via_method = PolicyDocument::from_toml_str(input)?;
+        let via_from_str: PolicyDocument = input.parse()?;
+        assert_eq!(via_method, via_from_str);
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_toml_syntax_error() {
+        let result = PolicyDocument::from_toml_str("commands = ][");
+        assert!(matches!(result, Err(PolicyParseError::Toml { .. })));
+    }
+
+    #[test]
+    fn rejects_commands_not_a_table() {
+        let result = PolicyDocument::from_toml_str("commands = 42");
+        assert_eq!(result, Err(PolicyParseError::CommandsMustBeTable));
+    }
 }
