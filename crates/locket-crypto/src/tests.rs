@@ -267,6 +267,169 @@ fn changed_dek_wrap_aad_fails_secret_decryption() -> Result<(), CryptoError> {
     Ok(())
 }
 
+/// Builds the canonical AAD pair for `lk_proj_123/lk_prof_dev/lk_sec_db/DATABASE_URL@v1`.
+fn canonical_secret_aads() -> Result<(Vec<u8>, Vec<u8>), CryptoError> {
+    let value_aad = secret_blob_aad_v1(&SecretBlobAad::new(
+        "lk_proj_123",
+        "lk_prof_dev",
+        "lk_sec_db",
+        "DATABASE_URL",
+        1,
+    ))?;
+    let wrap_aad = key_wrap_aad_v1(&KeyWrapAad::new(
+        "lk_proj_123",
+        "lk_sec_db",
+        Some("lk_prof_dev"),
+        1,
+        KeyWrapPurpose::SecretDek,
+    ))?;
+    Ok((value_aad, wrap_aad))
+}
+
+#[test]
+fn wrong_profile_secret_key_fails_secret_decryption() -> Result<(), CryptoError> {
+    let (value_aad, wrap_aad) = canonical_secret_aads()?;
+    let encrypted =
+        super::encrypt_secret_value_v1(&PROFILE_SECRET_KEY, "secret", &value_aad, &wrap_aad)?;
+    let mut wrong_key = PROFILE_SECRET_KEY;
+    wrong_key[0] ^= 0xff;
+    let result = decrypt_secret_value_v1(&wrong_key, &encrypted, &value_aad, &wrap_aad);
+    assert!(matches!(result, Err(CryptoError::DecryptionFailed)));
+    Ok(())
+}
+
+#[test]
+fn tampered_value_nonce_fails_secret_decryption() -> Result<(), CryptoError> {
+    let (value_aad, wrap_aad) = canonical_secret_aads()?;
+    let mut encrypted =
+        super::encrypt_secret_value_v1(&PROFILE_SECRET_KEY, "secret", &value_aad, &wrap_aad)?;
+    encrypted.value_nonce[0] ^= 0x01;
+    let result =
+        decrypt_secret_value_v1(&PROFILE_SECRET_KEY, &encrypted, &value_aad, &wrap_aad);
+    assert!(matches!(result, Err(CryptoError::DecryptionFailed)));
+    Ok(())
+}
+
+#[test]
+fn tampered_wrap_nonce_fails_dek_unwrap() -> Result<(), CryptoError> {
+    let (value_aad, wrap_aad) = canonical_secret_aads()?;
+    let mut encrypted =
+        super::encrypt_secret_value_v1(&PROFILE_SECRET_KEY, "secret", &value_aad, &wrap_aad)?;
+    encrypted.encrypted_dek[0] ^= 0x01;
+    let result =
+        decrypt_secret_value_v1(&PROFILE_SECRET_KEY, &encrypted, &value_aad, &wrap_aad);
+    assert!(matches!(result, Err(CryptoError::DecryptionFailed)));
+    Ok(())
+}
+
+#[test]
+fn changed_project_id_aad_fails_secret_decryption() -> Result<(), CryptoError> {
+    let (value_aad, wrap_aad) = canonical_secret_aads()?;
+    let changed_value_aad = secret_blob_aad_v1(&SecretBlobAad::new(
+        "lk_proj_999",
+        "lk_prof_dev",
+        "lk_sec_db",
+        "DATABASE_URL",
+        1,
+    ))?;
+    let encrypted =
+        super::encrypt_secret_value_v1(&PROFILE_SECRET_KEY, "secret", &value_aad, &wrap_aad)?;
+    let result =
+        decrypt_secret_value_v1(&PROFILE_SECRET_KEY, &encrypted, &changed_value_aad, &wrap_aad);
+    assert!(matches!(result, Err(CryptoError::DecryptionFailed)));
+    Ok(())
+}
+
+#[test]
+fn changed_secret_id_aad_fails_secret_decryption() -> Result<(), CryptoError> {
+    let (value_aad, wrap_aad) = canonical_secret_aads()?;
+    let changed_value_aad = secret_blob_aad_v1(&SecretBlobAad::new(
+        "lk_proj_123",
+        "lk_prof_dev",
+        "lk_sec_other",
+        "DATABASE_URL",
+        1,
+    ))?;
+    let encrypted =
+        super::encrypt_secret_value_v1(&PROFILE_SECRET_KEY, "secret", &value_aad, &wrap_aad)?;
+    let result =
+        decrypt_secret_value_v1(&PROFILE_SECRET_KEY, &encrypted, &changed_value_aad, &wrap_aad);
+    assert!(matches!(result, Err(CryptoError::DecryptionFailed)));
+    Ok(())
+}
+
+#[test]
+fn changed_secret_name_aad_fails_secret_decryption() -> Result<(), CryptoError> {
+    let (value_aad, wrap_aad) = canonical_secret_aads()?;
+    let changed_value_aad = secret_blob_aad_v1(&SecretBlobAad::new(
+        "lk_proj_123",
+        "lk_prof_dev",
+        "lk_sec_db",
+        "API_KEY",
+        1,
+    ))?;
+    let encrypted =
+        super::encrypt_secret_value_v1(&PROFILE_SECRET_KEY, "secret", &value_aad, &wrap_aad)?;
+    let result =
+        decrypt_secret_value_v1(&PROFILE_SECRET_KEY, &encrypted, &changed_value_aad, &wrap_aad);
+    assert!(matches!(result, Err(CryptoError::DecryptionFailed)));
+    Ok(())
+}
+
+#[test]
+fn changed_value_version_aad_fails_secret_decryption() -> Result<(), CryptoError> {
+    let (value_aad, wrap_aad) = canonical_secret_aads()?;
+    let changed_value_aad = secret_blob_aad_v1(&SecretBlobAad::new(
+        "lk_proj_123",
+        "lk_prof_dev",
+        "lk_sec_db",
+        "DATABASE_URL",
+        2,
+    ))?;
+    let encrypted =
+        super::encrypt_secret_value_v1(&PROFILE_SECRET_KEY, "secret", &value_aad, &wrap_aad)?;
+    let result =
+        decrypt_secret_value_v1(&PROFILE_SECRET_KEY, &encrypted, &changed_value_aad, &wrap_aad);
+    assert!(matches!(result, Err(CryptoError::DecryptionFailed)));
+    Ok(())
+}
+
+#[test]
+fn changed_wrap_project_id_aad_fails_dek_unwrap() -> Result<(), CryptoError> {
+    let (value_aad, wrap_aad) = canonical_secret_aads()?;
+    let changed_wrap_aad = key_wrap_aad_v1(&KeyWrapAad::new(
+        "lk_proj_999",
+        "lk_sec_db",
+        Some("lk_prof_dev"),
+        1,
+        KeyWrapPurpose::SecretDek,
+    ))?;
+    let encrypted =
+        super::encrypt_secret_value_v1(&PROFILE_SECRET_KEY, "secret", &value_aad, &wrap_aad)?;
+    let result =
+        decrypt_secret_value_v1(&PROFILE_SECRET_KEY, &encrypted, &value_aad, &changed_wrap_aad);
+    assert!(matches!(result, Err(CryptoError::DecryptionFailed)));
+    Ok(())
+}
+
+#[test]
+fn changed_wrap_key_id_aad_fails_dek_unwrap() -> Result<(), CryptoError> {
+    let (value_aad, wrap_aad) = canonical_secret_aads()?;
+    let changed_wrap_aad = key_wrap_aad_v1(&KeyWrapAad::new(
+        "lk_proj_123",
+        "lk_sec_other",
+        Some("lk_prof_dev"),
+        1,
+        KeyWrapPurpose::SecretDek,
+    ))?;
+    let encrypted =
+        super::encrypt_secret_value_v1(&PROFILE_SECRET_KEY, "secret", &value_aad, &wrap_aad)?;
+    let result =
+        decrypt_secret_value_v1(&PROFILE_SECRET_KEY, &encrypted, &value_aad, &changed_wrap_aad);
+    assert!(matches!(result, Err(CryptoError::DecryptionFailed)));
+    Ok(())
+}
+
 #[test]
 fn secret_values_reject_nul_bytes_before_encryption_or_fingerprinting() {
     let encrypted =
