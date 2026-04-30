@@ -166,6 +166,8 @@ Slices that have merged to `main` and verified. Open work tracked in
 - [x] bundle-age-encryption: Sealed bundle export now writes an encrypted bundle payload
   using age recipients. Verification handles the encrypted container structurally until
   local device private keys land.
+- [x] passkey-rp-id-policy: Passkey credentials now persist and display their WebAuthn
+  relying party metadata.
 
 ## Full Spec Coverage TODO — App/UI
 
