@@ -249,6 +249,8 @@ skill set fits a leaf better.
 - [ ] LocalUserVerifier Windows Hello backend.
 - [ ] LocalUserVerifier Linux Secret Service / hardware-key-presence
   backend.
+- [~] [acda32e4] branch agent-acda32e4/passkey-rp-id-policy, worktree .worktrees/agent-acda32e4-passkey-rp-id-policy; Passkey RP ID policy: persisted RP ID metadata with default and display coverage (`docs/specs/crypto.md`).
+
 ### App/UI
 
 Campaign plan: `docs/superpowers/specs/2026-04-29-desktop-ui-campaign.md`.
