@@ -412,6 +412,7 @@ mod history_purge_import;
 mod init_template_device;
 mod parsers;
 mod passphrase_recovery_hooks;
+mod proptest_device_descriptor;
 mod proptest_dotenv;
 mod policy_profile_project;
 mod recovery;
