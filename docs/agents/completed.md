@@ -160,6 +160,16 @@ Slices that have merged to `main` and verified. Open work tracked in
   agent on demand before agent-backed execution paths.
 - [x] pre-migration-backups: schema initialization now records
   pre-migration backup metadata for doctor reporting.
+- [x] policy-index-refresh: policy authoring mutations refresh the
+  SQLite command-policy index before returning.
+- [x] policy-edit-command: editor-backed policy edits validate saved
+  TOML before replacing the active policy row.
+- [x] lk-resolve-rpc: `ResolveReference` parses `lk://` references,
+  validates grants, and returns typed resolution errors.
+- [x] automation-private-key-storage: Locket-managed automation client
+  private keys are stored by metadata-only key references.
+- [x] clipboard-ttl-clear: clipboard copies schedule TTL clearing and
+  clear only when the clipboard still contains the same value.
 
 ## Full Spec Coverage TODO — Security/Recovery/Team
 
@@ -212,6 +222,12 @@ Slices that have merged to `main` and verified. Open work tracked in
   role constraints with typed denials.
 - [x] imported-audit-chain-verifier: imported audit chains now validate
   monotonic sequence, prev-HMAC linkage, and checkpoint HMAC structure.
+- [x] bundle-verify-cmd: bundle verification now fails typed on
+  malformed bundles and unsupported schema versions.
+- [x] team-invite-accept: invite acceptance verifies signature,
+  fingerprint, expiry, replay state, and safety-word confirmation.
+- [x] team-dangerous-user-verification: dangerous team/device actions
+  now require fresh local user verification.
 
 ## Full Spec Coverage TODO — App/UI
 
@@ -312,6 +328,22 @@ Slices that have merged to `main` and verified. Open work tracked in
   secret rows ordered by source precedence.
 - [x] agent-list-versions: The agent protocol now returns metadata-only current,
   deprecated, and purged version rows with rotation metadata.
+- [x] privacy-rendering-sweep: desktop status and labels now use privacy aliases
+  instead of raw project/profile names when redaction is enabled.
+- [x] tray-menu-actions: tray menu actions for open, lock, unlock,
+  profile switching, policy run, and scan route through the agent.
+- [x] agent-list-audit: the agent exposes filtered metadata-only audit
+  rows with audit-chain status.
+- [x] agent-verify-audit: the agent exposes structural audit HMAC
+  verification results.
+- [x] agent-config-read-write: settings RPCs cover privacy, unlock TTL,
+  verification policy, and dangerous-profile configuration.
+- [x] desktop-backup-recovery-view: BackupRecovery view covers
+  export, import, verify, and recovery-rotate surfaces.
+- [x] search-devices-members: desktop device/member metadata can be
+  filtered without exposing secret values.
+- [x] vscode-reveal-webview: VS Code exposes a gated short-lived reveal
+  webview for allowed references.
 
 ## Full Spec Coverage TODO — Code Health and Bug Fixes
 
@@ -472,6 +504,8 @@ Slices that have merged to `main` and verified. Open work tracked in
 - [x] **subtask** — policy-user-verification: `require_user_verification` calls the user-verification gate before allowing the command.
 - [x] **subtask** — policy-shell-vs-argv: parser distinguishes `argv = [...]` vs `shell = "..."`; evaluator dispatches on `CommandSpec`.
 - [x] **subtask** — proptest-dotenv: `.env` parser round-trip and rejection invariants in `crates/locket-cli/src/tests/proptest_dotenv.rs`.
+- [x] vscode-vsix-package: VS Code extension packaging now builds a VSIX
+  artifact and release digest output.
 
 ## Spec-by-Spec Completion Gates
 

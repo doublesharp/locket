@@ -102,12 +102,9 @@ skill set fits a leaf better.
 - [~] Policy command surface: `policy add`, `policy allow`,
   `policy require`, `policy edit`, `policy delete`, `policy doctor`
   (`docs/specs/policy.md:5-35`). Remaining:
-  - [~] [acda32e4] branch agent-acda32e4/policy-index-refresh, worktree .worktrees/agent-acda32e4-policy-index-refresh; **subtask** — policy-index-refresh: refresh SQLite command policy index after authoring mutations.
-  - [~] [acda32e4] branch agent-acda32e4/policy-edit-command, worktree .worktrees/agent-acda32e4-policy-edit-command; **subtask** — policy-edit-command: editor-backed policy edit with saved TOML validation.
 - [ ] Resolve `lk://` references through the agent
   (`docs/specs/runtime.md:123-155`). All subtasks depend on
   `lk-resolve-rpc`.
-  - [~] [acda32e4] branch agent-acda32e4/lk-resolve-rpc, worktree .worktrees/agent-acda32e4-lk-resolve-rpc; **subtask** — lk-resolve-rpc: `ResolveReference` handler parses `lk://`, looks up the secret, returns the value or a typed error. Pre-req: `agent-unlock-cache`. **Critical path.**
   - [ ] **subtask** — lk-resolve-policy-auth: gate by policy
     authorization (resolving caller's policy must allow the target).
   - [ ] **subtask** — lk-resolve-pinned-version: honor pinned
@@ -126,16 +123,12 @@ skill set fits a leaf better.
   - [ ] **subtask** — vscode-ide-env-session: terminal injection of
     `LOCKET_IDE_ENV_SESSION` and the agent-socket consumer side.
     Pre-req: `vscode-agent-client`, `env-source-ide`.
-- [~] [acda32e4] branch agent-acda32e4/automation-private-key-storage, worktree .worktrees/agent-acda32e4-automation-private-key-storage; Automation-client private-key storage for Locket-managed clients (`docs/specs/agent.md:62-79`).
 - [ ] Automation-client challenge-response auth
   (`docs/specs/agent.md:62-79`). Pre-req:
   `automation-private-key-storage`.
 - [ ] Policy TOML — remaining (`docs/specs/policy.md`):
   - [ ] **subtask** — policy-ttls: `ttl` translates to a grant TTL.
     Pre-req: `agent-grant-table`.
-- [~] [90b9f58a] branch agent-90b9f58a/clipboard-ttl-clear, worktree .worktrees/agent-90b9f58a-clipboard-ttl-clear; Clipboard clear-after-TTL only if clipboard still contains the
-  value. Wayland-aware pre-copy warning + `unsupported_reason`
-  shipped; background TTL clearing remains.
 
 ### Security/Recovery/Team
 
@@ -146,7 +139,6 @@ skill set fits a leaf better.
     newer-incoming / divergent / deleted-vs-active matrix with
     `--accept-incoming` / `--accept-local` and interactive resolve.
     Pre-req: `bundle-import-apply`.
-  - [~] [acda32e4] branch agent-acda32e4/bundle-verify-cmd, worktree .worktrees/agent-acda32e4-bundle-verify-cmd; **subtask** — bundle-verify-cmd: structural-only and decryptable paths both exit 0; malformed → `BundleVerificationFailed`; unsupported schema → `ConfigError`. Pre-req: `bundle-age-encryption`.
   - [ ] **subtask** — bundle-include-audit-import: append imported
     audit rows to `imported_audit_chains` with structural
     verification. Pre-req: `bundle-import-apply`.
@@ -156,7 +148,6 @@ skill set fits a leaf better.
 - [~] Team command surfaces (`docs/specs/team-sync-recovery.md:5-110`).
   `team-store-schema`, `team-init-command`, `team-members-list`
   shipped. Remaining:
-  - [~] [acda32e4] branch agent-acda32e4/team-invite-accept, worktree .worktrees/agent-acda32e4-team-invite-accept; **subtask** — team-invite-accept: verify signature, fingerprint, expiry, replay, safety-words display. Pre-req: `team-invite-create`.
 - [ ] Passkey support remaining: platform registration and PRF
   optional key wrapping (`docs/specs/crypto.md:192-218`).
 - [ ] Device descriptors (`lkdev1_` base64url JSON), v1 fingerprint
@@ -178,8 +169,6 @@ skill set fits a leaf better.
 - [~] Local user verification gates. `LocalUserVerifier` and
   `require_user_verification` shipped; `get --reveal/--copy
   --verify-user` enforces. Remaining:
-  - [~] [acda32e4] branch agent-acda32e4/team-dangerous-user-verification, worktree .worktrees/agent-acda32e4-team-dangerous-user-verification; **subtask** — team-dangerous-user-verification: verification sweep for team/device dangerous-profile actions.
-- [~] [acda32e4] branch agent-acda32e4/privacy-rendering-sweep, worktree .worktrees/agent-acda32e4-privacy-rendering-sweep; Privacy-mode rendering across status, context, redaction labels, debug bundles via `privacy_alias` / `privacy_redact_names_enabled`; tray/desktop/editor renderers pending until those crates exist.
 - [ ] Agent/process hardening. `harden-peer-cred`,
   `harden-socket-perms`, `harden-memory-lock`, `harden-zeroize`,
   `harden-doctor-degraded` shipped. Remaining:
@@ -216,7 +205,6 @@ Slices 1+2 shipped (agent client, tray binding, 6 view scaffolds,
     `SubscribeStatus`; replace today's 5 s `agent_status` poll.
     Pre-req: `agent-subscribe-status`. Pairs with
     `desktop-subscribe-status`.
-  - [~] [acda32e4] branch agent-acda32e4/tray-menu-actions, worktree .worktrees/agent-acda32e4-tray-menu-actions; **subtask** — tray-menu-actions: open / lock / unlock / switch profile / run policy / scan, all routed through the agent.
   - [ ] **subtask** — tray-recent-activity: bounded counts/safe
     statuses only. Source from `agent-list-audit`.
 - [ ] Desktop UI campaign — remaining slices:
@@ -239,14 +227,11 @@ Slices 1+2 shipped (agent client, tray binding, 6 view scaffolds,
   - [ ] **subtask** — desktop-tray-reveal-copy: tray context menu
     actions for the selected secret. Pre-req: `tray-menu-actions`,
     `desktop-reveal-modal`, `desktop-clipboard-copy`. Slice 8.
-  - [~] [90b9f58a] branch agent-90b9f58a/agent-list-audit, worktree .worktrees/agent-90b9f58a-agent-list-audit; **subtask** — agent-list-audit: filtered metadata-only audit log RPC with chain status.
-  - [~] [4ab55ee9] branch agent-4ab55ee9/agent-verify-audit, worktree .worktrees/agent-4ab55ee9-agent-verify-audit; **subtask** — agent-verify-audit: RPC returning a structural HMAC check result.
   - [ ] **subtask** — desktop-audit-data: wire `agent-list-audit` +
     `agent-verify-audit` into `AuditLog.vue`. Slice 9.
   - [ ] **subtask** — agent-scan-known-values-impl: real handler.
     Pre-req: `agent-unlock-cache` (matching) + `locket-scan`
     (pattern/entropy fallback). Emit `SCAN` rows.
-  - [~] [90b9f58a] branch agent-90b9f58a/agent-config-read-write, worktree .worktrees/agent-90b9f58a-agent-config-read-write; **subtask** — agent-config-read-write: settings RPCs for privacy, unlock TTL, verification policy, and dangerous-profile.
   - [ ] **subtask** — desktop-settings-data: wire into `Settings.vue`;
     propagate `privacy.redact_names` reactively. Slice 11.
   - [ ] **subtask** — agent-policy-doctor-rpc: RPC exercising
@@ -262,7 +247,6 @@ Slices 1+2 shipped (agent client, tray binding, 6 view scaffolds,
   - [ ] **subtask** — agent-prepare-exec-impl: real `PrepareExec`
     returning resolved env-name allow-list + TTL. Pre-req:
     `policy-ttls`, `agent-resolve-reference-impl`.
-  - [~] [52c592db] branch agent-52c592db/desktop-backup-recovery-view, worktree .worktrees/agent-52c592db-desktop-backup-recovery-view; **subtask** — desktop-backup-recovery-view: `BackupRecovery.vue` — export/import/verify/recovery-rotate. Slice 12b.
   - [ ] **subtask** — desktop-team-invite-view: invite
     issue/accept/revoke + member/device removal. Pre-req:
     `team-invite-*`, invite-ceremony subtasks.
@@ -281,14 +265,12 @@ Slices 1+2 shipped (agent client, tray binding, 6 view scaffolds,
 - [ ] Search/filter UI (`docs/specs/desktop.md`). Each subtask
   renders one surface; never exposes values; pre-req is the
   relevant view's data RPC.
-  - [~] [90b9f58a] branch agent-90b9f58a/search-devices-members, worktree .worktrees/agent-90b9f58a-search-devices-members; **subtask** — search-devices-members
 - [ ] Tray template-image policy: macOS template-image (alpha-mask)
   vs Windows/Linux full-color light/dark variants. Placeholder PNGs
   ship today (`docs/specs/desktop.md`).
 - [ ] Cross-surface error-text parity: CLI / UI / tray / shell /
   VS Code show the same reason and next action per typed error
   (`docs/specs/desktop.md`).
-- [~] [90b9f58a] branch agent-90b9f58a/vscode-reveal-webview, worktree .worktrees/agent-90b9f58a-vscode-reveal-webview; VS Code gated reveal webview with short-lived data (`docs/specs/integrations.md:50-51`).
 
 ### Code Health and Bug Fixes
 
@@ -329,11 +311,8 @@ Re-verify file:line references before editing — they drift. Severity:
   strict-mode hooks, cargo-vet, unsafe inventory, SBOM, exception
   ledger, and provenance policy verifier exist. Remaining: auditable
   builds and signing.
-- [~] [4ab55ee9] branch agent-4ab55ee9/vscode-vsix-package, worktree .worktrees/agent-4ab55ee9-vscode-vsix-package; VS Code extension VSIX package builder with release digest output.
-  Offline signed update-manifest verifier + typed
-  `UpdateManifestInvalid` shipped. Remaining: package builders +
-  signing for Homebrew / signed macOS pkg / Windows MSI / Linux
-  package / VS Code extension (`docs/specs/operations.md:27-53`).
+- [ ] Package builders and signing for Homebrew, signed macOS pkg,
+  Windows MSI, and Linux packages (`docs/specs/operations.md:27-53`).
 - [ ] Cold-start budgets (`docs/specs/performance.md`). Each subtask
   adds one bench plus a regression that fails the budget:
   - [ ] **subtask** — perf-agent-idle-memory: ≤50 MB RSS after
