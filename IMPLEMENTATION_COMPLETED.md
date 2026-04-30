@@ -251,6 +251,8 @@ Slices that have merged to `main` and verified. Open work tracked in
   permissive secret fields and do not infer allowed secrets from env settings.
 - [x] **subtask** — mutation-audit-tamper: store tests mutate appended
   audit rows and chain links, then assert audit verification fails closed.
+- [x] **subtask** — tests-typed-errors: per-variant exit-code regression
+  for all `LocketError` variants.
 
 ## Spec-by-Spec Completion Gates
 
