@@ -158,10 +158,7 @@ skill set fits a leaf better.
     newer-incoming / divergent / deleted-vs-active matrix with
     `--accept-incoming` / `--accept-local` and interactive resolve.
     Pre-req: `bundle-import-apply`.
-  - [ ] **subtask** — bundle-verify-cmd: structural-only and
-    decryptable paths both exit 0; malformed →
-    `BundleVerificationFailed`; unsupported schema → `ConfigError`.
-    Pre-req: `bundle-age-encryption`.
+  - [~] [acda32e4] branch agent-acda32e4/bundle-verify-cmd, worktree .worktrees/agent-acda32e4-bundle-verify-cmd; **subtask** — bundle-verify-cmd: structural-only and decryptable paths both exit 0; malformed → `BundleVerificationFailed`; unsupported schema → `ConfigError`. Pre-req: `bundle-age-encryption`.
   - [ ] **subtask** — bundle-include-audit-import: append imported
     audit rows to `imported_audit_chains` with structural
     verification. Pre-req: `bundle-import-apply`.
