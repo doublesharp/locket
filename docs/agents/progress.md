@@ -297,9 +297,7 @@ Slices 1+2 shipped (agent client, tray binding, 6 view scaffolds,
   - [ ] **subtask** — desktop-tray-reveal-copy: tray context menu
     actions for the selected secret. Pre-req: `tray-menu-actions`,
     `desktop-reveal-modal`, `desktop-clipboard-copy`. Slice 8.
-  - [ ] **subtask** — desktop-tray-notifications: route the four
-    `TrayNotificationKind` cases via `passive_notification`; honor
-    DND. Names and values never leak.
+  - [~] [52c592db] branch agent-52c592db/desktop-tray-notifications, worktree .worktrees/agent-52c592db-desktop-tray-notifications; **subtask** — desktop-tray-notifications: route the four `TrayNotificationKind` cases via `passive_notification`; honor DND. Names and values never leak.
   - [ ] **subtask** — agent-list-audit: RPC with filters (action,
     profile, status, time range) returning `AuditLogRow` shape +
     `hmac_ok` / `first_break_sequence` chain status.
