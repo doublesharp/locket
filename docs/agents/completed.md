@@ -68,6 +68,8 @@ Slices that have merged to `main` and verified. Open work tracked in
 - [x] Store/schema coverage for the full required-tables set
   (automation/teams/passkey/imported-audit tables + indexes/triggers,
   with `SCHEMA_MIGRATE` audit on migrations).
+- [x] scan-severity-policy: Scan severity now follows project policy for provider-token
+  and .env findings.
 
 ## Full Spec Coverage TODO — Runtime/DX
 
