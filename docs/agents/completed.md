@@ -214,6 +214,9 @@ Slices that have merged to `main` and verified. Open work tracked in
   project dashboard with status, health, and navigation into detail views.
 - [x] tauri-capabilities-per-view: Desktop Tauri commands now have explicit
   app-local capability coverage.
+- [x] profile-grant-invalidation: Shell hook install now validates the active profile's
+  durable grant before proceeding. Switching profiles requires a matching grant before
+  the hook can recreate live access.
 
 ## Full Spec Coverage TODO — Code Health and Bug Fixes
 
