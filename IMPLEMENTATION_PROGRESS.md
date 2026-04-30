@@ -570,10 +570,11 @@ the spec already covers. Closed slices land in
 - [ ] Invite issuer/recipient trust ceremony
   (`docs/specs/team-sync-recovery.md:56-69`). Subtasks below; later
   ones depend on `invite-codec`.
-  - [ ] **subtask** — invite-codec: signed-invite struct (issuer pub
+  - [~] [e7389a73] **subtask** — invite-codec: signed-invite struct (issuer pub
     keys, recipient fingerprint, expiry, nonce, role, profiles,
     project) plus encode/decode/verify in
     `crates/locket-core/src/invite.rs`.
+    Claim: branch agent-e7389a73/invite-codec, worktree .worktrees/agent-e7389a73-invite-codec.
   - [ ] **subtask** — invite-issue: `team invite` produces a signed
     invite using the device signing key; emit `TEAM_INVITE` audit.
     Pre-req: `invite-codec`, team-store-schema.
