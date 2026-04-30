@@ -257,6 +257,8 @@ Slices that have merged to `main` and verified. Open work tracked in
 - [x] vscode-diagnostics: The VS Code extension now plans and publishes metadata-only
   diagnostics for missing active-profile env references and pinned reference grace
   windows.
+- [x] tauri-permission-guard: Release desktop hardening now has stricter CSP and
+  permission regressions.
 
 ## Full Spec Coverage TODO — Code Health and Bug Fixes
 
