@@ -369,10 +369,30 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
   action/policy fields, nonce primitives, and CLI metadata are in.
   Remaining: private-key storage and challenge-response authentication
   (`docs/specs/agent.md:62-79`).
-- [ ] Policy TOML parsing/normalization with deny-by-default
-  evaluation, required/optional secret semantics, `confirm`,
-  `require_user_verification`, TTLs, and shell-vs-argv handling
-  (`docs/specs/policy.md`).
+- [ ] Policy TOML parsing/normalization (`docs/specs/policy.md`).
+  Decomposed below; later subtasks depend on `policy-parser`.
+  - [ ] **subtask** — policy-parser: parse `locket.toml`
+    `[commands.<name>]` blocks into a typed `CommandPolicy` with
+    structural validation. Errors: `InvalidPolicy` (65).
+  - [ ] **subtask** — policy-deny-default: evaluator denies by
+    default; only explicit allow/require entries pass. Pre-req:
+    `policy-parser`.
+  - [ ] **subtask** — policy-required-secrets: `required`/`optional`
+    secret semantics — required missing → `InvalidPolicy`. Pre-req:
+    `policy-parser`.
+  - [ ] **subtask** — policy-confirm: `confirm = true` enforced via
+    `RuntimeContext::confirmation_reader`. Pre-req: `policy-parser`.
+  - [ ] **subtask** — policy-user-verification:
+    `require_user_verification` calls the user-verification gate
+    before allowing the command. Pre-req: `policy-parser` and
+    user-verification gates infra.
+  - [ ] **subtask** — policy-ttls: `ttl` translates to a grant TTL
+    used by the agent grant table. Pre-req: `policy-parser`,
+    `agent-grant-table`.
+  - [ ] **subtask** — policy-shell-vs-argv: parser distinguishes
+    `argv = [...]` vs `shell = "..."` and the evaluator picks the
+    right spawn path. Pre-req: `policy-parser` and
+    `run-shell-policy`.
 - [x] Runtime session storage/retention primitives and runtime execution
   recording for `exec`/`run` (doctor process-liveness classification is a
   follow-up under doctor enhancements).
