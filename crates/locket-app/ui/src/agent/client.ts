@@ -96,6 +96,10 @@ export async function copy(request: CopyRequest): Promise<AgentResult<CopyRespon
   return callTyped<CopyResponse>('agent_copy', { request });
 }
 
+export async function lockVault(): Promise<AgentResult<void>> {
+  return callTyped<void>('agent_lock', {});
+}
+
 export async function scan(request: ScanRequest): Promise<AgentResult<ScanResponse>> {
   return callTyped<ScanResponse>('agent_scan', { request });
 }

@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
+import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 
 import AgentUnavailableBanner from './components/AgentUnavailableBanner.vue';
-import { listRuntimeSessions, scan as scanKnownValues } from './agent/client';
+import { listRuntimeSessions, lockVault, scan as scanKnownValues } from './agent/client';
 import { runtimeSessionRow } from './agent/runtimeSessions';
 import { useAgent } from './composables/useAgent';
 import { useTray } from './composables/useTray';
@@ -40,6 +41,15 @@ const { status, error, loading, refresh } = useAgent();
 useTray(status, error);
 
 const currentView = ref<ViewKey>('dashboard');
+let unlistenTrayMenu: UnlistenFn | null = null;
+
+type TrayMenuAction =
+  | 'open-app'
+  | 'lock-vault'
+  | 'unlock-vault'
+  | 'switch-profile'
+  | 'run-policy'
+  | 'start-scan';
 
 const navItems: ReadonlyArray<{ key: ViewKey; label: string }> = [
   { key: 'dashboard', label: 'Dashboard' },
@@ -147,6 +157,31 @@ function applySettingsPatch(patch: Partial<SettingsState>): void {
 
 function selectView(key: ViewKey): void {
   currentView.value = key;
+}
+
+async function handleTrayMenuAction(action: TrayMenuAction): Promise<void> {
+  switch (action) {
+    case 'open-app':
+      currentView.value = 'dashboard';
+      break;
+    case 'lock-vault':
+      await lockVault();
+      await refresh();
+      break;
+    case 'unlock-vault':
+    case 'switch-profile':
+      currentView.value = 'settings';
+      break;
+    case 'run-policy':
+      currentView.value = 'policies';
+      break;
+    case 'start-scan':
+      currentView.value = 'scan';
+      await triggerRescan();
+      break;
+    default:
+      break;
+  }
 }
 
 function selectSecret(): void {
@@ -276,6 +311,21 @@ async function triggerRescan(): Promise<void> {
   }
   scanning.value = false;
 }
+
+onMounted(() => {
+  void listen<TrayMenuAction>('tray-menu-action', (event) => {
+    void handleTrayMenuAction(event.payload);
+  })
+    .then((unlisten) => {
+      unlistenTrayMenu = unlisten;
+    })
+    .catch(() => {});
+});
+
+onUnmounted(() => {
+  unlistenTrayMenu?.();
+  unlistenTrayMenu = null;
+});
 </script>
 
 <template>

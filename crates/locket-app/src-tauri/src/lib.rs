@@ -16,7 +16,8 @@ mod tray;
 
 pub use agent_client::{AgentClientError, fetch_status, invoke_method, resolve_socket_path};
 pub use tray::{
-    LOCKET_TRAY_ID, TrayState, icon_bytes_for, setup_tray, tooltip_for, update_tray_state,
+    LOCKET_TRAY_ID, TRAY_MENU_ACTION_EVENT, TrayMenuAction, TrayState, icon_bytes_for, setup_tray,
+    tooltip_for, tray_menu_action_for_id, tray_menu_actions, update_tray_state,
 };
 
 /// Tauri command exposing the agent client to the webview.
@@ -28,6 +29,13 @@ pub use tray::{
 async fn agent_status() -> Result<locket_agent::StatusPayload, AgentClientError> {
     let path = agent_client::resolve_socket_path();
     agent_client::fetch_status(&path).await
+}
+
+/// Tauri command exposing the agent's `Lock` RPC to the webview and tray.
+#[tauri::command]
+async fn agent_lock() -> Result<(), AgentClientError> {
+    let path = agent_client::resolve_socket_path();
+    agent_client::invoke_method(&path, locket_agent::AgentMethod::Lock, &()).await
 }
 
 /// Tauri command exposing the agent's `Reveal` RPC to the webview.
@@ -118,6 +126,7 @@ pub fn run() -> tauri::Result<()> {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             agent_status,
+            agent_lock,
             agent_reveal,
             agent_copy,
             agent_scan,

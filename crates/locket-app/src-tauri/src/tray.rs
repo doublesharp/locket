@@ -1,9 +1,9 @@
 //! Tauri 2 system tray binding for the Locket desktop shell.
 //!
-//! This slice only registers the tray icon, an empty menu, and a way to
-//! push state updates from the rest of the app. Menu actions, click
-//! routing, and notification dispatch land in later slices. Per the
-//! desktop tray privacy spec the registered surface is metadata-only:
+//! This module registers the tray icon, a metadata-only menu, and a way
+//! to push state updates from the rest of the app. Notification dispatch
+//! lands in a later slice. Per the desktop tray privacy spec the
+//! registered surface is metadata-only:
 //! tooltip text comes from `TrayIconState::descriptor().label`, which is
 //! a fixed, name-free string.
 //!
@@ -22,12 +22,87 @@
 use locket_app::TrayIconState;
 use serde::{Deserialize, Serialize};
 use tauri::image::Image;
-use tauri::menu::Menu;
+use tauri::menu::{Menu, MenuBuilder, MenuEvent};
 use tauri::tray::TrayIconBuilder;
-use tauri::{AppHandle, Manager, Runtime};
+use tauri::{AppHandle, Emitter, Manager, Runtime};
 
 /// Stable identifier used to look up the registered tray icon.
 pub const LOCKET_TRAY_ID: &str = "locket";
+/// Frontend event emitted when a tray menu item requests a UI-routed action.
+pub const TRAY_MENU_ACTION_EVENT: &str = "tray-menu-action";
+
+const MENU_OPEN_APP: &str = "tray-open-app";
+const MENU_LOCK_VAULT: &str = "tray-lock-vault";
+const MENU_UNLOCK_VAULT: &str = "tray-unlock-vault";
+const MENU_SWITCH_PROFILE: &str = "tray-switch-profile";
+const MENU_RUN_POLICY: &str = "tray-run-policy";
+const MENU_START_SCAN: &str = "tray-start-scan";
+
+/// Metadata-only tray menu actions exposed to the webview.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TrayMenuAction {
+    /// Open/focus the desktop app.
+    OpenApp,
+    /// Lock the vault through the local agent.
+    LockVault,
+    /// Open the unlock surface.
+    UnlockVault,
+    /// Open the profile switcher surface.
+    SwitchProfile,
+    /// Open saved command policies.
+    RunPolicy,
+    /// Start a known-value scan.
+    StartScan,
+}
+
+impl TrayMenuAction {
+    /// Stable menu id for this action.
+    #[must_use]
+    pub const fn id(self) -> &'static str {
+        match self {
+            Self::OpenApp => MENU_OPEN_APP,
+            Self::LockVault => MENU_LOCK_VAULT,
+            Self::UnlockVault => MENU_UNLOCK_VAULT,
+            Self::SwitchProfile => MENU_SWITCH_PROFILE,
+            Self::RunPolicy => MENU_RUN_POLICY,
+            Self::StartScan => MENU_START_SCAN,
+        }
+    }
+
+    /// Human-readable menu label. Labels are generic by design and never
+    /// include project, profile, policy, or secret names.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::OpenApp => "Open Locket",
+            Self::LockVault => "Lock Vault",
+            Self::UnlockVault => "Unlock Vault...",
+            Self::SwitchProfile => "Switch Profile...",
+            Self::RunPolicy => "Run Policy...",
+            Self::StartScan => "Start Scan",
+        }
+    }
+}
+
+/// Tray menu actions in spec order.
+#[must_use]
+pub const fn tray_menu_actions() -> &'static [TrayMenuAction] {
+    &[
+        TrayMenuAction::OpenApp,
+        TrayMenuAction::LockVault,
+        TrayMenuAction::UnlockVault,
+        TrayMenuAction::SwitchProfile,
+        TrayMenuAction::RunPolicy,
+        TrayMenuAction::StartScan,
+    ]
+}
+
+/// Map a menu event id back to the typed action.
+#[must_use]
+pub fn tray_menu_action_for_id(id: &str) -> Option<TrayMenuAction> {
+    tray_menu_actions().iter().copied().find(|action| action.id() == id)
+}
 
 // macOS template (alpha-mask) variants.
 const MACOS_AGENT_UNLOCKED: &[u8] =
@@ -196,12 +271,13 @@ pub fn setup_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     let initial = TrayIconState::AgentStopped;
     let bytes = platform_icon_bytes(app, initial);
     let image = Image::from_bytes(bytes)?;
-    let menu: Menu<R> = Menu::new(app)?;
+    let menu = build_tray_menu(app)?;
     TrayIconBuilder::<R>::with_id(LOCKET_TRAY_ID)
         .icon(image)
         .icon_as_template(icon_is_template())
         .tooltip(tooltip_for(initial))
         .menu(&menu)
+        .on_menu_event(|app, event| handle_tray_menu_event(app, &event))
         .on_tray_icon_event(|_tray, _event| {
             // Click routing is wired up in a later slice. We register
             // a no-op handler here so the menu still surfaces on the
@@ -209,6 +285,49 @@ pub fn setup_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         })
         .build(app)?;
     Ok(())
+}
+
+fn build_tray_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
+    MenuBuilder::new(app)
+        .text(MENU_OPEN_APP, TrayMenuAction::OpenApp.label())
+        .separator()
+        .text(MENU_LOCK_VAULT, TrayMenuAction::LockVault.label())
+        .text(MENU_UNLOCK_VAULT, TrayMenuAction::UnlockVault.label())
+        .separator()
+        .text(MENU_SWITCH_PROFILE, TrayMenuAction::SwitchProfile.label())
+        .text(MENU_RUN_POLICY, TrayMenuAction::RunPolicy.label())
+        .text(MENU_START_SCAN, TrayMenuAction::StartScan.label())
+        .build()
+}
+
+fn handle_tray_menu_event<R: Runtime>(app: &AppHandle<R>, event: &MenuEvent) {
+    let Some(action) = tray_menu_action_for_id(event.id().as_ref()) else {
+        return;
+    };
+    if action == TrayMenuAction::OpenApp {
+        show_main_window(app);
+    }
+    if action == TrayMenuAction::LockVault {
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            let _ = crate::agent_client::invoke_method::<(), ()>(
+                &crate::agent_client::resolve_socket_path(),
+                locket_agent::AgentMethod::Lock,
+                &(),
+            )
+            .await;
+            let _ = app.emit(TRAY_MENU_ACTION_EVENT, action);
+        });
+        return;
+    }
+    let _ = app.emit(TRAY_MENU_ACTION_EVENT, action);
+}
+
+fn show_main_window<R: Runtime>(app: &AppHandle<R>) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
 }
 
 /// Update the registered tray icon to reflect a new `TrayIconState`.
@@ -241,7 +360,10 @@ pub fn update_tray_state<R: Runtime>(
 
 #[cfg(test)]
 mod tests {
-    use super::{TrayState, dark_bytes, icon_bytes_for, light_bytes, macos_bytes, tooltip_for};
+    use super::{
+        TrayMenuAction, TrayState, dark_bytes, icon_bytes_for, light_bytes, macos_bytes, tooltip_for,
+        tray_menu_action_for_id, tray_menu_actions,
+    };
     use locket_app::{TrayIconState, tray_icon_states};
 
     #[test]
@@ -278,6 +400,26 @@ mod tests {
         for state in tray_icon_states() {
             assert_eq!(tooltip_for(*state), state.descriptor().label);
             assert!(!tooltip_for(*state).is_empty());
+        }
+    }
+
+    #[test]
+    fn tray_menu_actions_match_spec_inventory() {
+        assert_eq!(
+            tray_menu_actions(),
+            &[
+                TrayMenuAction::OpenApp,
+                TrayMenuAction::LockVault,
+                TrayMenuAction::UnlockVault,
+                TrayMenuAction::SwitchProfile,
+                TrayMenuAction::RunPolicy,
+                TrayMenuAction::StartScan,
+            ]
+        );
+        for action in tray_menu_actions() {
+            assert_eq!(tray_menu_action_for_id(action.id()), Some(*action));
+            assert!(!action.label().is_empty());
+            assert!(!action.label().contains("secret"));
         }
     }
 
