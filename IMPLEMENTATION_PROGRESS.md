@@ -362,9 +362,10 @@ the spec already covers. Closed slices land in
   (`docs/specs/agent.md:62-79`).
 - [ ] Policy TOML parsing/normalization (`docs/specs/policy.md`).
   Decomposed below; later subtasks depend on `policy-parser`.
-  - [ ] **subtask** — policy-parser: parse `locket.toml`
+  - [~] [bec7ddfc] **subtask** — policy-parser: parse `locket.toml`
     `[commands.<name>]` blocks into a typed `CommandPolicy` with
     structural validation. Errors: `InvalidPolicy` (65).
+    Claim: branch agent-bec7ddfc/policy-parser-typed, worktree .worktrees/agent-bec7ddfc-policy-parser-typed.
   - [ ] **subtask** — policy-deny-default: evaluator denies by
     default; only explicit allow/require entries pass. Pre-req:
     `policy-parser`.
@@ -950,10 +951,11 @@ editing — they drift. Severity: **blocker** (security/correctness),
   (`docs/specs/storage.md`).
 - [ ] `automation_client_nonces` opportunistic pruning during client
   auth and via `locket doctor` (`docs/specs/storage.md`).
-- [ ] `runtime.session_secret_name_retention` enforcement: doctor
+- [~] [cb2437f7] `runtime.session_secret_name_retention` enforcement: doctor
   reports past-retention rows and prunes only `secret_names`; `off`
   disables storing the field for new rows
   (`docs/specs/storage.md:139`).
+  Claim: branch agent-cb2437f7/runtime-session-retention, worktree .worktrees/agent-cb2437f7-runtime-session-retention, scope doctor retention reporting/pruning and config-off coverage.
 
 ## Spec-by-Spec Completion Gates
 
