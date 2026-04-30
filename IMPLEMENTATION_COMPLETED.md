@@ -285,6 +285,16 @@ Slices that have merged to `main` and verified. Open work tracked in
 - [x] **subtask** — proptest-lk-uri: `lk://` parser round-trip, fragment/query rejection, pinned-version normalization.
 - [x] **subtask** — proptest-canonical-json: canonical JSON encoder is total-ordered, idempotent, stable across permutations.
 - [x] **subtask** — proptest-device-descriptor: descriptor codec round-trip; rejects malformed `lkdev1_` payloads.
+- [x] **subtask** — bundle-container-format: versioned sealed-bundle container with 8-byte magic, u16 schema, u32 manifest length, u64 payload length; `BundleContainer` new/serialize/deserialize; manifest allow-list enforced; 10 tests.
+- [x] **subtask** — invite-clock-skew: `SignedInvite::check_expiry` with `INVITE_CLOCK_SKEW_SECONDS = 300`; rejects past-window invites via `InviteExpiryError::Expired`; pure-core helper.
+- [x] **subtask** — harden-socket-perms: refuse to bind agent socket when parent directory has group/other mode bits; re-verify freshly bound socket is 0o600; 3 tests.
+- [x] **subtask** — tests-source-precedence: 12 tests covering get/set/list/rotate/rm/purge/history/exec source-resolution invariants in `source_precedence.rs`.
+- [x] **subtask** — e2e-policy-run: golden-path and denial tests for `locket run`; covers policy create, `policy doctor`, required/optional secrets, `PolicyNotFound`, `InvalidPolicy`.
+- [x] **subtask** — e2e-docker-compose: `prepare_docker_policy_execution` + `prepare_compose_policy_execution` E2E; names-only `RUN` audit; remote-`DOCKER_HOST` refusal.
+- [x] **subtask** — mutation-dangerous-profile: gate `locket use <profile>` on typed confirmation when target is dangerous; `new_profile_dangerous` in `PROFILE_CHANGE` audit; 3 mutation tests.
+- [x] Solo-developer authorization: no-Team projects allow all Owner-level operations; `team members` shows `team: none`; `team init` creates team; duplicate `team init` exits `SecretAlreadyExists` (67).
+- [x] Member/device revocation rotation checklist: `team remove` and `team revoke-device` emit per-profile active-secret counts and total; honors `privacy.redact_names`.
+- [x] **subtask** — mutation-malformed-crypto: tampered ciphertext body tests; `IntegrityFailure` on modified tag/nonce.
 
 ## Spec-by-Spec Completion Gates
 
