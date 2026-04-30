@@ -119,6 +119,8 @@ Slices that have merged to `main` and verified. Open work tracked in
   and changed AAD fields all exit `DecryptionFailed`.
 - [x] `locket export --sealed` dangerous-profile confirmation gate;
   mismatch returns `ConfirmationFailed` (68) before any bundle is written.
+- [x] `locket bundle verify` writes a `BUNDLE_VERIFY` audit row when
+  the bundle's project matches the cwd; unknown-project stays metadata-only.
 
 ## Full Spec Coverage TODO — Security/Recovery/Team
 

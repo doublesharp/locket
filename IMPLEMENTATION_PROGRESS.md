@@ -650,10 +650,9 @@ the spec already covers. Closed slices land in
   (`docs/specs/team-sync-recovery.md`).
 - [x] `locket export --sealed` dangerous-profile confirmation gate;
   mismatch returns `ConfirmationFailed` (68) before any bundle is written.
-- [~] [7138f228] `locket bundle verify` non-destructive command (structural
-  checks, age-decryptability probe, `BUNDLE_VERIFY` audit row,
-  documented exit-code rules).
-  Claim: branch agent-7138f228/bundle-verify-audit, worktree .worktrees/agent-7138f228-bundle-verify-audit. Scope: write `BUNDLE_VERIFY` audit rows on success and structural-failure when the local store has the bundle's project; bundles for unknown projects stay metadata-only. Age-decryptability probe waits for the bundle-age-encryption subtask.
+- [x] `locket bundle verify` writes a `BUNDLE_VERIFY` audit row when
+  the bundle's project matches the cwd; unknown-project invocations
+  stay metadata-only.
 - [ ] Solo-developer authorization: treat the local user as Owner
   when no `Team` record exists, while still enforcing typed
   confirmations / verification / audit / source-selection rules
