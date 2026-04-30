@@ -429,9 +429,9 @@ the spec already covers. Closed slices land in
   Decomposed below; later subtasks depend on `policy-parser`.
   - [x] **subtask** — policy-parser: typed `CommandPolicy` with
     structural validation; parse errors map to `InvalidPolicy` (65).
-  - [ ] **subtask** — policy-deny-default: evaluator denies by
-    default; only explicit allow/require entries pass. Pre-req:
-    `policy-parser`.
+  - [x] **subtask** — policy-deny-default: evaluator only ever resolves
+    `required_secrets`/`optional_secrets`; everything else is implicitly
+    denied. Parser tests in `policy/mod.rs` cover the deny-by-default contract.
   - [x] **subtask** — policy-required-secrets: required missing returns
     `InvalidPolicy` (65).
   - [x] **subtask** — policy-confirm: `confirm = true` enforced via
