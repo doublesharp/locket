@@ -5,6 +5,7 @@ CARGO_DENY ?= cargo deny
 CARGO_AUDIT ?= cargo audit
 CARGO_LLVM_COV ?= cargo llvm-cov
 CARGO_FUZZ ?= cargo +nightly fuzz
+PNPM ?= $(shell command -v pnpm 2>/dev/null)
 CARGO_JOBS ?= 12
 OFFLINE ?= 1
 STRICT ?= 0
@@ -21,7 +22,7 @@ else
 CARGO_OFFLINE_FLAG :=
 endif
 
-.PHONY: ci ci-local ci-strict fmt fmt-check clippy test nextest coverage coverage-html coverage-branch mutation supply-chain supply-chain-local audit deny unsafe-inventory sbom bench bench-ci bench-report fuzz-list fuzz-smoke fuzz fuzz-nightly fuzz-minimize leak-canary docs-check clean
+.PHONY: ci ci-local ci-strict fmt fmt-check clippy test nextest coverage coverage-html coverage-branch mutation supply-chain supply-chain-local audit deny unsafe-inventory sbom bench bench-ci bench-report fuzz-list fuzz-smoke fuzz fuzz-nightly fuzz-minimize leak-canary docs-check app-ui-install app-ui-check app-ui-build clean
 
 # Local default gate. It avoids network by default and skips missing optional tools
 # with explicit warnings. Use `make ci-strict OFFLINE=0 STRICT=1` for release-style
@@ -108,6 +109,28 @@ leak-canary:
 
 docs-check:
 	scripts/docs-check.pl
+
+app-ui-install:
+	@if [ -z "$(PNPM)" ]; then \
+		echo "skip: pnpm not on PATH"; \
+	else \
+		$(PNPM) --dir crates/locket-app/ui install --frozen-lockfile; \
+	fi
+
+app-ui-check: app-ui-install
+	@if [ -z "$(PNPM)" ]; then \
+		echo "skip: pnpm not on PATH"; \
+	else \
+		$(PNPM) --dir crates/locket-app/ui lint && \
+		$(PNPM) --dir crates/locket-app/ui typecheck; \
+	fi
+
+app-ui-build: app-ui-install
+	@if [ -z "$(PNPM)" ]; then \
+		echo "skip: pnpm not on PATH"; \
+	else \
+		$(PNPM) --dir crates/locket-app/ui build; \
+	fi
 
 clean:
 	$(CARGO) clean

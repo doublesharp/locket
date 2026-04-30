@@ -32,3 +32,10 @@
 # Multi-agent coordination state — local only, never committed.
 /.agents
 /.ready
+
+# locket-app desktop shell artifacts
+crates/locket-app/ui/node_modules/
+crates/locket-app/ui/dist/
+crates/locket-app/ui/.vite/
+crates/locket-app/src-tauri/target/
+crates/locket-app/src-tauri/gen/

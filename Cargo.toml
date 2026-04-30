@@ -2,6 +2,7 @@
 members = [
     "crates/locket-agent",
     "crates/locket-app",
+    "crates/locket-app/src-tauri",
     "crates/locket-cli",
     "crates/locket-core",
     "crates/locket-crypto",
