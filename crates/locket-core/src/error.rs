@@ -219,135 +219,157 @@ impl LocketError {
     /// Returns user-facing copy shared by CLI, desktop, tray, and editor surfaces.
     #[must_use]
     pub const fn display_copy(&self) -> ErrorDisplayCopy {
+        match self.display_copy_input_policy() {
+            Some(copy) => copy,
+            None => match self.display_copy_runtime_agent() {
+                Some(copy) => copy,
+                None => self.display_copy_storage_team(),
+            },
+        }
+    }
+
+    const fn display_copy_input_policy(self) -> Option<ErrorDisplayCopy> {
         match self {
-            Self::InvalidReference => ErrorDisplayCopy {
+            Self::InvalidReference => Some(ErrorDisplayCopy {
                 reason: "The Locket reference is invalid.",
                 next_action: "Fix the reference syntax, profile, key, source, or version.",
-            },
-            Self::GitWorktreeRequired => ErrorDisplayCopy {
+            }),
+            Self::GitWorktreeRequired => Some(ErrorDisplayCopy {
                 reason: "This command requires a Git worktree.",
                 next_action: "Run the command inside a Git worktree or scan an explicit path.",
-            },
-            Self::InvalidSecretName => ErrorDisplayCopy {
+            }),
+            Self::InvalidSecretName => Some(ErrorDisplayCopy {
                 reason: "The secret name is invalid.",
                 next_action: "Use an uppercase environment-style name.",
-            },
-            Self::InvalidProfileName => ErrorDisplayCopy {
+            }),
+            Self::InvalidProfileName => Some(ErrorDisplayCopy {
                 reason: "The profile name is invalid.",
                 next_action: "Use a lowercase profile name such as dev or staging.",
-            },
-            Self::PolicyValidationIncomplete => ErrorDisplayCopy {
+            }),
+            Self::PolicyValidationIncomplete => Some(ErrorDisplayCopy {
                 reason: "Policy validation could not finish.",
                 next_action: "Start or unlock the agent, then rerun policy validation.",
-            },
-            Self::InvalidPolicy => ErrorDisplayCopy {
+            }),
+            Self::InvalidPolicy => Some(ErrorDisplayCopy {
                 reason: "The policy is invalid.",
                 next_action: "Fix the policy document and retry.",
-            },
-            Self::PolicyNotFound => ErrorDisplayCopy {
+            }),
+            Self::PolicyNotFound => Some(ErrorDisplayCopy {
                 reason: "The policy was not found.",
                 next_action: "Add the policy or choose an existing policy name.",
-            },
-            Self::EnvironmentConflict => ErrorDisplayCopy {
+            }),
+            Self::EnvironmentConflict => Some(ErrorDisplayCopy {
                 reason: "Environment variable injection would overwrite a protected name.",
                 next_action: "Rename the variable or change the policy override mode.",
-            },
-            Self::MetadataInvalid => ErrorDisplayCopy {
+            }),
+            Self::MetadataInvalid => Some(ErrorDisplayCopy {
                 reason: "Metadata is invalid.",
                 next_action: "Remove unsupported characters or values and retry.",
-            },
-            Self::MetadataLooksLikeSecret => ErrorDisplayCopy {
+            }),
+            Self::MetadataLooksLikeSecret => Some(ErrorDisplayCopy {
                 reason: "Metadata looks like secret material.",
                 next_action: "Remove the secret-like metadata or store it as a secret.",
-            },
-            Self::ConfirmationFailed => ErrorDisplayCopy {
+            }),
+            Self::ConfirmationFailed => Some(ErrorDisplayCopy {
                 reason: "The confirmation text did not match.",
                 next_action: "Retry and type the requested confirmation exactly.",
-            },
-            Self::TtyRequired => ErrorDisplayCopy {
+            }),
+            Self::TtyRequired => Some(ErrorDisplayCopy {
                 reason: "An interactive terminal is required.",
                 next_action: "Retry from an interactive terminal.",
-            },
-            Self::ScanFindingBlocked => ErrorDisplayCopy {
+            }),
+            Self::ScanFindingBlocked => Some(ErrorDisplayCopy {
                 reason: "Scan findings blocked the command.",
                 next_action: "Review the findings, rotate exposed values, or suppress intentional matches.",
-            },
-            Self::SecretAlreadyExists => ErrorDisplayCopy {
+            }),
+            Self::SecretAlreadyExists => Some(ErrorDisplayCopy {
                 reason: "The secret already exists.",
                 next_action: "Use rotate/update behavior or choose a different source.",
-            },
-            Self::AccessDenied => ErrorDisplayCopy {
+            }),
+            _ => None,
+        }
+    }
+
+    const fn display_copy_runtime_agent(self) -> Option<ErrorDisplayCopy> {
+        match self {
+            Self::AccessDenied => Some(ErrorDisplayCopy {
                 reason: "Policy or trust rules denied the action.",
                 next_action: "Request the required grant, policy change, or team role.",
-            },
-            Self::TeamRoleDenied => ErrorDisplayCopy {
+            }),
+            Self::TeamRoleDenied => Some(ErrorDisplayCopy {
                 reason: "Your team role does not allow this action.",
                 next_action: "Ask an owner or maintainer to perform or authorize the action.",
-            },
-            Self::ProjectRootUntrusted => ErrorDisplayCopy {
+            }),
+            Self::ProjectRootUntrusted => Some(ErrorDisplayCopy {
                 reason: "The project root is not trusted.",
                 next_action: "Run locket project trust-root from the intended project path.",
-            },
-            Self::ProjectNotFound => ErrorDisplayCopy {
+            }),
+            Self::ProjectNotFound => Some(ErrorDisplayCopy {
                 reason: "No Locket project was found.",
                 next_action: "Run locket init or move into an existing Locket project.",
-            },
-            Self::UnlockRequired => ErrorDisplayCopy {
+            }),
+            Self::UnlockRequired => Some(ErrorDisplayCopy {
                 reason: "The vault is locked.",
                 next_action: "Run locket unlock or approve an agent unlock prompt.",
-            },
-            Self::GrantRequired => ErrorDisplayCopy {
+            }),
+            Self::GrantRequired => Some(ErrorDisplayCopy {
                 reason: "No live grant covers this action.",
                 next_action: "Run locket allow or refresh the shell or editor grant.",
-            },
-            Self::UserVerificationFailed => ErrorDisplayCopy {
+            }),
+            Self::UserVerificationFailed => Some(ErrorDisplayCopy {
                 reason: "Local user verification failed.",
                 next_action: "Retry verification or use a configured recovery path.",
-            },
-            Self::SecretVersionExpired => ErrorDisplayCopy {
+            }),
+            Self::SecretVersionExpired => Some(ErrorDisplayCopy {
                 reason: "The pinned secret version is expired.",
                 next_action: "Update the reference to the current version or rotate with a new grace window.",
-            },
-            Self::SecretDeleted => ErrorDisplayCopy {
+            }),
+            Self::SecretDeleted => Some(ErrorDisplayCopy {
                 reason: "The selected secret source is deleted.",
                 next_action: "Choose another source or restore from a trusted backup.",
-            },
-            Self::SecretNotFound => ErrorDisplayCopy {
+            }),
+            Self::SecretNotFound => Some(ErrorDisplayCopy {
                 reason: "The secret was not found.",
                 next_action: "Check the secret name, profile, and source.",
-            },
-            Self::ProfileNotFound => ErrorDisplayCopy {
+            }),
+            Self::ProfileNotFound => Some(ErrorDisplayCopy {
                 reason: "The profile was not found.",
                 next_action: "Choose an existing profile or create one.",
-            },
-            Self::AgentUnavailable => ErrorDisplayCopy {
+            }),
+            Self::AgentUnavailable => Some(ErrorDisplayCopy {
                 reason: "The local agent is unavailable.",
                 next_action: "Run locket agent start, then retry.",
-            },
-            Self::AgentSocketInUse => ErrorDisplayCopy {
+            }),
+            Self::AgentSocketInUse => Some(ErrorDisplayCopy {
                 reason: "The agent socket is already in use.",
                 next_action: "Stop the stale agent or retry in direct CLI mode.",
-            },
-            Self::AutomationClientNotTrusted => ErrorDisplayCopy {
+            }),
+            Self::AutomationClientNotTrusted => Some(ErrorDisplayCopy {
                 reason: "The automation client is not trusted.",
                 next_action: "Register the client or fix its policy scope.",
-            },
-            Self::AutomationClientReplayDetected => ErrorDisplayCopy {
+            }),
+            Self::AutomationClientReplayDetected => Some(ErrorDisplayCopy {
                 reason: "An automation client replay was detected.",
                 next_action: "Retry with a fresh nonce and rotate the client key if replay is suspected.",
-            },
-            Self::ExternalSourceUnavailable => ErrorDisplayCopy {
+            }),
+            Self::ExternalSourceUnavailable => Some(ErrorDisplayCopy {
                 reason: "An external environment source is unavailable.",
                 next_action: "Start or fix the external provider and retry.",
-            },
-            Self::UpdateManifestInvalid => ErrorDisplayCopy {
+            }),
+            Self::UpdateManifestInvalid => Some(ErrorDisplayCopy {
                 reason: "The update manifest is invalid.",
                 next_action: "Refresh the manifest source or use a trusted release artifact.",
-            },
-            Self::SecretVersionOverflow => ErrorDisplayCopy {
+            }),
+            Self::SecretVersionOverflow => Some(ErrorDisplayCopy {
                 reason: "The secret version counter cannot advance.",
                 next_action: "Inspect the store metadata before retrying.",
-            },
+            }),
+            _ => None,
+        }
+    }
+
+    const fn display_copy_storage_team(self) -> ErrorDisplayCopy {
+        match self {
             Self::CorruptDb => ErrorDisplayCopy {
                 reason: "The local database appears corrupt.",
                 next_action: "Run diagnostics and restore from a trusted backup if needed.",
@@ -407,6 +429,10 @@ impl LocketError {
             Self::InviteSignatureInvalid => ErrorDisplayCopy {
                 reason: "The invite signature is invalid.",
                 next_action: "Reject the invite and request a new one from the issuer.",
+            },
+            _ => ErrorDisplayCopy {
+                reason: "The Locket error is not mapped to display copy.",
+                next_action: "Upgrade Locket or report the missing error mapping.",
             },
         }
     }
