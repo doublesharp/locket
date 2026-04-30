@@ -11,9 +11,8 @@ use time::format_description::well_known::Rfc3339;
 use crate::{
     AGENT_LOG_FOLLOW_SLEEP_MS, AgentCommand, AgentLogsArgs, CliError, NANOS_PER_SECOND,
     RuntimeContext, agent_data_dir, agent_log_path, agent_log_paths_oldest_first, agent_pid_path,
-    append_agent_log, invalid_reference_error, metadata_invalid_error, prepare_agent_log_dir,
-    read_agent_pid, resolve_project, sanitize_agent_log_line, set_user_only_file_permissions,
-    write_agent_paths,
+    append_agent_log, metadata_invalid_error, prepare_agent_log_dir, read_agent_pid,
+    resolve_project, sanitize_agent_log_line, set_user_only_file_permissions, write_agent_paths,
 };
 
 pub fn agent_command(
@@ -78,7 +77,7 @@ fn agent_logs_command(
     args: &AgentLogsArgs,
 ) -> Result<(), CliError> {
     if args.lines > 10_000 {
-        return Err(invalid_reference_error("agent logs --lines is capped at 10000"));
+        return Err(metadata_invalid_error("agent logs --lines is capped at 10000"));
     }
     let since = args.since.as_deref().map(parse_agent_log_since).transpose()?;
     let lines = read_agent_log_lines(context, since)?;

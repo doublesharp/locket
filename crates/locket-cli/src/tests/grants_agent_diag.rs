@@ -407,6 +407,19 @@ fn agent_logs_filter_redact_rotate_and_harden_local_files() -> Result<(), Box<dy
     crate::prepare_agent_log_dir(&context)?;
     let log_path = crate::agent_log_path(&context);
     let old_path = crate::agent_rotated_log_path(&context, 1);
+    for index in 2..=crate::AGENT_LOG_RETAINED_FILES {
+        fs::write(
+            crate::agent_rotated_log_path(&context, index),
+            format!(
+                "{}\n",
+                json!({
+                    "timestamp": base,
+                    "action": format!("rotated-{index}"),
+                    "message": "retained",
+                })
+            ),
+        )?;
+    }
     fs::write(
         &old_path,
         format!(
@@ -466,7 +479,20 @@ fn agent_logs_filter_redact_rotate_and_harden_local_files() -> Result<(), Box<dy
     fs::write(&log_path, "x".repeat(usize::try_from(crate::AGENT_LOG_MAX_BYTES)? + 1))?;
     crate::append_agent_log(&context, "rotated", "ok", "safe")?;
     assert!(crate::agent_rotated_log_path(&context, 1).exists());
+    assert!(crate::agent_rotated_log_path(&context, crate::AGENT_LOG_RETAINED_FILES).exists());
+    assert!(
+        !crate::agent_data_dir(&context)
+            .join(format!("agent.log.{}", crate::AGENT_LOG_RETAINED_FILES + 1))
+            .exists()
+    );
     assert!(fs::read_to_string(&log_path)?.contains("\"action\":\"rotated\""));
+    assert!(
+        fs::read_to_string(crate::agent_rotated_log_path(
+            &context,
+            crate::AGENT_LOG_RETAINED_FILES
+        ))?
+        .contains("\"action\":\"rotated-4\"")
+    );
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -489,7 +515,23 @@ fn agent_logs_rejects_excessive_line_count() -> Result<(), Box<dyn std::error::E
         &context,
         &mut output,
     );
-    assert_error_contains(result, "capped at 10000");
+    let Err(error) = result else {
+        return Err("agent logs --lines over cap should fail".into());
+    };
+    assert_eq!(error.exit_code(), 64);
+    assert!(error.to_string().contains("capped at 10000"));
+
+    let mut since_output = Vec::new();
+    let since_result = run_with_context(
+        Cli::try_parse_from(["locket", "agent", "logs", "--since", "not-a-timestamp"])?,
+        &context,
+        &mut since_output,
+    );
+    let Err(since_error) = since_result else {
+        return Err("invalid agent logs --since should fail".into());
+    };
+    assert_eq!(since_error.exit_code(), 64);
+    assert!(since_error.to_string().contains("RFC3339 UTC or Unix seconds"));
     Ok(())
 }
 
