@@ -380,7 +380,7 @@ the spec already covers. Closed slices land in
   - [ ] **subtask** — policy-deny-default: evaluator denies by
     default; only explicit allow/require entries pass. Pre-req:
     `policy-parser`.
-  - [ ] **subtask** — policy-required-secrets: `required`/`optional`
+  - [~] [bec7ddfc] **subtask** — policy-required-secrets: `required`/`optional`
     secret semantics — required missing → `InvalidPolicy`. Pre-req:
     `policy-parser`.
   - [ ] **subtask** — policy-confirm: `confirm = true` enforced via
