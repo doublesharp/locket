@@ -147,3 +147,31 @@ export interface RuntimeSessionWireRow {
 export interface ListRuntimeSessionsResponse {
   rows: RuntimeSessionWireRow[];
 }
+
+export interface ListSecretsRequest {
+  store_path?: string;
+  project_id: string;
+  profile_id: string;
+  redact_names: boolean;
+}
+
+export type SecretSourceWire = 'team-managed' | 'user-local' | 'machine-local';
+
+export interface SecretWireRow {
+  id: string;
+  profile_id: string;
+  name: string;
+  source: SecretSourceWire;
+  source_precedence: number;
+  origin: string;
+  current_version: number;
+  state: string;
+  required: boolean;
+  created_at: number;
+  updated_at: number;
+  last_rotated_at: number | null;
+}
+
+export interface ListSecretsResponse {
+  rows: SecretWireRow[];
+}

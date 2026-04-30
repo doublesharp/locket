@@ -12,6 +12,7 @@ commands.allow = [
   "agent_resolve",
   "agent_prepare_exec",
   "agent_list_runtime_sessions",
+  "agent_list_secrets",
   "tray_set_state",
 ]
 commands.deny = []

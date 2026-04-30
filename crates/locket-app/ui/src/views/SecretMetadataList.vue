@@ -7,12 +7,15 @@ interface Props {
   rows: SecretRowMeta[];
   privacyMode: boolean;
   loading: boolean;
+  errorMessage?: string | null;
+  lastRefreshedAt?: string;
 }
 
 const props = defineProps<Props>();
 
 const emit = defineEmits<{
   (e: 'select', row: SecretRowMeta): void;
+  (e: 'refresh'): void;
 }>();
 
 const searchQuery = ref<string>('');
@@ -69,6 +72,10 @@ function onActivate(row: SecretRowMeta): void {
   emit('select', row);
 }
 
+function refresh(): void {
+  emit('refresh');
+}
+
 function onKey(event: KeyboardEvent, row: SecretRowMeta): void {
   if (event.key === 'Enter' || event.key === ' ') {
     event.preventDefault();
@@ -81,6 +88,14 @@ function onKey(event: KeyboardEvent, row: SecretRowMeta): void {
   <section class="view" aria-labelledby="secret-metadata-list-heading">
     <header class="view__header">
       <h2 id="secret-metadata-list-heading">Secrets</h2>
+      <div class="view__actions">
+        <span v-if="lastRefreshedAt" class="view__muted">
+          <time :datetime="lastRefreshedAt">{{ lastRefreshedAt }}</time>
+        </span>
+        <button type="button" class="view__button" :disabled="loading" @click="refresh">
+          Refresh
+        </button>
+      </div>
       <label class="view__search">
         <span class="view__search-label">Search secrets</span>
         <input
@@ -93,7 +108,9 @@ function onKey(event: KeyboardEvent, row: SecretRowMeta): void {
       </label>
     </header>
 
-    <p v-if="loading" class="view__loading" role="status">Loading secret metadata…</p>
+    <p v-if="errorMessage" class="view__error">{{ errorMessage }}</p>
+
+    <p v-else-if="loading" class="view__loading" role="status">Loading secret metadata…</p>
 
     <p v-else-if="isEmpty" class="view__empty">
       No secrets in this profile yet. Run <code>locket set &lt;KEY&gt;</code> or
@@ -194,6 +211,30 @@ function onKey(event: KeyboardEvent, row: SecretRowMeta): void {
   text-transform: uppercase;
 }
 
+.view__actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.625rem;
+  margin-left: auto;
+}
+
+.view__button {
+  min-height: 2rem;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 0.375rem;
+  background: rgba(255, 255, 255, 0.06);
+  color: #e6e8ec;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.8125rem;
+  padding: 0.25rem 0.625rem;
+}
+
+.view__button:disabled {
+  color: #667085;
+  cursor: not-allowed;
+}
+
 .view__search {
   display: grid;
   gap: 0.25rem;
@@ -235,6 +276,11 @@ function onKey(event: KeyboardEvent, row: SecretRowMeta): void {
   margin: 0;
   font-size: 0.875rem;
   color: #9aa3b2;
+}
+
+.view__error {
+  color: #ffb4a8;
+  margin: 0;
 }
 
 .view__empty code {

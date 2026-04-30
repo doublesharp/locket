@@ -4,6 +4,10 @@
 //! smallest capability set needed for metadata-only desktop views and
 //! agent-backed actions.
 
+use std::path::PathBuf;
+
+use directories::ProjectDirs;
+
 #[cfg(debug_assertions)]
 use tauri::Manager as _;
 
@@ -22,6 +26,15 @@ pub use tray::{
     tooltip_for, tray_menu_action_for_id, tray_menu_actions, tray_state_for_status,
     tray_state_for_status_event, update_tray_state,
 };
+
+#[derive(serde::Deserialize)]
+struct DesktopListSecretsRequest {
+    store_path: Option<PathBuf>,
+    project_id: String,
+    profile_id: String,
+    #[serde(default)]
+    redact_names: bool,
+}
 
 /// Tauri command exposing the agent client to the webview.
 ///
@@ -101,6 +114,34 @@ async fn agent_list_runtime_sessions(
         .await
 }
 
+/// Tauri command exposing the agent's metadata-only active-profile secret list.
+#[tauri::command]
+async fn agent_list_secrets(
+    request: DesktopListSecretsRequest,
+) -> Result<locket_agent::ListSecretsResponse, AgentClientError> {
+    let path = agent_client::resolve_socket_path();
+    let store_path = match request.store_path {
+        Some(path) => path,
+        None => default_store_path()?,
+    };
+    let request = locket_agent::ListSecretsRequest {
+        store_path,
+        project_id: request.project_id,
+        profile_id: request.profile_id,
+        redact_names: request.redact_names,
+    };
+    agent_client::invoke_method(&path, locket_agent::AgentMethod::ListSecrets, &request).await
+}
+
+fn default_store_path() -> Result<PathBuf, AgentClientError> {
+    let Some(project_dirs) = ProjectDirs::from("dev", "0xdoublesharp", "Locket") else {
+        return Err(AgentClientError::Protocol {
+            reason: "could not resolve Locket data directory".to_owned(),
+        });
+    };
+    Ok(project_dirs.data_dir().join("store.db"))
+}
+
 /// Tauri command pushing a new tray icon state from the webview.
 ///
 /// The frontend's `useTray` composable derives the desired
@@ -136,6 +177,7 @@ pub fn run() -> tauri::Result<()> {
             agent_resolve,
             agent_prepare_exec,
             agent_list_runtime_sessions,
+            agent_list_secrets,
             tray_set_state,
         ])
         .setup(|app| {

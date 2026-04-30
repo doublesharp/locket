@@ -3,8 +3,14 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 
 import AgentUnavailableBanner from './components/AgentUnavailableBanner.vue';
-import { listRuntimeSessions, lockVault, scan as scanKnownValues } from './agent/client';
+import {
+  listRuntimeSessions,
+  listSecrets,
+  lockVault,
+  scan as scanKnownValues,
+} from './agent/client';
 import { runtimeSessionRow } from './agent/runtimeSessions';
+import { secretRow } from './agent/secrets';
 import { useAgent } from './composables/useAgent';
 import { useTray } from './composables/useTray';
 import AuditLog from './views/AuditLog.vue';
@@ -27,7 +33,12 @@ import type {
   SettingsState,
   VersionHistoryRow,
 } from './types/views';
-import type { AgentClientError, ListRuntimeSessionsRequest, ScanFinding } from './agent/types';
+import type {
+  AgentClientError,
+  ListRuntimeSessionsRequest,
+  ListSecretsRequest,
+  ScanFinding,
+} from './agent/types';
 import { privacyAlias, privacyLabel } from './utils/privacy';
 
 type ViewKey =
@@ -92,10 +103,20 @@ const projectAlias = ref<string | null>(null);
 const profileAlias = ref<string | null>(null);
 
 const projectLabel = computed<string>(() =>
-  privacyLabel('project', status.value?.project_id, settings.value.privacyRedactNames, projectAlias.value),
+  privacyLabel(
+    'project',
+    status.value?.project_id,
+    settings.value.privacyRedactNames,
+    projectAlias.value,
+  ),
 );
 const profileLabel = computed<string>(() =>
-  privacyLabel('profile', status.value?.profile_name, settings.value.privacyRedactNames, profileAlias.value),
+  privacyLabel(
+    'profile',
+    status.value?.profile_name,
+    settings.value.privacyRedactNames,
+    profileAlias.value,
+  ),
 );
 
 // Slice 4-5/9-11 land the remaining real data sources. The execution
@@ -107,6 +128,9 @@ const deviceMembers = ref<DeviceMemberRow[]>([]);
 const auditRows = ref<AuditLogRow[]>([]);
 const findings = ref<ScanFindingRow[]>([]);
 const policies = ref<CommandPolicyRow[]>([]);
+const secretsLoading = ref<boolean>(false);
+const secretsError = ref<string | null>(null);
+const secretsLastRefreshed = ref<string | undefined>(undefined);
 const sessionsLoading = ref<boolean>(false);
 const sessionsError = ref<string | null>(null);
 const sessionsLastRefreshed = ref<string | undefined>(undefined);
@@ -198,8 +222,24 @@ function selectSecret(): void {
 
 function triggerVerify(): void {
   void refresh();
+  void refreshSecrets();
   void refreshRuntimeSessions();
 }
+
+const secretsRequest = computed<ListSecretsRequest | null>(() => {
+  const currentStatus = status.value;
+  if (currentStatus?.project_id === null || currentStatus?.project_id === undefined) {
+    return null;
+  }
+  if (currentStatus.profile_name === null || currentStatus.profile_name === undefined) {
+    return null;
+  }
+  return {
+    project_id: currentStatus.project_id,
+    profile_id: currentStatus.profile_name,
+    redact_names: settings.value.privacyRedactNames,
+  };
+});
 
 const runtimeSessionRequest = computed<ListRuntimeSessionsRequest | null>(() => {
   const currentStatus = status.value;
@@ -214,6 +254,52 @@ const runtimeSessionRequest = computed<ListRuntimeSessionsRequest | null>(() => 
     profile_id: currentStatus.profile_name,
     privacy_redact_names: settings.value.privacyRedactNames,
   };
+});
+
+function secretErrorLabel(error: AgentClientError): string {
+  switch (error.kind) {
+    case 'unavailable':
+      return 'Agent unavailable.';
+    case 'protocol':
+      return 'Secret request failed.';
+    case 'rejected':
+      return error.code;
+    default:
+      return 'Secret request failed.';
+  }
+}
+
+let secretRefreshSequence = 0;
+
+async function refreshSecrets(): Promise<void> {
+  const request = secretsRequest.value;
+  const sequence = (secretRefreshSequence += 1);
+  if (request === null) {
+    secrets.value = [];
+    secretsError.value = null;
+    secretsLoading.value = false;
+    secretsLastRefreshed.value = undefined;
+    return;
+  }
+
+  secretsLoading.value = true;
+  secretsError.value = null;
+  const result = await listSecrets(request);
+  if (sequence !== secretRefreshSequence) {
+    return;
+  }
+  if (result.ok) {
+    secrets.value = result.value.rows.map(secretRow);
+    secretsLastRefreshed.value = new Date().toISOString();
+  } else {
+    secrets.value = [];
+    secretsError.value = secretErrorLabel(result.error);
+  }
+  secretsLoading.value = false;
+}
+
+watch(secretsRequest, () => {
+  void refreshSecrets();
 });
 
 function sessionErrorLabel(error: AgentClientError): string {
@@ -395,8 +481,11 @@ onUnmounted(() => {
         v-else-if="currentView === 'secrets'"
         :rows="secrets"
         :privacy-mode="settings.privacyRedactNames"
-        :loading="loading"
+        :loading="secretsLoading"
+        :error-message="secretsError"
+        :last-refreshed-at="secretsLastRefreshed"
         @select="selectSecret"
+        @refresh="refreshSecrets"
       />
 
       <SecretVersionHistory
@@ -446,10 +535,7 @@ onUnmounted(() => {
         :loading="loading"
       />
 
-      <BackupRecovery
-        v-else-if="currentView === 'recovery'"
-        @action="triggerBackupAction"
-      />
+      <BackupRecovery v-else-if="currentView === 'recovery'" @action="triggerBackupAction" />
 
       <Settings
         v-else-if="currentView === 'settings'"
