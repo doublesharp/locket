@@ -131,6 +131,8 @@ Slices that have merged to `main` and verified. Open work tracked in
   and fail the gate when missing or expired.
 - [x] env-inspect-layers: Environment inspection now reports resolved external layers
   and final metadata-only decisions. External file values stay out of command output.
+- [x] mock-peer-credentials: Added spoofable peer-credential tests for agent socket
+  validation.
 
 ## Full Spec Coverage TODO — Security/Recovery/Team
 
