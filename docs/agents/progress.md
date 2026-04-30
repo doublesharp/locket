@@ -434,8 +434,7 @@ Re-verify file:line references before editing — they drift. Severity:
 - [ ] PR vs release tolerance gate: 10% PR / 20% tracked-regression
   / no-tolerance release (`docs/specs/performance.md`).
 - [~] [4ab55ee9] branch agent-4ab55ee9/supply-chain-exception-ledger, worktree .worktrees/agent-4ab55ee9-supply-chain-exception-ledger; Supply-chain exception ledger enforced by CI; no-expiration entries are invalid (`docs/specs/engineering.md`).
-- [ ] SLSA v1.2 provenance verification + Build L3 hosted-runner
-  targeting (`docs/specs/operations.md`).
+- [~] [4ab55ee9] branch agent-4ab55ee9/slsa-provenance-policy, worktree .worktrees/agent-4ab55ee9-slsa-provenance-policy; slsa-provenance-policy: offline release provenance policy verifier (`docs/specs/operations.md`).
 - [~] [90b9f58a] branch agent-90b9f58a/pre-migration-backups, worktree .worktrees/agent-90b9f58a-pre-migration-backups; pre-migration backup metadata and doctor reporting (`docs/specs/storage.md`).
 - [ ] Prune expired `automation_client_nonces` during automation
   client authentication. Pairs with the doctor-side prune; lands
