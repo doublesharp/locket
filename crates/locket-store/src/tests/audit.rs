@@ -673,6 +673,7 @@ fn append_audit_accepts_metadata_json_at_or_below_cap() -> Result<(), Box<dyn st
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn append_audit_rejects_metadata_json_shape_mismatches() -> Result<(), Box<dyn Error>> {
     struct Case {
         name: &'static str,
@@ -799,10 +800,12 @@ fn append_audit_rejects_metadata_json_shape_mismatches() -> Result<(), Box<dyn E
             timestamp: 100,
         };
 
-        let error = test_store
-            .store
-            .append_audit(&[42; 32], &audit)
-            .expect_err("invalid metadata must be rejected");
+        let error = match test_store.store.append_audit(&[42; 32], &audit) {
+            Ok(()) => {
+                return Err(format!("{}: invalid metadata must be rejected", case.name).into());
+            }
+            Err(error) => error,
+        };
         let StoreError::AuditMetadataInvalid { action, reason } = error else {
             return Err(format!("{}: expected AuditMetadataInvalid", case.name).into());
         };
