@@ -6,6 +6,7 @@ import { useAgent } from './composables/useAgent';
 import { useTray } from './composables/useTray';
 import AuditLog from './views/AuditLog.vue';
 import ExecutionMonitor from './views/ExecutionMonitor.vue';
+import PolicyEditor from './views/PolicyEditor.vue';
 import ProjectDashboard from './views/ProjectDashboard.vue';
 import ScanResults from './views/ScanResults.vue';
 import SecretMetadataList from './views/SecretMetadataList.vue';
@@ -13,6 +14,7 @@ import SecretVersionHistory from './views/SecretVersionHistory.vue';
 import Settings from './views/Settings.vue';
 import type {
   AuditLogRow,
+  CommandPolicyRow,
   RuntimeSessionRow,
   ScanFindingRow,
   SecretRowMeta,
@@ -20,7 +22,15 @@ import type {
   VersionHistoryRow,
 } from './types/views';
 
-type ViewKey = 'dashboard' | 'secrets' | 'versions' | 'execution' | 'audit' | 'scan' | 'settings';
+type ViewKey =
+  | 'dashboard'
+  | 'secrets'
+  | 'versions'
+  | 'execution'
+  | 'audit'
+  | 'scan'
+  | 'policies'
+  | 'settings';
 
 const { status, error, loading, refresh } = useAgent();
 useTray(status, error);
@@ -34,6 +44,7 @@ const navItems: ReadonlyArray<{ key: ViewKey; label: string }> = [
   { key: 'execution', label: 'Execution' },
   { key: 'audit', label: 'Audit' },
   { key: 'scan', label: 'Scan' },
+  { key: 'policies', label: 'Policies' },
   { key: 'settings', label: 'Settings' },
 ];
 
@@ -66,6 +77,7 @@ const versions = ref<VersionHistoryRow[]>([]);
 const sessions = ref<RuntimeSessionRow[]>([]);
 const auditRows = ref<AuditLogRow[]>([]);
 const findings = ref<ScanFindingRow[]>([]);
+const policies = ref<CommandPolicyRow[]>([]);
 const scanning = ref<boolean>(false);
 const auditChainOk = ref<boolean>(true);
 
@@ -185,6 +197,13 @@ function triggerRescan(): void {
         :findings="findings"
         :scanning="scanning"
         @rescan="triggerRescan"
+      />
+
+      <PolicyEditor
+        v-else-if="currentView === 'policies'"
+        :rows="policies"
+        :privacy-mode="settings.privacyRedactNames"
+        :loading="loading"
       />
 
       <Settings

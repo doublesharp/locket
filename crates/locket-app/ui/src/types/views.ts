@@ -46,6 +46,24 @@ export interface RuntimeSessionRow {
   completionAuditSequence?: number;
 }
 
+export interface CommandPolicyRow {
+  id: string;
+  name: string;
+  alias?: string;
+  commandKind: 'argv' | 'shell';
+  commandPreview: string;
+  requiredSecrets: string[];
+  optionalSecrets: string[];
+  allowedSecrets: string[];
+  confirm: boolean;
+  requireUserVerification: boolean;
+  allowRemoteDocker: boolean;
+  ttlSeconds: number;
+  envMode: 'minimal' | 'inherit' | 'strict';
+  overrideMode: 'locket' | 'preserve' | 'fail';
+  updatedAt: string; // ISO 8601
+}
+
 export interface AuditLogRow {
   sequence: number;
   action: string; // e.g. 'REVEAL', 'COPY', 'RUN_POLICY'
