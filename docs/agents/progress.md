@@ -66,7 +66,6 @@ skill set fits a leaf better.
 ### Near-Term CLI/Core
 
 - [~] [acda32e4] branch agent-acda32e4/policy-delete-confirmation, worktree .worktrees/agent-acda32e4-policy-delete-confirmation; Policy delete typed confirmation (`docs/specs/policy.md:26`).
-- [~] [acda32e4] branch agent-acda32e4/source-precedence-get, worktree .worktrees/agent-acda32e4-source-precedence-get; **subtask** - source-precedence-get: explicit `get --source` selection for metadata, reveal, copy, and audit.
 - [~] [acda32e4] branch agent-acda32e4/source-precedence-rm, worktree .worktrees/agent-acda32e4-source-precedence-rm; **subtask** - source-precedence-rm: require explicit `rm --source` when a key has multiple sources.
 - [~] [acda32e4] branch agent-acda32e4/source-precedence-purge, worktree .worktrees/agent-acda32e4-source-precedence-purge; **subtask** - source-precedence-purge: regression for ambiguous `purge` source selection.
 - [ ] Source-precedence remaining sweep across lifecycle and runtime

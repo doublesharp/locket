@@ -70,6 +70,8 @@ Slices that have merged to `main` and verified. Open work tracked in
   with `SCHEMA_MIGRATE` audit on migrations).
 - [x] scan-severity-policy: Scan severity now follows project policy for provider-token
   and .env findings.
+- [x] source-precedence-get: Added explicit source selection for get metadata and
+  value-access paths.
 
 ## Full Spec Coverage TODO — Runtime/DX
 
