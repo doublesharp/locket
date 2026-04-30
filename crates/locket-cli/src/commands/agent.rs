@@ -118,13 +118,8 @@ fn ensure_agent_running_with_launcher(
     // answers trusted status requests, preserve the live daemon and
     // keep start idempotent instead of unlinking its socket.
     if socket_path.exists() {
-        if let Ok(snapshot) = request_status_snapshot(&socket_path) {
-            writeln!(output, "agent: already running")?;
-            writeln!(output, "running: yes")?;
-            writeln!(output, "pid: -")?;
-            write_agent_paths(context, output)?;
-            write_agent_status_snapshot(output, &snapshot)?;
-            return Ok(());
+        if launcher.status_snapshot(&socket_path).is_ok() {
+            return Ok(AgentStartupReport { started: false, pid: None });
         }
     }
 

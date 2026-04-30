@@ -882,14 +882,14 @@ fn optional_timestamp_label(value: Option<i64>) -> String {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum TeamRole {
+enum TeamMemberRole {
     Owner,
     Maintainer,
     Developer,
     ReadOnly,
 }
 
-impl TeamRole {
+impl TeamMemberRole {
     fn from_label(label: &str) -> Option<Self> {
         match label {
             "owner" => Some(Self::Owner),
@@ -905,37 +905,37 @@ fn current_team_member_role(
     store: &locket_store::Store,
     project_id: &str,
     team_id: &str,
-) -> Result<TeamRole, CliError> {
+) -> Result<TeamMemberRole, CliError> {
     let Some(local_device) = store.get_active_local_device(project_id)? else {
         return Err(team_role_denied_error("team action requires an active local team device"));
     };
     let Some(member) = store.get_active_team_member_by_device(team_id, &local_device.id)? else {
         return Err(team_role_denied_error("local device is not an active team member"));
     };
-    TeamRole::from_label(&member.role)
+    TeamMemberRole::from_label(&member.role)
         .ok_or_else(|| team_role_denied_error("local team member has an unknown role"))
 }
 
-fn authorize_team_remove(caller: TeamRole, target: &TeamMemberListRecord) -> Result<(), CliError> {
+fn authorize_team_remove(caller: TeamMemberRole, target: &TeamMemberListRecord) -> Result<(), CliError> {
     match caller {
-        TeamRole::Owner => Ok(()),
-        TeamRole::Maintainer if matches!(target.role.as_str(), "developer" | "read-only") => Ok(()),
-        TeamRole::Maintainer => Err(team_role_denied_error(
+        TeamMemberRole::Owner => Ok(()),
+        TeamMemberRole::Maintainer if matches!(target.role.as_str(), "developer" | "read-only") => Ok(()),
+        TeamMemberRole::Maintainer => Err(team_role_denied_error(
             "maintainers can remove only developer and read-only members",
         )),
-        TeamRole::Developer | TeamRole::ReadOnly => {
+        TeamMemberRole::Developer | TeamMemberRole::ReadOnly => {
             Err(team_role_denied_error("team role cannot remove members"))
         }
     }
 }
 
 fn authorize_team_device_revoke(
-    caller: TeamRole,
+    caller: TeamMemberRole,
     target_member: Option<&TeamMemberListRecord>,
 ) -> Result<(), CliError> {
     match caller {
-        TeamRole::Owner => Ok(()),
-        TeamRole::Maintainer => {
+        TeamMemberRole::Owner => Ok(()),
+        TeamMemberRole::Maintainer => {
             let Some(member) = target_member else {
                 return Err(team_role_denied_error(
                     "maintainers can revoke only non-owner member devices",
@@ -948,7 +948,7 @@ fn authorize_team_device_revoke(
             }
             Ok(())
         }
-        TeamRole::Developer | TeamRole::ReadOnly => {
+        TeamMemberRole::Developer | TeamMemberRole::ReadOnly => {
             Err(team_role_denied_error("team role cannot revoke team devices"))
         }
     }
