@@ -454,8 +454,7 @@ fn data_change_failure_inside_audit_tx_drops_audit_row_atomically() -> Result<()
 }
 
 #[test]
-fn append_audit_rejects_metadata_json_above_64_kib_cap()
--> Result<(), Box<dyn std::error::Error>> {
+fn append_audit_rejects_metadata_json_above_64_kib_cap() -> Result<(), Box<dyn std::error::Error>> {
     use crate::AUDIT_METADATA_JSON_LIMIT;
 
     let mut test_store = open_initialized_store()?;

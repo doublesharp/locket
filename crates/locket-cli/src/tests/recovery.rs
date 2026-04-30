@@ -218,3 +218,135 @@ fn recover_with_corrupted_kdf_file_exits_with_metadata_invalid()
     assert!(error.to_string().contains("recovery/kdf.toml"));
     Ok(())
 }
+
+#[test]
+fn e2e_recovery_roundtrip_init_recover_and_rotate() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+
+    // Step 1: init — captures the initial recovery code from output.
+    let mut init_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut init_output,
+    )?;
+    let init_output = String::from_utf8(init_output)?;
+    let initial_code = recovery_code_from_output(&init_output)?.to_owned();
+    let (project_id, master_key) = test_project_id_and_master_key(&context)?;
+
+    // Step 2: delete the keychain entry to simulate loss, then recover.
+    context.key_store.delete_master_key(&project_id)?;
+    assert!(context.key_store.load_master_key(&project_id).is_err());
+
+    let recover_context = context_with_recovery_code(&context, &format!("{initial_code}\n"));
+    let mut recover_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "recover"])?,
+        &recover_context,
+        &mut recover_output,
+    )?;
+    let recover_output = String::from_utf8(recover_output)?;
+    assert!(recover_output.contains("recovered: master_key"));
+    assert!(recover_output.contains("metadata_only: yes"));
+    assert_eq!(*context.key_store.load_master_key(&project_id)?, master_key);
+
+    // Step 3: rotate — produces a new code and new envelope.
+    let rotate_context = context_with_recovery_code(&context, &format!("{initial_code}\n"));
+    let mut rotate_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "recovery", "rotate"])?,
+        &rotate_context,
+        &mut rotate_output,
+    )?;
+    let rotate_output = String::from_utf8(rotate_output)?;
+    assert!(rotate_output.contains("recovery_code_rotate: success"));
+    assert!(rotate_output.contains("warning: terminal scrollback may retain this code"));
+    assert!(rotate_output.contains("metadata_only: yes"));
+
+    // Step 4: verify the new code actually unlocks the envelope.
+    let new_code = recovery_code_from_output(&rotate_output)?.to_owned();
+    assert_ne!(new_code, initial_code, "rotate must produce a fresh code");
+
+    context.key_store.delete_master_key(&project_id)?;
+    let recover2_context = context_with_recovery_code(&context, &format!("{new_code}\n"));
+    let mut recover2_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "recover"])?,
+        &recover2_context,
+        &mut recover2_output,
+    )?;
+    assert!(String::from_utf8(recover2_output)?.contains("recovered: master_key"));
+    assert_eq!(*context.key_store.load_master_key(&project_id)?, master_key);
+    Ok(())
+}
+
+#[test]
+fn e2e_recover_refuses_when_keychain_valid_without_force() -> Result<(), Box<dyn std::error::Error>>
+{
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    let mut init_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut init_output,
+    )?;
+    let init_output = String::from_utf8(init_output)?;
+    let code = recovery_code_from_output(&init_output)?;
+
+    let recover_context = context_with_recovery_code(&context, &format!("{code}\n"));
+    let result = run_with_context(
+        Cli::try_parse_from(["locket", "recover"])?,
+        &recover_context,
+        &mut Vec::new(),
+    );
+
+    let Err(error) = result else {
+        return Err("recover without --force when keychain valid must fail".into());
+    };
+    assert_eq!(error.exit_code(), 67, "SecretAlreadyExists is exit 67");
+    assert!(error.to_string().contains("master key already exists"));
+    Ok(())
+}
+
+#[test]
+fn e2e_recover_force_overwrites_existing_keychain_entry_and_records_audit()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+
+    let mut init_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut init_output,
+    )?;
+    let init_output = String::from_utf8(init_output)?;
+    let code = recovery_code_from_output(&init_output)?.to_owned();
+    let (project_id, original_master_key) = test_project_id_and_master_key(&context)?;
+
+    let recover_context = context_with_recovery_code(&context, &format!("{code}\n"));
+    let mut recover_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "recover", "--force"])?,
+        &recover_context,
+        &mut recover_output,
+    )?;
+    let recover_output = String::from_utf8(recover_output)?;
+    assert!(recover_output.contains("recovered: master_key"));
+    assert!(recover_output.contains("metadata_only: yes"));
+    // Key is the same since the envelope holds the same key.
+    assert_eq!(*context.key_store.load_master_key(&project_id)?, original_master_key);
+
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let metadata: String = store.connection().query_row(
+        "SELECT metadata_json FROM audit_log WHERE action = 'RECOVER' ORDER BY sequence DESC LIMIT 1",
+        [],
+        |row| row.get(0),
+    )?;
+    assert!(metadata.contains("\"force\":true"));
+    assert!(metadata.contains("\"action\":\"RECOVER\""));
+    assert!(metadata.contains("\"status\":\"SUCCESS\""));
+    Ok(())
+}

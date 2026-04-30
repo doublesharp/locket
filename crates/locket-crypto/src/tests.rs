@@ -305,8 +305,7 @@ fn tampered_value_nonce_fails_secret_decryption() -> Result<(), CryptoError> {
     let mut encrypted =
         super::encrypt_secret_value_v1(&PROFILE_SECRET_KEY, "secret", &value_aad, &wrap_aad)?;
     encrypted.value_nonce[0] ^= 0x01;
-    let result =
-        decrypt_secret_value_v1(&PROFILE_SECRET_KEY, &encrypted, &value_aad, &wrap_aad);
+    let result = decrypt_secret_value_v1(&PROFILE_SECRET_KEY, &encrypted, &value_aad, &wrap_aad);
     assert!(matches!(result, Err(CryptoError::DecryptionFailed)));
     Ok(())
 }
@@ -317,8 +316,7 @@ fn tampered_wrap_nonce_fails_dek_unwrap() -> Result<(), CryptoError> {
     let mut encrypted =
         super::encrypt_secret_value_v1(&PROFILE_SECRET_KEY, "secret", &value_aad, &wrap_aad)?;
     encrypted.encrypted_dek[0] ^= 0x01;
-    let result =
-        decrypt_secret_value_v1(&PROFILE_SECRET_KEY, &encrypted, &value_aad, &wrap_aad);
+    let result = decrypt_secret_value_v1(&PROFILE_SECRET_KEY, &encrypted, &value_aad, &wrap_aad);
     assert!(matches!(result, Err(CryptoError::DecryptionFailed)));
     Ok(())
 }
