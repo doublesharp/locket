@@ -6,6 +6,7 @@ import { useAgent } from './composables/useAgent';
 import { useTray } from './composables/useTray';
 import AuditLog from './views/AuditLog.vue';
 import ExecutionMonitor from './views/ExecutionMonitor.vue';
+import ProjectDashboard from './views/ProjectDashboard.vue';
 import ScanResults from './views/ScanResults.vue';
 import SecretMetadataList from './views/SecretMetadataList.vue';
 import SecretVersionHistory from './views/SecretVersionHistory.vue';
@@ -19,14 +20,15 @@ import type {
   VersionHistoryRow,
 } from './types/views';
 
-type ViewKey = 'secrets' | 'versions' | 'execution' | 'audit' | 'scan' | 'settings';
+type ViewKey = 'dashboard' | 'secrets' | 'versions' | 'execution' | 'audit' | 'scan' | 'settings';
 
 const { status, error, loading, refresh } = useAgent();
 useTray(status, error);
 
-const currentView = ref<ViewKey>('secrets');
+const currentView = ref<ViewKey>('dashboard');
 
 const navItems: ReadonlyArray<{ key: ViewKey; label: string }> = [
+  { key: 'dashboard', label: 'Dashboard' },
   { key: 'secrets', label: 'Secrets' },
   { key: 'versions', label: 'Versions' },
   { key: 'execution', label: 'Execution' },
@@ -133,8 +135,25 @@ function triggerRescan(): void {
     <main class="shell__main">
       <AgentUnavailableBanner v-if="error" :error="error" />
 
+      <ProjectDashboard
+        v-if="currentView === 'dashboard'"
+        :lock-label="lockLabel"
+        :project-label="projectLabel"
+        :profile-label="profileLabel"
+        :loading="loading"
+        :secrets="secrets"
+        :versions="versions"
+        :sessions="sessions"
+        :audit-rows="auditRows"
+        :findings="findings"
+        :settings="settings"
+        :audit-chain-ok="auditChainOk"
+        @navigate="selectView"
+        @refresh="triggerVerify"
+      />
+
       <SecretMetadataList
-        v-if="currentView === 'secrets'"
+        v-else-if="currentView === 'secrets'"
         :rows="secrets"
         :privacy-mode="settings.privacyRedactNames"
         :loading="loading"
