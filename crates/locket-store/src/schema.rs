@@ -250,7 +250,6 @@ CREATE TABLE IF NOT EXISTS passkey_credentials (
   credential_id BLOB NOT NULL CHECK (length(credential_id) > 0),
   transports_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(transports_json)),
   prf_capable INTEGER NOT NULL CHECK (prf_capable IN (0, 1)),
-  webauthn_relying_party_id TEXT NOT NULL DEFAULT 'locket.localhost',
   backup_eligible INTEGER CHECK (backup_eligible IN (0, 1)),
   backup_state INTEGER CHECK (backup_state IN (0, 1)),
   created_at INTEGER NOT NULL,

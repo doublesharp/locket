@@ -44,11 +44,10 @@ fn passkey_list_command(
         for credential in credentials {
             writeln!(
                 output,
-                "- {} id={} credential_id_prefix={} rp_id={} transports={} prf={} backup_eligible={} backup_state={} created_at={} last_used_at={} revoked_at={}",
+                "- {} id={} credential_id_prefix={} transports={} prf={} backup_eligible={} backup_state={} created_at={} last_used_at={} revoked_at={}",
                 credential.label,
                 credential.id,
                 credential_id_prefix(&credential.credential_id),
-                credential.webauthn_relying_party_id,
                 render_passkey_transports(&credential.transports),
                 yes_no(credential.prf_capable),
                 render_optional_bool(credential.backup_eligible),
@@ -94,7 +93,6 @@ fn passkey_remove_command(
     writeln!(output, "passkey: revoke")?;
     writeln!(output, "label: {}", credential.label)?;
     writeln!(output, "credential_id_prefix: {}", credential_id_prefix(&credential.credential_id))?;
-    writeln!(output, "rp_id: {}", credential.webauthn_relying_party_id)?;
     writeln!(output, "transports: {}", render_passkey_transports(&credential.transports))?;
     writeln!(output, "prf: {}", yes_no(credential.prf_capable))?;
     let confirmation = context.confirmation_reader.read_confirmation("passkey remove")?;
@@ -146,7 +144,6 @@ fn write_passkey_remove_audit_if_available(
         "passkey_id": credential.id,
         "label": credential.label,
         "credential_id_prefix": credential_id_prefix(&credential.credential_id),
-        "webauthn_relying_party_id": credential.webauthn_relying_party_id,
         "transports": credential.transports,
         "prf_capable": credential.prf_capable,
         "backup_eligible": credential.backup_eligible,

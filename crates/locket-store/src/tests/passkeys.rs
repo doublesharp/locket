@@ -34,21 +34,3 @@ fn stores_lists_finds_and_revokes_passkey_credentials() -> Result<(), Box<dyn Er
     assert_eq!(all[0].revoked_at, Some(200));
     Ok(())
 }
-
-#[test]
-fn passkey_credentials_default_relying_party_id_when_omitted() -> Result<(), Box<dyn Error>> {
-    let test_store = open_initialized_store()?;
-    insert_project_profile(&test_store.store)?;
-    test_store.store.connection().execute(
-        "INSERT INTO passkey_credentials(
-           id, project_id, label, credential_id, transports_json, prf_capable, created_at
-         )
-         VALUES ('lk_passkey_default_rp', 'lk_proj_test', 'default-rp', x'ABCDEF', '[]', 1, 100)",
-        [],
-    )?;
-
-    let credentials = test_store.store.find_passkey_credentials("lk_proj_test", "default-rp")?;
-    assert_eq!(credentials.len(), 1);
-    assert_eq!(credentials[0].webauthn_relying_party_id, crate::DEFAULT_WEBAUTHN_RELYING_PARTY_ID);
-    Ok(())
-}

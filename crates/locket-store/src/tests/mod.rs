@@ -166,7 +166,6 @@ pub(super) fn test_passkey_credential() -> PasskeyCredentialRecord {
         credential_id: vec![0xab, 0xcd, 0xef, 0x12, 0x34, 0x56],
         transports: vec!["internal".to_owned(), "usb".to_owned()],
         prf_capable: true,
-        webauthn_relying_party_id: crate::DEFAULT_WEBAUTHN_RELYING_PARTY_ID.to_owned(),
         backup_eligible: Some(true),
         backup_state: Some(false),
         created_at: 100,
