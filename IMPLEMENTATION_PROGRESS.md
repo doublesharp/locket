@@ -549,8 +549,9 @@ the spec already covers. Closed slices land in
     socket. Pre-req: `agent-socket-server`.
   - [ ] **subtask** — harden-socket-perms: 0600/equivalent socket and
     pipe permissions; refuse to start if the bind path is wider.
-  - [ ] **subtask** — harden-core-dumps: disable core dumps in the
+  - [~] [d7d049a4] **subtask** — harden-core-dumps: disable core dumps in the
     agent and CLI processes that hold key material (per-platform).
+    Claim: branch agent-d7d049a4/harden-core-dumps, worktree .worktrees/agent-d7d049a4-harden-core-dumps. Scope: Unix `RLIMIT_CORE=0` + `PR_SET_DUMPABLE=0` (Linux) helper in `locket-platform`, called from CLI startup; Windows is a no-op for now with a `[ ]` follow-up.
   - [ ] **subtask** — harden-memory-lock: `mlock`/equivalent for
     unwrapped key buffers; warn on unsupported platforms.
   - [ ] **subtask** — harden-zeroize: ensure unwrapped keys/values
