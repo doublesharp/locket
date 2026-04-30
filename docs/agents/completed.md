@@ -273,6 +273,8 @@ Slices that have merged to `main` and verified. Open work tracked in
   windows.
 - [x] tauri-permission-guard: Release desktop hardening now has stricter CSP and
   permission regressions.
+- [x] tray-icons-real: Tray icons are now generated as visible template and light/dark
+  raster assets.
 
 ## Full Spec Coverage TODO — Code Health and Bug Fixes
 

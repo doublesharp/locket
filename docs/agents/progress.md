@@ -302,7 +302,6 @@ Slices 1+2 shipped (agent client, tray binding, 6 view scaffolds,
 - [ ] Tray template-image policy: macOS template-image (alpha-mask)
   vs Windows/Linux full-color light/dark variants. Placeholder PNGs
   ship today (`docs/specs/desktop.md`).
-  - [~] [acda32e4] branch agent-acda32e4/tray-icons-real, worktree .worktrees/agent-acda32e4-tray-icons-real; **subtask** — tray-icons-real: Lucide-derived tray icon assets for template and light/dark variants.
 - [ ] Cross-surface error-text parity: CLI / UI / tray / shell /
   VS Code show the same reason and next action per typed error
   (`docs/specs/desktop.md`).
