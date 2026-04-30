@@ -17,8 +17,17 @@ state — keep it current throughout your slice.
 
 ### Slice lifecycle
 
-Every agent follows this exact ordered flow. Each step's edit to this
-doc must reach `main` before the next agent reads the file.
+Two roles:
+
+- **Worker agents** claim, implement, and hand off via a ready-file.
+  Workers never merge to `main`.
+- **One integrator agent** drains the ready queue and merges to
+  `main`. Exactly one integrator runs at a time.
+
+The progress doc on `main` is the shared state. Workers update their
+claim line on `main`, then never touch `main` again until handoff.
+
+#### Worker flow
 
 1. **Claim an agent id** at session start (see "Claiming an agent id"
    below). Your id is the 8-char hex name of your file under
@@ -28,40 +37,111 @@ doc must reach `main` before the next agent reads the file.
    free to reassign.
 3. **Mark the claim on `main`.** Edit the line to
    `[~] [<your-agent-id>]` and append a one-line note (branch,
-   worktree, scope). Land that edit on `main` before touching code,
-   so other agents see your claim.
+   worktree, scope). Land that edit on `main` before touching code.
 4. **Create the worktree and branch** (`agent-<id>/<topic>` under
-   `.worktrees/agent-<id>-<topic>`; see Worktree and branch naming).
-   Do all implementation there.
-5. **Implement and quick-check.** Be optimistic — don't run the full
-   workspace battery. Add focused tests alongside the change and run
-   only the scoped tests for the touched crate(s):
-   `cargo test -p <crate> -j 12`. Skip workspace fmt/clippy/test
-   pre-merge.
-6. **Merge to `main`.** Rebase onto current `main` and fast-forward.
-   Never `--no-verify`, `--no-gpg-sign`, or `git push --force` on
-   `main`. Never overwrite or revert another agent's committed work.
-7. **Close out on `main`.** In one commit on `main`:
+   `.worktrees/agent-<id>-<topic>`). All implementation work happens
+   here.
+5. **Implement and quick-check.** Add focused tests alongside the
+   change. Run only the scoped tests for the touched crate(s):
+   `cargo test -p <crate> -j 12`. Skip workspace fmt/clippy/test —
+   the integrator runs the full battery before merging.
+6. **Commit to your branch.** Coherent commit messages, no
+   `--no-verify`. Do NOT touch `main` and do NOT delete the worktree.
+7. **Drop a ready-file and stop.** Write
+   `.ready/<agent-id>-<topic>.toml` (atomic create — see
+   "Ready-file format" below). Then exit; your loop ends here for
+   this slice.
+8. **Pick the next item** and repeat from step 2 with the same agent
+   id. Never reuse a worktree for a new slice.
+
+If blocked: change the claim line to
+`[~] [<id>] blocked: <reason>`, commit on your branch, do NOT drop a
+ready-file. Keep the id.
+
+#### Integrator flow
+
+The integrator runs alone. Confirm no other integrator is active
+(check `.agents/integrator.lock`) before draining the queue.
+
+1. **Take the integrator lock** (see "Integrator lock" below).
+2. **Pick the oldest ready-file** in `.ready/` (sort by mtime).
+3. **Verify the ready-file** matches disk: branch exists, `head_sha`
+   is the branch tip, worktree at the named path, claim line in
+   `IMPLEMENTATION_PROGRESS.md` references the same id and topic.
+   If any check fails, move the ready-file to `.ready/rejected/`
+   with a `<reason>.txt` sibling and continue.
+4. **Rebase the branch onto current `main`.** On rebase conflict,
+   move the ready-file to `.ready/conflict/` with `<reason>.txt`,
+   leave branch+worktree intact for the worker, and continue.
+5. **Run the full battery on the rebased branch.**
+   `cargo fmt --all -- --check`,
+   `cargo clippy --workspace --all-targets --all-features -j 12 -- -D warnings`,
+   `cargo test --workspace --all-targets --all-features -j 12`,
+   `make leak-canary`. On any failure, move the ready-file to
+   `.ready/failed/` with `<reason>.txt`, leave branch+worktree
+   intact, and continue.
+6. **Fast-forward `main`.** No `--no-verify`, no force-push, no
+   merge commits. Then close out on `main` in one commit:
    - **Move the line to `IMPLEMENTATION_COMPLETED.md`** under its
      section heading, flipping it to `[x]` and **compressing the
      description to 1–2 short lines** about what shipped. Drop
-     spec/error/audit/file pointers and any claim note. The line
-     does not stay in `IMPLEMENTATION_PROGRESS.md`.
+     spec/error/audit/file pointers and any claim note.
    - Remove the worktree and delete the branch:
      `git worktree remove .worktrees/agent-<id>-<topic>` then
      `git branch -D agent-<id>/<topic>`.
-8. **Run the full battery on `main`.** After the merge commit lands,
-   run `cargo fmt --all -- --check`,
-   `cargo clippy --workspace --all-targets --all-features -- -D warnings`,
-   and `cargo test --workspace --all-targets --all-features -j 12`.
-   If anything fails:
-   - Fix forward in a tiny follow-up commit on `main` if the fix is
-     obvious (one missing import, one stale assertion).
-     - Otherwise, **revert the merge commit on `main`** (`git revert
-     <sha>` on `main`), surface the failure on the original TODO
-     line as a new `[~]` claim with notes, and let the slice owner
-     re-do it.
-9. **Pick the next item** and repeat.
+   - Delete the ready-file from `.ready/`.
+7. **Drain the next ready-file.** Loop until `.ready/` is empty.
+8. **Release the integrator lock** on clean exit.
+
+Never paper over a failure. Workers reclaim from `.ready/conflict/`
+or `.ready/failed/` and redo.
+
+#### Ready-file format
+
+`.ready/<agent-id>-<topic>.toml`. Atomic create (`set -C` / `O_EXCL`).
+The integrator trusts these fields verbatim — get them right.
+
+```toml
+agent_id = "<8-char hex>"
+topic = "<short-topic>"             # matches branch and worktree suffix
+branch = "agent-<id>/<topic>"
+worktree = ".worktrees/agent-<id>-<topic>"
+head_sha = "<full sha of branch tip>"
+todo_section = "Near-Term CLI/Core" # H3 under Full Spec Coverage TODO
+todo_line = "Source-precedence and multi-source ..."  # exact match for grep
+description = "1–2 short lines about what shipped"    # goes into COMPLETED
+files_touched = ["crates/locket-cli/src/...", "..."]
+typed_errors_added = ["SecretAlreadyExists"]   # empty list ok
+audit_actions_added = ["RECOVER"]              # empty list ok
+scoped_tests_run = "cargo test -p locket-cli -j 12"
+notes = """
+Anything the integrator needs that isn't in the diff
+(e.g. follow-up TODOs to open, deps on another agent's slice).
+"""
+```
+
+#### Integrator lock
+
+`.agents/integrator.lock` is a single-writer guard so two integrators
+never race on `main`.
+
+```sh
+lock="$(cd "$(dirname "$(git rev-parse --git-common-dir)")" && pwd)/.agents/integrator.lock"
+if (set -C; : > "${lock}") 2>/dev/null; then
+    printf 'agent_id = "%s"\npid = %s\nclaimed_at = "%s"\n' \
+        "${AGENT_ID}" "$$" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "${lock}"
+else
+    # If pid in the existing lock is dead, reap and retry; otherwise abort.
+    p="$(awk -F' = ' '/^pid/ {print $2}' "${lock}")"
+    if [ -n "${p}" ] && ! kill -0 "${p}" 2>/dev/null; then
+        rm -f "${lock}" && exec "$0" "$@"
+    fi
+    echo "integrator already active" >&2; exit 1
+fi
+trap 'rm -f "${lock}"' EXIT
+```
+
+Keep `.ready/` and `.agents/` out of commits.
 
 ### Other rules
 
