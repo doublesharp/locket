@@ -193,8 +193,6 @@ skill set fits a leaf better.
 - [ ] `locket recover` restores Locket-managed automation-client
   private keys from the envelope; `--force` rotates intact keychain
   entries and records the override in the `RECOVER` audit row.
-- [~] [acda32e4] branch agent-acda32e4/audit-metadata-validator, worktree .worktrees/agent-acda32e4-audit-metadata-validator; Typed `metadata_json` shape validator per audit action family
-  (required fields, no unknown fields without a schema bump).
 - [ ] `device init` first-run-on-machine bootstrap: master key,
   recovery envelope, and recovery code on a teammate clone
   (`docs/specs/team-sync-recovery.md`).

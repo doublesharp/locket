@@ -432,6 +432,8 @@ Slices that have merged to `main` and verified. Open work tracked in
 - [x] Optional screen-clear after one-time recovery code display on `init` and `recovery rotate`; ANSI clear only when stdout is a TTY.
 - [x] **subtask** — e2e-recovery-roundtrip: `init` → `recover` → `recovery rotate`; refusal-when-keychain-valid and `--force` path covered.
 - [x] Caller-side summarization: `summarize_names` applied to exec/docker/run/redact audit sites to stay under 64 KiB cap.
+- [x] audit-metadata-validator: audit rows now validate metadata
+  shapes per action family and reject unknown fields without a schema bump.
 - [x] Bytes-after-UTF-8 sweep: non-ASCII UTF-8 values pass byte-for-byte through exec, docker, run, redact, and scan paths.
 - [x] **subtask** — tests-crypto-aad: AAD construction, key-wrap canonicalization, audit HMAC, recovery envelope, and device descriptor parsing.
 - [x] **subtask** — tests-store-migrations: schema migration paths, `SCHEMA_MIGRATE` audit on every step, rollback on failure.
