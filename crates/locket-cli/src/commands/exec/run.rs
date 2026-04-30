@@ -18,7 +18,7 @@ use crate::commands::secrets::import::{EnvImportEntry, parse_env_import};
 use crate::runtime::RuntimeContext;
 use crate::runtime::error::{
     CliError, child_exit_error, confirmation_failed_error, corrupt_db_error, exec_prepare_error,
-    external_source_unavailable_error, metadata_invalid_error, secret_not_found_error,
+    external_source_unavailable_error, invalid_policy_error, metadata_invalid_error,
     unimplemented_in_build_error, user_verification_failed_error,
 };
 use crate::runtime::key_access::default_profile;
@@ -144,7 +144,7 @@ fn prepare_policy_execution(
     let external_env = resolve_policy_external_env(policy, &parent_env, &resolved.root)?;
     let missing_required = missing_required_secret_names(&selections, &external_env);
     if !missing_required.is_empty() {
-        return Err(secret_not_found_error(format!(
+        return Err(invalid_policy_error(format!(
             "required secret(s) missing: {}",
             missing_required.join(",")
         )));
