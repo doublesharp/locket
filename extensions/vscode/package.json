@@ -15,9 +15,18 @@
   ],
   "main": "./out/extension.js",
   "activationEvents": [
-    "onStartupFinished"
+    "onStartupFinished",
+    "onCommand:locket.revealSecret"
   ],
-  "contributes": {},
+  "contributes": {
+    "commands": [
+      {
+        "command": "locket.revealSecret",
+        "title": "Reveal Secret",
+        "category": "Locket"
+      }
+    ]
+  },
   "scripts": {
     "build": "tsc -p .",
     "watch": "tsc -p . --watch",
