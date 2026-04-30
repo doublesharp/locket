@@ -168,7 +168,7 @@ skill set fits a leaf better.
 
 - [ ] Sealed bundle. `bundle-container-format` shipped
   (`docs/specs/team-sync-recovery.md:111-224`).
-  - [~] [52c592db] branch agent-52c592db/bundle-age-encryption, worktree .worktrees/agent-52c592db-bundle-age-encryption; **subtask** — bundle-age-encryption: integrate `age`/`rage` with multi-recipient support. **Critical path.**
+  - [~] [4ab55ee9] branch agent-4ab55ee9/bundle-age-encryption, worktree .worktrees/agent-4ab55ee9-bundle-age-encryption; **subtask** — bundle-age-encryption: integrate `age`/`rage` with multi-recipient support. **Critical path.**
   - [ ] **subtask** — bundle-export-payload: serialize selected
     profiles, policies, secret metadata, `secret_versions`, blobs,
     and per-profile keys; forbid master/audit/device/recovery key
