@@ -14,19 +14,31 @@ interface Props {
 const props = defineProps<Props>();
 
 const selectedId = ref<string | null>(null);
+const searchQuery = ref<string>('');
 
 const sortedRows = computed<CommandPolicyRow[]>(() =>
   [...props.rows].sort((left, right) => left.name.localeCompare(right.name)),
 );
 
+const filteredRows = computed<CommandPolicyRow[]>(() => {
+  const query = searchQuery.value.trim().toLowerCase();
+  if (query.length === 0) {
+    return sortedRows.value;
+  }
+  return sortedRows.value.filter((row) => searchText(row).includes(query));
+});
+
 const selectedPolicy = computed<CommandPolicyRow | null>(() => {
-  if (sortedRows.value.length === 0) {
+  if (filteredRows.value.length === 0) {
     return null;
   }
-  return sortedRows.value.find((row) => row.id === selectedId.value) ?? sortedRows.value[0];
+  return filteredRows.value.find((row) => row.id === selectedId.value) ?? filteredRows.value[0];
 });
 
 const isEmpty = computed<boolean>(() => !props.loading && sortedRows.value.length === 0);
+const isFilteredEmpty = computed<boolean>(
+  () => !props.loading && sortedRows.value.length > 0 && filteredRows.value.length === 0,
+);
 
 function policyLabel(row: CommandPolicyRow): string {
   if (props.privacyMode) {
@@ -53,6 +65,30 @@ function gateLabels(row: CommandPolicyRow): string[] {
   return labels;
 }
 
+function secretSearchLabels(row: CommandPolicyRow): string[] {
+  if (props.privacyMode) {
+    return [];
+  }
+  return [...row.requiredSecrets, ...row.optionalSecrets, ...row.allowedSecrets];
+}
+
+function searchText(row: CommandPolicyRow): string {
+  return [
+    policyLabel(row),
+    row.commandKind,
+    row.commandPreview,
+    row.envMode,
+    row.overrideMode,
+    ...gateLabels(row),
+    ...secretSearchLabels(row),
+    `${secretCount(row)} secrets`,
+    ttlLabel(row.ttlSeconds),
+    row.updatedAt,
+  ]
+    .join(' ')
+    .toLowerCase();
+}
+
 function ttlLabel(seconds: number): string {
   if (seconds <= 0) {
     return '0s';
@@ -77,7 +113,19 @@ function selectPolicy(row: CommandPolicyRow): void {
   <section class="view" aria-labelledby="policy-editor-heading">
     <header class="view__header">
       <h2 id="policy-editor-heading">Policies</h2>
-      <span class="badge badge--neutral">read-only</span>
+      <div class="view__actions">
+        <label class="view__search">
+          <span class="view__search-label">Search policies</span>
+          <input
+            v-model="searchQuery"
+            type="search"
+            autocomplete="off"
+            spellcheck="false"
+            placeholder="Search metadata"
+          />
+        </label>
+        <span class="badge badge--neutral">read-only</span>
+      </div>
     </header>
 
     <p v-if="loading" class="view__loading" role="status">Loading policy metadata...</p>
@@ -85,6 +133,8 @@ function selectPolicy(row: CommandPolicyRow): void {
     <p v-else-if="isEmpty" class="view__empty">
       No saved command policies. Run <code>locket policy add dev -- &lt;cmd&gt;</code>.
     </p>
+
+    <p v-else-if="isFilteredEmpty" class="view__empty">No matching policies.</p>
 
     <div v-else class="policy-layout">
       <table class="view__table" aria-describedby="policy-editor-heading">
@@ -100,7 +150,7 @@ function selectPolicy(row: CommandPolicyRow): void {
         </thead>
         <tbody>
           <tr
-            v-for="row in sortedRows"
+            v-for="row in filteredRows"
             :key="row.id"
             :class="['view__row', { 'view__row--selected': selectedPolicy?.id === row.id }]"
             tabindex="0"
@@ -218,6 +268,7 @@ function selectPolicy(row: CommandPolicyRow): void {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 0.75rem;
   margin-bottom: 0.75rem;
 }
@@ -227,6 +278,49 @@ function selectPolicy(row: CommandPolicyRow): void {
   font-size: 1rem;
   letter-spacing: 0.04em;
   text-transform: uppercase;
+}
+
+.view__actions {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.view__search {
+  display: grid;
+  gap: 0.25rem;
+  min-width: min(18rem, 100%);
+}
+
+.view__search-label {
+  color: #9aa3b2;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.view__search input {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 2rem;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 0.375rem;
+  background: rgba(255, 255, 255, 0.05);
+  color: #e6e8ec;
+  font: inherit;
+  padding: 0.375rem 0.625rem;
+}
+
+.view__search input:focus {
+  border-color: #f8d77a;
+  outline: 2px solid rgba(248, 215, 122, 0.24);
+  outline-offset: 1px;
+}
+
+.view__search input::placeholder {
+  color: #667085;
 }
 
 .view__loading,
