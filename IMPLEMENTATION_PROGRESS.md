@@ -640,8 +640,7 @@ the spec already covers. Closed slices land in
 - [ ] Audit-tx atomicity: append + data change share one SQLite
   transaction; sequence assigned at commit; rollback leaves no gap
   or phantom row (`docs/specs/audit.md`).
-- [~] [bec7ddfc] `metadata_json` ≤64 KiB per-row cap enforced at write time;
-  Claim: branch agent-bec7ddfc/audit-metadata-cap, worktree .worktrees/agent-bec7ddfc-audit-metadata-cap.
+- [ ] `metadata_json` ≤64 KiB per-row cap enforced at write time;
   large `secret_names`/`redacted_secret_names` collections summarize
   to stay under the cap (`docs/specs/audit.md`,
   `docs/specs/data-model.md:400`).
