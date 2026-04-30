@@ -282,6 +282,17 @@ required_secrets = ["DATABASE_URL"]
             .connection()
             .query_row("SELECT COUNT(*) FROM directory_grants", [], |row| row.get(0))?;
     assert_eq!(grant_count, 0);
+
+    // The spec says `locket allow` must fail before any grant happens —
+    // including before any audit row. Confirm no `ALLOW_DIRECTORY` row
+    // was written for the failed run, so denial state can't be confused
+    // with a successful grant in the audit chain.
+    let allow_audit_count: u32 = store.connection().query_row(
+        "SELECT COUNT(*) FROM audit_log WHERE action = 'ALLOW_DIRECTORY'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(allow_audit_count, 0, "untrusted-root allow must not append ALLOW_DIRECTORY");
     Ok(())
 }
 
