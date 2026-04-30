@@ -311,11 +311,18 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
     `require_agent = true`.
 - [x] `ExternalEnvSource::Parent` re-injects only policy-allowed
   parent names for `locket run`.
-- [ ] External env source resolution: `::File` (canonical, in-project,
-  non-symlink-escape; `policy doctor` warns), `::Compose` (shell out to
-  `docker compose config --format json`, names-only audit), `::Ide`
-  (consume `LOCKET_IDE_ENV_SESSION` over the agent socket; names-only;
-  no persistence) (`docs/specs/runtime.md:117-118`).
+- [~] External env source resolution
+  (`docs/specs/runtime.md:117-118`). `::Parent` and `::File` shipped.
+  Remaining subtasks:
+  - [ ] **subtask** — env-source-compose: shell out to
+    `docker compose config --format json`, parse the env block, write a
+    names-only `external_sources: ["compose"]` field on `RUN`/`EXEC`.
+    Errors: `ExternalSourceUnavailable` (89) when compose isn't on
+    PATH or returns non-zero.
+  - [ ] **subtask** — env-source-ide: consume the VS Code terminal
+    `LOCKET_IDE_ENV_SESSION` map over the agent socket; names-only
+    audit on `RUN`/`EXEC`; never persist values. Depends on the
+    agent-socket-server subtask under Local agent daemon.
 - [x] Shell prompt indicator renders lock state and respects privacy
   aliases (degrades to "stopped" when the agent is unreachable).
 - [~] [70c448c4] blocked: policy surface changes require `crates/locket-cli/src/commands/policy.rs`, currently owned by active claim agent-6e4d05db/audit-key-failures.
