@@ -7,6 +7,8 @@ interface Props {
   findings: ScanFindingRow[];
   scanning: boolean;
   lastScanAt?: string;
+  locked: boolean;
+  errorMessage?: string | null;
 }
 
 const props = defineProps<Props>();
@@ -15,7 +17,9 @@ const emit = defineEmits<{
   (e: 'rescan'): void;
 }>();
 
-const isEmpty = computed<boolean>(() => !props.scanning && props.findings.length === 0);
+const isEmpty = computed<boolean>(
+  () => !props.scanning && !props.errorMessage && props.findings.length === 0,
+);
 
 function severityLabel(severity: ScanFindingRow['severity']): string {
   return severity;
@@ -52,6 +56,12 @@ function onRescan(): void {
     </header>
 
     <p v-if="scanning" class="view__loading" role="status">Scanning project tree…</p>
+
+    <p v-else-if="errorMessage" class="view__error" role="alert">{{ errorMessage }}</p>
+
+    <p v-else-if="locked" class="view__notice" role="status">
+      Vault locked; known-value matching is unavailable.
+    </p>
 
     <p v-else-if="isEmpty" class="view__empty">No scan findings.</p>
 
@@ -152,10 +162,20 @@ function onRescan(): void {
 }
 
 .view__loading,
-.view__empty {
+.view__empty,
+.view__notice,
+.view__error {
   margin: 0;
   font-size: 0.875rem;
   color: #9aa3b2;
+}
+
+.view__notice {
+  color: #f8d77a;
+}
+
+.view__error {
+  color: #f4b3b3;
 }
 
 .view__table {

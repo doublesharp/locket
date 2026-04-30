@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue';
 
 import AgentUnavailableBanner from './components/AgentUnavailableBanner.vue';
+import { scan as scanKnownValues } from './agent/client';
 import { useAgent } from './composables/useAgent';
 import { useTray } from './composables/useTray';
 import AuditLog from './views/AuditLog.vue';
@@ -21,6 +22,7 @@ import type {
   SettingsState,
   VersionHistoryRow,
 } from './types/views';
+import type { AgentClientError, ScanFinding } from './agent/types';
 
 type ViewKey =
   | 'dashboard'
@@ -79,6 +81,9 @@ const auditRows = ref<AuditLogRow[]>([]);
 const findings = ref<ScanFindingRow[]>([]);
 const policies = ref<CommandPolicyRow[]>([]);
 const scanning = ref<boolean>(false);
+const scanLocked = ref<boolean>(false);
+const scanError = ref<string | null>(null);
+const lastScanAt = ref<string | undefined>(undefined);
 const auditChainOk = ref<boolean>(true);
 
 const settings = ref<SettingsState>({
@@ -105,11 +110,62 @@ function triggerVerify(): void {
   void refresh();
 }
 
-function triggerRescan(): void {
+function scanErrorLabel(error: AgentClientError): string {
+  switch (error.kind) {
+    case 'unavailable':
+      return 'Agent unavailable.';
+    case 'protocol':
+      return 'Scan request failed.';
+    case 'rejected':
+      return error.code;
+    default:
+      return 'Scan request failed.';
+  }
+}
+
+function normalizeSeverity(severity: string): ScanFindingRow['severity'] {
+  switch (severity.toLowerCase()) {
+    case 'critical':
+      return 'critical';
+    case 'high':
+    case 'error':
+      return 'high';
+    case 'medium':
+    case 'warn':
+    case 'warning':
+      return 'medium';
+    default:
+      return 'low';
+  }
+}
+
+function scanFindingRow(finding: ScanFinding, index: number): ScanFindingRow {
+  return {
+    id: `${finding.path}:${finding.line}:${finding.column}:${finding.rule}:${index}`,
+    rule: finding.rule,
+    severity: normalizeSeverity(finding.severity),
+    path: finding.path,
+    line: finding.line,
+    column: finding.column,
+    redactedSummary: finding.redacted_summary,
+    suppressedBy: finding.suppressed_by ?? undefined,
+  };
+}
+
+async function triggerRescan(): Promise<void> {
   scanning.value = true;
-  setTimeout(() => {
-    scanning.value = false;
-  }, 250);
+  scanError.value = null;
+  const result = await scanKnownValues({ paths: [], require_known: false });
+  if (result.ok) {
+    findings.value = result.value.findings.map(scanFindingRow);
+    scanLocked.value = result.value.locked;
+    lastScanAt.value = new Date().toISOString();
+  } else {
+    findings.value = [];
+    scanLocked.value = false;
+    scanError.value = scanErrorLabel(result.error);
+  }
+  scanning.value = false;
 }
 </script>
 
@@ -196,6 +252,9 @@ function triggerRescan(): void {
         v-else-if="currentView === 'scan'"
         :findings="findings"
         :scanning="scanning"
+        :locked="scanLocked"
+        :error-message="scanError"
+        :last-scan-at="lastScanAt"
         @rescan="triggerRescan"
       />
 
