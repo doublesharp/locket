@@ -190,6 +190,9 @@ Slices that have merged to `main` and verified. Open work tracked in
 
 - [x] `locket audit verify` spec coverage.
 - [x] `locket doctor`.
+- [x] `locket doctor` opportunistically prunes expired
+  `automation_client_nonces` and reports the count; client-auth
+  half tracked under Automation-client flows.
 - [x] Redacted `locket agent logs`.
 - [x] `locket debug bundle --redacted`.
 - [x] Required fuzz targets landed under `fuzz/fuzz_targets/` (cadence
