@@ -20,6 +20,7 @@ use crate::runtime::error::{
     CliError, confirmation_failed_error, invalid_profile_name_error, invalid_secret_name_error,
     profile_not_found_error, secret_not_found_error, tty_required_error,
 };
+use crate::runtime::prompts::ConfirmationReader;
 use crate::runtime::key_access::load_project_key;
 use crate::support::project_files::{ensure_gitignore, refresh_example_for_project_if_enabled};
 use crate::support::secret_helpers::{SecretEncryptRequest, encrypt_secret_version};
@@ -122,7 +123,7 @@ pub fn import_command(
     writeln!(output, "skipped_names: {}", format_name_set(&skipped_names))?;
     writeln!(output, "missing_in_profile: {}", format_name_set(&missing_in_profile))?;
     writeln!(output, "extra_in_profile: {}", format_name_set(&extra_in_profile))?;
-    write_env_delete_prompt(output, &path)?;
+    write_env_delete_prompt(output, &path, context.confirmation_reader.as_ref())?;
     writeln!(output, "metadata_only: yes")?;
     Ok(())
 }
@@ -168,19 +169,30 @@ fn format_name_set(names: &BTreeSet<String>) -> String {
     }
 }
 
-fn write_env_delete_prompt(output: &mut impl Write, path: &Path) -> Result<(), CliError> {
+fn write_env_delete_prompt(
+    output: &mut impl Write,
+    path: &Path,
+    confirmation_reader: &dyn ConfirmationReader,
+) -> Result<(), CliError> {
     if path.file_name().and_then(OsStr::to_str) != Some(".env") {
         writeln!(output, "delete_env_prompt: not_applicable")?;
         return Ok(());
     }
-    if !io::stdin().is_terminal() {
-        writeln!(output, "delete_env_prompt: skipped_noninteractive")?;
-        writeln!(output, "delete_env: kept")?;
-        return Ok(());
-    }
-    writeln!(output, "delete_env_prompt: type 'delete .env' to remove the plaintext .env file")?;
-    let mut confirmation = String::new();
-    io::stdin().read_line(&mut confirmation)?;
+    let confirmation =
+        match confirmation_reader.read_confirmation("type 'delete .env' to remove the plaintext .env file") {
+            Ok(c) => {
+                writeln!(
+                    output,
+                    "delete_env_prompt: type 'delete .env' to remove the plaintext .env file"
+                )?;
+                c
+            }
+            Err(_) => {
+                writeln!(output, "delete_env_prompt: skipped_noninteractive")?;
+                writeln!(output, "delete_env: kept")?;
+                return Ok(());
+            }
+        };
     if confirmation.trim_end() == "delete .env" {
         fs::remove_file(path)?;
         writeln!(output, "delete_env: deleted")?;

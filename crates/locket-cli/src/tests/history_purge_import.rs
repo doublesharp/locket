@@ -465,7 +465,6 @@ fn import_env_encrypts_values_and_refreshes_example() -> Result<(), Box<dyn std:
     assert!(import_output.contains("profile: dev"));
     assert!(import_output.contains("source: user-local"));
     assert!(import_output.contains("missing_in_profile: none"));
-    assert!(import_output.contains("delete_env_prompt: skipped_noninteractive"));
     assert!(import_output.contains("delete_env: kept"));
     assert!(import_output.contains("metadata_only: yes"));
     assert!(!import_output.contains("postgres://localhost/app"));
@@ -539,7 +538,7 @@ fn import_env_targets_named_profile_and_reports_parity() -> Result<(), Box<dyn s
     assert!(import_output.contains("profile_names: 1"));
     assert!(import_output.contains("missing_in_profile: none"));
     assert!(import_output.contains("extra_in_profile: none"));
-    assert!(import_output.contains("delete_env_prompt: skipped_noninteractive"));
+    assert!(import_output.contains("delete_env: kept"));
     assert!(!import_output.contains("sk_test_stagingImport123"));
 
     let resolved = crate::resolve_project(&context.cwd)?.ok_or("project should resolve")?;
@@ -628,5 +627,48 @@ fn import_overwrite_to_dangerous_profile_requires_confirmation_before_rotation()
         )?
         .ok_or("prod import should exist")?;
     assert_eq!(secret.current_version, 1);
+    Ok(())
+}
+
+#[test]
+fn import_with_delete_confirmation_removes_env_and_emits_example()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    let secret_value = "postgres://user:secret@db.example.local/myapp";
+    std::fs::write(
+        directory.path().join(".env"),
+        format!("DATABASE_URL={secret_value}\nAPI_TOKEN=tok_test_abc123\n"),
+    )?;
+
+    let confirm_context = context_with_confirmation(&context, "delete .env\n");
+    let mut import_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "import", ".env"])?,
+        &confirm_context,
+        &mut import_output,
+    )?;
+    let import_output = String::from_utf8(import_output)?;
+    assert!(import_output.contains("imported: 2"), "output: {import_output}");
+    assert!(import_output.contains("delete_env: deleted"), "output: {import_output}");
+    assert!(!import_output.contains(secret_value), "secret value must not appear in output");
+    assert!(!import_output.contains("tok_test_abc123"), "secret value must not appear in output");
+
+    assert!(
+        !directory.path().join(".env").exists(),
+        ".env should be deleted after confirmation"
+    );
+
+    let example = std::fs::read_to_string(directory.path().join(".env.example"))?;
+    assert!(example.contains("DATABASE_URL="), ".env.example should list DATABASE_URL");
+    assert!(example.contains("API_TOKEN="), ".env.example should list API_TOKEN");
+    assert!(!example.contains(secret_value), "secret value must not appear in .env.example");
+    assert!(!example.contains("tok_test_abc123"), "secret value must not appear in .env.example");
+
     Ok(())
 }
