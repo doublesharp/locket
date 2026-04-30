@@ -346,7 +346,7 @@ Slices 1+2 shipped (agent client, tray binding, 6 view scaffolds,
 - [ ] Search/filter UI (`docs/specs/desktop.md`). Each subtask
   renders one surface; never exposes values; pre-req is the
   relevant view's data RPC.
-  - [ ] **subtask** — search-projects-profiles
+  - [~] [acda32e4] branch agent-acda32e4/search-projects-profiles, worktree .worktrees/agent-acda32e4-search-projects-profiles; **subtask** — search-projects-profiles: dashboard project/profile search and filtering surface.
   - [ ] **subtask** — search-secrets-metadata
   - [ ] **subtask** — search-policies
   - [ ] **subtask** — search-audit
