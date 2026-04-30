@@ -11,6 +11,7 @@ use crate::{
 
 mod audit;
 mod automation;
+mod command_policies;
 mod devices;
 mod grants;
 mod keys;

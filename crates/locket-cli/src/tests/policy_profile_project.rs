@@ -72,6 +72,24 @@ fn policy_commands_update_locket_toml_without_duplicates_and_audit_metadata()
     assert!(rows.iter().any(|row| row.contains("\"operation\":\"require\"")));
     assert!(rows.iter().all(|row| !row.contains("pnpm")));
 
+    let project_id: String =
+        store.connection().query_row("SELECT id FROM projects LIMIT 1", [], |row| row.get(0))?;
+    let indexed_policy: (String, String, i64, i64) = store.connection().query_row(
+        "SELECT policy_json, normalized_json, created_at, updated_at
+         FROM command_policies
+         WHERE project_id = ?1 AND name = 'dev'",
+        [project_id],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+    )?;
+    let policy_json = serde_json::from_str::<serde_json::Value>(&indexed_policy.0)?;
+    let normalized_json = serde_json::from_str::<serde_json::Value>(&indexed_policy.1)?;
+    assert_eq!(policy_json["required_secrets"], json!(["API_KEY"]));
+    assert_eq!(policy_json["optional_secrets"], json!(["DATABASE_URL"]));
+    assert_eq!(normalized_json["required_secrets"], json!(["API_KEY"]));
+    assert_eq!(normalized_json["optional_secrets"], json!(["DATABASE_URL"]));
+    assert_eq!(normalized_json["ttl_seconds"], json!(900));
+    assert!(indexed_policy.3 >= indexed_policy.2);
+
     let mut doctor_output = Vec::new();
     run_with_context(
         Cli::try_parse_from(["locket", "policy", "doctor"])?,
@@ -123,7 +141,6 @@ fn policy_commands_update_locket_toml_without_duplicates_and_audit_metadata()
     let policy_text = std::fs::read_to_string(directory.path().join("locket.toml"))?;
     let document = locket_core::PolicyDocument::from_toml_str(&policy_text)?;
     assert!(!document.commands.contains_key("dev"));
-    let store = locket_store::Store::open(directory.path().join("store.db"))?;
     let delete_metadata: String = store.connection().query_row(
         "SELECT metadata_json FROM audit_log
          WHERE action = 'POLICY_UPDATE' AND command = 'policy'
@@ -134,6 +151,18 @@ fn policy_commands_update_locket_toml_without_duplicates_and_audit_metadata()
     assert!(delete_metadata.contains("\"operation\":\"delete\""));
     assert!(delete_metadata.contains("\"metadata_only\":true"));
     assert!(!delete_metadata.contains("pnpm"));
+    let indexed_rows_after_delete: i64 = store.connection().query_row(
+        "SELECT COUNT(*) FROM command_policies WHERE name = 'dev'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(indexed_rows_after_delete, 0);
+    let policy_update_rows_after_delete: i64 = store.connection().query_row(
+        "SELECT COUNT(*) FROM audit_log WHERE action = 'POLICY_UPDATE'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(policy_update_rows_after_delete, 4);
     Ok(())
 }
 

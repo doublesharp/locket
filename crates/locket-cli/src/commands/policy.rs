@@ -1,8 +1,8 @@
 use clap::{Args, Subcommand};
-use locket_core::{PolicyDocument, SecretName};
+use locket_core::{CommandPolicy, CommandSpec, ExternalEnvSource, PolicyDocument, SecretName};
 use locket_crypto::KeyPurpose;
 use locket_scan::EntropyRule;
-use locket_store::AuditWrite;
+use locket_store::{AuditContext, AuditWrite};
 use serde_json::json;
 use std::fs;
 use std::io::Write;
@@ -86,8 +86,15 @@ fn add(
     let mut policy = toml::map::Map::new();
     policy.insert("argv".to_owned(), string_array(args.command));
     commands.insert(args.name.clone(), toml::Value::Table(policy));
-    write_validated_locket_toml(&path, &document)?;
-    write_policy_update_audit_if_available(context, "add", &args.name)?;
+    let policy_document = write_validated_locket_toml(&path, &document)?;
+    write_policy_index_update_if_available(
+        context,
+        resolved.config.project_id.as_str(),
+        &document,
+        &policy_document,
+        &args.name,
+        "add",
+    )?;
     write_policy_update(output, &args.name, "add")
 }
 
@@ -102,8 +109,15 @@ fn allow(
     let policy = policy_table_mut(&mut document, &args.name)?;
     let keys = validate_secret_names(args.keys)?;
     append_without_duplicates(policy, "optional_secrets", &keys)?;
-    write_validated_locket_toml(&path, &document)?;
-    write_policy_update_audit_if_available(context, "allow", &args.name)?;
+    let policy_document = write_validated_locket_toml(&path, &document)?;
+    write_policy_index_update_if_available(
+        context,
+        resolved.config.project_id.as_str(),
+        &document,
+        &policy_document,
+        &args.name,
+        "allow",
+    )?;
     write_policy_update(output, &args.name, "allow")
 }
 
@@ -119,8 +133,15 @@ fn require(
     let keys = validate_secret_names(args.keys)?;
     append_without_duplicates(policy, "required_secrets", &keys)?;
     remove_values(policy, "optional_secrets", &keys)?;
-    write_validated_locket_toml(&path, &document)?;
-    write_policy_update_audit_if_available(context, "require", &args.name)?;
+    let policy_document = write_validated_locket_toml(&path, &document)?;
+    write_policy_index_update_if_available(
+        context,
+        resolved.config.project_id.as_str(),
+        &document,
+        &policy_document,
+        &args.name,
+        "require",
+    )?;
     write_policy_update(output, &args.name, "require")
 }
 
@@ -143,8 +164,8 @@ fn delete(
         return Err(confirmation_failed_error("confirmation did not match policy name"));
     }
     commands.remove(&name);
-    write_validated_locket_toml(&path, &document)?;
-    write_policy_update_audit_if_available(context, "delete", &name)?;
+    let _policy_document = write_validated_locket_toml(&path, &document)?;
+    write_policy_index_delete_if_available(context, resolved.config.project_id.as_str(), &name)?;
     write_policy_update(output, &name, "delete")
 }
 
@@ -207,12 +228,12 @@ fn read_locket_toml(path: &std::path::Path) -> Result<toml::Value, CliError> {
 fn write_validated_locket_toml(
     path: &std::path::Path,
     document: &toml::Value,
-) -> Result<(), CliError> {
+) -> Result<PolicyDocument, CliError> {
     let content = toml::to_string_pretty(document)?;
-    PolicyDocument::from_toml_str(&content)
+    let policy_document = PolicyDocument::from_toml_str(&content)
         .map_err(|error| metadata_invalid_error(error.to_string()))?;
     fs::write(path, content)?;
-    Ok(())
+    Ok(policy_document)
 }
 
 fn commands_table_mut(
@@ -319,21 +340,79 @@ fn write_policy_delete_confirmation(output: &mut impl Write, name: &str) -> Resu
     Ok(())
 }
 
-fn write_policy_update_audit_if_available(
+fn write_policy_index_update_if_available(
     context: &RuntimeContext,
+    project_id: &str,
+    raw_document: &toml::Value,
+    policy_document: &PolicyDocument,
+    policy_name: &str,
     operation: &str,
-    policy: &str,
 ) -> Result<(), CliError> {
-    let Ok(resolved) = require_project(context) else {
-        return Ok(());
-    };
     let mut store = open_store(context)?;
-    if store.get_project(resolved.config.project_id.as_str())?.is_none() {
+    if store.get_project(project_id)?.is_none() {
         return Ok(());
     }
-    let audit_key =
-        load_project_key(context, &store, resolved.config.project_id.as_str(), KeyPurpose::Audit)?;
-    let metadata = json!({
+    let raw_policy_json = policy_json(raw_document, policy_name)?;
+    let policy = policy_document.commands.get(policy_name).ok_or_else(|| {
+        metadata_invalid_error(format!("command policy missing after validation: {policy_name}"))
+    })?;
+    let normalized_json = normalized_policy_json(policy);
+    let audit_key = load_project_key(context, &store, project_id, KeyPurpose::Audit)?;
+    let timestamp = now_unix_nanos()?;
+    let metadata = policy_update_metadata(operation, policy_name);
+    let audit = AuditWrite {
+        project_id,
+        profile_id: None,
+        action: "POLICY_UPDATE",
+        status: "SUCCESS",
+        secret_name: None,
+        command: Some("policy"),
+        metadata_json: &metadata,
+        timestamp,
+    };
+    store.upsert_command_policy_index(
+        project_id,
+        policy_name,
+        &raw_policy_json,
+        &normalized_json,
+        timestamp,
+        Some(AuditContext { key: audit_key.as_ref(), write: &audit }),
+    )?;
+    Ok(())
+}
+
+fn write_policy_index_delete_if_available(
+    context: &RuntimeContext,
+    project_id: &str,
+    policy_name: &str,
+) -> Result<(), CliError> {
+    let mut store = open_store(context)?;
+    if store.get_project(project_id)?.is_none() {
+        return Ok(());
+    }
+    let audit_key = load_project_key(context, &store, project_id, KeyPurpose::Audit)?;
+    let timestamp = now_unix_nanos()?;
+    let metadata = policy_update_metadata("delete", policy_name);
+    let audit = AuditWrite {
+        project_id,
+        profile_id: None,
+        action: "POLICY_UPDATE",
+        status: "SUCCESS",
+        secret_name: None,
+        command: Some("policy"),
+        metadata_json: &metadata,
+        timestamp,
+    };
+    store.delete_command_policy_index(
+        project_id,
+        policy_name,
+        Some(AuditContext { key: audit_key.as_ref(), write: &audit }),
+    )?;
+    Ok(())
+}
+
+fn policy_update_metadata(operation: &str, policy: &str) -> serde_json::Value {
+    json!({
         "schema_version": 1,
         "action": "POLICY_UPDATE",
         "status": "SUCCESS",
@@ -341,17 +420,60 @@ fn write_policy_update_audit_if_available(
         "operation": operation,
         "policy": policy,
         "metadata_only": true,
-    });
-    let audit = AuditWrite {
-        project_id: resolved.config.project_id.as_str(),
-        profile_id: None,
-        action: "POLICY_UPDATE",
-        status: "SUCCESS",
-        secret_name: None,
-        command: Some("policy"),
-        metadata_json: &metadata,
-        timestamp: now_unix_nanos()?,
-    };
-    store.append_audit(audit_key.as_ref(), &audit)?;
-    Ok(())
+    })
+}
+
+fn policy_json(document: &toml::Value, policy_name: &str) -> Result<serde_json::Value, CliError> {
+    let policy = document
+        .get("commands")
+        .and_then(toml::Value::as_table)
+        .and_then(|commands| commands.get(policy_name))
+        .ok_or_else(|| metadata_invalid_error(format!("command policy missing: {policy_name}")))?;
+    serde_json::to_value(policy).map_err(CliError::from)
+}
+
+fn normalized_policy_json(policy: &CommandPolicy) -> serde_json::Value {
+    json!({
+        "schema_version": 1,
+        "name": policy.name,
+        "command": command_json(&policy.command),
+        "allowed_secrets": secret_name_strings(&policy.allowed_secrets),
+        "required_secrets": secret_name_strings(&policy.required_secrets),
+        "optional_secrets": secret_name_strings(&policy.optional_secrets),
+        "inherit_env": policy.inherit_env,
+        "env_mode": policy.env_mode.as_str(),
+        "override": policy.override_behavior.as_str(),
+        "override_explicit": policy.override_explicit(),
+        "external_env_sources": policy
+            .external_env_sources
+            .iter()
+            .map(external_env_source_json)
+            .collect::<Vec<_>>(),
+        "allow_remote_docker": policy.allow_remote_docker,
+        "confirm": policy.confirm,
+        "require_user_verification": policy.require_user_verification,
+        "ttl_seconds": policy.ttl.as_secs(),
+    })
+}
+
+fn command_json(command: &CommandSpec) -> serde_json::Value {
+    match command {
+        CommandSpec::Argv(argv) => json!({ "type": "argv", "argv": argv }),
+        CommandSpec::Shell(shell) => json!({ "type": "shell", "shell": shell }),
+    }
+}
+
+fn secret_name_strings(names: &[SecretName]) -> Vec<&str> {
+    names.iter().map(SecretName::as_str).collect()
+}
+
+fn external_env_source_json(source: &ExternalEnvSource) -> serde_json::Value {
+    match source {
+        ExternalEnvSource::Parent => json!({ "type": "parent" }),
+        ExternalEnvSource::File(path) => {
+            json!({ "type": "file", "path": path.display().to_string() })
+        }
+        ExternalEnvSource::Compose => json!({ "type": "compose" }),
+        ExternalEnvSource::Ide => json!({ "type": "ide" }),
+    }
 }

@@ -9,6 +9,7 @@ use std::path::Path;
 use rusqlite::Connection;
 
 mod audit;
+mod command_policy;
 mod device;
 mod error;
 mod grants;
@@ -28,6 +29,7 @@ pub use audit::{
     AuditLogRecord, AuditWrite, ImportedAuditChainRow, ImportedAuditChainVerification,
     verify_imported_audit_chain_structure,
 };
+pub use command_policy::CommandPolicyIndexRecord;
 pub use device::DeviceRecord;
 pub use error::StoreError;
 pub use grants::DirectoryGrantRecord;
