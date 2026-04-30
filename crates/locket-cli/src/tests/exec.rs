@@ -1487,3 +1487,138 @@ fn run_preserves_non_ascii_utf8_secret_bytes_through_injection()
     );
     Ok(())
 }
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn e2e_docker_compose_policy_run_writes_names_only_audit_and_refuses_remote()
+-> Result<(), Box<dyn std::error::Error>> {
+    // End-to-end harness for the e2e-docker-compose subtask: drives both
+    // `prepare_docker_policy_execution` and `prepare_compose_policy_execution`
+    // through a single project, verifies the names-only RUN audit row
+    // shape, and confirms remote DOCKER_HOST refusal for both helpers
+    // when `allow_remote_docker = false`.
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    let db_args = test_secret_write_args("DATABASE_URL");
+    crate::set_secret_value(&context, &db_args, "postgres://localhost/e2e", "manual", 1_000)?;
+    let api_args = test_secret_write_args("API_KEY");
+    crate::set_secret_value(&context, &api_args, "sk_test_e2e_value", "manual", 2_000)?;
+
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(directory.path().join("locket.toml"))?
+        .write_all(
+            br#"
+[commands.docker_app]
+argv = ["docker", "run", "app"]
+required_secrets = ["DATABASE_URL"]
+optional_secrets = ["API_KEY"]
+env_mode = "strict"
+inherit_env = ["PATH"]
+
+[commands.compose_app]
+argv = ["docker", "compose", "up"]
+required_secrets = ["DATABASE_URL"]
+optional_secrets = ["API_KEY"]
+env_mode = "strict"
+inherit_env = ["PATH"]
+"#,
+        )?;
+
+    let parent_env = std::iter::once(("PATH".to_owned(), locket_exec::env_value("/bin"))).collect();
+
+    // docker run path: prepare, write audit row, assert metadata-only.
+    let docker_argv = vec!["docker".to_owned(), "run".to_owned(), "alpine".to_owned()];
+    let mut docker_prepared =
+        crate::prepare_docker_policy_execution(&context, "docker_app", &docker_argv, parent_env)?;
+    assert_eq!(docker_prepared.execution.program, "docker");
+    assert!(
+        docker_prepared
+            .plan
+            .argv
+            .windows(2)
+            .any(|pair| pair == ["--env", "DATABASE_URL"])
+    );
+    let docker_argv_text = docker_prepared.plan.argv.join(" ");
+    assert!(!docker_argv_text.contains("postgres://localhost/e2e"));
+    assert!(!docker_argv_text.contains("sk_test_e2e_value"));
+    crate::write_docker_policy_audit_if_available(&context, &mut docker_prepared, "SUCCESS")?;
+
+    // compose path: prepare with `--project-directory .`, audit, assert names-only.
+    let compose_argv = crate::compose_argv_with_options(
+        vec!["docker".to_owned(), "compose".to_owned(), "up".to_owned()],
+        Some(Path::new(".")),
+        &[],
+    )?;
+    let compose_parent_env =
+        std::iter::once(("PATH".to_owned(), locket_exec::env_value("/bin"))).collect();
+    let mut compose_prepared = crate::prepare_compose_policy_execution(
+        &context,
+        "compose_app",
+        &compose_argv,
+        compose_parent_env,
+    )?;
+    let compose_argv_text = compose_prepared.plan.argv.join(" ");
+    assert!(!compose_argv_text.contains("postgres://localhost/e2e"));
+    assert!(!compose_argv_text.contains("sk_test_e2e_value"));
+    crate::write_docker_policy_audit_if_available(&context, &mut compose_prepared, "SUCCESS")?;
+
+    // Both runs should have produced metadata-only RUN rows naming both
+    // secrets but never a value.
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let mut statement = store.connection().prepare(
+        "SELECT command, metadata_json FROM audit_log WHERE action = 'RUN' ORDER BY sequence",
+    )?;
+    let rows: Vec<(String, String)> = statement
+        .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?
+        .collect::<Result<Vec<_>, _>>()?;
+    assert_eq!(rows.len(), 2, "expected one RUN row per helper");
+    let mut commands: Vec<&str> = rows.iter().map(|(command, _)| command.as_str()).collect();
+    commands.sort_unstable();
+    let mut expected_commands = vec!["compose run", "env docker"];
+    expected_commands.sort_unstable();
+    assert_eq!(commands, expected_commands);
+    for (_, metadata) in &rows {
+        assert!(metadata.contains("\"action\":\"RUN\""));
+        assert!(metadata.contains("\"status\":\"SUCCESS\""));
+        assert!(metadata.contains("DATABASE_URL"));
+        assert!(metadata.contains("API_KEY"));
+        assert!(!metadata.contains("postgres://localhost/e2e"));
+        assert!(!metadata.contains("sk_test_e2e_value"));
+    }
+
+    // Remote DOCKER_HOST refusal — both helpers must reject when
+    // `allow_remote_docker = false` (default).
+    let remote_env =
+        std::iter::once(("DOCKER_HOST".to_owned(), locket_exec::env_value("ssh://builder")))
+            .collect();
+    let remote_docker_argv = vec!["docker".to_owned(), "run".to_owned(), "alpine".to_owned()];
+    let docker_remote =
+        crate::prepare_docker_policy_execution(&context, "docker_app", &remote_docker_argv, remote_env);
+    let Err(docker_err) = docker_remote else {
+        return Err("remote docker context must be denied".into());
+    };
+    assert!(docker_err.to_string().contains("remote Docker context is denied by default"));
+
+    let remote_env =
+        std::iter::once(("DOCKER_HOST".to_owned(), locket_exec::env_value("tcp://host:2376")))
+            .collect();
+    let remote_compose_argv = vec!["docker".to_owned(), "compose".to_owned(), "up".to_owned()];
+    let compose_remote = crate::prepare_compose_policy_execution(
+        &context,
+        "compose_app",
+        &remote_compose_argv,
+        remote_env,
+    );
+    let Err(compose_err) = compose_remote else {
+        return Err("remote compose context must be denied".into());
+    };
+    assert!(compose_err.to_string().contains("remote Docker context is denied by default"));
+
+    Ok(())
+}
