@@ -83,11 +83,7 @@ skill set fits a leaf better.
   shipped; remaining subtasks below. Later subtasks depend on
   `agent-unlock-cache` / `agent-grant-table` — note deps on your claim.
   - [~] [acda32e4] branch agent-acda32e4/agent-unlock-cache, worktree .worktrees/agent-acda32e4-agent-unlock-cache; **subtask** — agent-unlock-cache: in-memory unlock-key cache keyed by project_id with TTL eviction; `Lock`/`Unlock`/`Status` handlers. **Critical path.**
-  - [ ] **subtask** — agent-grant-table: SQLite-backed grant table
-    with `(pid, process_start_time)` binding (helper landed in
-    `agent-4efea70d/process-grant-binding`);
-    `RequestGrant`/`ExpireGrant`/`RevokeGrant` handlers.
-    **Critical path.**
+  - [~] [acda32e4] branch agent-acda32e4/agent-grant-table, worktree .worktrees/agent-acda32e4-agent-grant-table; **subtask** — agent-grant-table: SQLite-backed grant table with `(pid, process_start_time)` binding; `RequestGrant`/`ExpireGrant`/`RevokeGrant` handlers. **Critical path.**
   - [ ] **subtask** — agent-subscribe-status: stream `lock_state`
     change events plus heartbeat cadence on top of the existing
     heartbeat envelope. Depends on `agent-unlock-cache`.
