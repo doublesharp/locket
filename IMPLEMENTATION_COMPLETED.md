@@ -103,6 +103,8 @@ Slices that have merged to `main` and verified. Open work tracked in
   project id, schema, `created_at`, profile count).
 - [x] Audit-chain HMAC verification recomputes each row using the row's
   stored `schema_version`, not the binary's current version.
+- [x] Core-dump suppression helper disables Unix `RLIMIT_CORE` and Linux
+  dumpability before CLI secret-bearing work starts.
 
 ## Full Spec Coverage TODO — App/UI
 
