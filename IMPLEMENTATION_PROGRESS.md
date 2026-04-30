@@ -529,7 +529,26 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
 
 - [x] `locket-app` workspace crate scaffolded under `crates/locket-app/`.
 - [ ] Build the Tauri desktop app (`docs/specs/desktop.md:5-65`).
+  Pre-req: `locket-app` workspace crate (already `[x]`).
+  Decomposed below; later subtasks depend on `tauri-shell`.
+  - [ ] **subtask** — tauri-shell: Tauri 2 main window + IPC plumbing
+    in `crates/locket-app/src-tauri/`; opens, renders an empty UI,
+    exits cleanly on every supported platform.
+  - [ ] **subtask** — tauri-agent-client: connect the desktop app to
+    the local agent over its socket; surface a typed
+    `AgentUnavailable` banner when the daemon isn't running. Pre-req:
+    `tauri-shell`; agent-side pre-req: `agent-socket-server`.
+  - [ ] **subtask** — tauri-frontend-bootstrap: pick the JS framework
+    (per spec), wire `pnpm` build/lint/typecheck, render the empty
+    project shell. Pre-req: `tauri-shell`.
 - [ ] Build the tray/status panel (`docs/specs/desktop.md:65-108`).
+  Pre-req: `tauri-shell`.
+  - [ ] **subtask** — tray-bind-platform: register the tray icon and
+    menu on macOS, Windows, and Linux using the Tauri tray API.
+  - [ ] **subtask** — tray-status-binding: subscribe to the agent's
+    `SubscribeStatus` and update tray label/icon on lock-state and
+    heartbeat events. Pre-req: `tray-bind-platform`,
+    `agent-subscribe-status`.
 - [ ] Reveal/copy UI gates with short-lived plaintext handling
   (`REVEAL`/`COPY` go through the agent).
 - [ ] Status subscriptions from the agent (`SubscribeStatus`).
@@ -725,7 +744,8 @@ editing — they drift. Severity: **blocker** (security/correctness),
   - [ ] **subtask** — mock-os-keychain: trait-based mock for
     `crates/locket-platform/src/keychain/` covering get/set/delete
     success and error paths, used in CLI/store tests.
-  - [ ] **subtask** — mock-user-verification: extend the existing
+  - [~] [6e4d05db] **subtask** — mock-user-verification: extend the existing
+    Claim: branch agent-6e4d05db/mock-user-verification, worktree .worktrees/agent-6e4d05db-mock-user-verification.
     `LocalUserVerifier` mock to cover platform-unsupported and
     user-cancelled paths in tests.
   - [ ] **subtask** — mock-peer-credentials: in-process socket harness
