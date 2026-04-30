@@ -363,55 +363,71 @@ fn request_status_snapshot(_socket_path: &Path) -> Result<Value, io::Error> {
 /// file and the socket so the next `agent start` is unblocked.
 #[cfg(unix)]
 pub fn run_internal_agent_serve(args: &InternalAgentServeArgs) -> Result<(), CliError> {
-    use locket_agent::{
-        AgentSocketConfig, AgentSocketState, bind_socket_listener, handle_connection,
-    };
-    use tokio::signal::unix::{SignalKind, signal};
-
+    // Daemon-startup ordering invariant:
+    //
+    // `agent_lifecycle::run_internal_agent_serve_listens_and_cleans_up_on_sigterm`
+    // signals the test process with SIGTERM after observing the pid file on
+    // disk. Tokio's `signal::unix::signal(SignalKind::terminate())` only
+    // masks the default-terminate disposition once it has been registered,
+    // so the pid file MUST NOT be written until both `term` and `intr`
+    // signal handlers are installed below. Reordering the write to run
+    // before the handler registration would re-introduce a race against
+    // any parallel test that emits SIGTERM, allowing the test process to
+    // exit instead of the daemon.
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
-    let socket_for_cleanup = args.socket.clone();
-    let pid_file_for_cleanup = &args.pid_file;
-    let socket_path = args.socket.clone();
-    let pid_file = args.pid_file.clone();
-
-    let serve_result: Result<io::Result<()>, CliError> = runtime.block_on(async move {
-        // bind_socket_listener creates a tokio UnixListener and so must
-        // run inside the runtime; signal streams require the same.
-        let listener =
-            bind_socket_listener(&AgentSocketConfig::new(socket_path, env!("CARGO_PKG_VERSION")))
-                .map_err(socket_error_to_cli)?;
-        write_pid_file(&pid_file)?;
-
-        let state = AgentSocketState::locked(env!("CARGO_PKG_VERSION"));
-        let mut term = signal(SignalKind::terminate()).map_err(CliError::Io)?;
-        let mut intr = signal(SignalKind::interrupt()).map_err(CliError::Io)?;
-        let serve: io::Result<()> = loop {
-            tokio::select! {
-                accepted = listener.accept() => {
-                    let (stream, _) = match accepted {
-                        Ok(pair) => pair,
-                        Err(error) => break Err(error),
-                    };
-                    let connection_state = state.clone();
-                    tokio::spawn(async move {
-                        let _outcome = handle_connection(stream, connection_state).await;
-                    });
-                }
-                _ = term.recv() => break Ok(()),
-                _ = intr.recv() => break Ok(()),
-            }
-        };
-        Ok(serve)
+    let result = runtime.block_on(async {
+        let (listener, state) = bind_and_record(args)?;
+        serve_until_signal(listener, state).await.map_err(CliError::Io)
     });
 
-    let _ignored = fs::remove_file(&socket_for_cleanup);
-    let _ignored = fs::remove_file(pid_file_for_cleanup);
+    let _ignored = fs::remove_file(&args.socket);
+    let _ignored = fs::remove_file(&args.pid_file);
+    result
+}
 
-    match serve_result {
-        Ok(Ok(())) => Ok(()),
-        Ok(Err(error)) => Err(CliError::Io(error)),
-        Err(error) => Err(error),
+#[cfg(unix)]
+fn bind_and_record(
+    args: &InternalAgentServeArgs,
+) -> Result<(tokio::net::UnixListener, locket_agent::AgentSocketState), CliError> {
+    use locket_agent::{AgentSocketConfig, AgentSocketState, bind_socket_listener};
+
+    // bind_socket_listener creates a tokio UnixListener and so must run
+    // inside a runtime; the caller invokes us from within `block_on` so
+    // a runtime is already on the current thread.
+    let listener = bind_socket_listener(&AgentSocketConfig::new(
+        args.socket.clone(),
+        env!("CARGO_PKG_VERSION"),
+    ))
+    .map_err(socket_error_to_cli)?;
+    write_pid_file(&args.pid_file)?;
+    let state = AgentSocketState::locked(env!("CARGO_PKG_VERSION"));
+    Ok((listener, state))
+}
+
+#[cfg(unix)]
+async fn serve_until_signal(
+    listener: tokio::net::UnixListener,
+    state: locket_agent::AgentSocketState,
+) -> io::Result<()> {
+    use locket_agent::handle_connection;
+    use tokio::signal::unix::{SignalKind, signal};
+
+    let mut term = signal(SignalKind::terminate())?;
+    let mut intr = signal(SignalKind::interrupt())?;
+    loop {
+        tokio::select! {
+            accepted = listener.accept() => {
+                let (stream, _) = accepted?;
+                let connection_state = state.clone();
+                tokio::spawn(async move {
+                    let _outcome = handle_connection(stream, connection_state).await;
+                });
+            }
+            _ = term.recv() => break,
+            _ = intr.recv() => break,
+        }
     }
+    Ok(())
 }
 
 #[cfg(not(unix))]
@@ -448,6 +464,15 @@ fn socket_error_to_cli(error: locket_agent::SocketServerError) -> CliError {
                 "peer uid {peer_uid} does not match daemon uid {daemon_uid}; refusing cross-user connection"
             ),
         ),
+        // SocketPathTooWide is a configuration error (parent dir or
+        // socket file has wider permissions than 0o700/0o600). The
+        // closest existing typed variant is AgentSocketInUse, which is
+        // imprecise — the path is not in use, it is misconfigured.
+        // Adding `LocketError::AgentSocketParentTooPermissive` is
+        // tracked as a follow-up (cross-crate change to
+        // `locket-core::error` plus an exit-code-table entry). Until
+        // then, the formatted message retains the offending mode and
+        // path so users can act on it.
         SocketServerError::SocketPathTooWide { path, mode, expected } => typed_cli_error(
             LocketError::AgentSocketInUse,
             format!(
