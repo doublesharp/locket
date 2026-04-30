@@ -556,6 +556,52 @@ env_mode = "strict"
 }
 
 #[test]
+fn env_inspect_reports_external_layers_without_values() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    std::fs::write(
+        directory.path().join(".env.local"),
+        "DATABASE_URL=fixture-dsn\nLOG_LEVEL=debug\nNOT_ALLOWED=hidden\n",
+    )?;
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(directory.path().join("locket.toml"))?
+        .write_all(
+            br#"
+[commands.env_check]
+argv = ["/bin/sh", "-c", "true"]
+required_secrets = ["DATABASE_URL"]
+optional_secrets = ["LOG_LEVEL"]
+external_env_sources = [{ file = ".env.local" }]
+env_mode = "strict"
+"#,
+        )?;
+
+    let mut output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "env", "inspect", "--policy", "env_check"])?,
+        &context,
+        &mut output,
+    )?;
+    let output = String::from_utf8(output)?;
+    assert!(output.contains("external_layers names=DATABASE_URL,LOG_LEVEL"));
+    assert!(output.contains("external_source file:.env.local decision=resolved"));
+    assert!(output.contains("secret DATABASE_URL kind=required sources=none selected=none"));
+    assert!(output.contains("conflicts=external-source decision=external-source"));
+    assert!(output.contains("secret LOG_LEVEL kind=optional sources=none selected=none"));
+    assert!(!output.contains("fixture-dsn"));
+    assert!(!output.contains("debug"));
+    assert!(!output.contains("hidden"));
+    assert!(!output.contains("NOT_ALLOWED"));
+    Ok(())
+}
+
+#[test]
 fn file_external_env_source_rejects_absolute_path() -> Result<(), Box<dyn std::error::Error>> {
     let document = locket_core::PolicyDocument::from_toml_str(
         r#"
