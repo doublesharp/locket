@@ -223,6 +223,7 @@ fn insert_schema_automation_client(
 fn schema_initialization_is_idempotent() -> Result<(), Box<dyn Error>> {
     let mut test_store = open_initialized_store()?;
 
+    assert_eq!(test_store.store.current_schema_version()?, Some(i64::from(SCHEMA_VERSION)));
     test_store.store.initialize_schema()?;
 
     let migration_rows = test_store.store.connection().query_row(
@@ -232,6 +233,16 @@ fn schema_initialization_is_idempotent() -> Result<(), Box<dyn Error>> {
     )?;
     assert_eq!(migration_rows, 1);
 
+    Ok(())
+}
+
+#[test]
+fn current_schema_version_reports_absent_migration_ledger() -> Result<(), Box<dyn Error>> {
+    let directory = tempdir()?;
+    let path = directory.path().join("store.db");
+    let store = Store::open(path)?;
+
+    assert_eq!(store.current_schema_version()?, None);
     Ok(())
 }
 

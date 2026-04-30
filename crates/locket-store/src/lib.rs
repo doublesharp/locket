@@ -81,6 +81,17 @@ impl Store {
         schema::initialize_schema(&mut self.connection)
     }
 
+    /// Returns the highest recorded schema version, or `None` for a store
+    /// without the migration ledger.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Sqlite`] when `SQLite` cannot inspect the
+    /// migration ledger.
+    pub fn current_schema_version(&self) -> Result<Option<i64>, StoreError> {
+        schema::current_schema_version(&self.connection)
+    }
+
     /// Returns the underlying `SQLite` connection.
     #[must_use]
     pub const fn connection(&self) -> &Connection {

@@ -668,6 +668,7 @@ fn doctor_reports_locked_safe_diagnostics_and_exit_codes() -> Result<(), Box<dyn
     assert!(doctor_output.contains("pass locket_toml_parseability"));
     assert!(doctor_output.contains("pass sqlite_integrity"));
     assert!(doctor_output.contains("pass trusted_roots"));
+    assert!(doctor_output.contains("pass schema_migration_backups"));
     assert!(doctor_output.contains("skip audit_hmac_verification"));
     // The hardening check must surface every shipped mitigation. Tests
     // run as a child of cargo, so both helpers have been called at
@@ -699,6 +700,63 @@ fn doctor_reports_locked_safe_diagnostics_and_exit_codes() -> Result<(), Box<dyn
             .is_some_and(|names| names.iter().any(|name| name == "sqlite_integrity"))
     );
     assert!(!doctor_metadata.to_string().contains(directory.path().to_string_lossy().as_ref()));
+    Ok(())
+}
+
+#[test]
+fn open_store_backs_up_legacy_store_and_doctor_reports_latest_backup()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    let store_path = directory.path().join("store.db");
+    {
+        let legacy = locket_store::Store::open(&store_path)?;
+        legacy.connection().execute("CREATE TABLE legacy_metadata(id TEXT PRIMARY KEY)", [])?;
+    }
+    let recovery_dir = directory.path().join(".locket").join("recovery");
+    fs::create_dir_all(&recovery_dir)?;
+    fs::write(recovery_dir.join("kdf.toml"), "schema_version = 1\n")?;
+    fs::write(recovery_dir.join("envelope.bin"), b"wrapped-envelope")?;
+
+    let store = crate::open_store(&context)?;
+    assert_eq!(store.current_schema_version()?, Some(i64::from(locket_store::SCHEMA_VERSION)));
+
+    let backup_root = directory.path().join("pre-migration-backups");
+    let backup_dirs = fs::read_dir(&backup_root)?
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<Result<Vec<_>, _>>()?;
+    assert_eq!(backup_dirs.len(), 1);
+    let backup_dir = &backup_dirs[0];
+    assert!(backup_dir.join("store.db").exists());
+    assert_eq!(
+        fs::read_to_string(backup_dir.join("recovery").join("kdf.toml"))?,
+        "schema_version = 1\n"
+    );
+    assert_eq!(fs::read(backup_dir.join("recovery").join("envelope.bin"))?, b"wrapped-envelope");
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root_mode = fs::metadata(&backup_root)?.permissions().mode() & 0o777;
+        let store_mode = fs::metadata(backup_dir.join("store.db"))?.permissions().mode() & 0o777;
+        let kdf_mode =
+            fs::metadata(backup_dir.join("recovery").join("kdf.toml"))?.permissions().mode()
+                & 0o777;
+        assert_eq!(root_mode, 0o700);
+        assert_eq!(store_mode, 0o600);
+        assert_eq!(kdf_mode, 0o600);
+    }
+
+    let mut doctor_output = Vec::new();
+    let code =
+        run_with_context(Cli::try_parse_from(["locket", "doctor"])?, &context, &mut doctor_output)?;
+    assert_eq!(code, 1);
+    let doctor_output = String::from_utf8(doctor_output)?;
+    assert!(doctor_output.contains("pass schema_migration_backups"));
+    assert!(doctor_output.contains("backup_skipped=0"));
+    assert!(doctor_output.contains("latest_backup=pre-migration-backups/"));
+    assert!(!doctor_output.contains(directory.path().to_string_lossy().as_ref()));
     Ok(())
 }
 
