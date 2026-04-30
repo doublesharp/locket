@@ -8,6 +8,7 @@ import { runtimeSessionRow } from './agent/runtimeSessions';
 import { useAgent } from './composables/useAgent';
 import { useTray } from './composables/useTray';
 import AuditLog from './views/AuditLog.vue';
+import BackupRecovery from './views/BackupRecovery.vue';
 import ExecutionMonitor from './views/ExecutionMonitor.vue';
 import PolicyEditor from './views/PolicyEditor.vue';
 import ProjectDashboard from './views/ProjectDashboard.vue';
@@ -35,6 +36,7 @@ type ViewKey =
   | 'audit'
   | 'scan'
   | 'policies'
+  | 'recovery'
   | 'settings';
 
 const { status, error, loading, refresh } = useAgent();
@@ -59,6 +61,7 @@ const navItems: ReadonlyArray<{ key: ViewKey; label: string }> = [
   { key: 'audit', label: 'Audit' },
   { key: 'scan', label: 'Scan' },
   { key: 'policies', label: 'Policies' },
+  { key: 'recovery', label: 'Recovery' },
   { key: 'settings', label: 'Settings' },
 ];
 
@@ -312,6 +315,10 @@ async function triggerRescan(): Promise<void> {
   scanning.value = false;
 }
 
+function triggerBackupAction(): void {
+  void refresh();
+}
+
 onMounted(() => {
   void listen<TrayMenuAction>('tray-menu-action', (event) => {
     void handleTrayMenuAction(event.payload);
@@ -426,6 +433,11 @@ onUnmounted(() => {
         :rows="policies"
         :privacy-mode="settings.privacyRedactNames"
         :loading="loading"
+      />
+
+      <BackupRecovery
+        v-else-if="currentView === 'recovery'"
+        @action="triggerBackupAction"
       />
 
       <Settings
