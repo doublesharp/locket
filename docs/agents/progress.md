@@ -417,16 +417,7 @@ Re-verify file:line references before editing — they drift. Severity:
 **blocker** (security/correctness), **important** (real defect),
 **nit** (cleanup).
 
-- [ ] **important** — Typed error system underused: ~6 typed callers
-  vs ~249 `CliError::Config`. `SecretNotFound` (77),
-  `ProfileNotFound` (78), `ConfirmationFailed` (68),
-  `InvalidSecretName` / `InvalidProfileName` (64) added; CLI source
-  sweep returns zero `CliError::Config(...)`. Remaining sweep is
-  audit each callsite, classify, and map to a typed `LocketError`.
-  Add new variants only when no existing one fits, and update the
-  Reference Quick-Index table at the bottom of this doc in the same
-  commit. Tests: per-variant exit-code regression covering at least
-  one callsite per variant.
+- [~] [acda32e4] branch agent-acda32e4/typed-error-sweep, worktree .worktrees/agent-acda32e4-typed-error-sweep; **important** — Typed error system underused: audit remaining callsites and map failures to typed `LocketError` variants.
 
 ### Diagnostics, Distribution, and Quality Gates
 
