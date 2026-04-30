@@ -10,6 +10,7 @@ export interface AgentStatus {
   profile_name: string | null;
   live_grant_count: number;
   agent_version: string;
+  unlock_ttl_seconds: number | null;
 }
 
 export type AgentClientError =
@@ -106,4 +107,33 @@ export interface PrepareExecResponse {
   allowed_env_names: string[];
   command_kind: string;
   ttl_seconds: number;
+}
+
+export type RuntimeSessionState = 'running' | 'completed' | 'failed' | 'stale';
+
+export interface ListRuntimeSessionsRequest {
+  project_id: string;
+  profile_id: string;
+  privacy_redact_names: boolean;
+}
+
+export interface RuntimeSessionWireRow {
+  session_id: string;
+  profile: string;
+  profile_alias?: string;
+  policy: string;
+  policy_alias?: string;
+  pid: number;
+  process_start_time: number;
+  started_at: number;
+  ended_at?: number;
+  exit_status?: number;
+  state: RuntimeSessionState;
+  secret_name_count: number;
+  spawn_audit_sequence?: number;
+  completion_audit_sequence?: number;
+}
+
+export interface ListRuntimeSessionsResponse {
+  rows: RuntimeSessionWireRow[];
 }

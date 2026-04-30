@@ -9,6 +9,8 @@ import type {
   AgentStatus,
   CopyRequest,
   CopyResponse,
+  ListRuntimeSessionsRequest,
+  ListRuntimeSessionsResponse,
   PrepareExecRequest,
   PrepareExecResponse,
   ResolveRequest,
@@ -108,4 +110,10 @@ export async function prepareExec(
   request: PrepareExecRequest,
 ): Promise<AgentResult<PrepareExecResponse>> {
   return callTyped<PrepareExecResponse>('agent_prepare_exec', { request });
+}
+
+export async function listRuntimeSessions(
+  request: ListRuntimeSessionsRequest,
+): Promise<AgentResult<ListRuntimeSessionsResponse>> {
+  return callTyped<ListRuntimeSessionsResponse>('agent_list_runtime_sessions', { request });
 }

@@ -24,8 +24,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use locket_agent::{AgentSocketConfig, AgentSocketState, bind_socket_listener, handle_connection};
-use locket_desktop_lib::{AgentClientError, fetch_status, resolve_socket_path};
+use locket_agent::{
+    AgentMethod, AgentSocketConfig, AgentSocketState, ListRuntimeSessionsRequest,
+    bind_socket_listener, handle_connection,
+};
+use locket_desktop_lib::{AgentClientError, fetch_status, invoke_method, resolve_socket_path};
 use tokio::sync::Notify;
 
 const AGENT_VERSION: &str = "0.0.0-test";
@@ -87,6 +90,25 @@ async fn fetch_status_recovers_after_daemon_restart() {
     let payload = fetch_status(&second.socket_path).await.expect("second round-trip");
     assert_eq!(payload.agent_version, AGENT_VERSION);
     second.stop().await;
+}
+
+#[tokio::test]
+async fn list_runtime_sessions_round_trips_against_a_live_agent() {
+    let dir = tempdir_user_only();
+    let socket_path = dir.path().join("agent.sock");
+
+    let server = TestServer::start_at(&socket_path).await;
+    let request = ListRuntimeSessionsRequest {
+        project_id: "project-main".to_owned(),
+        profile_id: "profile-prod".to_owned(),
+        privacy_redact_names: true,
+    };
+    let response: locket_agent::ListRuntimeSessionsResponse =
+        invoke_method(&server.socket_path, AgentMethod::ListRuntimeSessions, &request)
+            .await
+            .expect("runtime sessions round-trip");
+    assert!(response.rows.is_empty());
+    server.stop().await;
 }
 
 #[test]

@@ -1,8 +1,8 @@
 //! Tauri 2 desktop shell entry point for Locket.
 //!
-//! Registers a minimal scoped IPC surface. Today only the `agent_status`
-//! command is registered. Reveal/copy, scan, and policy surfaces ship in
-//! later slices and each opt in to the smallest capability set they need.
+//! Registers a minimal scoped IPC surface. Each command opts in to the
+//! smallest capability set needed for metadata-only desktop views and
+//! agent-backed actions.
 
 #[cfg(debug_assertions)]
 use tauri::Manager as _;
@@ -80,6 +80,16 @@ async fn agent_prepare_exec(
     agent_client::invoke_method(&path, locket_agent::AgentMethod::PrepareExec, &request).await
 }
 
+/// Tauri command exposing the agent's metadata-only runtime session list.
+#[tauri::command]
+async fn agent_list_runtime_sessions(
+    request: locket_agent::ListRuntimeSessionsRequest,
+) -> Result<locket_agent::ListRuntimeSessionsResponse, AgentClientError> {
+    let path = agent_client::resolve_socket_path();
+    agent_client::invoke_method(&path, locket_agent::AgentMethod::ListRuntimeSessions, &request)
+        .await
+}
+
 /// Tauri command pushing a new tray icon state from the webview.
 ///
 /// The frontend's `useTray` composable derives the desired
@@ -113,6 +123,7 @@ pub fn run() -> tauri::Result<()> {
             agent_scan,
             agent_resolve,
             agent_prepare_exec,
+            agent_list_runtime_sessions,
             tray_set_state,
         ])
         .setup(|app| {

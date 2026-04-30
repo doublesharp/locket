@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, ref, watch } from 'vue';
 
 import AgentUnavailableBanner from './components/AgentUnavailableBanner.vue';
-import { scan as scanKnownValues } from './agent/client';
+import { listRuntimeSessions, scan as scanKnownValues } from './agent/client';
+import { runtimeSessionRow } from './agent/runtimeSessions';
 import { useAgent } from './composables/useAgent';
 import { useTray } from './composables/useTray';
 import AuditLog from './views/AuditLog.vue';
@@ -22,7 +23,7 @@ import type {
   SettingsState,
   VersionHistoryRow,
 } from './types/views';
-import type { AgentClientError, ScanFinding } from './agent/types';
+import type { AgentClientError, ListRuntimeSessionsRequest, ScanFinding } from './agent/types';
 
 type ViewKey =
   | 'dashboard'
@@ -72,14 +73,17 @@ const lockLabel = computed<string>(() => {
 const projectLabel = computed<string>(() => status.value?.project_id ?? '—');
 const profileLabel = computed<string>(() => status.value?.profile_name ?? '—');
 
-// Slice 4-6/9-11 land real data sources. Today the views render with
-// the empty arrays below so the navigation is exercisable end-to-end.
+// Slice 4-5/9-11 land the remaining real data sources. The execution
+// monitor is populated from the agent's metadata-only session RPC.
 const secrets = ref<SecretRowMeta[]>([]);
 const versions = ref<VersionHistoryRow[]>([]);
 const sessions = ref<RuntimeSessionRow[]>([]);
 const auditRows = ref<AuditLogRow[]>([]);
 const findings = ref<ScanFindingRow[]>([]);
 const policies = ref<CommandPolicyRow[]>([]);
+const sessionsLoading = ref<boolean>(false);
+const sessionsError = ref<string | null>(null);
+const sessionsLastRefreshed = ref<string | undefined>(undefined);
 const scanning = ref<boolean>(false);
 const scanLocked = ref<boolean>(false);
 const scanError = ref<string | null>(null);
@@ -108,7 +112,69 @@ function selectSecret(): void {
 
 function triggerVerify(): void {
   void refresh();
+  void refreshRuntimeSessions();
 }
+
+const runtimeSessionRequest = computed<ListRuntimeSessionsRequest | null>(() => {
+  const currentStatus = status.value;
+  if (currentStatus?.project_id === null || currentStatus?.project_id === undefined) {
+    return null;
+  }
+  if (currentStatus.profile_name === null || currentStatus.profile_name === undefined) {
+    return null;
+  }
+  return {
+    project_id: currentStatus.project_id,
+    profile_id: currentStatus.profile_name,
+    privacy_redact_names: settings.value.privacyRedactNames,
+  };
+});
+
+function sessionErrorLabel(error: AgentClientError): string {
+  switch (error.kind) {
+    case 'unavailable':
+      return 'Agent unavailable.';
+    case 'protocol':
+      return 'Session request failed.';
+    case 'rejected':
+      return error.code;
+    default:
+      return 'Session request failed.';
+  }
+}
+
+let sessionRefreshSequence = 0;
+
+async function refreshRuntimeSessions(): Promise<void> {
+  const request = runtimeSessionRequest.value;
+  const sequence = (sessionRefreshSequence += 1);
+  if (request === null) {
+    sessions.value = [];
+    sessionsError.value = null;
+    sessionsLoading.value = false;
+    sessionsLastRefreshed.value = undefined;
+    return;
+  }
+
+  sessionsLoading.value = true;
+  sessionsError.value = null;
+  const result = await listRuntimeSessions(request);
+  if (sequence !== sessionRefreshSequence) {
+    return;
+  }
+  if (result.ok) {
+    sessions.value = result.value.rows.map(runtimeSessionRow);
+    sessionsLastRefreshed.value = new Date().toISOString();
+  } else {
+    sessions.value = [];
+    sessionsError.value = sessionErrorLabel(result.error);
+  }
+  sessionsLoading.value = false;
+}
+
+watch(runtimeSessionRequest, () => {
+  void refreshRuntimeSessions();
+});
 
 function scanErrorLabel(error: AgentClientError): string {
   switch (error.kind) {
@@ -238,6 +304,10 @@ async function triggerRescan(): Promise<void> {
         v-else-if="currentView === 'execution'"
         :rows="sessions"
         :privacy-mode="settings.privacyRedactNames"
+        :loading="sessionsLoading"
+        :error-message="sessionsError"
+        :last-refreshed-at="sessionsLastRefreshed"
+        @refresh="refreshRuntimeSessions"
       />
 
       <AuditLog

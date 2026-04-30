@@ -42,7 +42,7 @@ export interface RuntimeSessionRow {
   exitStatus?: number;
   state: 'running' | 'completed' | 'failed' | 'stale';
   secretNameCount: number;
-  spawnAuditSequence: number;
+  spawnAuditSequence?: number;
   completionAuditSequence?: number;
 }
 

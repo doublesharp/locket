@@ -6,9 +6,15 @@ import type { RuntimeSessionRow } from '../types/views';
 interface Props {
   rows: RuntimeSessionRow[];
   privacyMode: boolean;
+  loading: boolean;
+  errorMessage?: string | null;
+  lastRefreshedAt?: string;
 }
 
 const props = defineProps<Props>();
+const emit = defineEmits<{
+  refresh: [];
+}>();
 
 const isEmpty = computed<boolean>(() => props.rows.length === 0);
 
@@ -42,10 +48,17 @@ function stateLabel(state: RuntimeSessionRow['state']): string {
 }
 
 function auditLabel(row: RuntimeSessionRow): string {
+  if (typeof row.spawnAuditSequence !== 'number') {
+    return '—';
+  }
   if (typeof row.completionAuditSequence === 'number') {
     return `${row.spawnAuditSequence} → ${row.completionAuditSequence}`;
   }
   return `${row.spawnAuditSequence} → —`;
+}
+
+function refresh(): void {
+  emit('refresh');
 }
 </script>
 
@@ -53,9 +66,19 @@ function auditLabel(row: RuntimeSessionRow): string {
   <section class="view" aria-labelledby="execution-monitor-heading">
     <header class="view__header">
       <h2 id="execution-monitor-heading">Runtime sessions</h2>
+      <div class="view__actions">
+        <span v-if="lastRefreshedAt" class="view__muted">
+          <time :datetime="lastRefreshedAt">{{ lastRefreshedAt }}</time>
+        </span>
+        <button type="button" class="view__button" :disabled="loading" @click="refresh">
+          Refresh
+        </button>
+      </div>
     </header>
 
-    <p v-if="isEmpty" class="view__empty">No runtime sessions yet.</p>
+    <p v-if="errorMessage" class="view__error">{{ errorMessage }}</p>
+    <p v-else-if="loading && isEmpty" class="view__empty">Loading runtime sessions…</p>
+    <p v-else-if="isEmpty" class="view__empty">No runtime sessions yet.</p>
 
     <table v-else class="view__table" aria-describedby="execution-monitor-heading">
       <thead>
@@ -128,6 +151,7 @@ function auditLabel(row: RuntimeSessionRow): string {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 1rem;
   margin-bottom: 0.75rem;
 }
 
@@ -142,6 +166,38 @@ function auditLabel(row: RuntimeSessionRow): string {
   margin: 0;
   font-size: 0.875rem;
   color: #9aa3b2;
+}
+
+.view__error {
+  margin: 0;
+  font-size: 0.875rem;
+  color: #f08a8a;
+}
+
+.view__actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.view__button {
+  border: 1px solid rgba(248, 215, 122, 0.35);
+  background: rgba(248, 215, 122, 0.1);
+  color: #f8d77a;
+  border-radius: 0.375rem;
+  padding: 0.375rem 0.625rem;
+  font-size: 0.8125rem;
+  cursor: pointer;
+}
+
+.view__button:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.view__button:focus-visible {
+  outline: 2px solid #f8d77a;
+  outline-offset: 2px;
 }
 
 .view__table {
