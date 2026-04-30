@@ -18,8 +18,9 @@ use locket_crypto::{
     decrypt_secret_value_v1, derive_wrapping_key_v1, key_wrap_aad_v1, secret_blob_aad_v1,
     unwrap_key_material_v1,
 };
-use locket_store::{SecretRecord, SecretVersionRecord, Store};
+use locket_store::{AuditWrite, SecretRecord, SecretVersionRecord, Store};
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value, json};
 
 use crate::envelope::{ErrorEnvelope, RequestEnvelope, ResponseEnvelope};
 use crate::grant::{GrantAction, GrantBinding, GrantValidation};
@@ -208,8 +209,51 @@ fn resolve_reference(
         )
     })?;
     let master_key = key_array(master_key).ok_or_else(corrupt_db)?;
-    let store = Store::open(store_path).map_err(|_| corrupt_db())?;
-    authorize_policy_reference(&store, project_id, policy_name, parsed.key().as_str())?;
+    let mut store = Store::open(store_path).map_err(|_| corrupt_db())?;
+    match resolve_reference_inner(
+        &store,
+        project_id,
+        policy_name,
+        &parsed,
+        &master_key,
+        now_unix_nanos,
+    ) {
+        Ok(resolved) => {
+            append_resolve_reference_audit(
+                &mut store,
+                project_id,
+                policy_name,
+                &parsed,
+                &master_key,
+                now_unix_nanos,
+                ResolveAuditOutcome::Success(&resolved.audit),
+            )?;
+            Ok(resolved.response)
+        }
+        Err(error) => {
+            append_resolve_reference_audit(
+                &mut store,
+                project_id,
+                policy_name,
+                &parsed,
+                &master_key,
+                now_unix_nanos,
+                ResolveAuditOutcome::Failure(&error),
+            )?;
+            Err(error)
+        }
+    }
+}
+
+fn resolve_reference_inner(
+    store: &Store,
+    project_id: &str,
+    policy_name: &str,
+    parsed: &LkReferenceUri,
+    master_key: &locket_crypto::KeyBytes,
+    now_unix_nanos: i128,
+) -> Result<ResolvedReference, ResolveFailure> {
+    authorize_policy_reference(store, project_id, policy_name, parsed.key().as_str())?;
     let profile = store
         .get_profile_by_name(project_id, parsed.profile().as_str())
         .map_err(|_| corrupt_db())?
@@ -220,7 +264,7 @@ fn resolve_reference(
                 LocketError::ProfileNotFound,
             )
         })?;
-    let secret = select_secret(&store, project_id, &profile.id, &parsed)?;
+    let secret = select_secret(store, project_id, &profile.id, parsed)?;
     let version_number = parsed.version().map_or(secret.current_version, SecretVersion::get);
     let version = store
         .get_secret_version(&secret.id, version_number)
@@ -234,13 +278,99 @@ fn resolve_reference(
     })?;
     validate_version(&secret, &version, parsed.version().is_some(), now_unix_nanos)?;
     let value =
-        decrypt_secret(&store, project_id, &profile.id, &secret, version.version, &master_key)
+        decrypt_secret(store, project_id, &profile.id, &secret, version.version, master_key)
             .map_err(|_| corrupt_db())?;
-    Ok(ResolveResponse {
-        value: value.to_string(),
+    let audit = ResolveAuditDetails {
+        profile_id: profile.id.clone(),
+        source: secret.source,
         version: version.version,
-        profile_id: profile.id,
+        grace_until: version.grace_until,
+    };
+    Ok(ResolvedReference {
+        response: ResolveResponse {
+            value: value.to_string(),
+            version: version.version,
+            profile_id: profile.id,
+        },
+        audit,
     })
+}
+
+struct ResolvedReference {
+    response: ResolveResponse,
+    audit: ResolveAuditDetails,
+}
+
+struct ResolveAuditDetails {
+    profile_id: String,
+    source: String,
+    version: u32,
+    grace_until: Option<i64>,
+}
+
+#[derive(Clone, Copy)]
+enum ResolveAuditOutcome<'a> {
+    Success(&'a ResolveAuditDetails),
+    Failure(&'a ResolveFailure),
+}
+
+fn append_resolve_reference_audit(
+    store: &mut Store,
+    project_id: &str,
+    policy_name: &str,
+    parsed: &LkReferenceUri,
+    master_key: &locket_crypto::KeyBytes,
+    timestamp: i128,
+    outcome: ResolveAuditOutcome<'_>,
+) -> Result<(), ResolveFailure> {
+    let audit_key = load_project_key_with_master(store, project_id, KeyPurpose::Audit, master_key)
+        .map_err(|_| corrupt_db())?;
+    let timestamp = i64::try_from(timestamp).map_err(|_| corrupt_db())?;
+    let mut metadata = Map::from_iter([
+        ("schema_version".to_owned(), json!(1)),
+        ("action".to_owned(), json!("RESOLVE_REFERENCE")),
+        ("project_id".to_owned(), json!(project_id)),
+        ("policy".to_owned(), json!(policy_name)),
+        ("profile_name".to_owned(), json!(parsed.profile().as_str())),
+        ("secret_name".to_owned(), json!(parsed.key().as_str())),
+    ]);
+    if let Some(source) = parsed.source() {
+        metadata.insert("source".to_owned(), json!(source.as_str()));
+    }
+    if let Some(version) = parsed.version() {
+        metadata.insert("selected_version".to_owned(), json!(version.get()));
+    }
+    let (status, profile_id) = match outcome {
+        ResolveAuditOutcome::Success(details) => {
+            metadata.insert("status".to_owned(), json!("SUCCESS"));
+            metadata.insert("profile_id".to_owned(), json!(details.profile_id));
+            metadata.insert("source".to_owned(), json!(details.source));
+            metadata.insert("selected_version".to_owned(), json!(details.version));
+            if let Some(grace_until) = details.grace_until {
+                metadata.insert("grace_until".to_owned(), json!(grace_until));
+            }
+            ("SUCCESS", Some(details.profile_id.as_str()))
+        }
+        ResolveAuditOutcome::Failure(error) => {
+            metadata.insert("status".to_owned(), json!("FAILURE"));
+            metadata.insert("failure_reason".to_owned(), json!(error.error));
+            metadata.insert("exit_code".to_owned(), json!(error.kind.exit_code()));
+            ("FAILURE", None)
+        }
+    };
+    let metadata = Value::Object(metadata);
+    let audit = AuditWrite {
+        project_id,
+        profile_id,
+        action: "RESOLVE_REFERENCE",
+        status,
+        secret_name: Some(parsed.key().as_str()),
+        command: None,
+        metadata_json: &metadata,
+        timestamp,
+    };
+    store.append_audit(audit_key.as_ref(), &audit).map_err(|_| corrupt_db())?;
+    Ok(())
 }
 
 fn authorize_policy_reference(
@@ -430,6 +560,29 @@ fn load_profile_key_with_master(
     unwrap_key_material_v1(&wrapping_key, &wrapped, &aad)
 }
 
+fn load_project_key_with_master(
+    store: &Store,
+    project_id: &str,
+    purpose: KeyPurpose,
+    master_key: &locket_crypto::KeyBytes,
+) -> Result<zeroize::Zeroizing<locket_crypto::KeyBytes>, locket_crypto::CryptoError> {
+    let record = store
+        .get_key_by_scope(project_id, None, purpose.as_str())
+        .map_err(|_| locket_crypto::CryptoError::DecryptionFailed)?
+        .ok_or(locket_crypto::CryptoError::DecryptionFailed)?;
+    let wrapping_key =
+        derive_wrapping_key_v1(master_key, &HkdfWrapInfo::new(project_id, None, purpose))?;
+    let aad = key_wrap_aad_v1(&KeyWrapAad::new(
+        project_id,
+        &record.id,
+        None,
+        0,
+        KeyWrapPurpose::from(purpose),
+    ))?;
+    let wrapped = WrappedKeyMaterial { ciphertext: record.wrapped_material, nonce: record.nonce };
+    unwrap_key_material_v1(&wrapping_key, &wrapped, &aad)
+}
+
 fn key_array(bytes: &[u8]) -> Option<locket_crypto::KeyBytes> {
     bytes.try_into().ok()
 }
@@ -459,6 +612,7 @@ mod tests {
     use crate::method::AgentMethod;
     use crate::server::AgentSocketState;
     use crate::unlock_cache::{UnlockEntry, UnlockMethod};
+    use locket_core::LocketError;
     use locket_crypto::{
         HkdfWrapInfo, KeyPurpose, KeyWrapAad, KeyWrapPurpose, SecretBlobAad,
         derive_wrapping_key_v1, encrypt_secret_value_v1, key_wrap_aad_v1, secret_blob_aad_v1,
@@ -525,8 +679,16 @@ mod tests {
         insert_policy_index(&mut store, POLICY_NAME, &[SECRET_NAME])?;
 
         let master_key = [7_u8; 32];
+        let audit_key = [10_u8; 32];
         let profile_secret_key = [8_u8; 32];
         let profile_fingerprint_key = [9_u8; 32];
+        insert_wrapped_project_key(
+            &store,
+            "lk_key_project_audit",
+            KeyPurpose::Audit,
+            &master_key,
+            &audit_key,
+        )?;
         insert_wrapped_profile_key(
             &store,
             "lk_key_profile_secret",
@@ -578,6 +740,35 @@ mod tests {
             1,
             None,
         )?;
+        Ok(())
+    }
+
+    fn insert_wrapped_project_key(
+        store: &Store,
+        key_id: &str,
+        purpose: KeyPurpose,
+        master_key: &locket_crypto::KeyBytes,
+        key_material: &locket_crypto::KeyBytes,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let wrapping_key =
+            derive_wrapping_key_v1(master_key, &HkdfWrapInfo::new(PROJECT_ID, None, purpose))?;
+        let aad = key_wrap_aad_v1(&KeyWrapAad::new(
+            PROJECT_ID,
+            key_id,
+            None,
+            0,
+            KeyWrapPurpose::from(purpose),
+        ))?;
+        let wrapped = wrap_key_material_v1(&wrapping_key, key_material, &aad)?;
+        store.insert_key(&KeyRecord {
+            id: key_id.to_owned(),
+            project_id: PROJECT_ID.to_owned(),
+            profile_id: None,
+            purpose: purpose.as_str().to_owned(),
+            wrapped_material: wrapped.ciphertext,
+            nonce: wrapped.nonce,
+            created_at: 1,
+        })?;
         Ok(())
     }
 
@@ -727,6 +918,39 @@ mod tests {
         Ok(serde_json::from_value(success.payload)?)
     }
 
+    fn resolve_audit_metadata(
+        fixture: &ResolveFixture,
+    ) -> Result<Vec<serde_json::Value>, Box<dyn std::error::Error>> {
+        let store = Store::open(&fixture.store_path)?;
+        let mut statement = store.connection().prepare(
+            "SELECT action, status, secret_name, command, metadata_json
+             FROM audit_log
+             WHERE project_id = ?1
+             ORDER BY sequence",
+        )?;
+        let rows = statement
+            .query_map([PROJECT_ID], |row| {
+                let action: String = row.get(0)?;
+                let status: String = row.get(1)?;
+                let secret_name: Option<String> = row.get(2)?;
+                let command: Option<String> = row.get(3)?;
+                let metadata: String = row.get(4)?;
+                Ok((action, status, secret_name, command, metadata))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        rows.into_iter()
+            .map(|(action, status, secret_name, command, metadata)| {
+                let metadata: serde_json::Value = serde_json::from_str(&metadata)?;
+                assert_eq!(action, "RESOLVE_REFERENCE");
+                assert_eq!(metadata["action"], "RESOLVE_REFERENCE");
+                assert_eq!(metadata["status"], status);
+                assert_eq!(secret_name.as_deref(), Some(SECRET_NAME));
+                assert!(command.is_none());
+                Ok(metadata)
+            })
+            .collect()
+    }
+
     #[test]
     fn resolve_request_round_trips_through_json() -> Result<(), serde_json::Error> {
         let request = ResolveRequest {
@@ -818,6 +1042,16 @@ mod tests {
         assert!(payload.value == fixture.expected_value, "resolved value mismatch");
         assert_eq!(payload.version, 1);
         assert_eq!(payload.profile_id, PROFILE_ID);
+        let audits = resolve_audit_metadata(&fixture)?;
+        assert_eq!(audits.len(), 1);
+        assert_eq!(audits[0]["status"], "SUCCESS");
+        assert_eq!(audits[0]["policy"], POLICY_NAME);
+        assert_eq!(audits[0]["profile_id"], PROFILE_ID);
+        assert_eq!(audits[0]["profile_name"], PROFILE_NAME);
+        assert_eq!(audits[0]["secret_name"], SECRET_NAME);
+        assert_eq!(audits[0]["source"], "user-local");
+        assert_eq!(audits[0]["selected_version"], 1);
+        assert!(audits[0].get("value").is_none());
         Ok(())
     }
 
@@ -874,6 +1108,14 @@ mod tests {
 
         let response = handle_resolve(&envelope, &state, 1).await;
         assert_eq!(error_code(response)?, "AccessDenied");
+        let audits = resolve_audit_metadata(&fixture)?;
+        assert_eq!(audits.len(), 1);
+        assert_eq!(audits[0]["status"], "FAILURE");
+        assert_eq!(audits[0]["failure_reason"], "AccessDenied");
+        assert_eq!(audits[0]["exit_code"], LocketError::AccessDenied.exit_code());
+        assert_eq!(audits[0]["policy"], "deny-database");
+        assert_eq!(audits[0]["secret_name"], SECRET_NAME);
+        assert!(audits[0].get("value").is_none());
         Ok(())
     }
 
