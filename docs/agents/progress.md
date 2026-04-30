@@ -103,8 +103,7 @@ skill set fits a leaf better.
 - [ ] Resolve `lk://` references through the agent
   (`docs/specs/runtime.md:123-155`). All subtasks depend on
   `lk-resolve-rpc`.
-  - [ ] **subtask** — lk-resolve-policy-auth: gate by policy
-    authorization (resolving caller's policy must allow the target).
+  - [~] [acda32e4] branch agent-acda32e4/lk-resolve-policy-auth, worktree .worktrees/agent-acda32e4-lk-resolve-policy-auth; **subtask** — lk-resolve-policy-auth: gate by policy authorization.
   - [ ] **subtask** — lk-resolve-pinned-version: honor pinned
     `lk://...@vN`; `SecretVersionExpired` (75) past `grace_until`.
   - [ ] **subtask** — lk-resolve-grace: in-grace versions resolve
