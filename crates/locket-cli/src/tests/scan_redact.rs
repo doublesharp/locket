@@ -281,6 +281,60 @@ fn scan_require_known_matches_vault_values_without_printing_them()
 }
 
 #[test]
+fn scan_locked_vault_runs_metadata_only_but_require_known_fails()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    let args = test_secret_write_args("DATABASE_URL");
+    crate::set_secret_value(&context, &args, "known-secret-value", "manual", 1_000)?;
+    std::fs::write(
+        directory.path().join("sample.txt"),
+        "token=sk_test_lockedVaultToken123\nvalue=known-secret-value\n",
+    )?;
+
+    let locked_context =
+        test_context_with_key_store(&directory, Arc::new(UnavailableMasterKeyStore));
+    let mut scan_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "scan", "sample.txt"])?,
+        &locked_context,
+        &mut scan_output,
+    )?;
+
+    let scan_output = String::from_utf8(scan_output)?;
+    assert!(scan_output.contains("sample.txt:1:7: [warning] provider-token-pattern"));
+    assert!(scan_output.contains("scan: 1 finding(s) (blocking=0 warning=1)"));
+    assert!(!scan_output.contains("sk_test_lockedVaultToken123"));
+    assert!(!scan_output.contains("known-secret-value"));
+
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let scan_rows: u32 = store.connection().query_row(
+        "SELECT COUNT(*) FROM audit_log WHERE action = 'SCAN'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(scan_rows, 0);
+
+    let mut require_known_output = Vec::new();
+    let require_known_result = run_with_context(
+        Cli::try_parse_from(["locket", "scan", "--require-known", "sample.txt"])?,
+        &locked_context,
+        &mut require_known_output,
+    );
+    let Err(error) = require_known_result else {
+        return Err("locked scan --require-known must fail closed".into());
+    };
+    assert_eq!(error.exit_code(), locket_core::LocketError::UnlockRequired.exit_code());
+    assert!(require_known_output.is_empty());
+    Ok(())
+}
+
+#[test]
 fn scan_require_known_matches_deleted_current_version_with_blob()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempdir()?;
