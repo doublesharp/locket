@@ -3,10 +3,12 @@
 import type { ExtensionContext } from 'vscode';
 
 import { AgentClient } from './agentClient';
+import { registerLocketDiagnostics } from './diagnostics';
 import { registerReferenceCompletionProvider } from './referenceCompletion';
 
 export function activate(context: ExtensionContext): void {
   const agentClient = new AgentClient();
+  context.subscriptions.push(registerLocketDiagnostics());
   context.subscriptions.push(registerReferenceCompletionProvider(agentClient));
   context.subscriptions.push({
     dispose: () => {
