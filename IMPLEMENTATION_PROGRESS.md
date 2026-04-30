@@ -284,12 +284,11 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
   is broken into subtasks below; pick any open one.
   - Spec: `docs/specs/runtime.md:5-122`, `docs/specs/policy.md`.
   - Files: `crates/locket-exec/src/`, `crates/locket-cli/src/commands/exec/run.rs`.
-  - [ ] **subtask** — run-shell-policy: support shell-mode command policies
-    (`shell = "..."` + `args = [...]`) alongside the existing argv form. Wire
-    parser/normalizer in `crates/locket-core/src/policy/`, evaluator and
-    spawn path in `commands/exec/run.rs`. Errors: `InvalidPolicy` (65). Audit:
-    extend `RUN` metadata with `shape: "argv" | "shell"`. Tests cover argv
-    success, shell success, mixed/invalid policy rejection.
+  - [~] [aa40a4ce] **subtask** — run-shell-policy: support shell-mode command policies
+    Claim: branch agent-aa40a4ce/run-shell-policy, worktree .worktrees/agent-aa40a4ce-run-shell-policy.
+    (`shell = "..."` form). Wire spawn path in `commands/exec/run.rs` to
+    invoke the documented shell, audit `shape: "argv" | "shell"`. Tests
+    cover argv success, shell success, audit `shape` field.
   - [x] **subtask** — run-confirm-gate: `confirm = true` policies now require
     a typed `run <policy-name>` confirmation; success records
     `confirmation_source` on the audit row. `RUN/DENIED` rows remain a
@@ -506,8 +505,9 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
   clipboard).
 - [ ] Search/filter UI across projects, profiles, secrets, policies,
   audit, scan findings, devices, members (never reveals values).
-- [ ] Accessibility: keyboard nav, focus states, screen-reader labels,
+- [~] [cb2437f7] Accessibility: keyboard nav, focus states, screen-reader labels,
   contrast, reduced motion, no post-TTL value leak via a11y metadata.
+  Claim: branch agent-cb2437f7/accessibility-baseline, worktree .worktrees/agent-cb2437f7-accessibility-baseline, scope desktop accessibility descriptors.
 - [x] Empty-state guidance for `locket init`/`team accept`/
   `profile create dev`/`set`/`import`/`policy add`/`agent start`/
   `device init`.
