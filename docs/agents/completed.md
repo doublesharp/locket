@@ -291,6 +291,9 @@ Slices that have merged to `main` and verified. Open work tracked in
   returning secret values.
 - [x] search-policies: Policy editor rows can now be filtered with a metadata-only
   search control. Privacy mode avoids matching raw secret-name fields while filtering.
+- [x] search-scan-findings: Scan findings can now be filtered by metadata in the desktop
+  view. The filter searches only existing redacted finding summaries and safe row
+  fields.
 
 ## Full Spec Coverage TODO — Code Health and Bug Fixes
 

@@ -291,7 +291,6 @@ Slices 1+2 shipped (agent client, tray binding, 6 view scaffolds,
 - [ ] Search/filter UI (`docs/specs/desktop.md`). Each subtask
   renders one surface; never exposes values; pre-req is the
   relevant view's data RPC.
-  - [~] [acda32e4] branch agent-acda32e4/search-scan-findings, worktree .worktrees/agent-acda32e4-search-scan-findings; **subtask** — search-scan-findings
   - [~] [90b9f58a] branch agent-90b9f58a/search-devices-members, worktree .worktrees/agent-90b9f58a-search-devices-members; **subtask** — search-devices-members
 - [ ] Tray template-image policy: macOS template-image (alpha-mask)
   vs Windows/Linux full-color light/dark variants. Placeholder PNGs
