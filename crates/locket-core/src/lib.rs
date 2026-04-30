@@ -40,6 +40,8 @@ pub use reference_uri::{
 pub use secret_name::{InvalidSecretName, SecretName};
 pub use time::{Duration, InvalidDuration, Timestamp};
 pub use update_manifest::{
-    UpdateArtifact, UpdateChannel, UpdateManifestError, UpdateManifestPayload,
-    UpdateManifestSignature, VerifiedUpdateManifest, verify_update_manifest,
+    ReleaseKey, UpdateArtifact, UpdateChannel, UpdateManifestError, UpdateManifestFetchRequest,
+    UpdateManifestPayload, UpdateManifestSignature, VerifiedUpdateManifest,
+    build_update_manifest_fetch_request, verify_update_manifest,
+    verify_update_manifest_key_rotation,
 };
