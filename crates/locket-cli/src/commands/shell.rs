@@ -169,6 +169,7 @@ pub fn deny_command(
         let metadata = json!({
             "schema_version": 1,
             "action": "DENY_DIRECTORY",
+            "command": "deny",
             "status": "SUCCESS",
             "project_id": resolved.config.project_id.as_str(),
             "grant_scope": "all",
@@ -214,6 +215,7 @@ pub fn deny_command(
     let metadata = json!({
         "schema_version": 1,
         "action": "DENY_DIRECTORY",
+        "command": "deny",
         "status": "SUCCESS",
         "project_id": resolved.config.project_id.as_str(),
         "profile_id": &profile.id,

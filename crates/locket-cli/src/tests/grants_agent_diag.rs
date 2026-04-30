@@ -183,10 +183,18 @@ fn deny_all_writes_deny_directory_audit_row_with_revoked_count()
         [],
         |row| row.get(0),
     )?;
-    assert!(metadata.contains("\"action\":\"DENY_DIRECTORY\""));
-    assert!(metadata.contains("\"grant_scope\":\"all\""));
-    assert!(metadata.contains("\"revoked_count\":2"));
-    assert!(metadata.contains("\"result_state\":\"all\""));
+    let metadata: serde_json::Value = serde_json::from_str(&metadata)?;
+    assert_eq!(metadata["action"], "DENY_DIRECTORY");
+    assert_eq!(metadata["command"], "deny");
+    assert_eq!(metadata["grant_scope"], "all");
+    assert_eq!(metadata["revoked_count"], 2);
+    assert_eq!(metadata["result_state"], "all");
+    assert!(!metadata.to_string().contains("postgres://localhost/app"));
+    let remaining: u32 =
+        store
+            .connection()
+            .query_row("SELECT COUNT(*) FROM directory_grants", [], |row| row.get(0))?;
+    assert_eq!(remaining, 0);
     Ok(())
 }
 
