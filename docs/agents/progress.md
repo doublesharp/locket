@@ -83,9 +83,7 @@ skill set fits a leaf better.
   shipped; remaining subtasks below. Later subtasks depend on
   `agent-unlock-cache` / `agent-grant-table` — note deps on your claim.
   - [~] [acda32e4] branch agent-acda32e4/agent-grant-table, worktree .worktrees/agent-acda32e4-agent-grant-table; **subtask** — agent-grant-table: SQLite-backed grant table with `(pid, process_start_time)` binding; `RequestGrant`/`ExpireGrant`/`RevokeGrant` handlers. **Critical path.**
-  - [ ] **subtask** — agent-subscribe-status: stream `lock_state`
-    change events plus heartbeat cadence on top of the existing
-    heartbeat envelope. Depends on `agent-unlock-cache`.
+  - [~] [4ab55ee9] branch agent-4ab55ee9/agent-subscribe-status, worktree .worktrees/agent-4ab55ee9-agent-subscribe-status; **subtask** — agent-subscribe-status: stream `lock_state` change events plus heartbeat cadence on top of the existing heartbeat envelope.
   - [~] **subtask** — agent-reveal-copy: dispatch arms wired with
     typed `UnlockRequired`. Remaining: value path + `REVEAL`/`COPY`
     audit emission once cache + grant table ship.
