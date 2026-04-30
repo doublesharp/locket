@@ -418,11 +418,9 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
 - [ ] Ephemeral env-file fallback for children that can't accept an env
   map: 0700 parent / 0600 file outside project tree, post-spawn delete,
   audited delivery mode, secure-erase warning when unsupported.
-- [~] [cb2437f7] ready: agent-cb2437f7/clipboard-warning @ 61dca47 — pre-copy
-  warning is now Wayland-aware (`wl-copy` selected or
-  `XDG_SESSION_TYPE=wayland`) and the COPY audit row records
-  `unsupported_reason` for both Wayland and direct-CLI cases. Background
-  TTL clearing remains a follow-up sub-slice.
+- [~] Clipboard clear-after-TTL only if clipboard still contains the
+  value. Wayland-aware pre-copy warning and `COPY` audit
+  `unsupported_reason` shipped; background TTL clearing remains.
 - [x] `locket diff --since` resolves git revisions via direct
   `git log -1 --format=%ct <rev>` (no shell construction).
 
