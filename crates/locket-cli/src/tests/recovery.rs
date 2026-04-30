@@ -157,6 +157,7 @@ fn recovery_rotate_creates_envelope_and_prints_full_code() -> Result<(), Box<dyn
 
     let rotate_output = String::from_utf8(rotate_output)?;
     assert!(rotate_output.contains("recovery_code_rotate: success"));
+    assert!(rotate_output.contains("warning: terminal scrollback may retain this code"));
     assert!(rotate_output.contains("metadata_only: yes"));
     let code_line = recovery_code_from_output(&rotate_output)?;
     let code_bytes = locket_crypto::recovery_code_decode(code_line)?;

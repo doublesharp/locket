@@ -221,6 +221,7 @@ fn display_recovery_code(
     writeln!(output, "recovery_code_rotate: success")?;
     writeln!(output, "recovery_code (shown once, store securely):")?;
     writeln!(output, "{code}")?;
+    writeln!(output, "warning: terminal scrollback may retain this code")?;
     writeln!(output, "metadata_only: yes")?;
     Ok(())
 }
