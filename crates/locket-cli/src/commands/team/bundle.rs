@@ -104,7 +104,7 @@ pub fn export_bundle_command(
         payload_digest: manifest_digest_sha256,
     };
     let container = BundleContainer::new(manifest.clone(), encrypted_payload)
-        .map_err(bundle_container_cli_error)?;
+        .map_err(|error| bundle_container_cli_error(&error))?;
     let output_path =
         args.output.clone().unwrap_or_else(|| default_bundle_output_path(context, timestamp));
     write_bundle_file(&output_path, &container)?;
@@ -299,7 +299,7 @@ fn default_bundle_output_path(context: &RuntimeContext, timestamp: i64) -> PathB
 }
 
 fn write_bundle_file(path: &Path, bundle: &BundleContainer) -> Result<(), CliError> {
-    let bytes = bundle.serialize().map_err(bundle_container_cli_error)?;
+    let bytes = bundle.serialize().map_err(|error| bundle_container_cli_error(&error))?;
     let mut options = fs::OpenOptions::new();
     options.write(true).create_new(true);
     set_user_only_file_options(&mut options);
@@ -317,7 +317,8 @@ fn write_bundle_file(path: &Path, bundle: &BundleContainer) -> Result<(), CliErr
 
 fn verify_bundle_file(path: &Path) -> Result<VerifiedBundleV1, CliError> {
     let bytes = fs::read(path)?;
-    let container = BundleContainer::deserialize(&bytes).map_err(bundle_container_cli_error)?;
+    let container =
+        BundleContainer::deserialize(&bytes).map_err(|error| bundle_container_cli_error(&error))?;
     let digest = bundle_encrypted_payload_digest(&container.encrypted_payload);
     if digest != container.manifest.payload_digest {
         return Err(bundle_verification_error(
@@ -329,7 +330,7 @@ fn verify_bundle_file(path: &Path) -> Result<VerifiedBundleV1, CliError> {
     Ok(VerifiedBundleV1 { manifest: container.manifest })
 }
 
-fn bundle_container_cli_error(error: BundleContainerError) -> CliError {
+fn bundle_container_cli_error(error: &BundleContainerError) -> CliError {
     bundle_verification_error(format!("bundle verification failed: {error}"))
 }
 

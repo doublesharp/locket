@@ -1,5 +1,9 @@
 //! `SQLite` storage layer for Locket.
 
+// age 0.11 enters through locket-core and carries older transitive crates
+// alongside workspace versions. The sealed-bundle dependency owns that skew.
+#![allow(clippy::multiple_crate_versions)]
+
 use std::path::Path;
 
 use rusqlite::Connection;

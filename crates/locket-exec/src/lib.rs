@@ -1,5 +1,9 @@
 //! Process execution and environment injection for Locket.
 
+// age 0.11 enters through locket-core and carries older transitive crates
+// alongside workspace versions. The sealed-bundle dependency owns that skew.
+#![allow(clippy::multiple_crate_versions)]
+
 use std::process::Command;
 
 pub use locket_core::{
