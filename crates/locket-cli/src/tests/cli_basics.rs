@@ -408,9 +408,84 @@ fn sealed_bundle_export_verify_and_import_are_metadata_only()
         .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?
         .collect::<Result<Vec<_>, _>>()?;
     assert!(rows.iter().any(|(action, _)| action == "BACKUP_EXPORT"));
+    let verify_metadata = rows
+        .iter()
+        .find_map(|(action, metadata)| (action == "BUNDLE_VERIFY").then_some(metadata))
+        .ok_or("missing BUNDLE_VERIFY audit row")?;
+    let verify_metadata: serde_json::Value = serde_json::from_str(verify_metadata)?;
+    assert_eq!(verify_metadata["bundle_schema_version"], serde_json::json!(1));
+    assert_eq!(verify_metadata["profile_count"], serde_json::json!(1));
+    assert_eq!(verify_metadata["recipient_count"], serde_json::json!(1));
+    assert_eq!(verify_metadata["decryptable_by_this_device"], serde_json::json!(false));
+    assert_eq!(verify_metadata["metadata_only"], serde_json::json!(true));
+    assert!(verify_metadata.get("recipient_fingerprints").is_none());
     assert!(rows.iter().any(|(action, _)| action == "BACKUP_IMPORT"));
     for (_, metadata) in rows {
         assert!(!metadata.contains("postgres://bundle-secret"));
+    }
+    Ok(())
+}
+
+#[test]
+fn bundle_verify_rejects_unsupported_schema_as_config_error()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    let mut device_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "device", "init"])?,
+        &context,
+        &mut device_output,
+    )?;
+    let descriptor = String::from_utf8(device_output)?
+        .lines()
+        .find_map(|line| line.strip_prefix("descriptor: "))
+        .ok_or("missing descriptor")?
+        .to_owned();
+    let bundle_path = directory.path().join("unsupported.locket-bundle");
+    run_with_context(
+        Cli::try_parse_from([
+            "locket",
+            "export",
+            "--sealed",
+            "--recipient",
+            &descriptor,
+            "--output",
+            bundle_path.to_str().ok_or("utf8 path")?,
+        ])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    let mut bundle_bytes = fs::read(&bundle_path)?;
+    bundle_bytes[locket_core::BUNDLE_MAGIC.len()] = 99;
+    bundle_bytes[locket_core::BUNDLE_MAGIC.len() + 1] = 0;
+    fs::write(&bundle_path, bundle_bytes)?;
+
+    let result = run_with_context(
+        Cli::try_parse_from([
+            "locket",
+            "bundle",
+            "verify",
+            bundle_path.to_str().ok_or("utf8 path")?,
+        ])?,
+        &context,
+        &mut Vec::new(),
+    );
+    let Err(error) = result else {
+        return Err("expected unsupported schema error".into());
+    };
+    assert_eq!(error.exit_code(), locket_core::LocketError::MetadataInvalid.exit_code());
+    assert!(error.to_string().contains("unsupported bundle schema version 99"));
+    match error {
+        crate::CliError::Typed { kind, .. } => {
+            assert_eq!(kind, locket_core::LocketError::MetadataInvalid);
+        }
+        other => return Err(format!("expected typed MetadataInvalid error, got {other:?}").into()),
     }
     Ok(())
 }

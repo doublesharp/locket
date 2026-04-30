@@ -24,7 +24,7 @@ use crate::{
     confirmation_failed_error, default_profile, ensure_project_exists, ensure_trusted_project_root,
     external_env_source_label, format_hex, invalid_reference_error, load_project_key,
     metadata_invalid_error, now_unix_nanos, open_store, profile_not_found_error,
-    read_policy_document, require_project, set_user_only_file_options,
+    read_policy_document, require_project, resolve_project, set_user_only_file_options,
     set_user_only_file_permissions,
 };
 
@@ -285,11 +285,12 @@ pub fn import_bundle_command(
 }
 
 fn bundle_verify_command(
-    _context: &RuntimeContext,
+    context: &RuntimeContext,
     output: &mut impl Write,
     args: &BundleVerifyArgs,
 ) -> Result<(), CliError> {
     let bundle = verify_bundle_file(&args.bundle)?;
+    write_bundle_verify_audit_if_available(context, &bundle)?;
     writeln!(output, "bundle: valid")?;
     writeln!(output, "schema_version: {}", bundle.manifest.schema_version)?;
     writeln!(output, "project_id: {}", bundle.manifest.project_id)?;
@@ -566,7 +567,12 @@ fn verify_bundle_file(path: &Path) -> Result<VerifiedBundleV1, CliError> {
 }
 
 fn bundle_container_cli_error(error: &BundleContainerError) -> CliError {
-    bundle_verification_error(format!("bundle verification failed: {error}"))
+    match error {
+        BundleContainerError::UnsupportedSchema(version) => metadata_invalid_error(format!(
+            "unsupported bundle schema version {version}; upgrade locket to verify this bundle"
+        )),
+        _ => bundle_verification_error(format!("bundle verification failed: {error}")),
+    }
 }
 
 fn output_path_kind(path: &Path, context: &RuntimeContext) -> &'static str {
@@ -659,6 +665,49 @@ impl BundleAuditSubject for VerifiedBundleV1 {
     fn manifest(&self) -> &BundleManifest {
         &self.manifest
     }
+}
+
+fn write_bundle_verify_audit_if_available(
+    context: &RuntimeContext,
+    bundle: &VerifiedBundleV1,
+) -> Result<(), CliError> {
+    let Some(resolved) = resolve_project(&context.cwd)? else {
+        return Ok(());
+    };
+    let mut store = open_store(context)?;
+    let project_id = resolved.config.project_id.as_str();
+    if store.get_project(project_id)?.is_none() {
+        return Ok(());
+    }
+    let Ok(audit_key) = load_project_key(context, &store, project_id, KeyPurpose::Audit) else {
+        return Ok(());
+    };
+    let timestamp = now_unix_nanos()?;
+    let metadata = serde_json::json!({
+        "schema_version": 1,
+        "action": "BUNDLE_VERIFY",
+        "status": "SUCCESS",
+        "command": "bundle verify",
+        "project_id": project_id,
+        "bundle_schema_version": bundle.manifest.schema_version,
+        "bundle_digest": bundle.manifest.payload_digest,
+        "profile_count": bundle.manifest.profile_count,
+        "recipient_count": bundle.manifest.recipient_fingerprints.len(),
+        "decryptable_by_this_device": false,
+        "metadata_only": true,
+    });
+    let audit = AuditWrite {
+        project_id,
+        profile_id: None,
+        action: "BUNDLE_VERIFY",
+        status: "SUCCESS",
+        secret_name: None,
+        command: Some("bundle verify"),
+        metadata_json: &metadata,
+        timestamp,
+    };
+    store.append_audit(audit_key.as_ref(), &audit)?;
+    Ok(())
 }
 
 fn write_bundle_audit_if_available(
