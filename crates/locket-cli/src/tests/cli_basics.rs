@@ -237,10 +237,14 @@ fn sealed_bundle_export_verify_and_import_are_metadata_only()
     assert!(export_output.contains("bundle: exported"));
     assert!(export_output.contains("active_secret_count: 1"));
     assert!(export_output.contains("metadata_only: yes"));
-    let bundle_text = fs::read_to_string(&bundle_path)?;
-    assert!(bundle_text.contains("LOCKET-BUNDLE-V1"));
-    assert!(!bundle_text.contains("postgres://bundle-secret"));
-    assert!(!bundle_text.contains("DATABASE_URL"));
+    let bundle_bytes = fs::read(&bundle_path)?;
+    assert!(bundle_bytes.starts_with(locket_core::BUNDLE_MAGIC));
+    assert!(
+        !bundle_bytes
+            .windows("postgres://bundle-secret".len())
+            .any(|window| window == b"postgres://bundle-secret")
+    );
+    assert!(!bundle_bytes.windows("DATABASE_URL".len()).any(|window| window == b"DATABASE_URL"));
 
     let mut verify_output = Vec::new();
     run_with_context(
@@ -342,12 +346,10 @@ fn bundle_verify_rejects_tampered_digest() -> Result<(), Box<dyn std::error::Err
         &context,
         &mut Vec::new(),
     )?;
-    let tampered = fs::read_to_string(&bundle_path)?.replacen(
-        "\"active_secret_count\": 0",
-        "\"active_secret_count\": 1",
-        1,
-    );
-    fs::write(&bundle_path, tampered)?;
+    let bundle_bytes = fs::read(&bundle_path)?;
+    let mut container = locket_core::BundleContainer::deserialize(&bundle_bytes)?;
+    container.manifest.payload_digest = "0".repeat(64);
+    fs::write(&bundle_path, container.serialize()?)?;
     let result = run_with_context(
         Cli::try_parse_from([
             "locket",

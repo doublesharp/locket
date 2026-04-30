@@ -19,7 +19,9 @@
 //! schema are layered on top by separate slices.
 
 use std::collections::BTreeSet;
+use std::io::{Read, Write};
 
+use bech32::{ToBase32, Variant};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use thiserror::Error;
@@ -115,6 +117,37 @@ pub enum BundleContainerError {
 /// Result alias for sealed-bundle container operations.
 pub type BundleContainerResult<T> = Result<T, BundleContainerError>;
 
+/// Errors raised while encrypting or decrypting bundle payload bytes
+/// with age.
+///
+/// Callers map these to the slice-appropriate typed error. Export-time
+/// recipient validation is usually configuration/metadata invalid, while
+/// verify/decrypt failures map to `BundleVerificationFailed`.
+#[derive(Debug, Clone, Error, PartialEq, Eq)]
+pub enum BundleEncryptionError {
+    /// At least one recipient is required by the age format.
+    #[error("bundle encryption requires at least one recipient")]
+    MissingRecipients,
+    /// A stored or decoded recipient key could not be converted into
+    /// an age X25519 recipient.
+    #[error("bundle recipient {index} is invalid: {message}")]
+    InvalidRecipient {
+        /// Zero-based recipient index from the caller's list.
+        index: usize,
+        /// Redacted parse failure.
+        message: String,
+    },
+    /// age rejected the recipient set or failed while encrypting.
+    #[error("bundle encryption failed: {0}")]
+    Encrypt(String),
+    /// age could not parse, authenticate, or decrypt the ciphertext.
+    #[error("bundle decryption failed: {0}")]
+    Decrypt(String),
+}
+
+/// Result alias for age bundle payload operations.
+pub type BundleEncryptionResult<T> = Result<T, BundleEncryptionError>;
+
 /// Plaintext header + encrypted payload pair as it appears on disk.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BundleContainer {
@@ -122,6 +155,84 @@ pub struct BundleContainer {
     pub manifest: BundleManifest,
     /// Opaque encrypted payload bytes (age v1 ciphertext or test stub).
     pub encrypted_payload: Vec<u8>,
+}
+
+/// Encrypts a canonical bundle payload as an age v1 binary file for one
+/// or more X25519 recipients.
+///
+/// The `recipient_public_keys` values are the 32-byte raw public keys
+/// carried in Locket device descriptors and device rows. The resulting
+/// ciphertext is suitable for [`BundleContainer::encrypted_payload`].
+///
+/// # Errors
+///
+/// Returns [`BundleEncryptionError::MissingRecipients`] for an empty
+/// recipient list, [`BundleEncryptionError::InvalidRecipient`] for an
+/// invalid public key encoding, or [`BundleEncryptionError::Encrypt`]
+/// if age cannot construct or finish the file.
+pub fn encrypt_bundle_payload_for_age_recipients(
+    plaintext: &[u8],
+    recipient_public_keys: &[[u8; 32]],
+) -> BundleEncryptionResult<Vec<u8>> {
+    if recipient_public_keys.is_empty() {
+        return Err(BundleEncryptionError::MissingRecipients);
+    }
+    let recipients = recipient_public_keys
+        .iter()
+        .enumerate()
+        .map(|(index, public_key)| age_recipient_from_x25519_public_key(index, public_key))
+        .collect::<BundleEncryptionResult<Vec<_>>>()?;
+    let encryptor =
+        age::Encryptor::with_recipients(recipients.iter().map(|recipient| recipient as _))
+            .map_err(|error| BundleEncryptionError::Encrypt(error.to_string()))?;
+    let mut encrypted = Vec::new();
+    {
+        let mut writer = encryptor
+            .wrap_output(&mut encrypted)
+            .map_err(|error| BundleEncryptionError::Encrypt(error.to_string()))?;
+        writer
+            .write_all(plaintext)
+            .map_err(|error| BundleEncryptionError::Encrypt(error.to_string()))?;
+        writer.finish().map_err(|error| BundleEncryptionError::Encrypt(error.to_string()))?;
+    }
+    Ok(encrypted)
+}
+
+/// Parses an age v1 binary payload header without attempting decryption.
+///
+/// This is the structural-only verification path used when the current
+/// device does not have a usable local sealing private key.
+///
+/// # Errors
+///
+/// Returns [`BundleEncryptionError::Decrypt`] if age cannot parse a
+/// valid v1 header with recipient stanzas.
+pub fn verify_age_payload_structure(encrypted_payload: &[u8]) -> BundleEncryptionResult<()> {
+    age::Decryptor::new(encrypted_payload)
+        .map(|_| ())
+        .map_err(|error| BundleEncryptionError::Decrypt(error.to_string()))
+}
+
+/// Decrypts an age-encrypted bundle payload with a local X25519 identity.
+///
+/// # Errors
+///
+/// Returns [`BundleEncryptionError::Decrypt`] if the payload is
+/// malformed, is not addressed to `identity`, or fails authentication.
+pub fn decrypt_bundle_payload_with_age_identity(
+    encrypted_payload: &[u8],
+    identity: &age::x25519::Identity,
+) -> BundleEncryptionResult<Vec<u8>> {
+    let decryptor = age::Decryptor::new(encrypted_payload)
+        .map_err(|error| BundleEncryptionError::Decrypt(error.to_string()))?;
+    let mut reader = decryptor
+        .decrypt(std::iter::once(identity as &dyn age::Identity))
+        .map_err(|error| BundleEncryptionError::Decrypt(error.to_string()))?;
+    let mut plaintext = Vec::new();
+    reader
+        .read_to_end(&mut plaintext)
+        .map_err(|error| BundleEncryptionError::Decrypt(error.to_string()))?;
+    Ok(plaintext)
 }
 
 impl BundleContainer {
@@ -276,6 +387,20 @@ fn serialize_manifest(manifest: &BundleManifest) -> Vec<u8> {
     crate::canonical_json(&Value::Object(object)).into_bytes()
 }
 
+fn age_recipient_from_x25519_public_key(
+    index: usize,
+    public_key: &[u8; 32],
+) -> BundleEncryptionResult<age::x25519::Recipient> {
+    let encoded =
+        bech32::encode("age", public_key.to_base32(), Variant::Bech32).map_err(|error| {
+            BundleEncryptionError::InvalidRecipient { index, message: error.to_string() }
+        })?;
+    encoded.parse().map_err(|message: &'static str| BundleEncryptionError::InvalidRecipient {
+        index,
+        message: message.to_owned(),
+    })
+}
+
 fn parse_manifest(
     bytes: &[u8],
     header_schema_version: u16,
@@ -395,6 +520,7 @@ fn read_slice<'data>(
 #[allow(clippy::cast_possible_truncation)]
 mod tests {
     use super::*;
+    use bech32::FromBase32;
 
     fn sample_manifest() -> BundleManifest {
         BundleManifest {
@@ -407,6 +533,12 @@ mod tests {
         }
     }
 
+    fn public_key_bytes(recipient: &age::x25519::Recipient) -> [u8; 32] {
+        let (hrp, data, _) = bech32::decode(&recipient.to_string()).unwrap();
+        assert_eq!(hrp, "age");
+        Vec::<u8>::from_base32(&data).unwrap().try_into().unwrap()
+    }
+
     #[test]
     fn round_trip_synthetic_container_preserves_manifest_and_payload() {
         let payload = b"opaque-encrypted-payload-bytes".to_vec();
@@ -417,6 +549,35 @@ mod tests {
         let parsed = BundleContainer::deserialize(&bytes).expect("deserialize succeeds");
         assert_eq!(parsed, container);
         assert_eq!(parsed.encrypted_payload, payload);
+    }
+
+    #[test]
+    fn age_payload_encrypts_for_multiple_recipients_and_decrypts_matching_identity() {
+        let identity_a = age::x25519::Identity::generate();
+        let identity_b = age::x25519::Identity::generate();
+        let recipient_keys =
+            [public_key_bytes(&identity_a.to_public()), public_key_bytes(&identity_b.to_public())];
+        let plaintext = br#"{"schema_version":1,"profile_count":1}"#;
+
+        let encrypted =
+            encrypt_bundle_payload_for_age_recipients(plaintext, &recipient_keys).unwrap();
+
+        assert_ne!(encrypted, plaintext);
+        verify_age_payload_structure(&encrypted).unwrap();
+        let decrypted = decrypt_bundle_payload_with_age_identity(&encrypted, &identity_b).unwrap();
+        assert_eq!(decrypted, plaintext);
+    }
+
+    #[test]
+    fn age_payload_requires_at_least_one_recipient() {
+        let error = encrypt_bundle_payload_for_age_recipients(b"{}", &[]).unwrap_err();
+        assert_eq!(error, BundleEncryptionError::MissingRecipients);
+    }
+
+    #[test]
+    fn age_payload_structure_rejects_plaintext_payload() {
+        let error = verify_age_payload_structure(b"{\"not\":\"age\"}").unwrap_err();
+        assert!(matches!(error, BundleEncryptionError::Decrypt(_)));
     }
 
     #[test]

@@ -5,10 +5,14 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
+use locket_core::{
+    BUNDLE_SCHEMA_V1, BundleContainer, BundleContainerError, BundleManifest,
+    encrypt_bundle_payload_for_age_recipients, verify_age_payload_structure,
+};
 use locket_crypto::KeyPurpose;
 use locket_store::{AuditWrite, ProfileRecord, Store};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
 use super::device;
@@ -19,22 +23,6 @@ use crate::{
     load_project_key, metadata_invalid_error, now_unix_nanos, open_store, profile_not_found_error,
     require_project, set_user_only_file_options, set_user_only_file_permissions,
 };
-
-const BUNDLE_MAGIC_V1: &str = "LOCKET-BUNDLE-V1";
-
-#[derive(Debug, Deserialize, Serialize)]
-struct SealedBundleFileV1 {
-    magic: String,
-    schema_version: u16,
-    kind: String,
-    created_at: i64,
-    project_id: String,
-    include_audit: bool,
-    recipient_fingerprints: Vec<String>,
-    payload_status: String,
-    manifest_digest_sha256: String,
-    payload: SealedBundlePayloadV1,
-}
 
 #[derive(Debug, Deserialize, Serialize)]
 struct SealedBundlePayloadV1 {
@@ -49,6 +37,21 @@ struct SealedBundleProfileV1 {
     profile_id: String,
     dangerous: bool,
     active_secret_count: usize,
+}
+
+struct BundleRecipientV1 {
+    fingerprint: String,
+    sealing_public_key: [u8; 32],
+}
+
+struct ExportedBundleV1 {
+    manifest: BundleManifest,
+    active_secret_count: usize,
+    include_audit: bool,
+}
+
+struct VerifiedBundleV1 {
+    manifest: BundleManifest,
 }
 
 pub fn bundle_command(
@@ -77,27 +80,39 @@ pub fn export_bundle_command(
     let mut store = open_store(context)?;
     ensure_project_exists(&store, resolved.config.project_id.as_str())?;
     ensure_trusted_project_root(&store, &resolved)?;
-    let recipient_fingerprints = bundle_recipient_fingerprints(&args.recipients)?;
+    let recipients = bundle_recipients(&args.recipients)?;
+    let recipient_fingerprints =
+        recipients.iter().map(|recipient| recipient.fingerprint.clone()).collect::<Vec<_>>();
     let selected_profiles = selected_bundle_profiles(&store, &resolved, args)?;
     confirm_dangerous_profile_export(context, output, &selected_profiles)?;
     let timestamp = now_unix_nanos()?;
     let payload = bundle_payload(&store, &selected_profiles, args.include_audit)?;
-    let manifest_digest_sha256 = bundle_payload_digest(&payload)?;
-    let bundle = SealedBundleFileV1 {
-        magic: BUNDLE_MAGIC_V1.to_owned(),
-        schema_version: 1,
-        kind: "sealed-bundle".to_owned(),
-        created_at: timestamp,
-        project_id: resolved.config.project_id.to_string(),
-        include_audit: args.include_audit,
+    let plaintext_payload = serde_json::to_vec(&payload)?;
+    let recipient_keys =
+        recipients.iter().map(|recipient| recipient.sealing_public_key).collect::<Vec<_>>();
+    let encrypted_payload =
+        encrypt_bundle_payload_for_age_recipients(&plaintext_payload, &recipient_keys)
+            .map_err(|error| metadata_invalid_error(error.to_string()))?;
+    let manifest_digest_sha256 = bundle_encrypted_payload_digest(&encrypted_payload);
+    let manifest = BundleManifest {
         recipient_fingerprints,
-        payload_status: "metadata-only-placeholder".to_owned(),
-        manifest_digest_sha256,
-        payload,
+        project_id: resolved.config.project_id.to_string(),
+        schema_version: BUNDLE_SCHEMA_V1,
+        created_at: timestamp,
+        profile_count: u32::try_from(payload.profile_count)
+            .map_err(|_| metadata_invalid_error("bundle profile count exceeds schema limit"))?,
+        payload_digest: manifest_digest_sha256,
     };
+    let container = BundleContainer::new(manifest.clone(), encrypted_payload)
+        .map_err(bundle_container_cli_error)?;
     let output_path =
         args.output.clone().unwrap_or_else(|| default_bundle_output_path(context, timestamp));
-    write_bundle_file(&output_path, &bundle)?;
+    write_bundle_file(&output_path, &container)?;
+    let bundle = ExportedBundleV1 {
+        manifest,
+        active_secret_count: payload.active_secret_count,
+        include_audit: args.include_audit,
+    };
     write_bundle_audit_if_available(
         context,
         &mut store,
@@ -108,17 +123,18 @@ pub fn export_bundle_command(
             bundle: &bundle,
             path_kind: output_path_kind(&output_path, context),
             timestamp,
+            include_audit_requested: None,
         },
     )?;
 
     writeln!(output, "bundle: exported")?;
     writeln!(output, "path: {}", output_path.display())?;
-    writeln!(output, "profiles: {}", bundle.payload.profile_count)?;
-    writeln!(output, "active_secret_count: {}", bundle.payload.active_secret_count)?;
-    writeln!(output, "recipients: {}", bundle.recipient_fingerprints.len())?;
+    writeln!(output, "profiles: {}", bundle.manifest.profile_count)?;
+    writeln!(output, "active_secret_count: {}", bundle.active_secret_count)?;
+    writeln!(output, "recipients: {}", bundle.manifest.recipient_fingerprints.len())?;
     writeln!(output, "include_audit: {}", if bundle.include_audit { "yes" } else { "no" })?;
-    writeln!(output, "payload_status: {}", bundle.payload_status)?;
-    writeln!(output, "digest: {}", bundle.manifest_digest_sha256)?;
+    writeln!(output, "payload_status: age-encrypted")?;
+    writeln!(output, "digest: {}", bundle.manifest.payload_digest)?;
     writeln!(output, "metadata_only: yes")?;
     Ok(())
 }
@@ -133,7 +149,7 @@ pub fn import_bundle_command(
     ensure_project_exists(&store, resolved.config.project_id.as_str())?;
     ensure_trusted_project_root(&store, &resolved)?;
     let bundle = verify_bundle_file(&args.bundle)?;
-    if bundle.project_id != resolved.config.project_id.as_str() {
+    if bundle.manifest.project_id != resolved.config.project_id.as_str() {
         return Err(bundle_verification_error("bundle project id does not match current project"));
     }
     let conflict_policy = if args.accept_incoming {
@@ -153,16 +169,17 @@ pub fn import_bundle_command(
             bundle: &bundle,
             path_kind: "input",
             timestamp: now_unix_nanos()?,
+            include_audit_requested: Some(args.include_audit),
         },
     )?;
 
     writeln!(output, "bundle: verified")?;
     writeln!(output, "import: not_applied")?;
     writeln!(output, "reason: local device private-key import is not implemented in this build")?;
-    writeln!(output, "profiles: {}", bundle.payload.profile_count)?;
-    writeln!(output, "active_secret_count: {}", bundle.payload.active_secret_count)?;
+    writeln!(output, "profiles: {}", bundle.manifest.profile_count)?;
+    writeln!(output, "active_secret_count: encrypted")?;
     writeln!(output, "include_audit_requested: {}", if args.include_audit { "yes" } else { "no" })?;
-    writeln!(output, "bundle_include_audit: {}", if bundle.include_audit { "yes" } else { "no" })?;
+    writeln!(output, "bundle_include_audit: encrypted")?;
     writeln!(output, "conflict_policy: {conflict_policy}")?;
     writeln!(output, "metadata_only: yes")?;
     Ok(())
@@ -175,19 +192,20 @@ fn bundle_verify_command(
 ) -> Result<(), CliError> {
     let bundle = verify_bundle_file(&args.bundle)?;
     writeln!(output, "bundle: valid")?;
-    writeln!(output, "schema_version: {}", bundle.schema_version)?;
-    writeln!(output, "project_id: {}", bundle.project_id)?;
-    writeln!(output, "profiles: {}", bundle.payload.profile_count)?;
-    writeln!(output, "active_secret_count: {}", bundle.payload.active_secret_count)?;
-    writeln!(output, "recipients: {}", bundle.recipient_fingerprints.len())?;
-    writeln!(output, "digest: {}", bundle.manifest_digest_sha256)?;
+    writeln!(output, "schema_version: {}", bundle.manifest.schema_version)?;
+    writeln!(output, "project_id: {}", bundle.manifest.project_id)?;
+    writeln!(output, "profiles: {}", bundle.manifest.profile_count)?;
+    writeln!(output, "active_secret_count: encrypted")?;
+    writeln!(output, "recipients: {}", bundle.manifest.recipient_fingerprints.len())?;
+    writeln!(output, "digest: {}", bundle.manifest.payload_digest)?;
     writeln!(output, "decryptable_by_this_device: no")?;
     writeln!(output, "metadata_only: yes")?;
     Ok(())
 }
 
-fn bundle_recipient_fingerprints(recipients: &[String]) -> Result<Vec<String>, CliError> {
-    let mut fingerprints = BTreeSet::new();
+fn bundle_recipients(recipients: &[String]) -> Result<Vec<BundleRecipientV1>, CliError> {
+    let mut seen = BTreeSet::new();
+    let mut out = Vec::with_capacity(recipients.len());
     for recipient in recipients {
         let descriptor = device::decode_device_descriptor(recipient)?;
         let signing_public_key =
@@ -198,9 +216,11 @@ fn bundle_recipient_fingerprints(recipients: &[String]) -> Result<Vec<String>, C
         if fingerprint != descriptor.fingerprint_sha256 {
             return Err(metadata_invalid_error("recipient device descriptor fingerprint mismatch"));
         }
-        fingerprints.insert(fingerprint);
+        if seen.insert(fingerprint.clone()) {
+            out.push(BundleRecipientV1 { fingerprint, sealing_public_key });
+        }
     }
-    Ok(fingerprints.into_iter().collect())
+    Ok(out)
 }
 
 fn selected_bundle_profiles(
@@ -268,20 +288,18 @@ fn bundle_payload(
     })
 }
 
-fn bundle_payload_digest(payload: &SealedBundlePayloadV1) -> Result<String, CliError> {
-    let bytes = serde_json::to_vec(payload)?;
+fn bundle_encrypted_payload_digest(encrypted_payload: &[u8]) -> String {
     let mut hasher = Sha256::new();
-    hasher.update(b"locket-bundle-payload-v1");
-    hasher.update(bytes);
-    Ok(format_hex(&hasher.finalize()))
+    hasher.update(encrypted_payload);
+    format_hex(&hasher.finalize())
 }
 
 fn default_bundle_output_path(context: &RuntimeContext, timestamp: i64) -> PathBuf {
     context.cwd.join(format!("locket-bundle-{timestamp}.locket-bundle"))
 }
 
-fn write_bundle_file(path: &Path, bundle: &SealedBundleFileV1) -> Result<(), CliError> {
-    let text = serde_json::to_string_pretty(bundle)?;
+fn write_bundle_file(path: &Path, bundle: &BundleContainer) -> Result<(), CliError> {
+    let bytes = bundle.serialize().map_err(bundle_container_cli_error)?;
     let mut options = fs::OpenOptions::new();
     options.write(true).create_new(true);
     set_user_only_file_options(&mut options);
@@ -292,35 +310,27 @@ fn write_bundle_file(path: &Path, bundle: &SealedBundleFileV1) -> Result<(), Cli
             CliError::Io(error)
         }
     })?;
-    file.write_all(text.as_bytes())?;
-    file.write_all(b"\n")?;
+    file.write_all(&bytes)?;
     set_user_only_file_permissions(path)?;
     Ok(())
 }
 
-fn verify_bundle_file(path: &Path) -> Result<SealedBundleFileV1, CliError> {
+fn verify_bundle_file(path: &Path) -> Result<VerifiedBundleV1, CliError> {
     let bytes = fs::read(path)?;
-    let bundle: SealedBundleFileV1 = serde_json::from_slice(&bytes).map_err(|error| {
-        bundle_verification_error(format!("bundle verification failed: {error}"))
-    })?;
-    if bundle.magic != BUNDLE_MAGIC_V1 {
-        return Err(bundle_verification_error("bundle verification failed: bad magic"));
-    }
-    if bundle.schema_version != 1 {
-        return Err(bundle_verification_error(
-            "bundle verification failed: unsupported schema version",
-        ));
-    }
-    if bundle.kind != "sealed-bundle" {
-        return Err(bundle_verification_error("bundle verification failed: bad kind"));
-    }
-    let digest = bundle_payload_digest(&bundle.payload)?;
-    if digest != bundle.manifest_digest_sha256 {
+    let container = BundleContainer::deserialize(&bytes).map_err(bundle_container_cli_error)?;
+    let digest = bundle_encrypted_payload_digest(&container.encrypted_payload);
+    if digest != container.manifest.payload_digest {
         return Err(bundle_verification_error(
             "bundle verification failed: manifest digest mismatch",
         ));
     }
-    Ok(bundle)
+    verify_age_payload_structure(&container.encrypted_payload)
+        .map_err(|error| bundle_verification_error(error.to_string()))?;
+    Ok(VerifiedBundleV1 { manifest: container.manifest })
+}
+
+fn bundle_container_cli_error(error: BundleContainerError) -> CliError {
+    bundle_verification_error(format!("bundle verification failed: {error}"))
 }
 
 fn output_path_kind(path: &Path, context: &RuntimeContext) -> &'static str {
@@ -337,9 +347,42 @@ struct BundleAuditRequest<'a> {
     resolved: &'a ResolvedProject,
     action: &'static str,
     command: &'static str,
-    bundle: &'a SealedBundleFileV1,
+    bundle: &'a dyn BundleAuditSubject,
     path_kind: &'static str,
     timestamp: i64,
+    include_audit_requested: Option<bool>,
+}
+
+trait BundleAuditSubject {
+    fn manifest(&self) -> &BundleManifest;
+
+    fn active_secret_count(&self) -> Option<usize> {
+        None
+    }
+
+    fn include_audit(&self) -> Option<bool> {
+        None
+    }
+}
+
+impl BundleAuditSubject for ExportedBundleV1 {
+    fn manifest(&self) -> &BundleManifest {
+        &self.manifest
+    }
+
+    fn active_secret_count(&self) -> Option<usize> {
+        Some(self.active_secret_count)
+    }
+
+    fn include_audit(&self) -> Option<bool> {
+        Some(self.include_audit)
+    }
+}
+
+impl BundleAuditSubject for VerifiedBundleV1 {
+    fn manifest(&self) -> &BundleManifest {
+        &self.manifest
+    }
 }
 
 fn write_bundle_audit_if_available(
@@ -353,20 +396,32 @@ fn write_bundle_audit_if_available(
         request.resolved.config.project_id.as_str(),
         KeyPurpose::Audit,
     )?;
-    let metadata = json!({
-        "schema_version": 1,
-        "action": request.action,
-        "status": "SUCCESS",
-        "command": request.command,
-        "project_id": request.resolved.config.project_id.as_str(),
-        "profile_count": request.bundle.payload.profile_count,
-        "active_secret_count": request.bundle.payload.active_secret_count,
-        "recipient_fingerprints": &request.bundle.recipient_fingerprints,
-        "bundle_digest": &request.bundle.manifest_digest_sha256,
-        "path_kind": request.path_kind,
-        "include_audit": request.bundle.include_audit,
-        "metadata_only": true,
-    });
+    let manifest = request.bundle.manifest();
+    let mut metadata = Map::new();
+    metadata.insert("schema_version".to_owned(), Value::from(1));
+    metadata.insert("action".to_owned(), Value::from(request.action));
+    metadata.insert("status".to_owned(), Value::from("SUCCESS"));
+    metadata.insert("command".to_owned(), Value::from(request.command));
+    metadata
+        .insert("project_id".to_owned(), Value::from(request.resolved.config.project_id.as_str()));
+    metadata.insert("profile_count".to_owned(), Value::from(manifest.profile_count));
+    metadata.insert(
+        "recipient_fingerprints".to_owned(),
+        Value::Array(manifest.recipient_fingerprints.iter().cloned().map(Value::from).collect()),
+    );
+    metadata.insert("bundle_digest".to_owned(), Value::from(manifest.payload_digest.as_str()));
+    metadata.insert("path_kind".to_owned(), Value::from(request.path_kind));
+    metadata.insert("metadata_only".to_owned(), Value::from(true));
+    if let Some(active_secret_count) = request.bundle.active_secret_count() {
+        metadata.insert("active_secret_count".to_owned(), Value::from(active_secret_count));
+    }
+    if let Some(include_audit) = request.bundle.include_audit() {
+        metadata.insert("include_audit".to_owned(), Value::from(include_audit));
+    }
+    if let Some(include_audit_requested) = request.include_audit_requested {
+        metadata.insert("include_audit_requested".to_owned(), Value::from(include_audit_requested));
+    }
+    let metadata = Value::Object(metadata);
     let audit = AuditWrite {
         project_id: request.resolved.config.project_id.as_str(),
         profile_id: None,
