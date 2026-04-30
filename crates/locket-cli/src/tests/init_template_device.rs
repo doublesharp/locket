@@ -1666,6 +1666,12 @@ fn team_invite_creates_signed_file_pending_row_and_audit() -> Result<(), Box<dyn
     assert_eq!(invite.payload.profiles, vec!["dev".to_owned()]);
     assert!(!invite.signature.is_empty());
 
+    assert!(
+        output
+            .contains(&format!("issuer_fingerprint: {}", invite.payload.issuer_device_fingerprint)),
+        "{output}"
+    );
+
     let store = locket_store::Store::open(directory.path().join("store.db"))?;
     let (role, profiles_json, nonce_len): (String, String, i64) = store.connection().query_row(
         "SELECT role, profiles_json, length(nonce) FROM team_invites WHERE id = ?1",

@@ -163,7 +163,13 @@ fn team_invite_command(
     )?;
 
     let redact_names = privacy_redact_names_enabled(context, false)?;
-    write_invite_created_output(output, &invite_record, &output_path, redact_names)
+    write_invite_created_output(
+        output,
+        &invite_record,
+        &built_invite.issuer_fingerprint,
+        &output_path,
+        redact_names,
+    )
 }
 
 fn team_revoke_invite_command(
@@ -602,11 +608,17 @@ fn persist_invite(
 fn write_invite_created_output(
     output: &mut impl Write,
     invite_record: &TeamInviteRecord,
+    issuer_fingerprint: &str,
     output_path: &Path,
     redact_names: bool,
 ) -> Result<(), CliError> {
     writeln!(output, "team_invite: created")?;
     writeln!(output, "invite_id: {}", invite_id_label_from_str(&invite_record.id, redact_names))?;
+    writeln!(
+        output,
+        "issuer_fingerprint: {}",
+        device_fingerprint_label(issuer_fingerprint, redact_names)
+    )?;
     writeln!(
         output,
         "recipient_fingerprint: {}",
