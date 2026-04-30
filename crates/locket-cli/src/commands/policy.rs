@@ -155,7 +155,8 @@ fn doctor(context: &RuntimeContext, output: &mut impl Write) -> Result<(), CliEr
     let document = PolicyDocument::from_toml_str(&policy_text)
         .map_err(|error| metadata_invalid_error(error.to_string()))?;
 
-    writeln!(output, "policy_doctor: ok")?;
+    let has_lk_references = policy_text.contains("lk://");
+    writeln!(output, "policy_doctor: {}", if has_lk_references { "incomplete" } else { "ok" })?;
     writeln!(output, "policies: {}", document.commands.len())?;
     writeln!(output, "metadata_only: yes")?;
     writeln!(output, "minimal_env_allowlist: {}", locket_exec::DEFAULT_SAFE_ALLOWLIST.join(" "))?;
@@ -186,8 +187,14 @@ fn doctor(context: &RuntimeContext, output: &mut impl Write) -> Result<(), CliEr
             policy.name
         )?;
     }
-    if policy_text.contains("lk://") {
+    if has_lk_references {
         writeln!(output, "warning: lk:// validation skipped because agent is unavailable")?;
+        writeln!(output, "unvalidated_lk_references: present")?;
+        return Err(CliError::Typed {
+            kind: locket_core::LocketError::AgentUnavailable,
+            message: "AgentUnavailable: policy doctor could not validate lk:// references"
+                .to_owned(),
+        });
     }
     Ok(())
 }

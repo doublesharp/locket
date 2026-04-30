@@ -188,6 +188,49 @@ argv = []
 }
 
 #[test]
+fn policy_doctor_returns_agent_unavailable_for_unvalidated_lk_references()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(directory.path().join("locket.toml"))?
+        .write_all(
+            br#"
+[commands.uses_reference]
+argv = ["echo", "lk://dev/DATABASE_URL"]
+override = "preserve"
+"#,
+        )?;
+
+    let mut doctor_output = Vec::new();
+    let result = run_with_context(
+        Cli::try_parse_from(["locket", "policy", "doctor"])?,
+        &context,
+        &mut doctor_output,
+    );
+    let Err(error) = result else {
+        return Err("policy doctor should be incomplete without agent validation".into());
+    };
+
+    assert_eq!(error.exit_code(), locket_core::LocketError::AgentUnavailable.exit_code());
+    assert!(error.to_string().contains("AgentUnavailable"));
+    let doctor_output = String::from_utf8(doctor_output)?;
+    assert!(doctor_output.contains("policy_doctor: incomplete"));
+    assert!(
+        doctor_output.contains("warning: lk:// validation skipped because agent is unavailable")
+    );
+    assert!(doctor_output.contains("unvalidated_lk_references: present"));
+    Ok(())
+}
+
+#[test]
 fn missing_policy_commands_exit_with_policy_not_found() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempdir()?;
     let context = test_context(&directory);
