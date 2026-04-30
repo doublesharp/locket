@@ -76,7 +76,9 @@ doc must reach `main` before the next agent reads the file.
 
 ## Definition of Done
 
-In addition to the verification commands above, every slice must:
+Every slice must satisfy these invariants. Pre-merge: scoped tests for
+the touched crate(s); the workspace fmt/clippy/test battery runs on
+`main` after the merge (see lifecycle step 8).
 
 1. **Spec match.** Implement each linked-spec bullet, or carry the gap
    as a `[ ]` follow-up.
