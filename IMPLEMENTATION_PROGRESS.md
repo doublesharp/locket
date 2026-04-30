@@ -922,7 +922,7 @@ editing — they drift. Severity: **blocker** (security/correctness),
   independent and each lands one `proptest`/`quickcheck` harness
   asserting the documented invariants
   (`docs/specs/testing.md:14`).
-  - [ ] **subtask** — proptest-dotenv: `.env` parser round-trip and
+  - [~] [bec7ddfc] **subtask** — proptest-dotenv: `.env` parser round-trip and
     rejection invariants.
   - [ ] **subtask** — proptest-policy-toml: policy TOML parse →
     normalize → re-serialize round-trip; rejection of disallowed
