@@ -853,7 +853,7 @@ editing — they drift. Severity: **blocker** (security/correctness),
   subtask is one E2E harness that drives the CLI/agent/UI through a
   golden path plus the documented failure paths
   (`docs/specs/testing.md:38`). Subtasks are independent.
-  - [~] [bec7ddfc] **subtask** — e2e-greenfield-init: `locket init` →
+  - [x] **subtask** — e2e-greenfield-init: `locket init` →
     `device init` → `profile create dev` → `set` → `get`. Asserts
     audit chain integrity and 0600 file modes.
   - [ ] **subtask** — e2e-dotenv-migration: `import` from `.env` →
@@ -967,9 +967,8 @@ editing — they drift. Severity: **blocker** (security/correctness),
 - [ ] RustSec advisory severity policy: high/critical block,
   medium runtime block, dev-only exception, low triage
   (`docs/specs/engineering.md`).
-- [~] [cb2437f7] Markdown lint alongside `make docs-check`
-  (`docs/specs/engineering.md`).
-  Claim: branch agent-cb2437f7/markdown-lint-docs-check, worktree .worktrees/agent-cb2437f7-markdown-lint-docs-check, scope basic local markdown lint integrated with docs-check.
+- [x] Markdown lint integrated into `make docs-check`: trailing
+  whitespace, tabs, empty files, missing final newlines, unclosed fences.
 - [ ] Supply-chain exception ledger (package, version, reason,
   compensating controls, owner, expiration) enforced by CI;
   no-expiration entries are invalid (`docs/specs/engineering.md`).
