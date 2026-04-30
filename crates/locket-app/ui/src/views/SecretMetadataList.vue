@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, ref } from 'vue';
 
 import type { SecretRowMeta } from '../types/views';
 
@@ -15,7 +15,20 @@ const emit = defineEmits<{
   (e: 'select', row: SecretRowMeta): void;
 }>();
 
+const searchQuery = ref<string>('');
+
+const filteredRows = computed<SecretRowMeta[]>(() => {
+  const query = searchQuery.value.trim().toLowerCase();
+  if (query.length === 0) {
+    return props.rows;
+  }
+  return props.rows.filter((row) => searchText(row).includes(query));
+});
+
 const isEmpty = computed<boolean>(() => !props.loading && props.rows.length === 0);
+const isFilteredEmpty = computed<boolean>(
+  () => !props.loading && props.rows.length > 0 && filteredRows.value.length === 0,
+);
 
 function displayName(row: SecretRowMeta): string {
   if (props.privacyMode) {
@@ -37,6 +50,21 @@ function sourceLabel(source: SecretRowMeta['source']): string {
   }
 }
 
+function searchText(row: SecretRowMeta): string {
+  return [
+    displayName(row),
+    row.source,
+    row.required ? 'required' : '',
+    row.optional ? 'optional' : '',
+    row.ownerLabel ?? '',
+    ...(row.tags ?? []),
+    `v${row.currentVersion}`,
+    row.hasDeprecatedGrace ? 'deprecated grace' : '',
+  ]
+    .join(' ')
+    .toLowerCase();
+}
+
 function onActivate(row: SecretRowMeta): void {
   emit('select', row);
 }
@@ -53,6 +81,16 @@ function onKey(event: KeyboardEvent, row: SecretRowMeta): void {
   <section class="view" aria-labelledby="secret-metadata-list-heading">
     <header class="view__header">
       <h2 id="secret-metadata-list-heading">Secrets</h2>
+      <label class="view__search">
+        <span class="view__search-label">Search secrets</span>
+        <input
+          v-model="searchQuery"
+          type="search"
+          autocomplete="off"
+          spellcheck="false"
+          placeholder="Search metadata"
+        />
+      </label>
     </header>
 
     <p v-if="loading" class="view__loading" role="status">Loading secret metadata…</p>
@@ -61,6 +99,8 @@ function onKey(event: KeyboardEvent, row: SecretRowMeta): void {
       No secrets in this profile yet. Run <code>locket set &lt;KEY&gt;</code> or
       <code>locket import &lt;file.env&gt;</code>.
     </p>
+
+    <p v-else-if="isFilteredEmpty" class="view__empty">No matching secrets.</p>
 
     <table v-else class="view__table" aria-describedby="secret-metadata-list-heading">
       <thead>
@@ -78,7 +118,7 @@ function onKey(event: KeyboardEvent, row: SecretRowMeta): void {
       </thead>
       <tbody>
         <tr
-          v-for="row in rows"
+          v-for="row in filteredRows"
           :key="row.id"
           class="view__row"
           tabindex="0"
@@ -142,6 +182,8 @@ function onKey(event: KeyboardEvent, row: SecretRowMeta): void {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.75rem;
   margin-bottom: 0.75rem;
 }
 
@@ -150,6 +192,42 @@ function onKey(event: KeyboardEvent, row: SecretRowMeta): void {
   font-size: 1rem;
   letter-spacing: 0.04em;
   text-transform: uppercase;
+}
+
+.view__search {
+  display: grid;
+  gap: 0.25rem;
+  min-width: min(18rem, 100%);
+}
+
+.view__search-label {
+  color: #9aa3b2;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.view__search input {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 2rem;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 0.375rem;
+  background: rgba(255, 255, 255, 0.05);
+  color: #e6e8ec;
+  font: inherit;
+  padding: 0.375rem 0.625rem;
+}
+
+.view__search input:focus {
+  border-color: #f8d77a;
+  outline: 2px solid rgba(248, 215, 122, 0.24);
+  outline-offset: 1px;
+}
+
+.view__search input::placeholder {
+  color: #667085;
 }
 
 .view__loading,
