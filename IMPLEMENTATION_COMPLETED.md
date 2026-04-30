@@ -269,6 +269,15 @@ Slices that have merged to `main` and verified. Open work tracked in
   on low `RLIMIT_MEMLOCK`, `Unsupported` on macOS/Windows.
 - [x] Markdown lint integrated into `make docs-check`: trailing
   whitespace, tabs, empty files, missing newlines, unclosed fences.
+- [x] `locket ai-safe --pattern-only` degraded locked-vault mode, `--output <file>` 0600 transcript with refuse-overwrite-without-`--force`, and partial-line buffer cap.
+- [x] **subtask** — team-remove-member: `locket team remove` with `TEAM_REMOVE` audit and `TeamRoleDenied` typed error.
+- [x] **subtask** — e2e-recovery-roundtrip: `init` → `recover` → `recovery rotate`; refusal-when-keychain-valid and `--force` path covered.
+- [x] Caller-side summarization: `summarize_names` applied to exec/docker/run/redact audit sites to stay under 64 KiB cap.
+- [x] Bytes-after-UTF-8 sweep: non-ASCII UTF-8 values pass byte-for-byte through exec, docker, run, redact, and scan paths.
+- [x] **subtask** — tests-crypto-aad: AAD construction, key-wrap canonicalization, audit HMAC, recovery envelope, and device descriptor parsing.
+- [x] **subtask** — tests-store-migrations: schema migration paths, `SCHEMA_MIGRATE` audit on every step, rollback on failure.
+- [x] **subtask** — invite-codec: `SignedInvite` encode/decode/verify with ed25519 in `crates/locket-core/src/invite.rs`.
+- [x] **subtask** — harden-zeroize: `Zeroizing` wrappers at all key/value owner sites; recovery envelope open return wrapped.
 
 ## Spec-by-Spec Completion Gates
 
