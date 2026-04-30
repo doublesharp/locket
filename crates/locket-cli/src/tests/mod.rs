@@ -406,6 +406,7 @@ mod cli_basics;
 mod cli_errors;
 mod config_passkey_lock;
 mod diff_copy;
+mod e2e_policy_run;
 mod exec;
 mod grants_agent_diag;
 mod history_purge_import;
