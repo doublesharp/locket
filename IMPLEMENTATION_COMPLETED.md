@@ -182,6 +182,28 @@ Slices that have merged to `main` and verified. Open work tracked in
   devtools gated on `cfg(debug_assertions)`. Vue 3 + Vite + TypeScript frontend
   under `crates/locket-app/ui/` with `pnpm` build/lint/typecheck and Makefile
   targets `app-ui-{install,check,build}` (skip when `pnpm` is missing).
+- [x] tauri-agent-client: desktop connects to the agent's Unix socket over
+  the v1 framed JSON protocol. Typed `AgentClientError` distinguishes
+  Unavailable/Protocol/Rejected; `useAgent` composable polls every 5 s and
+  drives the lock/project/profile labels and an `AgentUnavailableBanner`.
+- [x] tray-bind-platform: Tauri 2 tray icon registered with platform-specific
+  assets (template image on macOS, light/dark variants on Windows/Linux).
+  `update_tray_state` maps the 5 `TrayIconState` variants to baked-in PNG
+  bytes and tooltip text; `useTray` composable derives state from
+  `AgentStatus`/`AgentClientError` and pushes via `tray_set_state`.
+- [x] Six primary desktop views scaffolded as standalone Vue 3 SFCs:
+  `SecretMetadataList`, `SecretVersionHistory`, `ExecutionMonitor`,
+  `AuditLog`, `ScanResults`, `Settings`. All metadata-only,
+  privacy-mode-aware, keyboard-accessible, with empty-state copy from the
+  desktop UX spec. `App.vue` mounts them under a 6-tab side navigation.
+- [x] Agent RPC dispatch arms shipped as typed stubs for `Reveal`, `Copy`,
+  `ScanKnownValues`, `ResolveReference`, and `PrepareExec`. Each returns
+  the spec-correct denial envelope (UnlockRequired / GrantRequired) or an
+  empty success payload, so the desktop UI exercises the full request /
+  response path before the unlock-cache and grant-table back-ends land.
+- [x] Frontend toolchain refresh via `ncu`: Vue 3.5.33, Vite 8, TypeScript
+  6.0, ESLint 10, Prettier 3.8, `@tauri-apps/api` 2.10.
+  `eslint-config-prettier` aligns the two; `pnpm-lock.yaml` is committed.
 
 ## Full Spec Coverage TODO — Code Health and Bug Fixes
 
@@ -308,6 +330,13 @@ Slices that have merged to `main` and verified. Open work tracked in
 - [x] **subtask** — mutation-expired-versions: gate pinned `lk://...@vN` secrets past `grace_until` on `SecretVersionExpired`; tests in `crates/locket-core/tests/mutation_expired_versions.rs`.
 - [x] **subtask** — ephemeral-env-file: `locket-exec` ephemeral env-file helper; 0600/0700 permissions; RAII cleanup on drop; used by exec pipeline to pass secrets as temp file.
 - [x] **subtask** — vscode-ext-scaffold: `extensions/vscode/` TypeScript skeleton with `package.json`, `tsconfig.json`, ESLint config; activation stub; no behavior yet.
+- [x] **subtask** — policy-parser: typed `CommandPolicy` with structural validation in `crates/locket-core/src/policy/`; parse errors map to `InvalidPolicy` (65).
+- [x] **subtask** — policy-deny-default: evaluator only ever resolves `required_secrets`/`optional_secrets`; everything else is implicitly denied.
+- [x] **subtask** — policy-required-secrets: missing required secret returns `InvalidPolicy` (65).
+- [x] **subtask** — policy-confirm: `confirm = true` enforced via `RuntimeContext::confirmation_reader` in `locket run`.
+- [x] **subtask** — policy-user-verification: `require_user_verification` calls the user-verification gate before allowing the command.
+- [x] **subtask** — policy-shell-vs-argv: parser distinguishes `argv = [...]` vs `shell = "..."`; evaluator dispatches on `CommandSpec`.
+- [x] **subtask** — proptest-dotenv: `.env` parser round-trip and rejection invariants in `crates/locket-cli/src/tests/proptest_dotenv.rs`.
 
 ## Spec-by-Spec Completion Gates
 

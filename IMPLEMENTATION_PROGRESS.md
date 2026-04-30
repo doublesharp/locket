@@ -280,7 +280,6 @@ the spec already covers. Closed slices land in
   precedence and set tombstone preflight returns typed `SecretDeleted`;
   remaining commands still need the unified resolver
   (`docs/specs/data-model.md`, `docs/specs/runtime.md:188-216`).
-- [x] `locket ai-safe --pattern-only` degraded locked-vault mode, `--output <file>` 0600 transcript with refuse-overwrite-without-`--force`, and partial-line buffer cap with redact-and-warn behavior.
 ### Runtime/DX
 
 - [ ] Local agent daemon (`docs/specs/agent.md`): socket/pipe server,
@@ -288,12 +287,6 @@ the spec already covers. Closed slices land in
   streaming. Decomposed below; later subtasks depend on
   `agent-socket-server` — note the dependency on the claim line if you
   take a downstream task.
-  - [x] **subtask** — agent-socket-server: Unix domain socket with 0600/0700 perms, tokio accept loop, Status/Heartbeat stub handlers, `AgentSocketInUse` on collision, framing round-trip tests.
-  - [x] [e7389a73] **subtask** — agent-peer-validation: validate the connecting peer
-    against the daemon's uid (`SO_PEERCRED` on Linux, `LOCAL_PEERPID` +
-    `LOCAL_PEEREPID` on macOS, named-pipe peer SID on Windows). Reject
-    cross-user connections with `AccessDenied`. Tests: a non-matching uid
-    is closed with the typed error. Depends on `agent-socket-server`.
   - [ ] **subtask** — agent-unlock-cache: in-memory unlock-key cache keyed
     by project_id with TTL eviction that fires `LOCK` audit on expiry. Add
     `Lock`/`Unlock`/`Status` RPC handlers. Errors: `UnlockRequired` (72).
@@ -313,6 +306,21 @@ the spec already covers. Closed slices land in
     (82). Tests: client receives initial state, a state change, and at
     least one heartbeat within the documented window. Depends on
     `agent-socket-server` and `agent-unlock-cache`.
+  - [~] **subtask** — agent-reveal-copy: `Reveal` and `Copy` RPC dispatch
+    arms wired and return typed `UnlockRequired`. Remaining: actual
+    value path once unlock cache + grant table + audit ship, plus
+    `REVEAL`/`COPY` audit row emission with `ttl_seconds`/`access_mode`.
+  - [~] **subtask** — agent-scan-known-values: `ScanKnownValues` dispatch
+    arm wired and returns `findings: [], locked: true`. Remaining:
+    in-memory known-value matching once unlock cache lands.
+  - [~] **subtask** — agent-resolve-reference: `ResolveReference`
+    dispatch arm wired and returns typed `GrantRequired`. Remaining:
+    `lk://` URI parsing, version pinning + grace handling, policy
+    authorization, `RESOLVE_REFERENCE` audit emission.
+  - [~] **subtask** — agent-prepare-exec: `PrepareExec` dispatch arm
+    wired and returns empty allow-list. Remaining: real policy
+    resolution + scoped allowed-env-name set + `ttl_seconds` from
+    policy declaration.
 - [ ] Replace metadata-only `agent start/status/stop/logs` with real
   agent process behavior and redacted log retention
   (`docs/specs/agent.md:99-110`).
@@ -391,14 +399,10 @@ the spec already covers. Closed slices land in
   override-mode docs.
 - [ ] On-demand agent startup: `locket exec`/`run` start the agent
   when missing; `AgentUnavailable` only after on-demand startup fails.
-- [x] Docker active-context detection refuses remote/TCP/SSH contexts
-  unless `allow_remote_docker = true` and a typed confirmation passes.
 - [ ] VS Code extension backed by the local agent
   (`docs/specs/integrations.md:39-65`). Extension never writes audit
   directly; everything goes through agent RPCs. Decomposed below;
   later subtasks depend on `vscode-ext-scaffold`.
-  - [x] [7138f228] **subtask** — vscode-ext-scaffold: `extensions/vscode/`
-    (out-of-tree TS) project skeleton with build/lint/test scripts.
   - [ ] **subtask** — vscode-agent-client: TypeScript client that
     speaks the agent socket protocol; surface
     `AgentUnavailable`/`ProtocolError` distinctly. Pre-req:
@@ -415,42 +419,20 @@ the spec already covers. Closed slices land in
   Remaining: private-key storage and challenge-response authentication
   (`docs/specs/agent.md:62-79`).
 - [ ] Policy TOML parsing/normalization (`docs/specs/policy.md`).
-  Decomposed below; later subtasks depend on `policy-parser`.
-  - [x] **subtask** — policy-parser: typed `CommandPolicy` with
-    structural validation; parse errors map to `InvalidPolicy` (65).
-  - [x] **subtask** — policy-deny-default: evaluator only ever resolves
-    `required_secrets`/`optional_secrets`; everything else is implicitly
-    denied. Parser tests in `policy/mod.rs` cover the deny-by-default contract.
-  - [x] **subtask** — policy-required-secrets: required missing returns
-    `InvalidPolicy` (65).
-  - [x] **subtask** — policy-confirm: `confirm = true` enforced via
-    `RuntimeContext::confirmation_reader` in `locket run`.
-  - [x] **subtask** — policy-user-verification: `require_user_verification`
-    calls the user-verification gate before allowing the command.
+  Parser, deny-by-default, required/confirm/user-verification, and
+  shell-vs-argv subtasks shipped (see `IMPLEMENTATION_COMPLETED.md`).
+  Remaining:
   - [ ] **subtask** — policy-ttls: `ttl` translates to a grant TTL
     used by the agent grant table. Pre-req: `policy-parser`,
     `agent-grant-table`.
-  - [x] **subtask** — policy-shell-vs-argv: parser distinguishes
-    `argv = [...]` vs `shell = "..."`; evaluator dispatches on
-    `CommandSpec`.
-- [x] [bec7ddfc] Ephemeral env-file fallback for children that can't accept an env
-  map: 0700 parent / 0600 file outside project tree, post-spawn delete,
-  audited delivery mode, secure-erase warning when unsupported.
 - [~] Clipboard clear-after-TTL only if clipboard still contains the
   value. Wayland-aware pre-copy warning and `COPY` audit
   `unsupported_reason` shipped; background TTL clearing remains.
 ### Security/Recovery/Team
 
-- [ ] Sealed bundle. Decomposed below; later subtasks depend on
-  `bundle-container-format` (`docs/specs/team-sync-recovery.md:111-224`).
-  - [x] [e7389a73] **subtask** — bundle-container-format: implement the versioned
-    container (magic header, schema version, plaintext-minimal
-    manifest, encrypted-payload section) plus a writer/reader pair.
-    Manifest minimization is enforced in code (no profile/secret/
-    policy/member/device names). Errors: `BundleVerificationFailed`
-    (110). Tests: round-trip a synthetic container; rejects unknown
-    schema, oversized manifest, and disallowed manifest fields.
-    Pre-req for all other bundle subtasks.
+- [ ] Sealed bundle. `bundle-container-format` shipped (see
+  `IMPLEMENTATION_COMPLETED.md`); remaining subtasks below
+  (`docs/specs/team-sync-recovery.md:111-224`).
   - [ ] **subtask** — bundle-age-encryption: integrate `age`/`rage`
     library for the encrypted payload with multi-recipient support.
     Errors: `BundleVerificationFailed` (110) on AAD/auth-tag failure.
@@ -648,22 +630,21 @@ the spec already covers. Closed slices land in
 
 ### App/UI
 
-- [ ] Build the Tauri desktop app (`docs/specs/desktop.md:5-65`).
-  Pre-req: `locket-app` workspace crate (already `[x]`).
-  Decomposed below; later subtasks depend on `tauri-shell`.
-  - [~] [4e842280] **subtask** — tauri-agent-client: connect the desktop app to
-    the local agent over its socket; surface a typed
-    `AgentUnavailable` banner when the daemon isn't running. Pre-req:
-    `agent-socket-server`.
-    Claim: branch agent-4e842280/tauri-agent-client, worktree .worktrees/agent-4e842280-tauri-agent-client. Slice 1 of the desktop UI campaign (docs/superpowers/specs/2026-04-29-desktop-ui-campaign.md). Scope: TS client speaking the v1 length-prefixed JSON protocol, useAgent() composable, Tauri commands for connect/disconnect, AgentUnavailable banner; no views ship yet.
-- [ ] Build the tray/status panel (`docs/specs/desktop.md:65-108`).
-  Pre-req: `tauri-shell`.
-  - [ ] **subtask** — tray-bind-platform: register the tray icon and
-    menu on macOS, Windows, and Linux using the Tauri tray API.
+- [~] Tauri desktop app (`docs/specs/desktop.md:5-65`). Shell + agent
+  client + tray binding + 6 primary views + tray icon-state pusher
+  shipped. Remaining: real data sources for each view, tray menu
+  actions, SubscribeStatus stream consumer.
+- [~] Tray/status panel (`docs/specs/desktop.md:65-108`). Icon binding
+  per platform shipped. Remaining: SubscribeStatus stream-driven label
+  updates, menu actions (lock/unlock/profile-switch/run-policy).
   - [ ] **subtask** — tray-status-binding: subscribe to the agent's
     `SubscribeStatus` and update tray label/icon on lock-state and
-    heartbeat events. Pre-req: `tray-bind-platform`,
-    `agent-subscribe-status`.
+    heartbeat events. Pre-req: `agent-subscribe-status` (shipped).
+    Today the desktop polls `agent_status` every 5 s; replace with
+    a streaming subscription.
+  - [ ] **subtask** — tray-menu-actions: register tray menu items
+    (open app, lock, unlock, switch profile, run saved policy, scan).
+    Each must route through the agent, never bypass core policy.
 - [ ] Reveal/copy UI gates with short-lived plaintext handling
   (`REVEAL`/`COPY` go through the agent).
 - [ ] Status subscriptions from the agent (`SubscribeStatus`).
