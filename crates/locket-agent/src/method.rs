@@ -37,6 +37,8 @@ pub enum AgentMethod {
     Reveal,
     /// Copy one secret value through a gated path.
     Copy,
+    /// Verify the local audit HMAC chain.
+    VerifyAudit,
     /// Subscribe to metadata-only status events.
     SubscribeStatus,
     /// Cancel a status subscription.
@@ -69,6 +71,7 @@ impl AgentMethod {
             Self::ListPolicies => "ListPolicies",
             Self::Reveal => "Reveal",
             Self::Copy => "Copy",
+            Self::VerifyAudit => "VerifyAudit",
             Self::SubscribeStatus => "SubscribeStatus",
             Self::CancelSubscription => "CancelSubscription",
             Self::ClientHello => "ClientHello",
@@ -98,6 +101,7 @@ impl FromStr for AgentMethod {
             "ListPolicies" => Ok(Self::ListPolicies),
             "Reveal" => Ok(Self::Reveal),
             "Copy" => Ok(Self::Copy),
+            "VerifyAudit" => Ok(Self::VerifyAudit),
             "SubscribeStatus" => Ok(Self::SubscribeStatus),
             "CancelSubscription" => Ok(Self::CancelSubscription),
             "ClientHello" => Ok(Self::ClientHello),

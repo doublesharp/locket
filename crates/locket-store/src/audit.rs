@@ -78,6 +78,19 @@ pub struct ImportedAuditChainVerification {
     pub checkpoint_sequence: u64,
 }
 
+/// Read-only audit HMAC chain verification result.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AuditChainVerification {
+    /// Whether the full chain verified.
+    pub hmac_ok: bool,
+    /// First broken sequence when verification failed.
+    pub first_break_sequence: Option<u64>,
+    /// Metadata-only failure reason when verification failed.
+    pub first_break_reason: Option<String>,
+    /// Rows verified before the first break, or all rows on success.
+    pub rows_verified: u64,
+}
+
 /// Audit key plus row payload for transaction-scoped appends.
 #[derive(Clone, Copy, Debug)]
 pub struct AuditContext<'a> {
@@ -239,6 +252,80 @@ pub fn verify_imported_audit_chain_structure(
     }
 
     Ok(ImportedAuditChainVerification { rows_verified: rows.len() as u64, checkpoint_sequence })
+}
+
+fn verify_audit_rows(
+    rows: &[StoredAuditRow],
+    audit_key: &[u8],
+) -> Result<AuditChainVerification, StoreError> {
+    let mut expected_sequence = 1_u64;
+    let mut previous_hmac = [0; AUDIT_HMAC_LEN];
+    let mut rows_verified = 0_u64;
+
+    for row in rows {
+        if row.sequence != expected_sequence {
+            return Ok(AuditChainVerification {
+                hmac_ok: false,
+                first_break_sequence: Some(expected_sequence),
+                first_break_reason: Some("sequence gap or reordering".to_owned()),
+                rows_verified,
+            });
+        }
+        if row.previous_hmac != previous_hmac {
+            return Ok(AuditChainVerification {
+                hmac_ok: false,
+                first_break_sequence: Some(row.sequence),
+                first_break_reason: Some("previous_hmac mismatch".to_owned()),
+                rows_verified,
+            });
+        }
+        let metadata = match serde_json::from_str::<Value>(&row.metadata_json) {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                return Ok(AuditChainVerification {
+                    hmac_ok: false,
+                    first_break_sequence: Some(row.sequence),
+                    first_break_reason: Some(format!("metadata_json is not valid JSON: {error}")),
+                    rows_verified,
+                });
+            }
+        };
+        let input = AuditHmacInput {
+            schema_version: row.schema_version,
+            sequence: row.sequence,
+            timestamp: Timestamp::from_unix_nanos(row.timestamp),
+            project_id: Some(&row.project_id),
+            profile_id: row.profile_id.as_deref(),
+            action: &row.action,
+            status: &row.status,
+            metadata_json: Some(&metadata),
+            previous_hmac: Some(&row.previous_hmac),
+        };
+        let canonical = audit_hmac_v1_bytes(&input)?;
+        let mut mac = Hmac::<Sha256>::new_from_slice(audit_key)
+            .map_err(|_| StoreError::InvalidAuditKeyLength { actual: audit_key.len() })?;
+        mac.update(&canonical);
+        let expected_hmac = mac.finalize().into_bytes();
+        if expected_hmac.as_slice() != row.hmac.as_slice() {
+            return Ok(AuditChainVerification {
+                hmac_ok: false,
+                first_break_sequence: Some(row.sequence),
+                first_break_reason: Some("row hmac mismatch".to_owned()),
+                rows_verified,
+            });
+        }
+
+        previous_hmac = row.hmac;
+        expected_sequence += 1;
+        rows_verified += 1;
+    }
+
+    Ok(AuditChainVerification {
+        hmac_ok: true,
+        first_break_sequence: None,
+        first_break_reason: None,
+        rows_verified,
+    })
 }
 
 pub fn append_audit(
@@ -684,6 +771,23 @@ impl Store {
             .query_map((project_id, profile_id, since), audit_log_record_from_row)?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(rows)
+    }
+
+    /// Verifies the local audit HMAC chain without appending an audit row.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] for database, HMAC-key, or canonicalization failures.
+    pub fn verify_audit_chain_read_only(
+        &self,
+        project_id: &str,
+        audit_key: &[u8],
+    ) -> Result<AuditChainVerification, StoreError> {
+        let transaction = self.connection.unchecked_transaction()?;
+        let rows = read_audit_rows(&transaction, project_id)?;
+        let verification = verify_audit_rows(&rows, audit_key)?;
+        transaction.commit()?;
+        Ok(verification)
     }
 
     /// Verifies the local audit HMAC chain and appends an `AUDIT_VERIFY` row on success.

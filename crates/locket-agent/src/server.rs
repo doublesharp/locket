@@ -611,6 +611,7 @@ pub async fn dispatch(envelope: &RequestEnvelope, state: &AgentSocketState) -> R
         Ok(AgentMethod::PrepareExec) => crate::prepare_exec::handle_prepare_exec(envelope),
         Ok(AgentMethod::ListSecrets) => handle_list_secrets(envelope),
         Ok(AgentMethod::ListVersions) => handle_list_versions(envelope),
+        Ok(AgentMethod::VerifyAudit) => handle_verify_audit(envelope, state).await,
         Ok(method) => ResponseEnvelope::Error(ErrorEnvelope::new(
             envelope.id.clone(),
             "ProtocolError",
@@ -692,6 +693,44 @@ fn handle_list_versions(envelope: &RequestEnvelope) -> ResponseEnvelope {
             }
         };
     match crate::versions::list_versions(&payload) {
+        Ok(response) => {
+            let payload = serde_json::to_value(response).unwrap_or(serde_json::Value::Null);
+            ResponseEnvelope::Success(SuccessEnvelope::new(envelope.id.clone(), payload))
+        }
+        Err(error) => {
+            let locket_error = error.locket_error();
+            ResponseEnvelope::Error(ErrorEnvelope::new(
+                envelope.id.clone(),
+                format!("{locket_error:?}"),
+                error.to_string(),
+                false,
+            ))
+        }
+    }
+}
+
+async fn handle_verify_audit(
+    envelope: &RequestEnvelope,
+    state: &AgentSocketState,
+) -> ResponseEnvelope {
+    let payload: crate::audit_verify::VerifyAuditRequest =
+        match serde_json::from_value(envelope.payload.clone()) {
+            Ok(payload) => payload,
+            Err(_) => {
+                return error_response(envelope, "ProtocolError", "invalid VerifyAudit payload");
+            }
+        };
+    let audit_key = {
+        let cache = state.unlock_cache.lock().await;
+        cache
+            .lookup(&payload.project_id, current_unix_nanos())
+            .map(|entry| entry.key_bytes().to_vec())
+    };
+    let response = audit_key.map_or_else(
+        || Ok(crate::audit_verify::VerifyAuditResponse::locked()),
+        |key| crate::audit_verify::verify_audit(&payload, &key),
+    );
+    match response {
         Ok(response) => {
             let payload = serde_json::to_value(response).unwrap_or(serde_json::Value::Null);
             ResponseEnvelope::Success(SuccessEnvelope::new(envelope.id.clone(), payload))

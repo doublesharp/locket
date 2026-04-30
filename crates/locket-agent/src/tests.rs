@@ -7,8 +7,8 @@ use super::{
     AgentMethod, DEFAULT_MAX_MESSAGE_SIZE, ErrorEnvelope, ListSecretsResponse, LockState,
     PROTOCOL_VERSION, ProtocolError, RequestEnvelope, ResponseEnvelope,
     STATUS_HEARTBEAT_INTERVAL_SECS, StatusEvent, StatusEventKind, StatusEventSequence,
-    StatusPayload, SuccessEnvelope, UnknownMethod, decode_request_frame, decode_response_frame,
-    encode_frame,
+    StatusPayload, SuccessEnvelope, UnknownMethod, VerifyAuditResponse, decode_request_frame,
+    decode_response_frame, encode_frame,
 };
 use serde_json::json;
 
@@ -43,10 +43,12 @@ fn agent_methods_round_trip_through_wire_names() -> Result<(), UnknownMethod> {
         AgentMethod::ListPolicies,
         AgentMethod::Reveal,
         AgentMethod::Copy,
+        AgentMethod::VerifyAudit,
         AgentMethod::SubscribeStatus,
         AgentMethod::CancelSubscription,
         AgentMethod::ClientHello,
         AgentMethod::ListSecrets,
+        AgentMethod::ListVersions,
     ];
 
     for method in methods {
@@ -54,6 +56,185 @@ fn agent_methods_round_trip_through_wire_names() -> Result<(), UnknownMethod> {
     }
 
     Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn verify_audit_returns_hmac_status_when_unlocked() -> Result<(), Box<dyn std::error::Error>>
+{
+    use crate::server::{AgentSocketState, dispatch};
+    use locket_store::{AuditWrite, Store};
+
+    let directory = tempfile::tempdir()?;
+    let store_path = directory.path().join("store.db");
+    let mut store = Store::open(&store_path)?;
+    store.initialize_schema()?;
+    store.insert_project_if_absent("lk_proj_agent_verify", "agent verify", 100)?;
+    let metadata = json!({
+        "schema_version": 1,
+        "action": "AUDIT_VERIFY",
+        "status": "SUCCESS",
+        "check_names": ["audit_hmac_chain"],
+        "pass_count": 1,
+        "warn_count": 0,
+        "fail_count": 0,
+        "skip_count": 0,
+        "rows_verified": 0,
+    });
+    store.append_audit(
+        &[42; 32],
+        &AuditWrite {
+            project_id: "lk_proj_agent_verify",
+            profile_id: None,
+            action: "AUDIT_VERIFY",
+            status: "SUCCESS",
+            secret_name: None,
+            command: None,
+            metadata_json: &metadata,
+            timestamp: 100,
+        },
+    )?;
+
+    let state = AgentSocketState::locked("test-version");
+    let unlock = RequestEnvelope::new(
+        "unlock",
+        AgentMethod::Unlock,
+        json!({
+            "project_id": "lk_proj_agent_verify",
+            "key": vec![42_u8; 32],
+            "ttl_seconds": 30,
+            "method": "Passphrase"
+        }),
+    );
+    assert!(matches!(dispatch(&unlock, &state).await, ResponseEnvelope::Success(_)));
+
+    let verify = RequestEnvelope::new(
+        "verify",
+        AgentMethod::VerifyAudit,
+        json!({
+            "store_path": store_path,
+            "project_id": "lk_proj_agent_verify"
+        }),
+    );
+    let ResponseEnvelope::Success(success) = dispatch(&verify, &state).await else {
+        panic!("VerifyAudit should succeed");
+    };
+    let payload: VerifyAuditResponse = serde_json::from_value(success.payload)?;
+    assert_eq!(payload.hmac_ok, Some(true));
+    assert_eq!(payload.first_break_sequence, None);
+    assert_eq!(payload.first_break_reason, None);
+    assert_eq!(payload.rows_verified, 1);
+    assert!(!payload.locked);
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn verify_audit_is_locked_safe() -> Result<(), Box<dyn std::error::Error>> {
+    use crate::server::{AgentSocketState, dispatch};
+
+    let state = AgentSocketState::locked("test-version");
+    let verify = RequestEnvelope::new(
+        "verify",
+        AgentMethod::VerifyAudit,
+        json!({
+            "store_path": "/tmp/locket-verify-audit-locked.db",
+            "project_id": "lk_proj_locked"
+        }),
+    );
+    let ResponseEnvelope::Success(success) = dispatch(&verify, &state).await else {
+        panic!("locked VerifyAudit should succeed with skipped status");
+    };
+    let payload: VerifyAuditResponse = serde_json::from_value(success.payload)?;
+    assert_eq!(payload.hmac_ok, None);
+    assert_eq!(payload.first_break_sequence, None);
+    assert_eq!(payload.first_break_reason, None);
+    assert_eq!(payload.rows_verified, 0);
+    assert!(payload.locked);
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn verify_audit_reports_first_hmac_break() -> Result<(), Box<dyn std::error::Error>> {
+    use crate::server::{AgentSocketState, dispatch};
+    use locket_store::{AuditWrite, Store};
+
+    let directory = tempfile::tempdir()?;
+    let store_path = directory.path().join("store.db");
+    let mut store = Store::open(&store_path)?;
+    store.initialize_schema()?;
+    store.insert_project_if_absent("lk_proj_agent_verify", "agent verify", 100)?;
+    let metadata = json!({
+        "schema_version": 1,
+        "action": "AUDIT_VERIFY",
+        "status": "SUCCESS",
+        "check_names": ["audit_hmac_chain"],
+        "pass_count": 1,
+        "warn_count": 0,
+        "fail_count": 0,
+        "skip_count": 0,
+        "rows_verified": 0,
+    });
+    store.append_audit(
+        &[42; 32],
+        &AuditWrite {
+            project_id: "lk_proj_agent_verify",
+            profile_id: None,
+            action: "AUDIT_VERIFY",
+            status: "SUCCESS",
+            secret_name: None,
+            command: None,
+            metadata_json: &metadata,
+            timestamp: 100,
+        },
+    )?;
+    store.connection().execute(
+        "UPDATE audit_log SET hmac = zeroblob(32) WHERE project_id = ?1",
+        ["lk_proj_agent_verify"],
+    )?;
+
+    let state = AgentSocketState::locked("test-version");
+    let unlock = RequestEnvelope::new(
+        "unlock",
+        AgentMethod::Unlock,
+        json!({
+            "project_id": "lk_proj_agent_verify",
+            "key": vec![42_u8; 32],
+            "ttl_seconds": 30,
+            "method": "Passphrase"
+        }),
+    );
+    assert!(matches!(dispatch(&unlock, &state).await, ResponseEnvelope::Success(_)));
+
+    let verify = RequestEnvelope::new(
+        "verify",
+        AgentMethod::VerifyAudit,
+        json!({
+            "store_path": store_path,
+            "project_id": "lk_proj_agent_verify"
+        }),
+    );
+    let ResponseEnvelope::Success(success) = dispatch(&verify, &state).await else {
+        panic!("VerifyAudit should return a structural failure payload");
+    };
+    let payload: VerifyAuditResponse = serde_json::from_value(success.payload)?;
+    assert_eq!(payload.hmac_ok, Some(false));
+    assert_eq!(payload.first_break_sequence, Some(1));
+    assert_eq!(payload.first_break_reason.as_deref(), Some("row hmac mismatch"));
+    assert_eq!(payload.rows_verified, 0);
+    assert!(!payload.locked);
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn malformed_verify_audit_payload_returns_protocol_error() {
+    use crate::server::{AgentSocketState, dispatch};
+
+    let state = AgentSocketState::locked("test-version");
+    let request =
+        RequestEnvelope::new("verify", AgentMethod::VerifyAudit, json!({"project_id": "p"}));
+    let ResponseEnvelope::Error(error) = dispatch(&request, &state).await else {
+        panic!("malformed VerifyAudit payload must fail");
+    };
+    assert_eq!(error.error, "ProtocolError");
 }
 
 #[tokio::test(flavor = "current_thread")]
