@@ -509,13 +509,20 @@ async fn request_grant_returns_id_bound_to_caller_process() {
     };
     let grant_id = success.payload.get("grant_id").and_then(|v| v.as_str()).unwrap_or_default();
     assert!(!grant_id.is_empty(), "grant id must not be empty");
-    assert_eq!(state.grants.lock().await.len(), 1);
+    let grants = state.grants.lock().await;
+    assert_eq!(grants.len(), 1);
+    let record = grants.get(grant_id).expect("issued grant is stored");
+    assert_eq!(record.project_id, "p-1");
+    assert_eq!(record.profile_id, "prof-1");
+    assert_eq!(record.action, crate::grant::GrantAction::RunPolicy);
+    assert_eq!(record.ttl_seconds, 30);
+    assert_eq!(record.binding.process_start_time, "0");
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn revoke_grant_drops_record_and_unknown_returns_grant_required() {
     use crate::envelope::{RequestEnvelope, ResponseEnvelope};
-    use crate::grant::{GrantBinding, GrantRecord};
+    use crate::grant::{GrantAction, GrantBinding, GrantRecord};
     use crate::method::AgentMethod;
     use crate::server::{AgentSocketState, dispatch};
     use serde_json::json;
@@ -523,7 +530,12 @@ async fn revoke_grant_drops_record_and_unknown_returns_grant_required() {
     let state = AgentSocketState::locked("test-version");
     state.grants.lock().await.insert(GrantRecord::new(
         "g-1",
+        "p-1",
+        "prof-1",
+        GrantAction::RunPolicy,
         GrantBinding::new(std::process::id(), "0"),
+        0,
+        30,
         i128::MAX,
     ));
 
@@ -545,7 +557,7 @@ async fn revoke_grant_drops_record_and_unknown_returns_grant_required() {
 #[tokio::test(flavor = "current_thread")]
 async fn expire_grant_drops_already_expired_record() {
     use crate::envelope::{RequestEnvelope, ResponseEnvelope};
-    use crate::grant::{GrantBinding, GrantRecord};
+    use crate::grant::{GrantAction, GrantBinding, GrantRecord};
     use crate::method::AgentMethod;
     use crate::server::{AgentSocketState, dispatch};
     use serde_json::json;
@@ -553,7 +565,12 @@ async fn expire_grant_drops_already_expired_record() {
     let state = AgentSocketState::locked("test-version");
     state.grants.lock().await.insert(GrantRecord::new(
         "g-2",
+        "p-1",
+        "prof-1",
+        GrantAction::RunPolicy,
         GrantBinding::new(std::process::id(), "0"),
+        0,
+        30,
         1,
     ));
 
@@ -567,7 +584,7 @@ async fn expire_grant_drops_already_expired_record() {
 #[tokio::test(flavor = "current_thread")]
 async fn expire_grant_leaves_live_grant_intact() {
     use crate::envelope::{RequestEnvelope, ResponseEnvelope};
-    use crate::grant::{GrantBinding, GrantRecord};
+    use crate::grant::{GrantAction, GrantBinding, GrantRecord};
     use crate::method::AgentMethod;
     use crate::server::{AgentSocketState, dispatch};
     use serde_json::json;
@@ -575,7 +592,12 @@ async fn expire_grant_leaves_live_grant_intact() {
     let state = AgentSocketState::locked("test-version");
     state.grants.lock().await.insert(GrantRecord::new(
         "g-live",
+        "p-1",
+        "prof-1",
+        GrantAction::RunPolicy,
         GrantBinding::new(std::process::id(), "0"),
+        0,
+        30,
         i128::MAX,
     ));
 

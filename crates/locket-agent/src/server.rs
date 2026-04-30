@@ -641,7 +641,7 @@ async fn handle_request_grant(
     let ttl_nanos = i128::from(payload.ttl_seconds).saturating_mul(1_000_000_000);
     let record = {
         let mut grants = state.grants.lock().await;
-        match grants.issue(payload.binding, now.saturating_add(ttl_nanos)) {
+        match grants.issue(payload, now, now.saturating_add(ttl_nanos)) {
             Ok(record) => record,
             Err(_) => {
                 return error_response(envelope, "ProtocolError", "failed to allocate grant id");

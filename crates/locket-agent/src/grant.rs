@@ -21,13 +21,41 @@ impl GrantBinding {
     }
 }
 
+/// Action set authorized by a live grant.
+///
+/// Spec: `docs/specs/agent.md:36-37`.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "PascalCase")]
+pub enum GrantAction {
+    /// Run a command policy.
+    RunPolicy,
+    /// Resolve an `lk://` reference.
+    ResolveReference,
+    /// Scan known secret values without persisting them.
+    ScanKnownValues,
+    /// Reveal one secret value through a gated path.
+    Reveal,
+    /// Copy one secret value through a gated path.
+    Copy,
+}
+
 /// Metadata-only live grant record.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct GrantRecord {
     /// Opaque grant id. This is never a secret value.
     pub grant_id: String,
+    /// Project identifier the grant is scoped to.
+    pub project_id: String,
+    /// Profile identifier the grant is scoped to.
+    pub profile_id: String,
+    /// Authorized action.
+    pub action: GrantAction,
     /// Process identity required to use the grant.
     pub binding: GrantBinding,
+    /// Issue timestamp in Unix nanoseconds.
+    pub issued_at_unix_nanos: i128,
+    /// TTL in seconds.
+    pub ttl_seconds: u64,
     /// Expiry timestamp in Unix nanoseconds.
     pub expires_at_unix_nanos: i128,
 }
@@ -37,10 +65,24 @@ impl GrantRecord {
     #[must_use]
     pub fn new(
         grant_id: impl Into<String>,
+        project_id: impl Into<String>,
+        profile_id: impl Into<String>,
+        action: GrantAction,
         binding: GrantBinding,
+        issued_at_unix_nanos: i128,
+        ttl_seconds: u64,
         expires_at_unix_nanos: i128,
     ) -> Self {
-        Self { grant_id: grant_id.into(), binding, expires_at_unix_nanos }
+        Self {
+            grant_id: grant_id.into(),
+            project_id: project_id.into(),
+            profile_id: profile_id.into(),
+            action,
+            binding,
+            issued_at_unix_nanos,
+            ttl_seconds,
+            expires_at_unix_nanos,
+        }
     }
 }
 
@@ -96,6 +138,9 @@ impl GrantTable {
     pub fn validate(
         &self,
         grant_id: &str,
+        project_id: &str,
+        profile_id: &str,
+        action: GrantAction,
         now_unix_nanos: i128,
         current_binding: Option<&GrantBinding>,
     ) -> GrantValidation {
@@ -104,6 +149,12 @@ impl GrantTable {
         };
         if now_unix_nanos >= grant.expires_at_unix_nanos {
             return GrantValidation::Expired;
+        }
+        if grant.project_id != project_id
+            || grant.profile_id != profile_id
+            || grant.action != action
+        {
+            return GrantValidation::ProcessMismatch;
         }
         let Some(current_binding) = current_binding else {
             return GrantValidation::ProcessMismatch;
@@ -129,32 +180,24 @@ impl GrantTable {
     /// Returns `IdGenerationError` if the OS RNG fails.
     pub fn issue(
         &mut self,
-        binding: GrantBinding,
+        payload: RequestGrantPayload,
+        issued_at_unix_nanos: i128,
         expires_at_unix_nanos: i128,
     ) -> Result<GrantRecord, locket_core::id::IdGenerationError> {
         let grant_id = locket_core::id::GrantId::generate()?;
-        let record = GrantRecord::new(grant_id.into_string(), binding, expires_at_unix_nanos);
+        let record = GrantRecord::new(
+            grant_id.into_string(),
+            payload.project_id,
+            payload.profile_id,
+            payload.action,
+            payload.binding,
+            issued_at_unix_nanos,
+            payload.ttl_seconds,
+            expires_at_unix_nanos,
+        );
         self.insert(record.clone());
         Ok(record)
     }
-}
-
-/// Action set authorized by a live grant.
-///
-/// Spec: `docs/specs/agent.md:36-37`.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "PascalCase")]
-pub enum GrantAction {
-    /// Run a command policy.
-    RunPolicy,
-    /// Resolve an `lk://` reference.
-    ResolveReference,
-    /// Scan known secret values without persisting them.
-    ScanKnownValues,
-    /// Reveal one secret value through a gated path.
-    Reveal,
-    /// Copy one secret value through a gated path.
-    Copy,
 }
 
 /// Wire payload for `RequestGrant`.
@@ -181,23 +224,55 @@ pub struct GrantIdPayload {
 
 #[cfg(test)]
 mod tests {
-    use super::{GrantBinding, GrantRecord, GrantTable, GrantValidation};
+    use super::{
+        GrantAction, GrantBinding, GrantRecord, GrantTable, GrantValidation, RequestGrantPayload,
+    };
 
     #[test]
     fn grant_table_requires_pid_and_start_time_match() {
         let mut table = GrantTable::default();
-        table.insert(GrantRecord::new("grant-1", GrantBinding::new(4242, "start-a"), 200));
+        table.insert(GrantRecord::new(
+            "grant-1",
+            "p-1",
+            "prof-1",
+            GrantAction::RunPolicy,
+            GrantBinding::new(4242, "start-a"),
+            100,
+            30,
+            200,
+        ));
 
         assert_eq!(
-            table.validate("grant-1", 100, Some(&GrantBinding::new(4242, "start-a"))),
+            table.validate(
+                "grant-1",
+                "p-1",
+                "prof-1",
+                GrantAction::RunPolicy,
+                100,
+                Some(&GrantBinding::new(4242, "start-a")),
+            ),
             GrantValidation::Valid
         );
         assert_eq!(
-            table.validate("grant-1", 100, Some(&GrantBinding::new(4242, "start-b"))),
+            table.validate(
+                "grant-1",
+                "p-1",
+                "prof-1",
+                GrantAction::RunPolicy,
+                100,
+                Some(&GrantBinding::new(4242, "start-b")),
+            ),
             GrantValidation::ProcessMismatch
         );
         assert_eq!(
-            table.validate("grant-1", 100, Some(&GrantBinding::new(4343, "start-a"))),
+            table.validate(
+                "grant-1",
+                "p-1",
+                "prof-1",
+                GrantAction::RunPolicy,
+                100,
+                Some(&GrantBinding::new(4343, "start-a")),
+            ),
             GrantValidation::ProcessMismatch
         );
     }
@@ -205,13 +280,89 @@ mod tests {
     #[test]
     fn grant_table_fails_closed_for_unknown_expired_and_missing_process() {
         let mut table = GrantTable::default();
-        table.insert(GrantRecord::new("grant-1", GrantBinding::new(4242, "start-a"), 200));
+        table.insert(GrantRecord::new(
+            "grant-1",
+            "p-1",
+            "prof-1",
+            GrantAction::RunPolicy,
+            GrantBinding::new(4242, "start-a"),
+            100,
+            30,
+            200,
+        ));
 
-        assert_eq!(table.validate("missing", 100, None), GrantValidation::Unknown);
         assert_eq!(
-            table.validate("grant-1", 200, Some(&GrantBinding::new(4242, "start-a"))),
+            table.validate("missing", "p-1", "prof-1", GrantAction::RunPolicy, 100, None),
+            GrantValidation::Unknown
+        );
+        assert_eq!(
+            table.validate(
+                "grant-1",
+                "p-1",
+                "prof-1",
+                GrantAction::RunPolicy,
+                200,
+                Some(&GrantBinding::new(4242, "start-a")),
+            ),
             GrantValidation::Expired
         );
-        assert_eq!(table.validate("grant-1", 100, None), GrantValidation::ProcessMismatch);
+        assert_eq!(
+            table.validate("grant-1", "p-1", "prof-1", GrantAction::RunPolicy, 100, None),
+            GrantValidation::ProcessMismatch
+        );
+    }
+
+    #[test]
+    fn grant_table_scope_is_part_of_validation() {
+        let mut table = GrantTable::default();
+        table.insert(GrantRecord::new(
+            "grant-1",
+            "p-1",
+            "prof-1",
+            GrantAction::Reveal,
+            GrantBinding::new(4242, "start-a"),
+            100,
+            30,
+            200,
+        ));
+        let binding = GrantBinding::new(4242, "start-a");
+
+        assert_eq!(
+            table.validate("grant-1", "p-2", "prof-1", GrantAction::Reveal, 100, Some(&binding),),
+            GrantValidation::ProcessMismatch
+        );
+        assert_eq!(
+            table.validate("grant-1", "p-1", "prof-2", GrantAction::Reveal, 100, Some(&binding),),
+            GrantValidation::ProcessMismatch
+        );
+        assert_eq!(
+            table.validate("grant-1", "p-1", "prof-1", GrantAction::Copy, 100, Some(&binding),),
+            GrantValidation::ProcessMismatch
+        );
+    }
+
+    #[test]
+    fn issued_grants_retain_metadata_without_values() {
+        let mut table = GrantTable::default();
+        let record = table
+            .issue(
+                RequestGrantPayload {
+                    project_id: "p-1".to_owned(),
+                    profile_id: "prof-1".to_owned(),
+                    action: GrantAction::ScanKnownValues,
+                    ttl_seconds: 45,
+                    binding: GrantBinding::new(4242, "start-a"),
+                },
+                100,
+                45_000_000_100,
+            )
+            .expect("grant id");
+
+        assert_eq!(record.project_id, "p-1");
+        assert_eq!(record.profile_id, "prof-1");
+        assert_eq!(record.action, GrantAction::ScanKnownValues);
+        assert_eq!(record.issued_at_unix_nanos, 100);
+        assert_eq!(record.ttl_seconds, 45);
+        assert_eq!(record.expires_at_unix_nanos, 45_000_000_100);
     }
 }
