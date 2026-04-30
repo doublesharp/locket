@@ -350,3 +350,37 @@ fn e2e_recover_force_overwrites_existing_keychain_entry_and_records_audit()
     assert!(metadata.contains("\"status\":\"SUCCESS\""));
     Ok(())
 }
+
+#[test]
+fn init_and_rotate_do_not_emit_ansi_clear_when_stdout_is_not_a_terminal()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+
+    let mut init_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut init_output,
+    )?;
+    assert!(
+        !init_output.contains(&0x1b),
+        "init output must not contain ANSI escape when stdout is not a terminal"
+    );
+
+    let init_output = String::from_utf8(init_output)?;
+    let initial_code = recovery_code_from_output(&init_output)?.to_owned();
+    let rotate_context = context_with_recovery_code(&context, &initial_code);
+
+    let mut rotate_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "recovery", "rotate"])?,
+        &rotate_context,
+        &mut rotate_output,
+    )?;
+    assert!(
+        !rotate_output.contains(&0x1b),
+        "rotate output must not contain ANSI escape when stdout is not a terminal"
+    );
+    Ok(())
+}

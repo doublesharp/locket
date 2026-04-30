@@ -6,7 +6,7 @@
 
 use std::collections::BTreeSet;
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
 use locket_core::{ProfileName, ProjectConfig, ProjectId};
@@ -531,8 +531,17 @@ fn display_initial_recovery_code(
     if confirmation.trim_end_matches(['\r', '\n']) != config.name {
         return Err(confirmation_failed_error("confirmation did not match project name"));
     }
+    try_clear_screen();
     writeln!(output, "metadata_only: yes")?;
     Ok(())
+}
+
+/// Emits ANSI clear-screen codes to stdout when stdout is an interactive
+/// terminal. No-op when stdout is piped, redirected, or in a test harness.
+fn try_clear_screen() {
+    if io::stdout().is_terminal() {
+        let _ = io::stdout().write_all(b"\x1b[2J\x1b[H");
+    }
 }
 
 fn write_init_audit(

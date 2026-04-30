@@ -6,7 +6,7 @@ use locket_platform::{
 use locket_store::AuditWrite;
 use serde_json::json;
 use sha2::{Digest, Sha256};
-use std::io::Write;
+use std::io::{self, IsTerminal, Write};
 use std::path::PathBuf;
 
 use crate::{
@@ -222,6 +222,9 @@ fn display_recovery_code(
     writeln!(output, "recovery_code (shown once, store securely):")?;
     writeln!(output, "{code}")?;
     writeln!(output, "warning: terminal scrollback may retain this code")?;
+    if io::stdout().is_terminal() {
+        let _ = io::stdout().write_all(b"\x1b[2J\x1b[H");
+    }
     writeln!(output, "metadata_only: yes")?;
     Ok(())
 }

@@ -291,10 +291,7 @@ ttl = "{value}"
 required_secrets = ["DATABASE_URL"]
 "#,
         );
-        assert_eq!(
-            result,
-            Err(PolicyParseError::MissingCommandSpec { command: "dev".to_owned() })
-        );
+        assert_eq!(result, Err(PolicyParseError::MissingCommandSpec { command: "dev".to_owned() }));
     }
 
     #[test]
