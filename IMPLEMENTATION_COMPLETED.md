@@ -71,6 +71,8 @@ Slices that have merged to `main` and verified. Open work tracked in
 
 ## Full Spec Coverage TODO — Runtime/DX
 
+- [x] SQLite pragma posture: `foreign_keys = ON`, WAL mode, 5 s busy
+  timeout; `locket doctor` runs `PRAGMA integrity_check`.
 - [x] Status-stream heartbeats (`StatusEvent kind="heartbeat"`, ≥30 s,
   monotonic `sequence`, not treated as state change).
 - [x] Process-bound grant binding via `(pid, process_start_time)` per

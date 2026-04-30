@@ -991,9 +991,6 @@ editing — they drift. Severity: **blocker** (security/correctness),
 - [ ] SLSA v1.2 provenance verification (artifact digest, builder
   identity, source repo, build params) and Build L3 hosted-runner
   targeting (`docs/specs/operations.md`).
-- [ ] SQLite pragma posture: `foreign_keys = ON`, WAL mode, 5000 ms
-  busy timeout default; `locket doctor` runs an integrity check
-  (`docs/specs/storage.md`).
 - [ ] Pre-migration backup of `store.db` and recovery files
   (user-only perms) before schema-mutating migrations; `locket doctor`
   reports backup-skipped migrations and last backup path
