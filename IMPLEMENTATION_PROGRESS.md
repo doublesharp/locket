@@ -903,9 +903,10 @@ editing — they drift. Severity: **blocker** (security/correctness),
     fragment/query rejection, and pinned-version normalization.
   - [x] **subtask** — proptest-canonical-json: canonical JSON encoder is total-ordered, idempotent, stable across permutations.
   - [x] **subtask** — proptest-device-descriptor: descriptor codec round-trip; rejects malformed `lkdev1_` payloads.
-  - [ ] **subtask** — proptest-bundle-manifest: plaintext-manifest
+  - [~] [e7389a73] **subtask** — proptest-bundle-manifest: plaintext-manifest
     round-trip; rejects forbidden fields (profile/secret/policy/
     member/device names). Depends on `bundle-container-format`.
+    Claim: branch agent-e7389a73/proptest-bundle-manifest, worktree .worktrees/agent-e7389a73-proptest-bundle-manifest.
 - [ ] Cross-platform test mocks and mutation tests
   (`docs/specs/testing.md`). Subtasks are independent — pick any:
   - [ ] **subtask** — mock-peer-credentials: in-process socket harness
