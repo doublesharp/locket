@@ -1,6 +1,6 @@
 id = "bec7ddfc"
 topic = "tests-scanner-rules"
 branch = "agent-bec7ddfc/tests-scanner-rules"
-sha = "68c9eb635800f38164badae8d37ea53b1b98193f"
+sha = "e602af7c489f8f06ae6f0dc1eced39db98b6272a"
 worktree = "/Users/justin/Workspaces/0xdoublesharp/locket/.worktrees/agent-bec7ddfc-tests-scanner-rules"
-ready_at = "2026-04-30T03:01:50Z"
+ready_at = "2026-04-30T03:00:00Z"
