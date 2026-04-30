@@ -597,6 +597,7 @@ fn device_commands_initialize_describe_add_list_and_revoke_metadata_only()
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn device_registration_honors_configured_user_verification()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempdir()?;
