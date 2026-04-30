@@ -145,7 +145,6 @@ skill set fits a leaf better.
 
 - [ ] Sealed bundle. `bundle-container-format` shipped
   (`docs/specs/team-sync-recovery.md:111-224`).
-  - [~] [acda32e4] branch agent-acda32e4/bundle-export-payload, worktree .worktrees/agent-acda32e4-bundle-export-payload; **subtask** — bundle-export-payload: serialize selected profiles, policies, secret metadata, `secret_versions`, blobs, and per-profile keys; forbid master/audit/device/recovery key material. Pre-req: `bundle-age-encryption`.
   - [~] [acda32e4] blocked: bundle import apply needs encrypted payload rows and local device private-key storage; main currently exports only profile summaries and reports private_key_storage unavailable.
   - [ ] **subtask** — bundle-import-conflicts: identical /
     newer-incoming / divergent / deleted-vs-active matrix with

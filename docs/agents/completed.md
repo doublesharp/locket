@@ -195,6 +195,9 @@ Slices that have merged to `main` and verified. Open work tracked in
 - [x] passkey-remove-user-verification: Required local verification before passkey
   removal.
 - [x] invite-issue: Team invite creation now prints the issuing device fingerprint.
+- [x] bundle-export-payload: Sealed bundle export now builds a real encrypted payload
+  for selected profile data. Safe export and audit counts cover the serialized sections
+  without exposing names or values.
 
 ## Full Spec Coverage TODO — App/UI
 
