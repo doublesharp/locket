@@ -408,8 +408,7 @@ Re-verify file:line references before editing — they drift. Severity:
   strict-mode hooks exist. Remaining: enforced `cargo deny`/`audit`,
   cargo-vet, unsafe inventory, SBOM, auditable builds, provenance,
   signing.
-- [ ] Leak canary harness. Scanner/redactor tests + `make
-  leak-canary` exist. Remaining: broader CLI/agent/UI scanning.
+- [~] [4ab55ee9] branch agent-4ab55ee9/leak-canary-cli-artifacts, worktree .worktrees/agent-4ab55ee9-leak-canary-cli-artifacts; Leak canary harness. Scanner/redactor tests + `make leak-canary` exist. Remaining: broader CLI/agent/UI scanning.
 - [ ] Signed distribution packaging and update-check verification.
   Offline signed update-manifest verifier + typed
   `UpdateManifestInvalid` shipped. Remaining: package builders +
