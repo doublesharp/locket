@@ -354,10 +354,8 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
 - [x] Runtime session storage/retention primitives and runtime execution
   recording for `exec`/`run` (doctor process-liveness classification is a
   follow-up under doctor enhancements).
-- [~] [70c448c4] Env layering modes `merge`/`passthrough` distinct from
+- [~] [70c448c4] ready: agent-70c448c4/env-layering-modes @ aef0a15 — policy parsing tracks explicit `override`, `policy doctor` warns on implicit defaults, `locket run` warns metadata-only before implicit Locket overrides, and `RUN_POLICY` audit records `override_explicit`.
   Claim: branch agent-70c448c4/env-layering-modes, worktree .worktrees/agent-70c448c4-env-layering-modes.
-  `minimal`/`strict`, plus `override = "preserve"`/`"error"` with a
-  warning when a policy chooses neither.
 - [x] Conservative env allowlist
   (`PATH HOME USER SHELL TMPDIR LANG LC_* TERM CI`) applied in `minimal`
   mode with `LC_*` matching; `policy doctor` surfaces it.
@@ -642,10 +640,10 @@ editing — they drift. Severity: **blocker** (security/correctness),
   Linux package / VS Code extension
   (`docs/specs/operations.md:27-53`).
 - [x] Markdown/spec link checks via `make docs-check`.
-- [~] [bec7ddfc] `agent logs` retention: JSON Lines, 1 MiB rotation, 5 files,
+- [x] `agent logs` retention: JSON Lines, 1 MiB rotation, 5 files,
   default 200 lines, `--lines` cap 10000, RFC 3339 / Unix `--since`,
-  `--follow` streaming (`docs/specs/operations.md`).
-  Claim: branch agent-bec7ddfc/agent-logs-retention, worktree .worktrees/agent-bec7ddfc-agent-logs-retention.
+  `--follow` streaming; typed invalid-input errors and retention-boundary
+  regressions landed in `agent-bec7ddfc/agent-logs-retention`.
 - [x] Update-manifest fetch keyed only by channel/platform/arch/version
   (no project/device/host/user/install ids); release-key rotation
   requires a dual-signed manifest (`docs/specs/operations.md`).
