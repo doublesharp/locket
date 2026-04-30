@@ -157,6 +157,8 @@ Slices that have merged to `main` and verified. Open work tracked in
   dumpability before CLI secret-bearing work starts.
 - [x] team-invite-create: Team invite creation now writes a signed invite
   file and records pending invite metadata with metadata-only audit coverage.
+- [x] passkey-rp-id-policy: Passkey credentials now persist and display
+  their WebAuthn relying party metadata.
 
 ## Full Spec Coverage TODO — App/UI
 
