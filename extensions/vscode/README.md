@@ -2,12 +2,9 @@
 
 Out-of-tree TypeScript skeleton for the Locket VS Code extension.
 
-This package is the host for upcoming subtasks under the
-"VS Code extension backed by the local agent" item in
-`IMPLEMENTATION_PROGRESS.md`. It is not yet wired into any agent
-RPCs; only the build/lint/test scripts are scaffolded so the next
-subtask can drop in actual extension code without touching the
-project setup.
+This package hosts the VS Code extension backed by the local Locket
+agent. It includes a TypeScript agent socket client for the v1 framed
+JSON protocol; UI features land in follow-up slices.
 
 ## Build
 
@@ -33,7 +30,6 @@ pnpm run test
 
 ## Scope
 
-- `src/extension.ts` — empty `activate`/`deactivate` stubs.
-- No agent RPC behavior yet. All Locket actions go through the agent
-  socket once `vscode-agent-client` lands; the extension itself
-  never writes audit rows directly.
+- `src/extension.ts` — extension activation and client lifecycle.
+- `src/agentClient.ts` — metadata-only agent socket protocol client.
+- The extension itself never writes audit rows directly.
