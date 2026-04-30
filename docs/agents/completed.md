@@ -228,6 +228,8 @@ Slices that have merged to `main` and verified. Open work tracked in
   row with prior/new profile metadata.
 - [x] **important** — `*_audit_if_available` helpers no longer swallow
   audit-key load failures; missing keys hard-fail the command.
+- [x] **important** — typed-error-sweep: Clipboard copy failures now use a
+  typed external-source error and CLI config constructors are typed.
 - [x] **nit** — Optional-value formatters unified on the `"-"` sentinel
   across history/diff/audit output.
 - [x] **nit** — Audit-write helpers reuse the caller's store handle

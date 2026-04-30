@@ -416,8 +416,6 @@ Re-verify file:line references before editing — they drift. Severity:
 **blocker** (security/correctness), **important** (real defect),
 **nit** (cleanup).
 
-- [~] [acda32e4] branch agent-acda32e4/typed-error-sweep, worktree .worktrees/agent-acda32e4-typed-error-sweep; **important** — Typed error system underused: audit remaining callsites and map failures to typed `LocketError` variants.
-
 ### Diagnostics, Distribution, and Quality Gates
 
 - [ ] Expand tests toward 90% line/branch on security-critical
