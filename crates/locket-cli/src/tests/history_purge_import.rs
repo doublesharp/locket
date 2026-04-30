@@ -659,10 +659,7 @@ fn import_with_delete_confirmation_removes_env_and_emits_example()
     assert!(!import_output.contains(secret_value), "secret value must not appear in output");
     assert!(!import_output.contains("tok_test_abc123"), "secret value must not appear in output");
 
-    assert!(
-        !directory.path().join(".env").exists(),
-        ".env should be deleted after confirmation"
-    );
+    assert!(!directory.path().join(".env").exists(), ".env should be deleted after confirmation");
 
     let example = std::fs::read_to_string(directory.path().join(".env.example"))?;
     assert!(example.contains("DATABASE_URL="), ".env.example should list DATABASE_URL");

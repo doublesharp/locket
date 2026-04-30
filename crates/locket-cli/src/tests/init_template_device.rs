@@ -1550,7 +1550,10 @@ fn e2e_greenfield_init_set_get_with_audit_chain_and_file_modes()
         &mut profile_output,
     )?;
     let profile_text = String::from_utf8(profile_output)?;
-    assert!(profile_text.contains("created profile staging"), "profile create output: {profile_text}");
+    assert!(
+        profile_text.contains("created profile staging"),
+        "profile create output: {profile_text}"
+    );
 
     // Step 4: locket set DATABASE_URL
     let mut set_output = Vec::new();
@@ -1561,7 +1564,10 @@ fn e2e_greenfield_init_set_get_with_audit_chain_and_file_modes()
     )?;
     let set_text = String::from_utf8(set_output)?;
     assert!(set_text.contains("set DATABASE_URL"), "set output: {set_text}");
-    assert!(!set_text.contains("postgres://localhost/e2e"), "secret value must not appear in output");
+    assert!(
+        !set_text.contains("postgres://localhost/e2e"),
+        "secret value must not appear in output"
+    );
 
     // Step 5: locket get DATABASE_URL --reveal --force
     let mut get_output = Vec::new();
@@ -1589,11 +1595,9 @@ fn e2e_greenfield_init_set_get_with_audit_chain_and_file_modes()
     // Assert no secret values appear in any audit row metadata
     let store = locket_store::Store::open(directory.path().join("store.db"))?;
     let metadata_rows: Vec<String> = {
-        let mut stmt = store
-            .connection()
-            .prepare("SELECT metadata_json FROM audit_log ORDER BY sequence")?;
-        stmt.query_map([], |row| row.get::<_, String>(0))?
-            .collect::<Result<Vec<_>, _>>()?
+        let mut stmt =
+            store.connection().prepare("SELECT metadata_json FROM audit_log ORDER BY sequence")?;
+        stmt.query_map([], |row| row.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()?
     };
     for metadata in &metadata_rows {
         assert!(
@@ -1604,11 +1608,9 @@ fn e2e_greenfield_init_set_get_with_audit_chain_and_file_modes()
 
     // Assert INIT audit row is present
     let actions: Vec<String> = {
-        let mut stmt = store
-            .connection()
-            .prepare("SELECT action FROM audit_log ORDER BY sequence")?;
-        stmt.query_map([], |row| row.get::<_, String>(0))?
-            .collect::<Result<Vec<_>, _>>()?
+        let mut stmt =
+            store.connection().prepare("SELECT action FROM audit_log ORDER BY sequence")?;
+        stmt.query_map([], |row| row.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()?
     };
     assert!(actions.contains(&"INIT".to_owned()), "INIT audit row missing: {actions:?}");
     assert!(actions.contains(&"SET".to_owned()), "SET audit row missing: {actions:?}");
@@ -1622,6 +1624,130 @@ fn e2e_greenfield_init_set_get_with_audit_chain_and_file_modes()
         let mode = fs::metadata(&passphrase_fallback)?.permissions().mode() & 0o777;
         assert_eq!(mode, 0o600, "passphrase-fallback must have 0600 permissions, got 0o{mode:o}");
     }
+
+    Ok(())
+}
+
+#[test]
+fn solo_project_without_team_allows_all_owner_operations() -> Result<(), Box<dyn std::error::Error>>
+{
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+
+    let args = test_secret_write_args("DATABASE_URL");
+    crate::set_secret_value(&context, &args, "postgres://localhost/app", "manual", 1_000)?;
+
+    let mut get_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "get", "DATABASE_URL"])?,
+        &context,
+        &mut get_output,
+    )?;
+
+    let mut members_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "team", "members"])?,
+        &context,
+        &mut members_output,
+    )?;
+    let members_output = String::from_utf8(members_output)?;
+    assert!(members_output.contains("team: none"), "solo project should show no team");
+    assert!(members_output.contains("members: none"));
+    assert!(members_output.contains("pending_invites: none"));
+
+    run_with_context(
+        Cli::try_parse_from([
+            "locket",
+            "exec",
+            "--force",
+            "--secret",
+            "DATABASE_URL",
+            "--",
+            "/bin/sh",
+            "-c",
+            "test \"$DATABASE_URL\" = \"postgres://localhost/app\"",
+        ])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+
+    Ok(())
+}
+
+#[test]
+fn solo_project_without_team_init_rejects_duplicate_team_init()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+
+    let mut team_init_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "team", "init", "myteam"])?,
+        &context,
+        &mut team_init_output,
+    )?;
+    let team_init_output = String::from_utf8(team_init_output)?;
+    assert!(team_init_output.contains("team initialized: myteam"));
+
+    let result = run_with_context(
+        Cli::try_parse_from(["locket", "team", "init", "myteam"])?,
+        &context,
+        &mut Vec::new(),
+    );
+    let Err(error) = result else {
+        return Err("duplicate team init must fail".into());
+    };
+    assert_eq!(error.exit_code(), 67, "SecretAlreadyExists is exit 67");
+    assert!(error.to_string().contains("team already initialized"));
+
+    Ok(())
+}
+
+#[test]
+fn solo_project_can_init_team_and_becomes_team_project() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+
+    let mut members_before = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "team", "members"])?,
+        &context,
+        &mut members_before,
+    )?;
+    assert!(String::from_utf8(members_before)?.contains("team: none"), "no team before init");
+
+    let mut team_init_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "team", "init", "myteam"])?,
+        &context,
+        &mut team_init_output,
+    )?;
+    let team_init_output = String::from_utf8(team_init_output)?;
+    assert!(team_init_output.contains("team initialized: myteam"));
+
+    let mut members_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "team", "members"])?,
+        &context,
+        &mut members_output,
+    )?;
+    let members_output = String::from_utf8(members_output)?;
+    assert!(members_output.contains("team: myteam"), "after init, team should be present");
 
     Ok(())
 }

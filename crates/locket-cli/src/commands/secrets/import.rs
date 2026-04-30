@@ -20,8 +20,8 @@ use crate::runtime::error::{
     CliError, confirmation_failed_error, invalid_profile_name_error, invalid_secret_name_error,
     profile_not_found_error, secret_not_found_error, tty_required_error,
 };
-use crate::runtime::prompts::ConfirmationReader;
 use crate::runtime::key_access::load_project_key;
+use crate::runtime::prompts::ConfirmationReader;
 use crate::support::project_files::{ensure_gitignore, refresh_example_for_project_if_enabled};
 use crate::support::secret_helpers::{SecretEncryptRequest, encrypt_secret_version};
 use crate::{

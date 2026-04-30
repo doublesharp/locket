@@ -576,16 +576,13 @@ fn audit_verify_fails_when_stored_schema_version_is_mutated() -> Result<(), Box<
         return Err("mutated schema_version must fail HMAC verification".into());
     };
     assert_eq!(sequence, 1);
-    assert!(
-        reason.contains("hmac mismatch"),
-        "expected 'hmac mismatch' in reason, got {reason:?}"
-    );
+    assert!(reason.contains("hmac mismatch"), "expected 'hmac mismatch' in reason, got {reason:?}");
     Ok(())
 }
 
 #[test]
-fn audit_verify_processes_each_row_with_its_own_stored_schema_version()
--> Result<(), Box<dyn Error>> {
+fn audit_verify_processes_each_row_with_its_own_stored_schema_version() -> Result<(), Box<dyn Error>>
+{
     let mut test_store = open_initialized_store()?;
     insert_project_profile(&test_store.store)?;
 
@@ -613,7 +610,12 @@ fn audit_verify_processes_each_row_with_its_own_stored_schema_version()
             status, metadata_json, secret_name, command, previous_hmac, hmac
          )
          VALUES (?1, 1, 1, 100, NULL, 'SET', 'SUCCESS', ?2, NULL, NULL, ?3, ?4)",
-        rusqlite::params!["lk_proj_test", metadata_v1_json, previous_hmac_v1.as_slice(), hmac_v1.as_slice()],
+        rusqlite::params![
+            "lk_proj_test",
+            metadata_v1_json,
+            previous_hmac_v1.as_slice(),
+            hmac_v1.as_slice()
+        ],
     )?;
 
     let metadata_v2 = json!({"schema_version": 2, "action": "GET", "status": "SUCCESS"});

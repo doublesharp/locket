@@ -184,9 +184,8 @@ fn mark_completed_with_no_exit_status_records_signal_termination() -> Result<(),
     let session = test_runtime_session("lk_sess_signal", 100);
     test_store.store.insert_runtime_session(&session)?;
 
-    let updated = test_store
-        .store
-        .mark_runtime_session_completed("lk_sess_signal", 200, None, None)?;
+    let updated =
+        test_store.store.mark_runtime_session_completed("lk_sess_signal", 200, None, None)?;
     assert!(updated);
 
     let incomplete = test_store.store.list_incomplete_runtime_sessions("lk_proj_test")?;

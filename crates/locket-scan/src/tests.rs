@@ -355,7 +355,9 @@ fn scan_text_with_multiple_findings_preserves_line_numbers() {
     let text = format!("line1\n{provider}\nline3\n{entropy}\n");
     let findings = scan_text("notes.txt", &text);
 
-    let Some(provider_finding) = findings.iter().find(|f| f.kind == FindingKind::ProviderTokenPattern) else {
+    let Some(provider_finding) =
+        findings.iter().find(|f| f.kind == FindingKind::ProviderTokenPattern)
+    else {
         panic!("provider token finding expected");
     };
     let Some(entropy_finding) = findings.iter().find(|f| f.kind == FindingKind::HighEntropy) else {
