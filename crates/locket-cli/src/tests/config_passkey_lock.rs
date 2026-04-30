@@ -432,6 +432,7 @@ fn passkey_list_and_remove_use_project_store_and_audit() -> Result<(), Box<dyn s
         credential_id: vec![0xab, 0xcd, 0xef, 0x12, 0x34, 0x56],
         transports: vec!["internal".to_owned(), "usb".to_owned()],
         prf_capable: true,
+        webauthn_relying_party_id: locket_store::DEFAULT_WEBAUTHN_RELYING_PARTY_ID.to_owned(),
         backup_eligible: Some(true),
         backup_state: Some(false),
         created_at: 100,
@@ -450,8 +451,11 @@ fn passkey_list_and_remove_use_project_store_and_audit() -> Result<(), Box<dyn s
     let list_output = String::from_utf8(list_output)?;
     assert!(list_output.contains("work-laptop"));
     assert!(list_output.contains("credential_id_prefix=abcdef123456"));
+    assert!(list_output.contains("rp_id=locket.localhost"));
     assert!(list_output.contains("transports=internal,usb"));
     assert!(list_output.contains("prf=yes"));
+    assert!(list_output.contains("backup_eligible=yes"));
+    assert!(list_output.contains("backup_state=no"));
     assert!(list_output.contains("private_key_material: never displayed"));
 
     let mut remove_output = Vec::new();
@@ -463,6 +467,7 @@ fn passkey_list_and_remove_use_project_store_and_audit() -> Result<(), Box<dyn s
     let remove_output = String::from_utf8(remove_output)?;
     assert!(remove_output.contains("passkey: revoked"));
     assert!(remove_output.contains("passkey_id: lk_passkey_test"));
+    assert!(remove_output.contains("rp_id: locket.localhost"));
     assert!(!remove_output.contains("abcdef123456abcdef"));
 
     let active = store.list_passkey_credentials(&project_id, false)?;
@@ -476,6 +481,9 @@ fn passkey_list_and_remove_use_project_store_and_audit() -> Result<(), Box<dyn s
         |row| row.get(0),
     )?;
     assert!(metadata.contains("\"credential_id_prefix\":\"abcdef123456\""));
+    assert!(metadata.contains("\"webauthn_relying_party_id\":\"locket.localhost\""));
+    assert!(metadata.contains("\"backup_eligible\":true"));
+    assert!(metadata.contains("\"backup_state\":false"));
     assert!(!metadata.contains("abcdef123456abcdef"));
     Ok(())
 }

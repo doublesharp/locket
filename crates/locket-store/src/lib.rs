@@ -28,7 +28,7 @@ pub use device::DeviceRecord;
 pub use error::StoreError;
 pub use grants::DirectoryGrantRecord;
 pub use keys::KeyRecord;
-pub use passkey::PasskeyCredentialRecord;
+pub use passkey::{DEFAULT_WEBAUTHN_RELYING_PARTY_ID, PasskeyCredentialRecord};
 pub use profile::ProfileRecord;
 pub use project::ProjectRecord;
 pub use roots::ProjectRootRecord;
