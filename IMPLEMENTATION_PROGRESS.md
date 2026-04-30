@@ -235,6 +235,25 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
 - [x] Store/schema coverage for the full required-tables set
   (automation/teams/passkey/imported-audit tables + indexes/triggers,
   with `SCHEMA_MIGRATE` audit on migrations).
+- [ ] Default high-entropy scan rule (≥20 chars, Shannon ≥4.5
+  bits/char, exclude UUIDs/checksums/public ids) with project
+  overrides in `locket.toml`; `policy doctor` reports non-default
+  thresholds (`docs/specs/scan-redaction.md:24`).
+- [ ] Known-value scan must include deleted-source current versions
+  with blobs and deprecated versions still within `grace_until`;
+  exclude purged versions (`docs/specs/scan-redaction.md:17`).
+- [ ] `locket redact --stdin` streaming mode with non-UTF-8 byte
+  segment pass-through (warn metadata-only); pattern-only fallback
+  label `lk_redacted_PATTERN_N` for matches not tied to a known id
+  (`docs/specs/scan-redaction.md:43-49`).
+- [ ] `locket ai-safe --pattern-only` degraded locked-vault mode and
+  `--output <file>` 0600 transcript with refuse-overwrite-without-
+  `--force`; partial-line buffer cap with redact-and-warn behavior
+  (`docs/specs/scan-redaction.md:72-76`).
+- [ ] `Duration` grammar parser/normalizer
+  (`^[1-9][0-9]*(s|m|h|d|w)$`, reject compound/fractional/zero/
+  negative/uppercase/whitespace) used everywhere durations are read
+  (`docs/specs/data-model.md:27`).
 
 ### Runtime/DX
 
