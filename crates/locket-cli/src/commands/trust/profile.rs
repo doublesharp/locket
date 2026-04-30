@@ -242,6 +242,20 @@ pub fn use_profile_command(
         .get_profile_by_name(&project_id, &prior_profile_name)?
         .ok_or_else(|| profile_not_found_error("current default profile not found"))?;
 
+    if new_profile.dangerous {
+        writeln!(output, "dangerous_profile: {}", new_profile.name)?;
+        writeln!(
+            output,
+            "type '{}' to confirm switching to a dangerous profile",
+            new_profile.name
+        )?;
+        let confirmation =
+            context.confirmation_reader.read_confirmation("use dangerous profile")?;
+        if confirmation.trim_end_matches(['\r', '\n']) != new_profile.name.as_str() {
+            return Err(confirmation_failed_error("confirmation did not match"));
+        }
+    }
+
     let timestamp = now_unix_nanos()?;
     let root_hash = format_hex(&root_hash(&resolved.root)?);
     let audit_key = load_project_key(context, &store, &project_id, KeyPurpose::Audit)?;
@@ -283,6 +297,7 @@ fn profile_use_audit_metadata(
         "prior_profile_name": prior_profile.name,
         "new_profile_id": new_profile.id,
         "new_profile_name": new_profile.name,
+        "new_profile_dangerous": new_profile.dangerous,
         "root_hash": root_hash,
     })
 }

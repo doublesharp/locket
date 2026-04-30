@@ -901,3 +901,130 @@ fn team_init_rejects_already_initialized_project() -> Result<(), Box<dyn std::er
     assert_eq!(team_init_count, 1, "rejected re-init must not write a second TEAM_INIT row");
     Ok(())
 }
+
+#[test]
+fn use_dangerous_profile_requires_typed_confirmation() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let key_store: Arc<dyn MasterKeyStore + Send + Sync> =
+        Arc::new(MemoryMasterKeyStore::default());
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &test_context_with_key_store(&directory, Arc::clone(&key_store)),
+        &mut Vec::new(),
+    )?;
+    run_with_context(
+        Cli::try_parse_from(["locket", "profile", "create", "prod"])?,
+        &test_context_with_key_store(&directory, Arc::clone(&key_store)),
+        &mut Vec::new(),
+    )?;
+    run_with_context(
+        Cli::try_parse_from(["locket", "profile", "mark-dangerous", "prod"])?,
+        &test_context_with_key_store_and_confirmation(&directory, Arc::clone(&key_store), "prod\n"),
+        &mut Vec::new(),
+    )?;
+
+    // Wrong confirmation is rejected
+    let result = run_with_context(
+        Cli::try_parse_from(["locket", "use", "prod"])?,
+        &test_context_with_key_store_and_confirmation(
+            &directory,
+            Arc::clone(&key_store),
+            "wrong\n",
+        ),
+        &mut Vec::new(),
+    );
+    let Err(error) = result else {
+        return Err("use dangerous profile with wrong confirmation must fail".into());
+    };
+    assert_eq!(error.exit_code(), 68, "ConfirmationFailed is exit 68");
+    assert!(error.to_string().contains("confirmation did not match"));
+
+    // Config must not have changed
+    let config = crate::read_project_config(&directory.path().join("locket.toml"))?;
+    assert_eq!(config.default_profile.as_str(), "dev", "failed use must not switch profile");
+
+    // No PROFILE_CHANGE with command=use written for the failed attempt
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let use_count: i64 = store.connection().query_row(
+        "SELECT COUNT(*) FROM audit_log WHERE action = 'PROFILE_CHANGE' AND command = 'use'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(use_count, 0, "rejected dangerous switch must not write a PROFILE_CHANGE audit row");
+
+    Ok(())
+}
+
+#[test]
+fn use_dangerous_profile_succeeds_with_correct_confirmation()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let key_store: Arc<dyn MasterKeyStore + Send + Sync> =
+        Arc::new(MemoryMasterKeyStore::default());
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &test_context_with_key_store(&directory, Arc::clone(&key_store)),
+        &mut Vec::new(),
+    )?;
+    run_with_context(
+        Cli::try_parse_from(["locket", "profile", "create", "prod"])?,
+        &test_context_with_key_store(&directory, Arc::clone(&key_store)),
+        &mut Vec::new(),
+    )?;
+    run_with_context(
+        Cli::try_parse_from(["locket", "profile", "mark-dangerous", "prod"])?,
+        &test_context_with_key_store_and_confirmation(&directory, Arc::clone(&key_store), "prod\n"),
+        &mut Vec::new(),
+    )?;
+
+    let mut output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "use", "prod"])?,
+        &test_context_with_key_store_and_confirmation(&directory, Arc::clone(&key_store), "prod\n"),
+        &mut output,
+    )?;
+    let output = String::from_utf8(output)?;
+    assert!(output.contains("dangerous_profile: prod"));
+    assert!(output.contains("active profile: prod"));
+
+    let config = crate::read_project_config(&directory.path().join("locket.toml"))?;
+    assert_eq!(config.default_profile.as_str(), "prod");
+
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let metadata: String = store.connection().query_row(
+        "SELECT metadata_json FROM audit_log WHERE action = 'PROFILE_CHANGE' AND command = 'use'
+         ORDER BY sequence DESC LIMIT 1",
+        [],
+        |row| row.get(0),
+    )?;
+    assert!(metadata.contains("\"new_profile_dangerous\":true"));
+    assert!(metadata.contains("\"new_profile_name\":\"prod\""));
+    assert!(metadata.contains("\"prior_profile_name\":\"dev\""));
+    Ok(())
+}
+
+#[test]
+fn use_non_dangerous_profile_requires_no_confirmation() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    run_with_context(
+        Cli::try_parse_from(["locket", "profile", "create", "staging"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+
+    let mut output = Vec::new();
+    run_with_context(Cli::try_parse_from(["locket", "use", "staging"])?, &context, &mut output)?;
+    let output = String::from_utf8(output)?;
+    assert!(
+        !output.contains("dangerous_profile"),
+        "non-dangerous switch must not show dangerous prompt"
+    );
+    assert!(output.contains("active profile: staging"));
+    Ok(())
+}
