@@ -32,6 +32,12 @@ metadata() {
   "${cargo_bin}" metadata --offline --locked --format-version=1 > "${quality_dir}/cargo-metadata.json"
 }
 
+exception_ledger() {
+  scripts/supply-chain-exceptions.pl \
+    supply-chain-exceptions.json \
+    "${quality_dir}/supply-chain-exceptions.md"
+}
+
 deny_local() {
   if require_tool "cargo-deny" "${cargo_deny}"; then
     ${cargo_deny} check licenses bans sources
@@ -233,6 +239,7 @@ sbom() {
 
 case "${mode}" in
   local)
+    exception_ledger
     metadata
     deny_local
     audit_local
@@ -258,7 +265,11 @@ case "${mode}" in
   sbom)
     sbom
     ;;
+  exceptions)
+    exception_ledger
+    ;;
   strict)
+    exception_ledger
     metadata
     deny_strict
     audit_strict

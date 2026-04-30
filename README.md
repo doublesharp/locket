@@ -233,6 +233,7 @@ make deny
 make audit
 make unsafe-inventory
 make sbom
+make supply-chain-exceptions
 make fuzz-smoke
 ```
 
@@ -249,5 +250,7 @@ Quality gate scripts live in `scripts/` and are intentionally metadata-only:
 they must not print, snapshot, or persist secret values. Generated reports are
 written under `target/quality/` or `coverage/` and are ignored by Git. RustSec
 advisory policy output is written to `target/quality/rustsec-policy.md`.
+Supply-chain exceptions are tracked in `supply-chain-exceptions.json` and
+validated by `make supply-chain-exceptions`.
 
 Full design specs live in [`docs/specs/index.md`](docs/specs/index.md).
