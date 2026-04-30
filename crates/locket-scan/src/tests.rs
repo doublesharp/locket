@@ -348,19 +348,21 @@ fn scan_text_identifies_env_file_by_filename_not_path() {
 }
 
 #[test]
+#[allow(clippy::panic)]
 fn scan_text_with_multiple_findings_preserves_line_numbers() {
     let provider = "sk_live_sampleTokenValue123";
     let entropy = "Z9a$kLmN2pQx7R!sT4vW8yB3cD6eF";
     let text = format!("line1\n{provider}\nline3\n{entropy}\n");
     let findings = scan_text("notes.txt", &text);
 
-    let provider_finding = findings.iter().find(|f| f.kind == FindingKind::ProviderTokenPattern);
-    let entropy_finding = findings.iter().find(|f| f.kind == FindingKind::HighEntropy);
-
-    assert!(provider_finding.is_some(), "provider token finding expected");
-    assert!(entropy_finding.is_some(), "high entropy finding expected");
-    assert_eq!(provider_finding.unwrap().line, 2);
-    assert_eq!(entropy_finding.unwrap().line, 4);
+    let Some(provider_finding) = findings.iter().find(|f| f.kind == FindingKind::ProviderTokenPattern) else {
+        panic!("provider token finding expected");
+    };
+    let Some(entropy_finding) = findings.iter().find(|f| f.kind == FindingKind::HighEntropy) else {
+        panic!("high entropy finding expected");
+    };
+    assert_eq!(provider_finding.line, 2);
+    assert_eq!(entropy_finding.line, 4);
 }
 
 #[test]

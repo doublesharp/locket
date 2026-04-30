@@ -255,6 +255,9 @@ Slices that have merged to `main` and verified. Open work tracked in
   for all `LocketError` variants.
 - [x] **subtask** — mutation-locked-vault-scan: locked vault scan stays
   metadata-only; no leakage; `--require-known` exits `UnlockRequired`.
+- [x] **subtask** — tests-env-merge: 9 env merge edge-case tests.
+- [x] **subtask** — tests-policy-evaluation: 14 policy evaluation tests.
+- [x] **subtask** — tests-scanner-rules: 12 scanner rule and finding metadata tests.
 
 - [x] `locket allow` requires trusted root; regression test confirms
   untrusted root exits 71, no `ALLOW_DIRECTORY` row written.
