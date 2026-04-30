@@ -285,11 +285,9 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
   is broken into subtasks below; pick any open one.
   - Spec: `docs/specs/runtime.md:5-122`, `docs/specs/policy.md`.
   - Files: `crates/locket-exec/src/`, `crates/locket-cli/src/commands/exec/run.rs`.
-  - [~] [aa40a4ce] **subtask** — run-shell-policy: support shell-mode command policies
-    Claim: branch agent-aa40a4ce/run-shell-policy, worktree .worktrees/agent-aa40a4ce-run-shell-policy.
-    (`shell = "..."` form). Wire spawn path in `commands/exec/run.rs` to
-    invoke the documented shell, audit `shape: "argv" | "shell"`. Tests
-    cover argv success, shell success, audit `shape` field.
+  - [x] **subtask** — run-shell-policy: `CommandSpec::Shell` now spawns
+    `/bin/sh -c` on Unix and `cmd.exe /C` on Windows; audit records
+    `command_type = "shell"`.
   - [x] **subtask** — run-confirm-gate: `confirm = true` policies now require
     a typed `run <policy-name>` confirmation; success records
     `confirmation_source` on the audit row. `RUN/DENIED` rows remain a
@@ -545,11 +543,25 @@ the spec already covers. Closed items are 1–2 lines about what shipped.
 - [x] Tray notification policy: no secret values, no secret names by default
   (use generic "secret"/"policy"/"project" labels until the user opens the app).
   - Spec: `docs/specs/desktop.md:94-96`.
-- [ ] Tauri hardening: restrictive CSP, release devtools off, scoped
-  commands, deny-by-default capabilities (fs/shell/network/updater/
-  clipboard).
-- [ ] Search/filter UI across projects, profiles, secrets, policies,
-  audit, scan findings, devices, members (never reveals values).
+- [ ] Tauri hardening (`docs/specs/desktop.md`). Independent subtasks
+  — pre-req: `locket-app` Tauri shell exists.
+  - [ ] **subtask** — tauri-csp: restrictive Content-Security-Policy
+    on every renderer window; reject inline scripts/styles.
+  - [ ] **subtask** — tauri-devtools-release: gate devtools open
+    behind `cfg(debug_assertions)`; never expose in release builds.
+  - [ ] **subtask** — tauri-command-scope: every Tauri command is
+    explicitly scoped to the minimum capability set it needs.
+  - [ ] **subtask** — tauri-capabilities-deny-default: deny-by-default
+    `fs`/`shell`/`network`/`updater`/`clipboard` capabilities; opt
+    each in only where the spec calls for it.
+- [ ] Search/filter UI (`docs/specs/desktop.md`). Each subtask renders
+  one surface and never exposes values; pre-req: the relevant view.
+  - [ ] **subtask** — search-projects-profiles
+  - [ ] **subtask** — search-secrets-metadata
+  - [ ] **subtask** — search-policies
+  - [ ] **subtask** — search-audit
+  - [ ] **subtask** — search-scan-findings
+  - [ ] **subtask** — search-devices-members
 - [~] [cb2437f7] Accessibility: keyboard nav, focus states, screen-reader labels,
   contrast, reduced motion, no post-TTL value leak via a11y metadata.
   Claim: branch agent-cb2437f7/accessibility-baseline, worktree .worktrees/agent-cb2437f7-accessibility-baseline, scope desktop accessibility descriptors.
