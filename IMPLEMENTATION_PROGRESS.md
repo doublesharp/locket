@@ -670,8 +670,9 @@ the spec already covers. Closed slices land in
   and changed AAD fields all exit `DecryptionFailed`.
 - [x] `set`/`rotate`/`import` reject NUL and multiline secret values
   via `validate_secret_value_str` (`MetadataInvalid` 64).
-- [ ] Bytes-after-UTF-8 sweep across docker/compose/exec/redact/scan
+- [~] [aa40a4ce] Bytes-after-UTF-8 sweep across docker/compose/exec/redact/scan
   paths (`docs/specs/crypto.md`).
+  Claim: branch agent-aa40a4ce/bytes-after-utf8, worktree .worktrees/agent-aa40a4ce-bytes-after-utf8. Scope: tests verifying non-ASCII UTF-8 secret values pass byte-for-byte through exec injection and redact/scan matching.
 
 ### App/UI
 
