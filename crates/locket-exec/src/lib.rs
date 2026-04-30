@@ -7,6 +7,12 @@ pub use locket_core::{
 };
 use thiserror::Error;
 
+mod ephemeral_env_file;
+
+pub use ephemeral_env_file::{
+    EphemeralEnvFile, EphemeralEnvFileError, secure_erase_supported, write_ephemeral_env_file,
+};
+
 /// Parent environment names considered safe in [`EnvMode::Minimal`].
 pub const DEFAULT_SAFE_ALLOWLIST: &[&str] =
     &["PATH", "HOME", "USER", "SHELL", "TMPDIR", "LANG", "LC_*", "TERM", "CI"];
