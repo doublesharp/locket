@@ -72,6 +72,8 @@ Slices that have merged to `main` and verified. Open work tracked in
   and .env findings.
 - [x] source-precedence-get: Added explicit source selection for get metadata and
   value-access paths.
+- [x] source-precedence-purge: Added regression coverage for ambiguous purge source
+  selection.
 
 ## Full Spec Coverage TODO — Runtime/DX
 
