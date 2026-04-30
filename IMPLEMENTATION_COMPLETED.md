@@ -210,6 +210,8 @@ Slices that have merged to `main` and verified. Open work tracked in
   get/set/delete success and injected error paths in platform and CLI tests.
 - [x] **subtask** — mutation-deny-by-default: policy tests reject
   permissive secret fields and do not infer allowed secrets from env settings.
+- [x] **subtask** — mutation-audit-tamper: store tests mutate appended
+  audit rows and chain links, then assert audit verification fails closed.
 
 ## Spec-by-Spec Completion Gates
 
