@@ -248,6 +248,8 @@ Slices that have merged to `main` and verified. Open work tracked in
   project/profile metadata.
 - [x] desktop-scan-data: Wires the desktop scan view to the typed agent scan command.
   Shows scan timestamp, locked state, and metadata-only scan errors.
+- [x] search-secrets-metadata: Adds metadata-only search to the desktop secrets view.
+  Filtering honors privacy aliases and never inspects secret values.
 
 ## Full Spec Coverage TODO — Code Health and Bug Fixes
 
