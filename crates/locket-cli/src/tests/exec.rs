@@ -1078,3 +1078,139 @@ inherit_env = ["PATH"]
     assert_eq!(metadata_json["user_verification"]["method"], json!(null));
     Ok(())
 }
+
+#[test]
+#[cfg(unix)]
+fn run_shell_policy_executes_via_sh_and_audits_shape_shell()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    let marker_path = directory.path().join("shell-marker.txt");
+    let marker_str = marker_path.display().to_string();
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(directory.path().join("locket.toml"))?
+        .write_all(
+            format!(
+                r#"
+[commands.shell_check]
+shell = "echo shell-mode-marker > {marker_str}"
+env_mode = "strict"
+inherit_env = ["PATH"]
+"#,
+            )
+            .as_bytes(),
+        )?;
+
+    run_with_context(
+        Cli::try_parse_from(["locket", "run", "shell_check"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+
+    let marker_contents = std::fs::read_to_string(&marker_path)?;
+    assert!(
+        marker_contents.contains("shell-mode-marker"),
+        "shell-mode policy must invoke /bin/sh -c so shell features run; got {marker_contents:?}"
+    );
+
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let metadata: String = store.connection().query_row(
+        "SELECT metadata_json FROM audit_log WHERE action = 'RUN_POLICY'
+         ORDER BY sequence DESC LIMIT 1",
+        [],
+        |row| row.get(0),
+    )?;
+    let metadata_json: serde_json::Value = serde_json::from_str(&metadata)?;
+    assert_eq!(metadata_json["status"], "SUCCESS");
+    assert_eq!(metadata_json["command_type"], "shell");
+    assert_eq!(metadata_json["policy"], "shell_check");
+    Ok(())
+}
+
+#[test]
+fn run_argv_policy_audit_records_command_type_argv() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(directory.path().join("locket.toml"))?
+        .write_all(
+            br#"
+[commands.argv_check]
+argv = ["/bin/sh", "-c", "true"]
+env_mode = "strict"
+inherit_env = ["PATH"]
+"#,
+        )?;
+
+    run_with_context(
+        Cli::try_parse_from(["locket", "run", "argv_check"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let metadata: String = store.connection().query_row(
+        "SELECT metadata_json FROM audit_log WHERE action = 'RUN_POLICY'
+         ORDER BY sequence DESC LIMIT 1",
+        [],
+        |row| row.get(0),
+    )?;
+    let metadata_json: serde_json::Value = serde_json::from_str(&metadata)?;
+    assert_eq!(metadata_json["command_type"], "argv");
+    Ok(())
+}
+
+#[test]
+#[cfg(unix)]
+fn run_shell_policy_injects_locket_secrets_into_shell_environment()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    let db = test_secret_write_args("DATABASE_URL");
+    crate::set_secret_value(&context, &db, "postgres://shell-mode-secret", "manual", 1_000)?;
+
+    let marker_path = directory.path().join("shell-secret-check.txt");
+    let marker_str = marker_path.display().to_string();
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(directory.path().join("locket.toml"))?
+        .write_all(
+            format!(
+                r#"
+[commands.shell_secret]
+shell = "printf '%s' \"$DATABASE_URL\" > {marker_str}"
+required_secrets = ["DATABASE_URL"]
+env_mode = "strict"
+inherit_env = ["PATH"]
+"#,
+            )
+            .as_bytes(),
+        )?;
+
+    run_with_context(
+        Cli::try_parse_from(["locket", "run", "shell_secret"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+
+    let value = std::fs::read_to_string(&marker_path)?;
+    assert_eq!(value, "postgres://shell-mode-secret");
+    Ok(())
+}

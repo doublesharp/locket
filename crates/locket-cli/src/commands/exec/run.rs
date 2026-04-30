@@ -61,12 +61,6 @@ pub fn run_command(
     let resolved = require_project(context)?;
     let policy = load_command_policy(&resolved, &run_args.policy)?;
 
-    if matches!(policy.command, CommandSpec::Shell(_)) {
-        writeln!(output, "policy {}: shell execution is not implemented", policy.name)?;
-        return Err(unimplemented_in_build_error(
-            "shell policy execution is not wired in this build",
-        ));
-    }
     let confirmation_source = if policy.confirm {
         let expected = format!("run {}", policy.name);
         writeln!(output, "type '{expected}' to confirm run")?;
@@ -336,8 +330,18 @@ fn policy_locket_env(
 fn policy_argv(policy: &CommandPolicy) -> Vec<String> {
     match &policy.command {
         CommandSpec::Argv(arguments) => arguments.clone(),
-        CommandSpec::Shell(_) => unreachable!("shell policies are rejected before decryption"),
+        CommandSpec::Shell(script) => shell_argv(script),
     }
+}
+
+#[cfg(unix)]
+fn shell_argv(script: &str) -> Vec<String> {
+    vec!["/bin/sh".to_owned(), "-c".to_owned(), script.to_owned()]
+}
+
+#[cfg(windows)]
+fn shell_argv(script: &str) -> Vec<String> {
+    vec!["cmd.exe".to_owned(), "/C".to_owned(), script.to_owned()]
 }
 
 pub fn execute_prepared_with_runtime_session(
