@@ -166,6 +166,188 @@ fn policy_commands_update_locket_toml_without_duplicates_and_audit_metadata()
     Ok(())
 }
 
+#[cfg(unix)]
+#[test]
+fn policy_edit_uses_configured_editor_validates_and_audits()
+-> Result<(), Box<dyn std::error::Error>> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    run_with_context(
+        Cli::try_parse_from(["locket", "policy", "add", "dev", "--", "pnpm", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+
+    let editor = directory.path().join("policy-editor.sh");
+    std::fs::write(
+        &editor,
+        r#"#!/bin/sh
+set -eu
+input="$1"
+next="${input}.next"
+while IFS= read -r line; do
+  printf '%s\n' "$line"
+  if [ "$line" = "[commands.dev]" ]; then
+    printf '%s\n' "confirm = true"
+  fi
+done < "$input" > "$next"
+mv "$next" "$input"
+"#,
+    )?;
+    let mut permissions = std::fs::metadata(&editor)?.permissions();
+    permissions.set_mode(0o700);
+    std::fs::set_permissions(&editor, permissions)?;
+    std::fs::create_dir_all(context.config_path.parent().ok_or("missing config parent")?)?;
+    std::fs::write(
+        &context.config_path,
+        format!("[editor]\ndefault = \"{}\"\n", editor.display()),
+    )?;
+
+    let mut output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "policy", "edit", "dev"])?,
+        &context,
+        &mut output,
+    )?;
+    let output = String::from_utf8(output)?;
+    assert!(output.contains("policy: dev"));
+    assert!(output.contains("operation: edit"));
+    assert!(output.contains("metadata_only: yes"));
+    assert!(!output.contains("pnpm"));
+
+    let policy_text = std::fs::read_to_string(directory.path().join("locket.toml"))?;
+    let document = locket_core::PolicyDocument::from_toml_str(&policy_text)?;
+    let policy = document.commands.get("dev").ok_or("missing dev policy")?;
+    assert!(policy.confirm);
+
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let metadata: String = store.connection().query_row(
+        "SELECT metadata_json FROM audit_log WHERE action = 'POLICY_UPDATE'
+         ORDER BY sequence DESC LIMIT 1",
+        [],
+        |row| row.get(0),
+    )?;
+    assert!(metadata.contains("\"operation\":\"edit\""));
+    assert!(metadata.contains("\"policy\":\"dev\""));
+    assert!(!metadata.contains("pnpm"));
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn policy_edit_rejects_editor_failure_without_writing_audit()
+-> Result<(), Box<dyn std::error::Error>> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    run_with_context(
+        Cli::try_parse_from(["locket", "policy", "add", "dev", "--", "pnpm", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+
+    let editor = directory.path().join("failing-editor.sh");
+    std::fs::write(&editor, "#!/bin/sh\nexit 7\n")?;
+    let mut permissions = std::fs::metadata(&editor)?.permissions();
+    permissions.set_mode(0o700);
+    std::fs::set_permissions(&editor, permissions)?;
+    std::fs::create_dir_all(context.config_path.parent().ok_or("missing config parent")?)?;
+    std::fs::write(
+        &context.config_path,
+        format!("[editor]\ndefault = \"{}\"\n", editor.display()),
+    )?;
+
+    let result = run_with_context(
+        Cli::try_parse_from(["locket", "policy", "edit", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    );
+    let Err(error) = result else {
+        return Err("failing policy editor should fail".into());
+    };
+    assert_eq!(error.exit_code(), locket_core::LocketError::InvalidPolicy.exit_code());
+    assert!(error.to_string().contains("policy editor exited unsuccessfully"));
+
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let edit_rows: i64 = store.connection().query_row(
+        "SELECT COUNT(*) FROM audit_log WHERE action = 'POLICY_UPDATE'
+         AND metadata_json LIKE '%\"operation\":\"edit\"%'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(edit_rows, 0);
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn policy_edit_rejects_invalid_saved_toml_without_writing_audit()
+-> Result<(), Box<dyn std::error::Error>> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    run_with_context(
+        Cli::try_parse_from(["locket", "policy", "add", "dev", "--", "pnpm", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+
+    let editor = directory.path().join("invalid-policy-editor.sh");
+    std::fs::write(&editor, "#!/bin/sh\nprintf '%s\\n' '[commands.dev' > \"$1\"\n")?;
+    let mut permissions = std::fs::metadata(&editor)?.permissions();
+    permissions.set_mode(0o700);
+    std::fs::set_permissions(&editor, permissions)?;
+    std::fs::create_dir_all(context.config_path.parent().ok_or("missing config parent")?)?;
+    std::fs::write(
+        &context.config_path,
+        format!("[editor]\ndefault = \"{}\"\n", editor.display()),
+    )?;
+
+    let result = run_with_context(
+        Cli::try_parse_from(["locket", "policy", "edit", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    );
+    let Err(error) = result else {
+        return Err("invalid edited policy should fail".into());
+    };
+    assert_eq!(error.exit_code(), locket_core::LocketError::InvalidPolicy.exit_code());
+    assert!(error.to_string().contains("invalid edited policy TOML"));
+
+    let policy_text = std::fs::read_to_string(directory.path().join("locket.toml"))?;
+    let document = locket_core::PolicyDocument::from_toml_str(&policy_text)?;
+    assert!(document.commands.contains_key("dev"));
+
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let edit_rows: i64 = store.connection().query_row(
+        "SELECT COUNT(*) FROM audit_log WHERE action = 'POLICY_UPDATE'
+         AND metadata_json LIKE '%\"operation\":\"edit\"%'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(edit_rows, 0);
+    Ok(())
+}
+
 #[test]
 fn policy_doctor_reports_non_default_scanner_thresholds() -> Result<(), Box<dyn std::error::Error>>
 {

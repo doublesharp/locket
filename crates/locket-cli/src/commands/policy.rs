@@ -5,13 +5,19 @@ use locket_scan::EntropyRule;
 use locket_store::{AuditContext, AuditWrite};
 use serde_json::json;
 use std::fs;
-use std::io::Write;
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
+use std::process::Command as ProcessCommand;
 
+use crate::commands::config::spec::{
+    config_get_value, read_user_config, validate_config_key, validate_stored_config_value,
+};
 use crate::commands::scan::scanner::{ScanPolicy, read_scan_policy};
 use crate::{
-    CliError, LOCKET_TOML, RuntimeContext, confirmation_failed_error, invalid_reference_error,
-    invalid_secret_name_error, load_project_key, metadata_invalid_error, now_unix_nanos,
-    open_store, policy_not_found_error, require_project, secret_already_exists_error,
+    CliError, LOCKET_TOML, RuntimeContext, confirmation_failed_error, invalid_policy_error,
+    invalid_reference_error, invalid_secret_name_error, load_project_key, metadata_invalid_error,
+    now_unix_nanos, open_store, policy_not_found_error, require_project,
+    secret_already_exists_error, set_user_only_file_options, set_user_only_file_permissions,
 };
 
 #[derive(Debug, Subcommand)]
@@ -24,6 +30,8 @@ pub enum PolicyCommand {
     Require(PolicySecretsArgs),
     /// Delete a command policy.
     Delete(PolicyDeleteArgs),
+    /// Edit a command policy in the configured editor.
+    Edit(PolicyEditArgs),
     /// Validate policy metadata in locket.toml.
     Doctor,
 }
@@ -52,6 +60,12 @@ pub struct PolicyDeleteArgs {
     name: String,
 }
 
+#[derive(Debug, Args)]
+pub struct PolicyEditArgs {
+    /// Command policy name.
+    name: String,
+}
+
 pub fn command(
     context: &RuntimeContext,
     output: &mut impl Write,
@@ -62,6 +76,7 @@ pub fn command(
         PolicyCommand::Allow(args) => allow(context, output, args),
         PolicyCommand::Require(args) => require(context, output, args),
         PolicyCommand::Delete(args) => delete(context, output, args),
+        PolicyCommand::Edit(args) => edit(context, output, args),
         PolicyCommand::Doctor => doctor(context, output),
     }
 }
@@ -169,6 +184,42 @@ fn delete(
     write_policy_update(output, &name, "delete")
 }
 
+fn edit(
+    context: &RuntimeContext,
+    output: &mut impl Write,
+    args: PolicyEditArgs,
+) -> Result<(), CliError> {
+    let resolved = require_project(context)?;
+    let path = resolved.root.join(LOCKET_TOML);
+    let document = read_locket_toml(&path)?;
+    ensure_policy_exists(&document, &args.name)?;
+    let editor = configured_editor(context)?;
+    let edit_path = write_edit_copy(&path, &document)?;
+    let edit_result = run_policy_editor(&editor, &edit_path)
+        .and_then(|()| apply_edited_policy(&path, &edit_path, &args.name));
+    let cleanup_result = fs::remove_file(&edit_path);
+    if let Err(error) = cleanup_result
+        && error.kind() != io::ErrorKind::NotFound
+        && edit_result.is_ok()
+    {
+        return Err(error.into());
+    }
+    edit_result?;
+    let updated_document = read_locket_toml(&path)?;
+    let policy_text = toml::to_string_pretty(&updated_document)?;
+    let policy_document = PolicyDocument::from_toml_str(&policy_text)
+        .map_err(|error| metadata_invalid_error(error.to_string()))?;
+    write_policy_index_update_if_available(
+        context,
+        resolved.config.project_id.as_str(),
+        &updated_document,
+        &policy_document,
+        &args.name,
+        "edit",
+    )?;
+    write_policy_update(output, &args.name, "edit")
+}
+
 fn doctor(context: &RuntimeContext, output: &mut impl Write) -> Result<(), CliError> {
     let resolved = require_project(context)?;
     let path = resolved.root.join(LOCKET_TOML);
@@ -220,20 +271,100 @@ fn doctor(context: &RuntimeContext, output: &mut impl Write) -> Result<(), CliEr
     Ok(())
 }
 
-fn read_locket_toml(path: &std::path::Path) -> Result<toml::Value, CliError> {
+fn read_locket_toml(path: &Path) -> Result<toml::Value, CliError> {
     let content = fs::read_to_string(path)?;
     toml::from_str::<toml::Value>(&content).map_err(CliError::from)
 }
 
-fn write_validated_locket_toml(
-    path: &std::path::Path,
-    document: &toml::Value,
-) -> Result<PolicyDocument, CliError> {
+fn write_validated_locket_toml(path: &Path, document: &toml::Value) -> Result<PolicyDocument, CliError> {
     let content = toml::to_string_pretty(document)?;
     let policy_document = PolicyDocument::from_toml_str(&content)
         .map_err(|error| metadata_invalid_error(error.to_string()))?;
     fs::write(path, content)?;
     Ok(policy_document)
+}
+
+fn ensure_policy_exists(document: &toml::Value, name: &str) -> Result<(), CliError> {
+    let exists = document
+        .get("commands")
+        .and_then(toml::Value::as_table)
+        .and_then(|commands| commands.get(name))
+        .and_then(toml::Value::as_table)
+        .is_some();
+    if exists {
+        Ok(())
+    } else {
+        Err(policy_not_found_error(format!("command policy not found: {name}")))
+    }
+}
+
+fn configured_editor(context: &RuntimeContext) -> Result<String, CliError> {
+    let config = read_user_config(context)?;
+    let spec = validate_config_key("editor.default")?;
+    if let Some(value) = config_get_value(&config, "editor.default") {
+        validate_stored_config_value(spec, value)?;
+        let Some(editor) = value.as_str() else {
+            return Err(metadata_invalid_error("invalid stored config value for editor.default"));
+        };
+        return Ok(editor.to_owned());
+    }
+    std::env::var("VISUAL")
+        .or_else(|_| std::env::var("EDITOR"))
+        .map_err(|_| {
+            metadata_invalid_error("policy edit requires editor.default, VISUAL, or EDITOR")
+        })
+        .and_then(|editor| validate_editor_command(&editor).map(|()| editor))
+}
+
+fn validate_editor_command(editor: &str) -> Result<(), CliError> {
+    if editor.is_empty()
+        || editor.chars().any(char::is_control)
+        || editor.chars().any(char::is_whitespace)
+    {
+        return Err(metadata_invalid_error(
+            "policy editor must be a command name or absolute path without arguments",
+        ));
+    }
+    if editor.starts_with('~') || editor.contains('$') || editor.contains('`') {
+        return Err(metadata_invalid_error("policy editor must not use shell expansion"));
+    }
+    Ok(())
+}
+
+fn write_edit_copy(path: &Path, document: &toml::Value) -> Result<PathBuf, CliError> {
+    let edit_path = path.with_file_name(format!(
+        ".locket-policy-edit-{}-{}.toml",
+        std::process::id(),
+        now_unix_nanos()?
+    ));
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    set_user_only_file_options(&mut options);
+    let mut file = options.open(&edit_path)?;
+    file.write_all(toml::to_string_pretty(document)?.as_bytes())?;
+    set_user_only_file_permissions(&edit_path)?;
+    Ok(edit_path)
+}
+
+fn run_policy_editor(editor: &str, edit_path: &Path) -> Result<(), CliError> {
+    let status = ProcessCommand::new(editor).arg(edit_path).status().map_err(CliError::from)?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(invalid_policy_error("policy editor exited unsuccessfully"))
+    }
+}
+
+fn apply_edited_policy(path: &Path, edit_path: &Path, name: &str) -> Result<(), CliError> {
+    let edited_text = fs::read_to_string(edit_path)?;
+    let edited = toml::from_str::<toml::Value>(&edited_text)
+        .map_err(|error| invalid_policy_error(format!("invalid edited policy TOML: {error}")))?;
+    ensure_policy_exists(&edited, name)?;
+    let content = toml::to_string_pretty(&edited)?;
+    PolicyDocument::from_toml_str(&content)
+        .map_err(|error| invalid_policy_error(format!("invalid edited policy: {error}")))?;
+    fs::write(path, content)?;
+    Ok(())
 }
 
 fn commands_table_mut(
