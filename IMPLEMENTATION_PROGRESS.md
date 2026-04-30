@@ -612,7 +612,7 @@ the spec already covers. Closed slices land in
     pipe permissions; refuse to start if the bind path is wider.
   - [x] **subtask** — harden-memory-lock: `mlockall` at CLI startup;
     graceful `Degraded` on `RLIMIT_MEMLOCK` limit; `Unsupported` on macOS/Windows.
-  - [~] [e7389a73] **subtask** — harden-zeroize: ensure unwrapped keys/values
+  - [x] [e7389a73] **subtask** — harden-zeroize: ensure unwrapped keys/values
     are wrapped in `Zeroizing`/equivalent at every owner; audit
     sites that haven't been migrated.
     Claim: branch agent-e7389a73/harden-zeroize, worktree .worktrees/agent-e7389a73-harden-zeroize.
