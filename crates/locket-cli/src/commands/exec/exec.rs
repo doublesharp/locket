@@ -16,7 +16,9 @@ use crate::runtime::error::{
     invalid_reference_error,
 };
 use crate::runtime::key_access::{default_profile, load_project_key};
-use crate::support::secret_helpers::{decrypt_current_secret, resolve_active_secret};
+use crate::support::secret_helpers::{
+    decrypt_current_secret, resolve_active_secret, summarize_names,
+};
 use crate::{
     ExecArgs, ResolvedProject, active_profile_secret_names, now_unix_nanos, open_store,
     require_project,
@@ -177,7 +179,7 @@ fn write_exec_audit_if_available(
         "profile_id": profile.id,
         "argv_program": argv_program,
         "arg_count": arg_count,
-        "secret_names": injected_names,
+        "secret_names": summarize_names(injected_names),
         "secret_sources": injected_sources,
         "all_mode": all_mode,
         "exit_code": exit_code,

@@ -11,6 +11,7 @@ use std::sync::mpsc;
 use std::thread;
 
 use crate::runtime::error::corrupt_db_error;
+use crate::support::secret_helpers::summarize_names;
 use crate::{
     AI_SAFE_PARTIAL_LINE_MAX_BYTES, AI_SAFE_READ_CHUNK_BYTES, AiSafeArgs, CliError, RedactArgs,
     ResolvedProject, RuntimeContext, absolutize, decrypt_secret_version, default_profile,
@@ -735,7 +736,7 @@ fn write_ai_safe_audit_if_available(
         },
         "child_exit_code": result.exit_code,
         "finding_counts": finding_counts_json(&result.counts),
-        "redacted_secret_names": result.redacted_secret_names.iter().cloned().collect::<Vec<_>>(),
+        "redacted_secret_names": summarize_names(&result.redacted_secret_names.iter().cloned().collect::<Vec<_>>()),
         "stdout_chunks": result.stdout_chunks,
         "stderr_chunks": result.stderr_chunks,
         "buffer_limit_flushes": result.buffer_limit_flushes,

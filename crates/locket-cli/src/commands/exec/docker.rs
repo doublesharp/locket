@@ -18,7 +18,7 @@ use crate::runtime::error::{
 };
 use crate::runtime::key_access::{default_profile, load_project_key};
 use crate::support::secret_helpers::{
-    PolicySecretSelection, decrypt_secret_version, policy_secret_selections,
+    PolicySecretSelection, decrypt_secret_version, policy_secret_selections, summarize_names,
 };
 use crate::{
     ensure_trusted_project_root, load_command_policy, now_unix_nanos, open_store, require_project,
@@ -282,7 +282,7 @@ pub fn docker_policy_audit_metadata(
         "docker_context_class": docker_context_class_label(prepared.plan.context_class),
         "argv_program": prepared.plan.argv.first().map_or("", String::as_str),
         "arg_count": prepared.plan.argv.len(),
-        "secret_names": prepared.plan.injected_names,
+        "secret_names": summarize_names(&prepared.plan.injected_names),
     })
 }
 

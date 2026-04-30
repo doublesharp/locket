@@ -393,6 +393,23 @@ pub fn reveal_ttl_seconds(context: &RuntimeContext) -> Result<u64, CliError> {
     Ok(duration.as_secs().min(300))
 }
 
+/// Maximum number of names kept verbatim before the list is truncated to stay
+/// safely under the 64 KiB metadata-JSON per-row cap.
+const SECRET_NAMES_INLINE_LIMIT: usize = 200;
+
+/// Returns names as a `Vec<String>` suitable for embedding in audit metadata.
+/// When the list exceeds `SECRET_NAMES_INLINE_LIMIT`, only the first N names
+/// are kept and a trailing `"... M more"` sentinel is appended.
+pub fn summarize_names<S: AsRef<str>>(names: &[S]) -> Vec<String> {
+    if names.len() <= SECRET_NAMES_INLINE_LIMIT {
+        return names.iter().map(|s| s.as_ref().to_owned()).collect();
+    }
+    let mut out: Vec<String> =
+        names[..SECRET_NAMES_INLINE_LIMIT].iter().map(|s| s.as_ref().to_owned()).collect();
+    out.push(format!("... {} more", names.len() - SECRET_NAMES_INLINE_LIMIT));
+    out
+}
+
 pub fn policy_secret_selections(
     store: &Store,
     resolved: &ResolvedProject,
@@ -425,4 +442,34 @@ pub fn policy_secret_selection(
         .collect::<Vec<_>>();
     let selected = secrets.into_iter().max_by_key(|secret| source_precedence(&secret.source));
     PolicySecretSelection { name: name.to_owned(), required, sources, selected }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{SECRET_NAMES_INLINE_LIMIT, summarize_names};
+
+    #[test]
+    fn summarize_names_passes_through_small_list() {
+        let names = vec!["SECRET_A", "SECRET_B", "SECRET_C"];
+        let result = summarize_names(&names);
+        assert_eq!(result, vec!["SECRET_A", "SECRET_B", "SECRET_C"]);
+    }
+
+    #[test]
+    fn summarize_names_passes_through_list_at_limit() {
+        let names: Vec<String> =
+            (0..SECRET_NAMES_INLINE_LIMIT).map(|i| format!("SECRET_{i}")).collect();
+        let result = summarize_names(&names);
+        assert_eq!(result.len(), SECRET_NAMES_INLINE_LIMIT);
+        assert!(!result.last().unwrap().starts_with("..."));
+    }
+
+    #[test]
+    fn summarize_names_truncates_list_above_limit() {
+        let count = SECRET_NAMES_INLINE_LIMIT + 50;
+        let names: Vec<String> = (0..count).map(|i| format!("SECRET_{i}")).collect();
+        let result = summarize_names(&names);
+        assert_eq!(result.len(), SECRET_NAMES_INLINE_LIMIT + 1);
+        assert_eq!(result.last().unwrap(), "... 50 more");
+    }
 }

@@ -35,7 +35,7 @@ pub(crate) use support::project_files::{
 use support::secret_helpers::{
     PolicySecretSelection, ResolvedSecret, SecretEncryptRequest, decrypt_secret_version,
     encrypt_secret_version, resolve_active_secret_for_source, resolve_secret_for_source,
-    secret_audit_metadata, select_copy_profiles_and_sources,
+    secret_audit_metadata, select_copy_profiles_and_sources, summarize_names,
 };
 pub(crate) use support::time::{
     format_optional_str, format_optional_unix_nanos, format_unix_nanos, optional_i64,
@@ -2205,18 +2205,21 @@ pub(crate) fn write_runtime_policy_audit_if_available(
     }
     let audit_key =
         load_project_key(context, store, resolved.config.project_id.as_str(), KeyPurpose::Audit)?;
-    let secret_names = selections
+    let secret_names_raw = selections
         .iter()
         .filter(|selection| selection.selected.is_some())
         .map(|selection| selection.name.as_str())
         .collect::<Vec<_>>();
+    let secret_names = summarize_names(&secret_names_raw);
     let external_sources =
         policy.external_env_sources.iter().map(external_env_source_label).collect::<Vec<_>>();
     let secrets = policy_secret_audit_entries(selections);
-    let allowed_secret_names =
+    let allowed_secret_names_raw =
         policy.allowed_secrets.iter().map(locket_core::SecretName::as_str).collect::<Vec<_>>();
-    let required_secret_names =
+    let allowed_secret_names = summarize_names(&allowed_secret_names_raw);
+    let required_secret_names_raw =
         policy.required_secrets.iter().map(locket_core::SecretName::as_str).collect::<Vec<_>>();
+    let required_secret_names = summarize_names(&required_secret_names_raw);
     let user_verification_metadata = json!({
         "required": policy.require_user_verification,
         "satisfied": user_verification.is_some(),
