@@ -336,7 +336,7 @@ Slices 1+2 shipped (agent client, tray binding, 6 view scaffolds,
   relevant view's data RPC.
   - [~] [acda32e4] branch agent-acda32e4/search-projects-profiles, worktree .worktrees/agent-acda32e4-search-projects-profiles; **subtask** — search-projects-profiles: dashboard project/profile search and filtering surface.
   - [~] [52c592db] branch agent-52c592db/search-secrets-metadata, worktree .worktrees/agent-52c592db-search-secrets-metadata; **subtask** — search-secrets-metadata
-  - [ ] **subtask** — search-policies
+  - [~] [90b9f58a] branch agent-90b9f58a/search-policies, worktree .worktrees/agent-90b9f58a-search-policies; **subtask** — search-policies
   - [~] [52c592db] branch agent-52c592db/search-audit, worktree .worktrees/agent-52c592db-search-audit; **subtask** — search-audit
   - [~] [52c592db] branch agent-52c592db/search-scan-findings, worktree .worktrees/agent-52c592db-search-scan-findings; **subtask** — search-scan-findings
   - [ ] **subtask** — search-devices-members
