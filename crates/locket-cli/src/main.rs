@@ -59,8 +59,9 @@ pub(crate) use commands::scan::redact::{
 };
 #[cfg(test)]
 pub(crate) use commands::secrets::get::{
-    ClipboardClearLimit, ClipboardCommand, clipboard_clear_limit, copy_secret_to_clipboard_with,
-    get_command_with_clipboard, get_command_with_clipboard_and_limit, select_clipboard_command,
+    ClipboardBackend, ClipboardClearLimit, ClipboardClearResult, ClipboardCommand, MemoryClipboard,
+    clipboard_clear_limit, copy_secret_to_clipboard_with, get_command_with_clipboard,
+    get_command_with_clipboard_and_limit, select_clipboard_command,
 };
 #[cfg(test)]
 pub(crate) use commands::secrets::import::{EnvImportEntry, parse_env_import};

@@ -281,6 +281,51 @@ fn clipboard_copy_reports_unavailable_without_value_leakage()
 }
 
 #[test]
+fn memory_clipboard_copies_and_clears_only_matching_value() -> Result<(), Box<dyn std::error::Error>>
+{
+    let mut clipboard = crate::MemoryClipboard::clearing_supported();
+
+    crate::ClipboardBackend::copy(&mut clipboard, "postgres://localhost/app")?;
+    assert_eq!(clipboard.value(), Some("postgres://localhost/app"));
+    assert_eq!(
+        crate::ClipboardBackend::clear_if_current(&mut clipboard, "postgres://localhost/app"),
+        crate::ClipboardClearResult::Cleared
+    );
+    assert_eq!(clipboard.value(), None);
+    Ok(())
+}
+
+#[test]
+fn memory_clipboard_keeps_user_replacement_after_ttl() -> Result<(), Box<dyn std::error::Error>> {
+    let mut clipboard = crate::MemoryClipboard::clearing_supported();
+
+    crate::ClipboardBackend::copy(&mut clipboard, "postgres://localhost/app")?;
+    crate::ClipboardBackend::copy(&mut clipboard, "user replacement")?;
+
+    assert_eq!(
+        crate::ClipboardBackend::clear_if_current(&mut clipboard, "postgres://localhost/app"),
+        crate::ClipboardClearResult::Changed
+    );
+    assert_eq!(clipboard.value(), Some("user replacement"));
+    Ok(())
+}
+
+#[test]
+fn memory_clipboard_reports_unsupported_clear_without_dropping_value()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut clipboard = crate::MemoryClipboard::clearing_unsupported();
+
+    crate::ClipboardBackend::copy(&mut clipboard, "postgres://localhost/app")?;
+
+    assert_eq!(
+        crate::ClipboardBackend::clear_if_current(&mut clipboard, "postgres://localhost/app"),
+        crate::ClipboardClearResult::Unsupported
+    );
+    assert_eq!(clipboard.value(), Some("postgres://localhost/app"));
+    Ok(())
+}
+
+#[test]
 fn parses_profile_project_and_agent_commands() {
     for args in [
         ["locket", "profile", "create", "dev"].as_slice(),
