@@ -34,6 +34,37 @@ pub struct SecretRecord {
     pub deleted_at: Option<i64>,
 }
 
+/// Secret metadata row ordered for active-profile UI listing.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SecretMetadataRecord {
+    /// Secret identifier.
+    pub id: String,
+    /// Parent project identifier.
+    pub project_id: String,
+    /// Parent profile identifier.
+    pub profile_id: String,
+    /// Secret name.
+    pub name: String,
+    /// Persisted secret source string.
+    pub source: String,
+    /// Numeric source precedence, with larger values winning runtime resolution.
+    pub source_precedence: u8,
+    /// Persisted secret origin string.
+    pub origin: String,
+    /// Current secret version.
+    pub current_version: u32,
+    /// Persisted secret state string.
+    pub state: String,
+    /// Whether command policies should treat the secret as required.
+    pub required: bool,
+    /// Creation timestamp in nanoseconds since the Unix epoch.
+    pub created_at: i64,
+    /// Last metadata update timestamp in nanoseconds since the Unix epoch.
+    pub updated_at: i64,
+    /// Last rotation timestamp in nanoseconds since the Unix epoch.
+    pub last_rotated_at: Option<i64>,
+}
+
 /// Secret version metadata row.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SecretVersionRecord {
@@ -143,6 +174,26 @@ pub fn secret_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Secre
         updated_at: row.get(9)?,
         last_rotated_at: row.get(10)?,
         deleted_at: row.get(11)?,
+    })
+}
+
+pub fn secret_metadata_record_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<SecretMetadataRecord> {
+    Ok(SecretMetadataRecord {
+        id: row.get(0)?,
+        project_id: row.get(1)?,
+        profile_id: row.get(2)?,
+        name: row.get(3)?,
+        source: row.get(4)?,
+        source_precedence: row.get(5)?,
+        origin: row.get(6)?,
+        current_version: row.get(7)?,
+        state: row.get(8)?,
+        required: row.get(9)?,
+        created_at: row.get(10)?,
+        updated_at: row.get(11)?,
+        last_rotated_at: row.get(12)?,
     })
 }
 

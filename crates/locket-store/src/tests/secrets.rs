@@ -44,6 +44,51 @@ fn create_secret_lists_blob_and_fingerprint() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
+fn active_secret_metadata_uses_source_precedence_ordering() -> Result<(), Box<dyn Error>> {
+    let test_store = open_initialized_store()?;
+    insert_project_profile(&test_store.store)?;
+
+    for (id, name, source, required, current_version) in [
+        ("lk_sec_team", "DATABASE_URL", "team-managed", true, 1),
+        ("lk_sec_machine", "DATABASE_URL", "machine-local", false, 3),
+        ("lk_sec_user", "DATABASE_URL", "user-local", false, 2),
+        ("lk_sec_api", "API_TOKEN", "user-local", true, 1),
+        ("lk_sec_deleted", "Z_DELETED", "machine-local", false, 4),
+    ] {
+        let state = if id == "lk_sec_deleted" { "deleted" } else { "active" };
+        test_store.store.connection().execute(
+            "INSERT INTO secrets(
+               id, project_id, profile_id, name, source, origin, required,
+               current_version, state, created_at, updated_at, last_rotated_at, deleted_at
+             )
+             VALUES (?1, 'lk_proj_test', 'lk_prof_test', ?2, ?3, 'manual', ?4, ?5, ?6, 100, 200, 300, NULL)",
+            rusqlite::params![id, name, source, required, current_version, state],
+        )?;
+    }
+
+    let rows =
+        test_store.store.list_active_secret_metadata_by_profile("lk_proj_test", "lk_prof_test")?;
+
+    let ordered = rows
+        .iter()
+        .map(|row| (row.name.as_str(), row.source.as_str(), row.source_precedence))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        ordered,
+        vec![
+            ("API_TOKEN", "user-local", 2),
+            ("DATABASE_URL", "machine-local", 3),
+            ("DATABASE_URL", "user-local", 2),
+            ("DATABASE_URL", "team-managed", 1),
+        ]
+    );
+    assert_eq!(rows[0].required, true);
+    assert_eq!(rows[1].current_version, 3);
+    assert_eq!(rows[1].last_rotated_at, Some(300));
+    Ok(())
+}
+
+#[test]
 fn create_secret_rolls_back_when_version_source_mismatches() -> Result<(), Box<dyn Error>> {
     let mut test_store = open_initialized_store()?;
     insert_project_profile(&test_store.store)?;

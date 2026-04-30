@@ -43,6 +43,8 @@ pub enum AgentMethod {
     CancelSubscription,
     /// Automation client challenge handshake.
     ClientHello,
+    /// Return metadata-only active-profile secret rows.
+    ListSecrets,
 }
 
 impl AgentMethod {
@@ -68,6 +70,7 @@ impl AgentMethod {
             Self::SubscribeStatus => "SubscribeStatus",
             Self::CancelSubscription => "CancelSubscription",
             Self::ClientHello => "ClientHello",
+            Self::ListSecrets => "ListSecrets",
         }
     }
 }
@@ -95,6 +98,7 @@ impl FromStr for AgentMethod {
             "SubscribeStatus" => Ok(Self::SubscribeStatus),
             "CancelSubscription" => Ok(Self::CancelSubscription),
             "ClientHello" => Ok(Self::ClientHello),
+            "ListSecrets" => Ok(Self::ListSecrets),
             other => Err(UnknownMethod { method: other.to_owned() }),
         }
     }

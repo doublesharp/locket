@@ -17,6 +17,7 @@ mod resolve;
 mod reveal;
 mod runtime_sessions;
 mod scan;
+mod secrets;
 #[cfg(unix)]
 mod server;
 mod status;
@@ -44,6 +45,7 @@ pub use runtime_sessions::{
     RuntimeSessionSnapshot, RuntimeSessionState,
 };
 pub use scan::{ScanFinding, ScanRequest, ScanResponse};
+pub use secrets::{ListSecretsRequest, ListSecretsResponse, ListSecretsRow};
 #[cfg(unix)]
 pub use server::{
     AgentSocketConfig, AgentSocketState, ConnectionOutcome, SocketServerError,

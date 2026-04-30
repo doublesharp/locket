@@ -4,10 +4,11 @@
 #![allow(clippy::panic)]
 
 use super::{
-    AgentMethod, DEFAULT_MAX_MESSAGE_SIZE, ErrorEnvelope, LockState, PROTOCOL_VERSION,
-    ProtocolError, RequestEnvelope, ResponseEnvelope, STATUS_HEARTBEAT_INTERVAL_SECS, StatusEvent,
-    StatusEventKind, StatusEventSequence, StatusPayload, SuccessEnvelope, UnknownMethod,
-    decode_request_frame, decode_response_frame, encode_frame,
+    AgentMethod, DEFAULT_MAX_MESSAGE_SIZE, ErrorEnvelope, ListSecretsResponse, LockState,
+    PROTOCOL_VERSION, ProtocolError, RequestEnvelope, ResponseEnvelope,
+    STATUS_HEARTBEAT_INTERVAL_SECS, StatusEvent, StatusEventKind, StatusEventSequence,
+    StatusPayload, SuccessEnvelope, UnknownMethod, decode_request_frame, decode_response_frame,
+    encode_frame,
 };
 use serde_json::json;
 
@@ -45,12 +46,144 @@ fn agent_methods_round_trip_through_wire_names() -> Result<(), UnknownMethod> {
         AgentMethod::SubscribeStatus,
         AgentMethod::CancelSubscription,
         AgentMethod::ClientHello,
+        AgentMethod::ListSecrets,
     ];
 
     for method in methods {
         assert_eq!(method.as_str().parse::<AgentMethod>()?, method);
     }
 
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn list_secrets_returns_metadata_ordered_by_source_precedence()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::envelope::{RequestEnvelope, ResponseEnvelope};
+    use crate::method::AgentMethod;
+    use crate::server::{AgentSocketState, dispatch};
+    use locket_store::Store;
+    use serde_json::json;
+
+    let directory = tempfile::tempdir()?;
+    let store_path = directory.path().join("store.db");
+    let mut store = Store::open(&store_path)?;
+    store.initialize_schema()?;
+    store.connection().execute(
+        "INSERT INTO projects(id, name, created_at) VALUES ('lk_proj_test', 'test', 1)",
+        [],
+    )?;
+    store.connection().execute(
+        "INSERT INTO profiles(id, project_id, name, dangerous, created_at)
+         VALUES ('lk_prof_test', 'lk_proj_test', 'default', 0, 1)",
+        [],
+    )?;
+    for (id, name, source, required, version) in [
+        ("lk_sec_team", "DATABASE_URL", "team-managed", true, 1),
+        ("lk_sec_machine", "DATABASE_URL", "machine-local", false, 3),
+        ("lk_sec_user", "DATABASE_URL", "user-local", false, 2),
+        ("lk_sec_api", "API_TOKEN", "user-local", true, 1),
+    ] {
+        store.connection().execute(
+            "INSERT INTO secrets(
+               id, project_id, profile_id, name, source, origin, required,
+               current_version, state, created_at, updated_at, last_rotated_at, deleted_at
+             )
+             VALUES (?1, 'lk_proj_test', 'lk_prof_test', ?2, ?3, 'manual', ?4, ?5, 'active', 100, 200, NULL, NULL)",
+            (id, name, source, required, version),
+        )?;
+    }
+
+    let state = AgentSocketState::locked("test-version");
+    let request = RequestEnvelope::new(
+        "secrets",
+        AgentMethod::ListSecrets,
+        json!({
+            "store_path": store_path,
+            "project_id": "lk_proj_test",
+            "profile_id": "lk_prof_test",
+            "redact_names": false
+        }),
+    );
+    let response = dispatch(&request, &state).await;
+    let ResponseEnvelope::Success(success) = response else {
+        panic!("ListSecrets should succeed");
+    };
+    let payload: ListSecretsResponse = serde_json::from_value(success.payload)?;
+
+    let ordered = payload
+        .rows
+        .iter()
+        .map(|row| (row.name.as_str(), row.source.as_str(), row.source_precedence))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        ordered,
+        vec![
+            ("API_TOKEN", "user-local", 2),
+            ("DATABASE_URL", "machine-local", 3),
+            ("DATABASE_URL", "user-local", 2),
+            ("DATABASE_URL", "team-managed", 1),
+        ]
+    );
+    assert_eq!(payload.rows[0].required, true);
+    assert_eq!(payload.rows[1].current_version, 3);
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn list_secrets_applies_privacy_aliases_and_remains_locked_safe()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::envelope::{RequestEnvelope, ResponseEnvelope};
+    use crate::method::AgentMethod;
+    use crate::server::{AgentSocketState, dispatch};
+    use locket_store::Store;
+    use serde_json::json;
+
+    let directory = tempfile::tempdir()?;
+    let store_path = directory.path().join("store.db");
+    let mut store = Store::open(&store_path)?;
+    store.initialize_schema()?;
+    store.connection().execute(
+        "INSERT INTO projects(id, name, created_at) VALUES ('lk_proj_test', 'test', 1)",
+        [],
+    )?;
+    store.connection().execute(
+        "INSERT INTO profiles(id, project_id, name, dangerous, created_at)
+         VALUES ('lk_prof_test', 'lk_proj_test', 'default', 0, 1)",
+        [],
+    )?;
+    store.connection().execute(
+        "INSERT INTO secrets(
+           id, project_id, profile_id, name, source, origin, required,
+           current_version, state, created_at, updated_at, last_rotated_at, deleted_at
+         )
+         VALUES ('lk_sec_test', 'lk_proj_test', 'lk_prof_test', 'DATABASE_URL', 'user-local',
+                 'manual', 1, 1, 'active', 100, 200, NULL, NULL)",
+        [],
+    )?;
+
+    let state = AgentSocketState::locked("test-version");
+    let request = RequestEnvelope::new(
+        "secrets",
+        AgentMethod::ListSecrets,
+        json!({
+            "store_path": store_path,
+            "project_id": "lk_proj_test",
+            "profile_id": "lk_prof_test",
+            "redact_names": true
+        }),
+    );
+    let response = dispatch(&request, &state).await;
+    let ResponseEnvelope::Success(success) = response else {
+        panic!("ListSecrets should succeed while locked");
+    };
+    let payload: ListSecretsResponse = serde_json::from_value(success.payload)?;
+
+    assert_eq!(payload.rows.len(), 1);
+    assert_ne!(payload.rows[0].name, "DATABASE_URL");
+    assert_ne!(payload.rows[0].profile_id, "lk_prof_test");
+    assert!(payload.rows[0].name.starts_with("secret-"));
+    assert!(payload.rows[0].profile_id.starts_with("profile-"));
     Ok(())
 }
 

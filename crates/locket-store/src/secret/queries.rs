@@ -5,8 +5,9 @@ use rusqlite::{OptionalExtension, params};
 use crate::Store;
 use crate::error::StoreError;
 use crate::secret::{
-    SecretBlobRecord, SecretRecord, SecretVersionRecord, secret_blob_record_from_row,
-    secret_record_from_row, secret_version_record_from_row,
+    SecretBlobRecord, SecretMetadataRecord, SecretRecord, SecretVersionRecord,
+    secret_blob_record_from_row, secret_metadata_record_from_row, secret_record_from_row,
+    secret_version_record_from_row,
 };
 
 impl Store {
@@ -111,6 +112,39 @@ impl Store {
         )?;
         let secrets = statement
             .query_map((project_id, profile_id), secret_record_from_row)?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(secrets)
+    }
+
+    /// Lists active secret metadata for a profile ordered by logical name and source precedence.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Sqlite`] when `SQLite` cannot query secret rows.
+    pub fn list_active_secret_metadata_by_profile(
+        &self,
+        project_id: &str,
+        profile_id: &str,
+    ) -> Result<Vec<SecretMetadataRecord>, StoreError> {
+        let mut statement = self.connection.prepare(
+            "SELECT id, project_id, profile_id, name, source,
+                    CASE source
+                      WHEN 'machine-local' THEN 3
+                      WHEN 'user-local' THEN 2
+                      WHEN 'team-managed' THEN 1
+                      ELSE 0
+                    END AS source_precedence,
+                    origin, current_version, state, required, created_at, updated_at,
+                    last_rotated_at
+             FROM secrets
+             WHERE project_id = ?1 AND profile_id = ?2 AND state = 'active'
+             ORDER BY name,
+                      source_precedence DESC,
+                      source",
+        )?;
+        let secrets = statement
+            .query_map((project_id, profile_id), secret_metadata_record_from_row)?
             .collect::<Result<Vec<_>, _>>()?;
 
         Ok(secrets)

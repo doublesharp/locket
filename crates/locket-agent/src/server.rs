@@ -609,6 +609,7 @@ pub async fn dispatch(envelope: &RequestEnvelope, state: &AgentSocketState) -> R
         Ok(AgentMethod::ListPolicies) => handle_list_policies(envelope, state).await,
         Ok(AgentMethod::ResolveReference) => crate::resolve::handle_resolve(envelope),
         Ok(AgentMethod::PrepareExec) => crate::prepare_exec::handle_prepare_exec(envelope),
+        Ok(AgentMethod::ListSecrets) => handle_list_secrets(envelope),
         Ok(method) => ResponseEnvelope::Error(ErrorEnvelope::new(
             envelope.id.clone(),
             "ProtocolError",
