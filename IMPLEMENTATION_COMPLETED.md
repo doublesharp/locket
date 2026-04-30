@@ -197,6 +197,8 @@ Slices that have merged to `main` and verified. Open work tracked in
   unsupported clear.
 - [x] **subtask** — mock-os-keychain: `MockMasterKeyStore` covers
   get/set/delete success and injected error paths in platform and CLI tests.
+- [x] **subtask** — mutation-deny-by-default: policy tests reject
+  permissive secret fields and do not infer allowed secrets from env settings.
 
 ## Spec-by-Spec Completion Gates
 

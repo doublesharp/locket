@@ -899,10 +899,6 @@ editing — they drift. Severity: **blocker** (security/correctness),
     that returns spoofable peer creds so the agent's peer-validation
     logic can be tested without root. Pre-req:
     `agent-peer-validation` subtask under Local agent daemon.
-  - [~] [6e4d05db] **subtask** — mutation-deny-by-default: policy-evaluator
-    Claim: branch agent-6e4d05db/mutation-deny-by-default, worktree .worktrees/agent-6e4d05db-mutation-deny-by-default.
-    tests that explicitly inject permissive variants and assert
-    deny-by-default still rejects.
   - [ ] **subtask** — mutation-malformed-crypto: tamper AAD/nonces
     and replay automation-client nonces; assert typed
     `IntegrityFailure`/`ReplayDetected` paths.
