@@ -297,11 +297,11 @@ fn schema_migrate_audit_action_constant_matches_spec() {
 fn wal_journal_mode_is_enabled() -> Result<(), Box<dyn Error>> {
     let test_store = open_initialized_store()?;
 
-    let journal_mode = test_store.store.connection().query_row(
-        "PRAGMA journal_mode",
-        [],
-        |row| row.get::<_, String>(0),
-    )?;
+    let journal_mode =
+        test_store
+            .store
+            .connection()
+            .query_row("PRAGMA journal_mode", [], |row| row.get::<_, String>(0))?;
 
     // WAL mode reports "wal" after enabling.
     assert_eq!(journal_mode, "wal");
@@ -354,13 +354,11 @@ fn newer_schema_version_blocks_initialization_before_any_tables_are_created()
         Err(StoreError::UnsupportedSchema { found, .. }) if found == i64::from(SCHEMA_VERSION) + 1
     ));
 
-    let projects_absent = store
-        .connection()
-        .query_row(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'projects'",
-            [],
-            |row| row.get::<_, i64>(0),
-        )?;
+    let projects_absent = store.connection().query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'projects'",
+        [],
+        |row| row.get::<_, i64>(0),
+    )?;
     assert_eq!(projects_absent, 0, "rollback must leave other tables absent");
 
     Ok(())

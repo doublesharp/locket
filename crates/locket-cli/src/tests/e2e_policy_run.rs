@@ -3,6 +3,7 @@
 //! Covers: policy creation via CLI, `policy doctor`, `locket run` argv path
 //! with required/optional secrets, deny path (missing policy, missing required
 //! secret), confirm gate, and user-verification gate.
+#![allow(clippy::literal_string_with_formatting_args)]
 #[allow(unused_imports)]
 use super::*;
 
@@ -79,7 +80,7 @@ fn e2e_policy_run_golden_path_required_and_optional_secrets()
     Ok(())
 }
 
-/// Deny path: `locket run` with a non-existent policy exits PolicyNotFound.
+/// Deny path: `locket run` with a non-existent policy exits `PolicyNotFound`.
 #[test]
 fn e2e_policy_run_missing_policy_exits_policy_not_found() -> Result<(), Box<dyn std::error::Error>>
 {
@@ -115,7 +116,7 @@ fn e2e_policy_run_missing_policy_exits_policy_not_found() -> Result<(), Box<dyn 
     Ok(())
 }
 
-/// Deny path: `locket run` when a required secret is not set exits InvalidPolicy.
+/// Deny path: `locket run` when a required secret is not set exits `InvalidPolicy`.
 #[test]
 fn e2e_policy_run_missing_required_secret_exits_invalid_policy()
 -> Result<(), Box<dyn std::error::Error>> {

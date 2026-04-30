@@ -449,11 +449,7 @@ mod proptest_lk_uri {
     fn valid_secret_strategy() -> impl Strategy<Value = String> {
         let first = prop::char::ranges(std::borrow::Cow::Borrowed(&['A'..='Z', '_'..='_']));
         let rest = prop::collection::vec(
-            prop::char::ranges(std::borrow::Cow::Borrowed(&[
-                'A'..='Z',
-                '0'..='9',
-                '_'..='_',
-            ])),
+            prop::char::ranges(std::borrow::Cow::Borrowed(&['A'..='Z', '0'..='9', '_'..='_'])),
             0..12,
         );
         (first, rest).prop_map(|(f, r)| {

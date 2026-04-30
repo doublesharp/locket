@@ -669,7 +669,8 @@ fn recovery_entry_key_is_deterministic_and_domain_separated() -> Result<(), Cryp
 
     let k1 = recovery_entry_key_v1(&unwrap_root, "master_key", "lk_key_01", "lk_kdf_v1")?;
     let k2 = recovery_entry_key_v1(&unwrap_root, "master_key", "lk_key_01", "lk_kdf_v1")?;
-    let k_other_kind = recovery_entry_key_v1(&unwrap_root, "profile_key", "lk_key_01", "lk_kdf_v1")?;
+    let k_other_kind =
+        recovery_entry_key_v1(&unwrap_root, "profile_key", "lk_key_01", "lk_kdf_v1")?;
     let k_other_id = recovery_entry_key_v1(&unwrap_root, "master_key", "lk_key_02", "lk_kdf_v1")?;
 
     assert_eq!(&*k1, &*k2);
@@ -724,13 +725,8 @@ fn recovery_entry_open_fails_on_tampered_ciphertext() -> Result<(), CryptoError>
 fn recovery_entry_open_fails_on_wrong_entry_id() -> Result<(), CryptoError> {
     let unwrap_root = [0x77_u8; KEY_LEN];
 
-    let (nonce, ciphertext) = seal_recovery_entry_v1(
-        &unwrap_root,
-        "lk_kdf_v1",
-        "master_key",
-        "lk_key_01",
-        b"payload",
-    )?;
+    let (nonce, ciphertext) =
+        seal_recovery_entry_v1(&unwrap_root, "lk_kdf_v1", "master_key", "lk_key_01", b"payload")?;
     let result = open_recovery_entry_v1(
         &unwrap_root,
         "lk_kdf_v1",

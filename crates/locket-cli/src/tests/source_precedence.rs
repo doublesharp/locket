@@ -80,9 +80,12 @@ fn list_shows_each_source_as_separate_entry() -> Result<(), Box<dyn std::error::
     let machine_local_line = list_output.lines().find(|l| l.contains("source=machine-local"));
     assert!(user_local_line.is_some(), "list must show user-local source: {list_output}");
     assert!(machine_local_line.is_some(), "list must show machine-local source: {list_output}");
-    assert!(user_local_line.unwrap().contains("DB_URL"), "user-local line must include the key");
     assert!(
-        machine_local_line.unwrap().contains("DB_URL"),
+        user_local_line.is_some_and(|l| l.contains("DB_URL")),
+        "user-local line must include the key"
+    );
+    assert!(
+        machine_local_line.is_some_and(|l| l.contains("DB_URL")),
         "machine-local line must include the key"
     );
     assert!(!list_output.contains("user-db"), "list must not reveal values");

@@ -435,8 +435,8 @@ mod server_tests {
     }
 
     #[tokio::test]
-    async fn bind_succeeds_when_parent_already_owner_only()
-    -> Result<(), Box<dyn std::error::Error>> {
+    async fn bind_succeeds_when_parent_already_owner_only() -> Result<(), Box<dyn std::error::Error>>
+    {
         let directory = tempdir()?;
         std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))?;
         let socket_path = directory.path().join("agent.sock");
@@ -456,7 +456,7 @@ mod server_tests {
         std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))?;
         let nested = directory.path().join("agent");
         let socket_path = nested.join("agent.sock");
-        let config = AgentSocketConfig::new(socket_path.clone(), "0.0.0-test");
+        let config = AgentSocketConfig::new(socket_path, "0.0.0-test");
 
         let _listener = bind_socket_listener(&config)?;
         let nested_mode = std::fs::metadata(&nested)?.permissions().mode() & 0o777;

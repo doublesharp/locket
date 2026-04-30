@@ -193,9 +193,7 @@ impl LocketError {
             Self::BundleVerificationFailed => 110,
             Self::InviteExpired => 111,
             Self::TeamBundleConflict => 112,
-            Self::DeviceRevoked
-            | Self::ReplayDetected
-            | Self::DeviceDescriptorInvalid => 113,
+            Self::DeviceRevoked | Self::ReplayDetected | Self::DeviceDescriptorInvalid => 113,
             Self::InviteSignatureInvalid => 114,
         }
     }

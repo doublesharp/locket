@@ -7,16 +7,9 @@ use super::*;
 use proptest::prelude::*;
 
 fn valid_key_strategy() -> impl Strategy<Value = String> {
-    let first = prop::char::ranges(std::borrow::Cow::Borrowed(&[
-        'A'..='Z',
-        '_'..='_',
-    ]));
+    let first = prop::char::ranges(std::borrow::Cow::Borrowed(&['A'..='Z', '_'..='_']));
     let rest = prop::collection::vec(
-        prop::char::ranges(std::borrow::Cow::Borrowed(&[
-            'A'..='Z',
-            '0'..='9',
-            '_'..='_',
-        ])),
+        prop::char::ranges(std::borrow::Cow::Borrowed(&['A'..='Z', '0'..='9', '_'..='_'])),
         0..20,
     );
     (first, rest).prop_map(|(f, r)| {
@@ -29,12 +22,10 @@ fn valid_key_strategy() -> impl Strategy<Value = String> {
 
 fn clean_value_strategy() -> impl Strategy<Value = String> {
     prop::collection::vec(
-        prop::char::ranges(std::borrow::Cow::Borrowed(&[
-            ' '..='~',
-        ]))
-        .prop_filter("no NUL, no newline, no quote", |c| {
-            *c != '\0' && *c != '\n' && *c != '\r' && *c != '"' && *c != '\''
-        }),
+        prop::char::ranges(std::borrow::Cow::Borrowed(&[' '..='~']))
+            .prop_filter("no NUL, no newline, no quote", |c| {
+                *c != '\0' && *c != '\n' && *c != '\r' && *c != '"' && *c != '\''
+            }),
         0..40,
     )
     .prop_map(|chars| chars.into_iter().collect())

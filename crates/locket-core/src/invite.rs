@@ -184,7 +184,8 @@ impl SignedInvite {
     /// error.
     pub fn decode(s: &str) -> Result<Self, InviteDecodeError> {
         let encoded = s.strip_prefix(INVITE_PREFIX).ok_or(InviteDecodeError::WrongPrefix)?;
-        let bytes = BASE64URL_NOPAD.decode(encoded.as_bytes()).map_err(|_| InviteDecodeError::Base64)?;
+        let bytes =
+            BASE64URL_NOPAD.decode(encoded.as_bytes()).map_err(|_| InviteDecodeError::Base64)?;
         Ok(serde_json::from_slice(&bytes)?)
     }
 
@@ -203,8 +204,8 @@ impl SignedInvite {
             .map_err(|_| InviteVerifyError::InvalidIssuerKey)?;
         let key_array: [u8; 32] =
             key_bytes.try_into().map_err(|_| InviteVerifyError::InvalidIssuerKey)?;
-        let verifying_key =
-            VerifyingKey::from_bytes(&key_array).map_err(|_| InviteVerifyError::InvalidIssuerKey)?;
+        let verifying_key = VerifyingKey::from_bytes(&key_array)
+            .map_err(|_| InviteVerifyError::InvalidIssuerKey)?;
 
         let sig_bytes = BASE64URL_NOPAD
             .decode(self.signature.as_bytes())
@@ -401,10 +402,7 @@ mod tests {
     #[test]
     fn team_role_serde_uses_snake_case() {
         assert_eq!(serde_json::to_string(&TeamRole::ReadOnly).unwrap(), "\"read_only\"");
-        assert_eq!(
-            serde_json::from_str::<TeamRole>("\"read_only\"").unwrap(),
-            TeamRole::ReadOnly
-        );
+        assert_eq!(serde_json::from_str::<TeamRole>("\"read_only\"").unwrap(), TeamRole::ReadOnly);
     }
 
     fn invite_with_expiry(expires_at: i64) -> SignedInvite {

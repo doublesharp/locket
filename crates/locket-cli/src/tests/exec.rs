@@ -1537,13 +1537,7 @@ inherit_env = ["PATH"]
     let mut docker_prepared =
         crate::prepare_docker_policy_execution(&context, "docker_app", &docker_argv, parent_env)?;
     assert_eq!(docker_prepared.execution.program, "docker");
-    assert!(
-        docker_prepared
-            .plan
-            .argv
-            .windows(2)
-            .any(|pair| pair == ["--env", "DATABASE_URL"])
-    );
+    assert!(docker_prepared.plan.argv.windows(2).any(|pair| pair == ["--env", "DATABASE_URL"]));
     let docker_argv_text = docker_prepared.plan.argv.join(" ");
     assert!(!docker_argv_text.contains("postgres://localhost/e2e"));
     assert!(!docker_argv_text.contains("sk_test_e2e_value"));
@@ -1598,8 +1592,12 @@ inherit_env = ["PATH"]
         std::iter::once(("DOCKER_HOST".to_owned(), locket_exec::env_value("ssh://builder")))
             .collect();
     let remote_docker_argv = vec!["docker".to_owned(), "run".to_owned(), "alpine".to_owned()];
-    let docker_remote =
-        crate::prepare_docker_policy_execution(&context, "docker_app", &remote_docker_argv, remote_env);
+    let docker_remote = crate::prepare_docker_policy_execution(
+        &context,
+        "docker_app",
+        &remote_docker_argv,
+        remote_env,
+    );
     let Err(docker_err) = docker_remote else {
         return Err("remote docker context must be denied".into());
     };

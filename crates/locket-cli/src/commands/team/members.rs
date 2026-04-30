@@ -331,9 +331,11 @@ fn invite_profiles_label(invite: &PendingTeamInviteRecord, redact_names: bool) -
     invite
         .profiles
         .iter()
-        .map(|profile| {
-            if redact_names { privacy_alias("profile", profile) } else { profile.clone() }
-        })
+        .map(
+            |profile| {
+                if redact_names { privacy_alias("profile", profile) } else { profile.clone() }
+            },
+        )
         .collect::<Vec<_>>()
         .join(",")
 }
@@ -375,11 +377,8 @@ fn write_rotation_checklist(
     for profile in &profiles {
         let secrets = store.list_active_secrets_by_profile(project_id, &profile.id)?;
         total = total.saturating_add(secrets.len());
-        let label = if redact_names {
-            privacy_alias("profile", &profile.id)
-        } else {
-            profile.name.clone()
-        };
+        let label =
+            if redact_names { privacy_alias("profile", &profile.id) } else { profile.name.clone() };
         writeln!(output, "  profile {label}: rotate_active_secrets={}", secrets.len())?;
     }
     writeln!(output, "  total_active_secrets={total}")?;
