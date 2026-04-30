@@ -278,6 +278,9 @@ Slices that have merged to `main` and verified. Open work tracked in
   raster assets.
 - [x] error-copy-table: Typed error display copy is now shared across shell, UI, and
   tray clients.
+- [x] desktop-execution-data: Desktop execution monitor now loads metadata-only runtime
+  sessions from the agent. The view refreshes state, aliases, stale rows, and safe
+  audit/session fields.
 
 ## Full Spec Coverage TODO — Code Health and Bug Fixes
 

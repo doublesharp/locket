@@ -238,7 +238,6 @@ Slices 1+2 shipped (agent client, tray binding, 6 view scaffolds,
   - [~] [acda32e4] branch agent-acda32e4/agent-list-versions, worktree .worktrees/agent-acda32e4-agent-list-versions; **subtask** — agent-list-versions: current/deprecated/purged metadata plus rotation summary.
   - [ ] **subtask** — desktop-versions-data: wire into
     `SecretVersionHistory.vue`. Slice 5.
-  - [~] [acda32e4] branch agent-acda32e4/desktop-execution-data, worktree .worktrees/agent-acda32e4-desktop-execution-data; **subtask** — desktop-execution-data: wire into `ExecutionMonitor.vue` + stale-session classifier. Slice 6.
   - [ ] **subtask** — agent-reveal-copy-impl: real `Reveal` / `Copy`
     handlers (today both stub `UnlockRequired`). Pre-req:
     `agent-unlock-cache`, `agent-grant-table`.
