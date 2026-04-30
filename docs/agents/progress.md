@@ -308,9 +308,7 @@ Slices 1+2 shipped (agent client, tray binding, 6 view scaffolds,
     policy, dangerous-profile flag. Writes emit `CONFIG_UPDATE`.
   - [ ] **subtask** — desktop-settings-data: wire into `Settings.vue`;
     propagate `privacy.redact_names` reactively. Slice 11.
-  - [ ] **subtask** — agent-list-policies: RPC returning saved
-    `CommandPolicy` metadata (argv vs shell, required/optional
-    secrets, gates) without exposing resolved values.
+  - [~] [90b9f58a] branch agent-90b9f58a/agent-list-policies, worktree .worktrees/agent-90b9f58a-agent-list-policies; **subtask** — agent-list-policies: metadata-only saved policy RPC.
   - [ ] **subtask** — agent-policy-doctor-rpc: RPC exercising
     `lk://` resolution + env-mode expansion. Pre-req:
     `agent-resolve-reference-impl`.
