@@ -613,9 +613,10 @@ the spec already covers. Closed slices land in
   - [~] [7138f228] **subtask** — harden-memory-lock: `mlock`/equivalent for
     unwrapped key buffers; warn on unsupported platforms.
     Claim: branch agent-7138f228/harden-memory-lock, worktree .worktrees/agent-7138f228-harden-memory-lock. Scope: process-wide `mlockall(MCL_CURRENT | MCL_FUTURE)` at CLI startup with graceful `Degraded` fallback when `RLIMIT_MEMLOCK` is too low; mirrors the core_dumps shape and hands the state to the existing doctor `hardening` check.
-  - [ ] **subtask** — harden-zeroize: ensure unwrapped keys/values
+  - [~] [e7389a73] **subtask** — harden-zeroize: ensure unwrapped keys/values
     are wrapped in `Zeroizing`/equivalent at every owner; audit
     sites that haven't been migrated.
+    Claim: branch agent-e7389a73/harden-zeroize, worktree .worktrees/agent-e7389a73-harden-zeroize.
   - [ ] **subtask** — harden-session-lock: lock on system sleep,
     screen lock, and user-session switch; emit `LOCK` audit row.
   - [x] **subtask** — harden-doctor-degraded: doctor reports
