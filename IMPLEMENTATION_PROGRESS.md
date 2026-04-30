@@ -895,8 +895,6 @@ editing — they drift. Severity: **blocker** (security/correctness),
   - [ ] **subtask** — mock-os-keychain: trait-based mock for
     `crates/locket-platform/src/keychain/` covering get/set/delete
     success and error paths, used in CLI/store tests.
-  - [x] **subtask** — mock-user-verification: `MemoryLocalUserVerifier`
-    covers allow, deny, platform-unsupported, and user-cancelled paths.
   - [ ] **subtask** — mock-peer-credentials: in-process socket harness
     that returns spoofable peer creds so the agent's peer-validation
     logic can be tested without root. Pre-req:
@@ -904,8 +902,6 @@ editing — they drift. Severity: **blocker** (security/correctness),
   - [ ] **subtask** — mock-clipboard: trait mock for the clipboard
     module covering copy success, post-TTL clear, and the
     cannot-clear platform path.
-  - [x] **subtask** — mock-docker-compose: Compose external env
-    resolution has a process-stub harness that runs without Docker.
   - [ ] **subtask** — mutation-deny-by-default: policy-evaluator
     tests that explicitly inject permissive variants and assert
     deny-by-default still rejects.

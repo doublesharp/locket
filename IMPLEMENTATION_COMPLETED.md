@@ -177,6 +177,10 @@ Slices that have merged to `main` and verified. Open work tracked in
   ≥8 cumulative CPU-hours/target since prior release; deterministic
   per-target resource limits and codified finding workflow
   (`docs/specs/fuzzing.md`).
+- [x] **subtask** — mock-user-verification: `MemoryLocalUserVerifier`
+  covers allow, deny, platform-unsupported, and user-cancelled paths.
+- [x] **subtask** — mock-docker-compose: Compose external env
+  resolution has a process-stub harness that runs without Docker.
 
 ## Spec-by-Spec Completion Gates
 
