@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, ref } from 'vue';
 
 import type { ScanFindingRow } from '../types/views';
 
@@ -17,8 +17,25 @@ const emit = defineEmits<{
   (e: 'rescan'): void;
 }>();
 
+const searchQuery = ref<string>('');
+
+const filteredFindings = computed<ScanFindingRow[]>(() => {
+  const query = searchQuery.value.trim().toLowerCase();
+  if (query.length === 0) {
+    return props.findings;
+  }
+  return props.findings.filter((row) => searchText(row).includes(query));
+});
+
 const isEmpty = computed<boolean>(
   () => !props.scanning && !props.errorMessage && props.findings.length === 0,
+);
+const isFilteredEmpty = computed<boolean>(
+  () =>
+    !props.scanning &&
+    !props.errorMessage &&
+    props.findings.length > 0 &&
+    filteredFindings.value.length === 0,
 );
 
 function severityLabel(severity: ScanFindingRow['severity']): string {
@@ -27,6 +44,20 @@ function severityLabel(severity: ScanFindingRow['severity']): string {
 
 function locationLabel(row: ScanFindingRow): string {
   return `${row.path}:${row.line}:${row.column}`;
+}
+
+function searchText(row: ScanFindingRow): string {
+  return [
+    row.rule,
+    row.severity,
+    row.path,
+    String(row.line),
+    String(row.column),
+    row.redactedSummary,
+    row.suppressedBy ?? '',
+  ]
+    .join(' ')
+    .toLowerCase();
 }
 
 function onRescan(): void {
@@ -39,6 +70,16 @@ function onRescan(): void {
     <header class="view__header">
       <h2 id="scan-results-heading">Scan results</h2>
       <div class="view__actions">
+        <label class="view__search">
+          <span class="view__search-label">Search findings</span>
+          <input
+            v-model="searchQuery"
+            type="search"
+            autocomplete="off"
+            spellcheck="false"
+            placeholder="Search metadata"
+          />
+        </label>
         <span v-if="lastScanAt" class="view__last-scan">
           Last scan
           <time :datetime="lastScanAt">{{ lastScanAt }}</time>
@@ -65,6 +106,8 @@ function onRescan(): void {
 
     <p v-else-if="isEmpty" class="view__empty">No scan findings.</p>
 
+    <p v-else-if="isFilteredEmpty" class="view__empty">No matching scan findings.</p>
+
     <table v-else class="view__table" aria-describedby="scan-results-heading">
       <thead>
         <tr>
@@ -76,7 +119,7 @@ function onRescan(): void {
         </tr>
       </thead>
       <tbody>
-        <tr v-for="row in findings" :key="row.id">
+        <tr v-for="row in filteredFindings" :key="row.id">
           <td>
             <span :class="['badge', `badge--severity-${row.severity}`]">
               {{ severityLabel(row.severity) }}
@@ -115,6 +158,7 @@ function onRescan(): void {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   margin-bottom: 0.75rem;
   gap: 0.75rem;
 }
@@ -129,7 +173,44 @@ function onRescan(): void {
 .view__actions {
   display: inline-flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 0.75rem;
+}
+
+.view__search {
+  display: grid;
+  gap: 0.25rem;
+  min-width: min(18rem, 100%);
+}
+
+.view__search-label {
+  color: #9aa3b2;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.view__search input {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 2rem;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 0.375rem;
+  background: rgba(255, 255, 255, 0.05);
+  color: #e6e8ec;
+  font: inherit;
+  padding: 0.375rem 0.625rem;
+}
+
+.view__search input:focus {
+  border-color: #f8d77a;
+  outline: 2px solid rgba(248, 215, 122, 0.24);
+  outline-offset: 1px;
+}
+
+.view__search input::placeholder {
+  color: #667085;
 }
 
 .view__last-scan {
