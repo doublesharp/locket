@@ -390,10 +390,7 @@ Slices 1+2 shipped (agent client, tray binding, 6 view scaffolds,
 - [ ] Cross-surface error-text parity: CLI / UI / tray / shell /
   VS Code show the same reason and next action per typed error
   (`docs/specs/desktop.md`).
-  - [ ] **subtask** — error-copy-table: extract typed-error display
-    copy into a shared table consumed by CLI, desktop
-    `AgentUnavailableBanner`, tray dispatcher, shell prompt.
-    Regression asserts every `LocketError` variant has a row.
+  - [~] [acda32e4] branch agent-acda32e4/error-copy-table, worktree .worktrees/agent-acda32e4-error-copy-table; **subtask** — error-copy-table: shared typed-error display copy with coverage regression.
 - [ ] VS Code diagnostics: `process.env.KEY` missing in active
   profile; pinned `lk://...@vN` near/past `grace_until`
   (`docs/specs/integrations.md:48-49`).
