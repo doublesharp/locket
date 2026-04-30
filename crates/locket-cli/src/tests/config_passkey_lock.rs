@@ -511,6 +511,7 @@ fn passkey_remove_requires_fresh_user_verification_before_revocation()
         credential_id: vec![0xab, 0xcd, 0xef, 0x12, 0x34, 0x56],
         transports: vec!["internal".to_owned()],
         prf_capable: true,
+        webauthn_relying_party_id: locket_store::DEFAULT_WEBAUTHN_RELYING_PARTY_ID.to_owned(),
         backup_eligible: Some(true),
         backup_state: Some(false),
         created_at: 100,
