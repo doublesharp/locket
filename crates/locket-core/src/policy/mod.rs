@@ -172,6 +172,77 @@ argv = []
     }
 
     #[test]
+    fn deny_by_default_does_not_infer_secret_authorization_from_permissive_settings()
+    -> Result<(), Box<dyn Error>> {
+        let document = PolicyDocument::from_toml_str(
+            r#"
+[commands.dev]
+argv = ["pnpm", "dev"]
+inherit_env = ["DATABASE_URL", "API_KEY"]
+external_env_sources = ["parent", "compose"]
+env_mode = "merge"
+override = "preserve"
+confirm = false
+require_user_verification = false
+allow_remote_docker = true
+"#,
+        )?;
+
+        let policy = document.commands.get("dev").ok_or("missing dev policy")?;
+
+        assert!(policy.required_secrets.is_empty());
+        assert!(policy.optional_secrets.is_empty());
+        assert!(policy.allowed_secrets.is_empty());
+        assert!(!policy.confirm);
+        assert!(!policy.require_user_verification);
+        assert!(policy.allow_remote_docker);
+        Ok(())
+    }
+
+    #[test]
+    fn deny_by_default_rejects_permissive_secret_authorization_variants() {
+        let cases = [
+            (
+                r#"[commands.dev]
+argv = ["pnpm"]
+allowed_secrets = ["DATABASE_URL"]
+"#,
+                "allowed_secrets",
+            ),
+            (
+                r#"[commands.dev]
+argv = ["pnpm"]
+secret = "DATABASE_URL"
+"#,
+                "secret",
+            ),
+            (
+                r#"[commands.dev]
+argv = ["pnpm"]
+all_secrets = true
+"#,
+                "all_secrets",
+            ),
+            (
+                r#"[commands.dev]
+argv = ["pnpm"]
+secrets = ["DATABASE_URL"]
+"#,
+                "secrets",
+            ),
+        ];
+
+        for (input, field) in cases {
+            let error = PolicyDocument::from_toml_str(input).expect_err("permissive policy passed");
+            let message = error.to_string();
+            assert!(
+                message.contains(field),
+                "error for {field} should mention rejected field, got {message:?}"
+            );
+        }
+    }
+
+    #[test]
     fn rejects_ttl_above_builtin_policy_cap() {
         let result = PolicyDocument::from_toml_str(
             r#"[commands.dev]
