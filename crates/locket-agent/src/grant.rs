@@ -406,4 +406,124 @@ mod tests {
         assert_eq!(record.expires_at_unix_nanos, 45_000_000_100);
         Ok(())
     }
+
+    #[test]
+    fn revoke_returns_record_when_present_and_none_when_absent() {
+        let mut table = GrantTable::default();
+        table.insert(grant_record(GrantAction::Reveal));
+        assert!(table.revoke("grant-1").is_some());
+        assert!(table.revoke("grant-1").is_none());
+    }
+
+    #[test]
+    fn clear_empties_grant_table() {
+        let mut table = GrantTable::default();
+        table.insert(grant_record(GrantAction::Reveal));
+        assert!(!table.is_empty());
+        table.clear();
+        assert!(table.is_empty());
+        assert_eq!(table.len(), 0);
+    }
+
+    #[test]
+    fn revoke_for_project_returns_zero_for_unknown_project() {
+        let mut table = GrantTable::default();
+        table.insert(grant_record(GrantAction::Reveal));
+        assert_eq!(table.revoke_for_project("nope"), 0);
+        assert_eq!(table.len(), 1);
+    }
+
+    #[test]
+    fn count_for_project_returns_zero_for_unknown_project() {
+        let mut table = GrantTable::default();
+        table.insert(grant_record(GrantAction::Reveal));
+        assert_eq!(table.count_for_project("nope"), 0);
+    }
+
+    #[test]
+    fn get_returns_none_for_unknown_grant() {
+        let table = GrantTable::default();
+        assert!(table.get("missing").is_none());
+    }
+
+    #[test]
+    fn validate_at_exact_expiry_boundary_is_expired() {
+        let mut table = GrantTable::default();
+        table.insert(grant_record(GrantAction::RunPolicy));
+        let binding = GrantBinding::new(4242, "start-a");
+        // Grant expires_at = 200. now=200 is treated as expired (>= boundary).
+        assert_eq!(
+            table.validate("grant-1", "p-1", "prof-1", GrantAction::RunPolicy, 200, Some(&binding)),
+            GrantValidation::Expired
+        );
+        // now=199 is still valid.
+        assert_eq!(
+            table.validate("grant-1", "p-1", "prof-1", GrantAction::RunPolicy, 199, Some(&binding)),
+            GrantValidation::Valid
+        );
+    }
+
+    #[test]
+    fn grant_action_serializes_pascal_case() {
+        let s = serde_json::to_string(&GrantAction::RunPolicy).unwrap();
+        assert_eq!(s, "\"RunPolicy\"");
+        let parsed: GrantAction = serde_json::from_str("\"SetSecret\"").unwrap();
+        assert_eq!(parsed, GrantAction::SetSecret);
+    }
+
+    #[test]
+    fn grant_action_clone_copy_eq_debug_for_every_variant() {
+        let variants = [
+            GrantAction::RunPolicy,
+            GrantAction::ResolveReference,
+            GrantAction::ScanKnownValues,
+            GrantAction::Reveal,
+            GrantAction::Copy,
+            GrantAction::SetSecret,
+        ];
+        for v in variants {
+            let copied = v;
+            assert_eq!(v, copied);
+            let debug = format!("{v:?}");
+            assert!(!debug.is_empty());
+        }
+    }
+
+    #[test]
+    fn grant_binding_round_trips_through_serde_json() {
+        let binding = GrantBinding::new(99, "ts-1");
+        let json = serde_json::to_string(&binding).unwrap();
+        let parsed: GrantBinding = serde_json::from_str(&json).unwrap();
+        assert_eq!(binding, parsed);
+    }
+
+    #[test]
+    fn grant_validation_clone_copy_eq() {
+        let v = GrantValidation::Valid;
+        let copied = v;
+        assert_eq!(v, copied);
+        assert_ne!(v, GrantValidation::Expired);
+        assert_ne!(GrantValidation::Unknown, GrantValidation::ProcessMismatch);
+    }
+
+    #[test]
+    fn grant_table_clone_round_trips() {
+        let mut table = GrantTable::default();
+        table.insert(grant_record(GrantAction::Reveal));
+        let cloned = table.clone();
+        assert_eq!(table, cloned);
+    }
+
+    #[test]
+    fn insert_replaces_grant_with_same_id() {
+        let mut table = GrantTable::default();
+        table.insert(grant_record(GrantAction::Reveal));
+        let mut replacement = grant_record(GrantAction::Copy);
+        replacement.ttl_seconds = 999;
+        table.insert(replacement);
+        assert_eq!(table.len(), 1);
+        let g = table.get("grant-1").unwrap();
+        assert_eq!(g.action, GrantAction::Copy);
+        assert_eq!(g.ttl_seconds, 999);
+    }
 }

@@ -228,4 +228,182 @@ mod tests {
         assert_eq!(cleared, vec!["a".to_owned(), "b".to_owned()]);
         assert!(cache.is_empty());
     }
+
+    #[test]
+    fn evict_returns_entry_when_present() {
+        let mut cache = UnlockCache::default();
+        cache.insert(
+            "p".to_owned(),
+            UnlockEntry::new(b"k".to_vec(), 0, Duration::from_secs(60), UnlockMethod::Passphrase),
+        );
+        let evicted = cache.evict("p");
+        assert!(evicted.is_some());
+        assert!(cache.is_empty());
+    }
+
+    #[test]
+    fn evict_returns_none_when_absent() {
+        let mut cache = UnlockCache::default();
+        assert!(cache.evict("missing").is_none());
+    }
+
+    #[test]
+    fn drain_returns_all_entries_and_empties_cache() {
+        let mut cache = UnlockCache::default();
+        cache.insert(
+            "a".to_owned(),
+            UnlockEntry::new(b"x".to_vec(), 0, Duration::from_secs(60), UnlockMethod::OsKeychain),
+        );
+        cache.insert(
+            "b".to_owned(),
+            UnlockEntry::new(b"y".to_vec(), 0, Duration::from_secs(60), UnlockMethod::Passphrase),
+        );
+        let drained = cache.drain();
+        assert_eq!(drained.len(), 2);
+        assert!(cache.is_empty());
+    }
+
+    #[test]
+    fn entry_with_audit_context_round_trips() {
+        let ctx = UnlockAuditContext {
+            store_path: PathBuf::from("/tmp/x.sqlite3"),
+            profile_id: Some("lk_prof_x".to_owned()),
+        };
+        let entry = UnlockEntry::new(
+            b"k".to_vec(),
+            0,
+            Duration::from_secs(60),
+            UnlockMethod::RecoveryEnvelope,
+        )
+        .with_audit_context(ctx.clone());
+        assert_eq!(entry.audit_context(), Some(&ctx));
+        assert_eq!(entry.method(), UnlockMethod::RecoveryEnvelope);
+    }
+
+    #[test]
+    fn entry_without_audit_context_returns_none() {
+        let entry =
+            UnlockEntry::new(b"k".to_vec(), 0, Duration::from_secs(1), UnlockMethod::Passphrase);
+        assert!(entry.audit_context().is_none());
+    }
+
+    #[test]
+    fn entry_expiry_clamps_overflow_ttl() {
+        let entry = UnlockEntry::new(
+            b"k".to_vec(),
+            i128::MAX - 1,
+            Duration::from_secs(u64::MAX),
+            UnlockMethod::OsKeychain,
+        );
+        // Should not panic; expires_at_unix_nanos clamps via saturating_add.
+        let expiry = entry.expires_at_unix_nanos();
+        assert!(expiry > 0);
+    }
+
+    #[test]
+    fn entry_is_expired_at_exact_expiry_boundary() {
+        let entry = UnlockEntry::new(
+            b"k".to_vec(),
+            100,
+            Duration::from_nanos(50),
+            UnlockMethod::Passphrase,
+        );
+        assert!(!entry.is_expired(149));
+        assert!(entry.is_expired(150));
+        assert!(entry.is_expired(151));
+    }
+
+    #[test]
+    fn evict_expired_returns_empty_when_no_expirations() {
+        let mut cache = UnlockCache::default();
+        cache.insert(
+            "p".to_owned(),
+            UnlockEntry::new(b"k".to_vec(), 0, Duration::from_secs(60), UnlockMethod::Passphrase),
+        );
+        let evicted = cache.evict_expired(1_000_000_000);
+        assert!(evicted.is_empty());
+        assert!(!cache.is_empty());
+    }
+
+    #[test]
+    fn evict_expired_only_removes_expired_entries() {
+        let mut cache = UnlockCache::default();
+        // entry "old" expires at 60 ns; entry "new" expires at 600 ns.
+        cache.insert(
+            "old".to_owned(),
+            UnlockEntry::new(b"a".to_vec(), 0, Duration::from_nanos(60), UnlockMethod::Passphrase),
+        );
+        cache.insert(
+            "new".to_owned(),
+            UnlockEntry::new(b"b".to_vec(), 0, Duration::from_nanos(600), UnlockMethod::OsKeychain),
+        );
+        let evicted = cache.evict_expired(100);
+        assert_eq!(evicted, vec!["old".to_owned()]);
+        assert!(cache.lookup("new", 100).is_some());
+    }
+
+    #[test]
+    fn clear_on_empty_returns_empty_vec() {
+        let mut cache = UnlockCache::default();
+        let cleared = cache.clear();
+        assert!(cleared.is_empty());
+    }
+
+    #[test]
+    fn drain_on_empty_returns_empty_vec() {
+        let mut cache = UnlockCache::default();
+        let drained = cache.drain();
+        assert!(drained.is_empty());
+    }
+
+    #[test]
+    fn unlock_method_serializes_pascal_case() {
+        let s = serde_json::to_string(&UnlockMethod::OsKeychain).unwrap();
+        assert_eq!(s, "\"OsKeychain\"");
+        let parsed: UnlockMethod = serde_json::from_str("\"RecoveryEnvelope\"").unwrap();
+        assert_eq!(parsed, UnlockMethod::RecoveryEnvelope);
+    }
+
+    #[test]
+    fn unlock_entry_debug_does_not_leak_key_bytes() {
+        let entry = UnlockEntry::new(
+            b"super-secret-key-material".to_vec(),
+            0,
+            Duration::from_secs(1),
+            UnlockMethod::Passphrase,
+        );
+        let debug = format!("{entry:?}");
+        assert!(!debug.contains("super-secret"));
+        assert!(debug.contains("key_len"));
+    }
+
+    #[test]
+    fn entries_for_status_iterates_all() {
+        let mut cache = UnlockCache::default();
+        cache.insert(
+            "a".to_owned(),
+            UnlockEntry::new(b"x".to_vec(), 0, Duration::from_secs(60), UnlockMethod::Passphrase),
+        );
+        cache.insert(
+            "b".to_owned(),
+            UnlockEntry::new(b"y".to_vec(), 0, Duration::from_secs(60), UnlockMethod::OsKeychain),
+        );
+        let count = cache.entries_for_status().count();
+        assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn insert_replaces_existing_entry() {
+        let mut cache = UnlockCache::default();
+        cache.insert(
+            "p".to_owned(),
+            UnlockEntry::new(b"old".to_vec(), 0, Duration::from_secs(60), UnlockMethod::Passphrase),
+        );
+        cache.insert(
+            "p".to_owned(),
+            UnlockEntry::new(b"new".to_vec(), 100, Duration::from_secs(60), UnlockMethod::OsKeychain),
+        );
+        let entry = cache.lookup("p", 200).unwrap();
+        assert_eq!(entry.method(), UnlockMethod::OsKeychain);
+    }
 }
