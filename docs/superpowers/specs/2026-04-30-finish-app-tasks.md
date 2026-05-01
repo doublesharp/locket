@@ -86,39 +86,19 @@ ship. Each bullet has spec ref + code ref + suggested touches.
   or remains Unix-socket-only by design.
 ### D. Desktop / integrations / scan
 
-- [~] (in-flight: feature/agent-bundle-import-recovery) **agent-export-bundle-audit-chain**: agent `ExportBundle`
+- [ ] **agent-export-bundle-audit-chain**: agent `ExportBundle`
   now writes sealed bundles for selected profile scope using unlock
   audit context, recipient descriptor validation, encrypted blobs,
   profile keys, export audit metadata, and metadata-only response.
   Remaining export parity: support `include_audit=true` by extracting
   CLI sealed audit-chain encryption into shared bundle helpers instead
   of returning the current typed `PolicyValidationIncomplete` error.
-- [~] (in-flight: feature/agent-bundle-import-recovery) **agent-export-bundle-command-policies**: agent `ExportBundle`
-  currently exports store-backed profiles/secrets/versions/blobs/profile
-  keys only. Add a shared policy-document/snapshot source so command
-  policies are included in the sealed payload without depending on CLI
-  `RuntimeContext`.
-- [~] (in-flight: feature/agent-bundle-import-recovery) **agent-import-bundle-core**: `ImportBundle` reaches the typed
-  agent path, validates unlock state and input path, then returns
-  `not-implemented`. Extract/apply the bundle import core in the
-  agent with conflict policies (`review`, `accept-incoming`,
-  `accept-local`) and local audit writes.
-- [~] (in-flight: feature/agent-bundle-import-recovery) **agent-recovery-rotate-core**: `RecoveryRotate` reaches the
+- [ ] **agent-recovery-rotate-core**: `RecoveryRotate` reaches the
   typed agent path and enforces one-time-display acknowledgement, but
   still lacks fresh platform/current-code verification and recovery
   envelope rewrite from `vault/recovery.rs`.
-- [x] **secret-row-cross-reference-deprecation**: desktop secret rows now
-  derive metadata-only warnings from loaded policy and version rows when
-  pinned policy/command-preview `lk://...@vN` references target deprecated
-  versions with active or expired grace. Badges show version, grace state,
-  reference surface, and count only; no secret values or command text.
 ### E. Quality / ops / build
 
-- [x] **canary-packaged-os-follow-up**: repo-side harnesses now cover
-  packaged artifact canary scanning, host installer/VSIX smoke command
-  shape, CI dry-run probes, and operator docs. Remaining credential/OS
-  release-host work is tracked in
-  `docs/operations/os-host-validation.md`.
 ## P0 — Correctness / Security Drift (audit findings)
 
 These are spec contracts the code currently violates or silently
@@ -320,25 +300,25 @@ exist. Remaining: auditable builds and signing.
 ### Package builders and signing
 Spec ref: `docs/specs/operations.md:27-53`.
 
-- [~] (in-flight: feature/release-operator-final) **homebrew-tap-publish-operator**: with signed source tarball URL
+- [ ] **homebrew-tap-publish-operator**: with signed source tarball URL
   and SHA-256, run `scripts/render-homebrew-formula.sh`, run
   `LOCKET_HOMEBREW_AUDIT=1`, and open the tap PR using tap credentials.
-- [~] (in-flight: feature/release-operator-final) **cargo-install-publish-operator**: after internal `locket-*`
+- [ ] **cargo-install-publish-operator**: after internal `locket-*`
   crates are published or reserved, run `cargo publish --dry-run -p
   locket-cli --locked` and the real publish with `CARGO_REGISTRY_TOKEN`
   from the signed release tag.
-- [~] (in-flight: feature/release-operator-final) **macos-pkg-sign-notarize-operator**: run
+- [ ] **macos-pkg-sign-notarize-operator**: run
   `scripts/package-native-installers.sh --target macos-pkg` on the
   release macOS signer with Developer ID Installer and notarization
   credentials.
-- [~] (in-flight: feature/release-operator-final) **windows-msi-sign-operator**: run
+- [ ] **windows-msi-sign-operator**: run
   `scripts/package-native-installers.sh --target windows-msi` on the
   release Windows signer with the EV certificate available to `signtool`.
-- [~] (in-flight: feature/release-operator-final) **linux-deb-rpm-sign-operator**: run
+- [ ] **linux-deb-rpm-sign-operator**: run
   `scripts/package-native-installers.sh --target linux-deb` and
   `--target linux-rpm` with the release GPG keys, then publish through
   the package repository operator path.
-- [~] (in-flight: feature/release-operator-final) **vsix-release-sign-operator**: run
+- [ ] **vsix-release-sign-operator**: run
   `scripts/package-vscode-extension.sh --sign <key-id>` on the offline
   signing host with `LOCKET_MINISIGN_SECRET_KEY`; verify the detached
   signature against `dist/keys/<key-id>.pub` before upload.
