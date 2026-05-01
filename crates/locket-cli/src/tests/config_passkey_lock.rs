@@ -439,6 +439,25 @@ fn passkey_register_is_unavailable_without_writing_metadata()
         |row| row.get(0),
     )?;
     assert_eq!(denied, 1);
+
+    // Lock in the failure-path audit shape required by docs/specs/crypto.md:
+    // PASSKEY_REGISTER DENIED rows must carry `passkey_id` (null when no
+    // credential could be minted), `credential_id_prefix` (null), an
+    // `auth_result` mapped from the platform error, and a
+    // `failure_reason` derived from that error's display impl.
+    let metadata: String = store.connection().query_row(
+        "SELECT metadata_json FROM audit_log WHERE action = 'PASSKEY_REGISTER' AND status = 'DENIED'",
+        [],
+        |row| row.get(0),
+    )?;
+    let metadata: serde_json::Value = serde_json::from_str(&metadata)?;
+    assert_eq!(metadata["action"], "PASSKEY_REGISTER");
+    assert_eq!(metadata["status"], "DENIED");
+    assert_eq!(metadata["command"], "passkey register");
+    assert!(metadata["passkey_id"].is_null(), "passkey_id null when no credential minted");
+    assert!(metadata["credential_id_prefix"].is_null());
+    assert_eq!(metadata["auth_result"], "unsupported");
+    assert_eq!(metadata["failure_reason"], "platform passkey unsupported");
     Ok(())
 }
 
@@ -497,9 +516,23 @@ fn passkey_register_via_memory_registrar_writes_credential_and_audit()
         [],
         |row| row.get(0),
     )?;
-    assert!(metadata.contains("\"auth_result\":\"success\""));
-    assert!(metadata.contains("\"credential_id_prefix\":\"abcdef123456\""));
-    assert!(metadata.contains("\"prf_capable\":true"));
+    let metadata: serde_json::Value = serde_json::from_str(&metadata)?;
+    assert_eq!(metadata["action"], "PASSKEY_REGISTER");
+    assert_eq!(metadata["status"], "SUCCESS");
+    assert_eq!(metadata["command"], "passkey register");
+    assert_eq!(metadata["auth_result"], "success");
+    assert_eq!(metadata["credential_id_prefix"], "abcdef123456");
+    assert_eq!(metadata["prf_capable"], true);
+    // PASSKEY_REGISTER schema (docs/specs/crypto.md) requires
+    // `passkey_id`, `credential_id_prefix`, and `auth_result` on the
+    // success row. The validator pins these as required fields; pin
+    // them at the test level too so a regression that drops a field
+    // trips this contract before it reaches the validator.
+    assert!(
+        metadata["passkey_id"].as_str().is_some_and(|id| id.starts_with("lk_passkey_")),
+        "passkey_id must be a `lk_passkey_*` identifier, got {:?}",
+        metadata["passkey_id"],
+    );
     Ok(())
 }
 
