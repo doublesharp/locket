@@ -7,6 +7,7 @@
 //! can be unit-tested without a `Store`.
 
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -35,6 +36,9 @@ pub struct UnlockEntry {
     ttl: Duration,
     /// Unlock method recorded on the corresponding audit row.
     method: UnlockMethod,
+    /// Optional metadata needed to append `LOCK` rows when project
+    /// context is available.
+    audit_context: Option<UnlockAuditContext>,
 }
 
 impl std::fmt::Debug for UnlockEntry {
@@ -44,8 +48,18 @@ impl std::fmt::Debug for UnlockEntry {
             .field("inserted_at_unix_nanos", &self.inserted_at_unix_nanos)
             .field("ttl", &self.ttl)
             .field("method", &self.method)
+            .field("has_audit_context", &self.audit_context.is_some())
             .finish()
     }
+}
+
+/// Metadata needed to append lock rows for a cached project key.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UnlockAuditContext {
+    /// `SQLite` store path for the project.
+    pub store_path: PathBuf,
+    /// Optional active profile id.
+    pub profile_id: Option<String>,
 }
 
 impl UnlockEntry {
@@ -57,7 +71,14 @@ impl UnlockEntry {
         ttl: Duration,
         method: UnlockMethod,
     ) -> Self {
-        Self { key: Zeroizing::new(key), inserted_at_unix_nanos, ttl, method }
+        Self { key: Zeroizing::new(key), inserted_at_unix_nanos, ttl, method, audit_context: None }
+    }
+
+    /// Adds metadata-only audit context to an unlock entry.
+    #[must_use]
+    pub fn with_audit_context(mut self, audit_context: UnlockAuditContext) -> Self {
+        self.audit_context = Some(audit_context);
+        self
     }
 
     /// Returns the unlock method without exposing the key.
@@ -85,6 +106,11 @@ impl UnlockEntry {
     #[allow(dead_code)]
     pub(crate) fn key_bytes(&self) -> &[u8] {
         &self.key
+    }
+
+    /// Returns metadata-only audit context for this cached key.
+    pub(crate) const fn audit_context(&self) -> Option<&UnlockAuditContext> {
+        self.audit_context.as_ref()
     }
 }
 
@@ -135,6 +161,13 @@ impl UnlockCache {
         let ids: Vec<String> = self.entries.keys().cloned().collect();
         self.entries.clear();
         ids
+    }
+
+    /// Drains every entry (`Lock` for all projects) and returns the
+    /// removed entries for audit emission.
+    pub fn drain(&mut self) -> Vec<(String, UnlockEntry)> {
+        let entries = std::mem::take(&mut self.entries);
+        entries.into_iter().collect()
     }
 
     /// Returns true when no live entries are held.

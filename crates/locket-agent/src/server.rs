@@ -16,6 +16,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use locket_store::{Store, StoreError};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::Mutex;
@@ -24,6 +25,9 @@ use crate::DEFAULT_MAX_MESSAGE_SIZE;
 use crate::envelope::{ErrorEnvelope, RequestEnvelope, ResponseEnvelope, SuccessEnvelope};
 use crate::framing::{decode_request_frame, encode_frame};
 use crate::method::AgentMethod;
+use crate::session_lock::{
+    SessionLockAudit, SessionLockOutcome, SessionLockSource, append_lock_audit,
+};
 use crate::status::{LockState, StatusPayload};
 use crate::status_stream::StatusHub;
 
@@ -364,6 +368,85 @@ impl AgentSocketState {
         self.status_hub.publish(snapshot.clone()).await;
         snapshot
     }
+
+    /// Clears unlocked key material and live grants for a session-lock event.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] when a cached project has audit context
+    /// and its `LOCK` row cannot be appended.
+    pub async fn lock_for_session_event(
+        &self,
+        source: SessionLockSource,
+        now_unix_nanos: i128,
+    ) -> Result<SessionLockOutcome, StoreError> {
+        let cleared_entries = {
+            let mut cache = self.unlock_cache.lock().await;
+            cache.drain()
+        };
+        let cached_keys_cleared = cleared_entries.len();
+        let audit_material = lock_audit_material(&cleared_entries);
+        let live_grants_revoked = {
+            let mut grants = self.grants.lock().await;
+            let count = grants.len();
+            grants.clear();
+            count
+        };
+        let outcome = SessionLockOutcome { cached_keys_cleared, live_grants_revoked };
+        if outcome.changed() {
+            self.publish_status_snapshot(now_unix_nanos).await;
+        }
+        append_lock_audits(source, now_unix_nanos, outcome, &audit_material)?;
+        Ok(outcome)
+    }
+}
+
+struct LockAuditMaterial {
+    project_id: String,
+    profile_id: Option<String>,
+    store_path: PathBuf,
+    audit_key: zeroize::Zeroizing<Vec<u8>>,
+}
+
+fn lock_audit_material(
+    entries: &[(String, crate::unlock_cache::UnlockEntry)],
+) -> Vec<LockAuditMaterial> {
+    entries
+        .iter()
+        .filter_map(|(project_id, entry)| {
+            let context = entry.audit_context()?;
+            Some(LockAuditMaterial {
+                project_id: project_id.clone(),
+                profile_id: context.profile_id.clone(),
+                store_path: context.store_path.clone(),
+                audit_key: zeroize::Zeroizing::new(entry.key_bytes().to_vec()),
+            })
+        })
+        .collect()
+}
+
+fn append_lock_audits(
+    source: SessionLockSource,
+    now_unix_nanos: i128,
+    outcome: SessionLockOutcome,
+    audit_material: &[LockAuditMaterial],
+) -> Result<(), StoreError> {
+    let timestamp = i64::try_from(now_unix_nanos).unwrap_or(i64::MAX);
+    for material in audit_material {
+        let mut store = Store::open(&material.store_path)?;
+        append_lock_audit(
+            &mut store,
+            &SessionLockAudit {
+                project_id: &material.project_id,
+                profile_id: material.profile_id.as_deref(),
+                audit_key: &material.audit_key,
+                source,
+                outcome,
+                timestamp,
+            },
+        )?;
+    }
+    Ok(())
 }
 
 /// Snapshot of live unlock-cache state used to fill a `StatusPayload`.
@@ -543,6 +626,21 @@ struct UnlockPayload {
     key: Vec<u8>,
     ttl_seconds: u64,
     method: crate::unlock_cache::UnlockMethod,
+    #[serde(default)]
+    audit: Option<UnlockAuditPayload>,
+}
+
+#[derive(serde::Deserialize)]
+struct UnlockAuditPayload {
+    store_path: PathBuf,
+    #[serde(default)]
+    profile_id: Option<String>,
+}
+
+#[derive(Default, serde::Deserialize)]
+struct LockPayload {
+    #[serde(default)]
+    source: SessionLockSource,
 }
 
 /// Returns the current Unix wall-clock time in nanoseconds, clamped to
@@ -587,12 +685,18 @@ pub async fn dispatch(envelope: &RequestEnvelope, state: &AgentSocketState) -> R
                     return error_response(envelope, "ProtocolError", "invalid Unlock payload");
                 }
             };
-            let entry = crate::unlock_cache::UnlockEntry::new(
+            let mut entry = crate::unlock_cache::UnlockEntry::new(
                 payload.key,
                 now,
                 std::time::Duration::from_secs(payload.ttl_seconds),
                 payload.method,
             );
+            if let Some(audit) = payload.audit {
+                entry = entry.with_audit_context(crate::unlock_cache::UnlockAuditContext {
+                    store_path: audit.store_path,
+                    profile_id: audit.profile_id,
+                });
+            }
             state.unlock_cache.lock().await.insert(payload.project_id, entry);
             state.publish_status_snapshot(now).await;
             ResponseEnvelope::Success(SuccessEnvelope::new(
@@ -601,9 +705,16 @@ pub async fn dispatch(envelope: &RequestEnvelope, state: &AgentSocketState) -> R
             ))
         }
         Ok(AgentMethod::Lock) => {
-            state.unlock_cache.lock().await.clear();
-            state.grants.lock().await.clear();
-            state.publish_status_snapshot(current_unix_nanos()).await;
+            let payload: LockPayload = match serde_json::from_value(envelope.payload.clone()) {
+                Ok(payload) => payload,
+                Err(_) => {
+                    return error_response(envelope, "ProtocolError", "invalid Lock payload");
+                }
+            };
+            let now = current_unix_nanos();
+            if state.lock_for_session_event(payload.source, now).await.is_err() {
+                return error_response(envelope, "CorruptDb", "failed to append LOCK audit row");
+            }
             ResponseEnvelope::Success(SuccessEnvelope::new(
                 envelope.id.clone(),
                 serde_json::Value::Null,

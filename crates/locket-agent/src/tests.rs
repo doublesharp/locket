@@ -817,6 +817,175 @@ async fn unlock_and_lock_publish_status_changes() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn session_lock_event_clears_cache_grants_and_publishes_status() {
+    use crate::envelope::{RequestEnvelope, ResponseEnvelope};
+    use crate::method::AgentMethod;
+    use crate::server::{AgentSocketState, dispatch};
+    use crate::session_lock::SessionLockSource;
+    use serde_json::json;
+
+    let state = AgentSocketState::locked("test-version");
+    state.grants.lock().await.insert(test_grant_record("g-live", i128::MAX));
+    let mut subscriber = state.status_hub.subscribe().await;
+    let initial = subscriber.next_event().await.expect("initial status event");
+    assert_eq!(initial.status.lock_state, LockState::Locked);
+
+    let unlock = RequestEnvelope::new(
+        "req-1",
+        AgentMethod::Unlock,
+        json!({
+            "project_id": "p-1",
+            "key": [1, 2, 3, 4],
+            "ttl_seconds": 30,
+            "method": "Passphrase"
+        }),
+    );
+    assert!(matches!(dispatch(&unlock, &state).await, ResponseEnvelope::Success(_)));
+    let unlocked = subscriber.next_event().await.expect("unlock status event");
+    assert_eq!(unlocked.status.lock_state, LockState::Unlocked);
+
+    let outcome = state
+        .lock_for_session_event(SessionLockSource::ScreenLock, crate::server::current_unix_nanos())
+        .await
+        .expect("session lock succeeds");
+
+    assert_eq!(outcome.cached_keys_cleared, 1);
+    assert_eq!(outcome.live_grants_revoked, 1);
+    assert!(state.unlock_cache.lock().await.is_empty());
+    assert!(state.grants.lock().await.is_empty());
+    let locked = subscriber.next_event().await.expect("session-lock status event");
+    assert!(locked.is_state_change());
+    assert_eq!(locked.status.lock_state, LockState::Locked);
+    assert_eq!(locked.status.unlock_ttl_seconds, None);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn lock_with_audit_context_appends_metadata_only_lock_row()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::envelope::{RequestEnvelope, ResponseEnvelope};
+    use crate::method::AgentMethod;
+    use crate::server::{AgentSocketState, dispatch};
+    use serde_json::{Value, json};
+
+    let tempdir = tempfile::tempdir()?;
+    let store_path = tempdir.path().join("locket.sqlite3");
+    let mut store = locket_store::Store::open(&store_path)?;
+    store.initialize_schema()?;
+    store.connection().execute(
+        "INSERT INTO projects(id, name, created_at) VALUES ('lk_proj_test', 'test', 1)",
+        [],
+    )?;
+    store.connection().execute(
+        "INSERT INTO profiles(id, project_id, name, dangerous, created_at)
+         VALUES ('lk_prof_test', 'lk_proj_test', 'default', 0, 1)",
+        [],
+    )?;
+    drop(store);
+
+    let state = AgentSocketState::locked("test-version");
+    let unlock = RequestEnvelope::new(
+        "req-1",
+        AgentMethod::Unlock,
+        json!({
+            "project_id": "lk_proj_test",
+            "key": [7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
+                    7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7],
+            "ttl_seconds": 30,
+            "method": "Passphrase",
+            "audit": {
+                "store_path": store_path,
+                "profile_id": "lk_prof_test"
+            }
+        }),
+    );
+    assert!(matches!(dispatch(&unlock, &state).await, ResponseEnvelope::Success(_)));
+    state.grants.lock().await.insert(test_grant_record("g-live", i128::MAX));
+
+    let lock = RequestEnvelope::new(
+        "req-2",
+        AgentMethod::Lock,
+        json!({
+            "source": "screen_lock"
+        }),
+    );
+    assert!(matches!(dispatch(&lock, &state).await, ResponseEnvelope::Success(_)));
+
+    let store = locket_store::Store::open(&store_path)?;
+    let (action, profile_id, metadata): (String, String, String) = store.connection().query_row(
+        "SELECT action, profile_id, metadata_json
+         FROM audit_log
+         WHERE project_id = 'lk_proj_test'",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )?;
+    let metadata: Value = serde_json::from_str(&metadata)?;
+    assert_eq!(action, "LOCK");
+    assert_eq!(profile_id, "lk_prof_test");
+    assert_eq!(metadata["source"], "screen_lock");
+    assert_eq!(metadata["cached_keys_cleared"], 1);
+    assert_eq!(metadata["live_grants_revoked"], 1);
+    assert_eq!(metadata["metadata_only"], true);
+    assert!(metadata.get("secret_name").is_none());
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn lock_audit_failure_returns_corrupt_db_after_clearing_state() {
+    use crate::envelope::{RequestEnvelope, ResponseEnvelope};
+    use crate::method::AgentMethod;
+    use crate::server::{AgentSocketState, dispatch};
+    use serde_json::json;
+
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let missing_store = tempdir.path().join("missing").join("locket.sqlite3");
+    let state = AgentSocketState::locked("test-version");
+    let unlock = RequestEnvelope::new(
+        "req-1",
+        AgentMethod::Unlock,
+        json!({
+            "project_id": "lk_proj_test",
+            "key": [7, 7, 7, 7],
+            "ttl_seconds": 30,
+            "method": "Passphrase",
+            "audit": {
+                "store_path": missing_store,
+                "profile_id": "lk_prof_test"
+            }
+        }),
+    );
+    assert!(matches!(dispatch(&unlock, &state).await, ResponseEnvelope::Success(_)));
+    state.grants.lock().await.insert(test_grant_record("g-live", i128::MAX));
+
+    let lock = RequestEnvelope::new("req-2", AgentMethod::Lock, json!({}));
+    let ResponseEnvelope::Error(error) = dispatch(&lock, &state).await else {
+        unreachable!("missing audit store should fail lock response");
+    };
+    assert_eq!(error.error, "CorruptDb");
+    assert!(state.unlock_cache.lock().await.is_empty());
+    assert!(state.grants.lock().await.is_empty());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn session_lock_event_without_audit_context_is_locked_safe() {
+    use crate::server::AgentSocketState;
+    use crate::session_lock::SessionLockSource;
+    use crate::unlock_cache::{UnlockEntry, UnlockMethod};
+    use std::time::Duration;
+
+    let state = AgentSocketState::locked("test-version");
+    state.unlock_cache.lock().await.insert(
+        "p-1".to_owned(),
+        UnlockEntry::new(b"k".to_vec(), 0, Duration::from_secs(30), UnlockMethod::Passphrase),
+    );
+    let outcome = state.lock_for_session_event(SessionLockSource::UserSessionSwitch, 1).await;
+
+    let outcome = outcome.expect("session lock without audit context succeeds");
+    assert_eq!(outcome.cached_keys_cleared, 1);
+    assert_eq!(outcome.live_grants_revoked, 0);
+    assert!(state.unlock_cache.lock().await.is_empty());
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn malformed_unlock_payload_returns_protocol_error() {
     use crate::envelope::{RequestEnvelope, ResponseEnvelope};
     use crate::method::AgentMethod;
@@ -839,6 +1008,30 @@ async fn malformed_unlock_payload_returns_protocol_error() {
     };
     assert_eq!(error.error, "ProtocolError");
     assert!(state.unlock_cache.lock().await.is_empty());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn malformed_lock_payload_returns_protocol_error() {
+    use crate::envelope::{RequestEnvelope, ResponseEnvelope};
+    use crate::method::AgentMethod;
+    use crate::server::{AgentSocketState, dispatch};
+    use serde_json::json;
+
+    let state = AgentSocketState::locked("test-version");
+    let lock = RequestEnvelope::new(
+        "req-1",
+        AgentMethod::Lock,
+        json!({
+            "source": "not-a-source"
+        }),
+    );
+
+    let ResponseEnvelope::Error(error) = dispatch(&lock, &state).await else {
+        unreachable!("malformed Lock payload must fail");
+    };
+    assert_eq!(error.error, "ProtocolError");
+    assert!(state.unlock_cache.lock().await.is_empty());
+    assert!(state.grants.lock().await.is_empty());
 }
 
 #[tokio::test(flavor = "current_thread")]

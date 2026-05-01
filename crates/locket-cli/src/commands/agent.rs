@@ -508,11 +508,12 @@ async fn serve_until_signal(
     listener: tokio::net::UnixListener,
     state: locket_agent::AgentSocketState,
 ) -> io::Result<()> {
-    use locket_agent::handle_connection;
+    use locket_agent::{SessionLockSource, handle_connection};
     use tokio::signal::unix::{SignalKind, signal};
 
     let mut term = signal(SignalKind::terminate())?;
     let mut intr = signal(SignalKind::interrupt())?;
+    let mut hup = signal(SignalKind::hangup())?;
     loop {
         tokio::select! {
             accepted = listener.accept() => {
@@ -522,11 +523,49 @@ async fn serve_until_signal(
                     let _outcome = handle_connection(stream, connection_state).await;
                 });
             }
-            _ = term.recv() => break,
-            _ = intr.recv() => break,
+            _ = hup.recv() => {
+                state.lock_for_session_event(
+                    SessionLockSource::UserSessionSwitch,
+                    agent_signal_unix_nanos(),
+                ).await.map_err(|error| {
+                    io::Error::other(format!("failed to append LOCK audit row: {error}"))
+                })?;
+            }
+            _ = term.recv() => {
+                state.lock_for_session_event(
+                    SessionLockSource::ProcessExit,
+                    agent_signal_unix_nanos(),
+                ).await.map_err(|error| {
+                    io::Error::other(format!("failed to append LOCK audit row: {error}"))
+                })?;
+                break;
+            }
+            _ = intr.recv() => {
+                state.lock_for_session_event(
+                    SessionLockSource::ProcessExit,
+                    agent_signal_unix_nanos(),
+                ).await.map_err(|error| {
+                    io::Error::other(format!("failed to append LOCK audit row: {error}"))
+                })?;
+                break;
+            }
         }
     }
     Ok(())
+}
+
+#[cfg(unix)]
+fn agent_signal_unix_nanos() -> i128 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| {
+            let max = u128::from(u64::try_from(i64::MAX).unwrap_or(0));
+            let clamped = duration.as_nanos().min(max);
+            i128::from(i64::try_from(clamped).unwrap_or(0))
+        })
+        .unwrap_or(0)
 }
 
 #[cfg(not(unix))]

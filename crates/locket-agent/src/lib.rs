@@ -25,6 +25,7 @@ mod scan;
 mod secrets;
 #[cfg(unix)]
 mod server;
+mod session_lock;
 mod set_secret;
 mod status;
 mod status_stream;
@@ -66,6 +67,9 @@ pub use secrets::{ListSecretsRequest, ListSecretsResponse, ListSecretsRow};
 pub use server::{
     AgentSocketConfig, AgentSocketState, ConnectionOutcome, SocketServerError,
     bind_socket_listener, handle_connection, socket_permission_mode,
+};
+pub use session_lock::{
+    SessionLockAudit, SessionLockOutcome, SessionLockSource, append_lock_audit, lock_audit_metadata,
 };
 pub use set_secret::{SetSecretRequest, SetSecretResponse};
 pub use status::{

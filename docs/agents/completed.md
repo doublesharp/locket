@@ -262,6 +262,8 @@ Slices that have merged to `main` and verified. Open work tracked in
   lifecycle in one transaction.
 - [x] invite-accept-display: Team invite acceptance now fails closed with a recorded
   denial when issuer confirmation does not match.
+- [x] harden-session-lock: Agent session-lock handling clears cached keys and live
+  grants for daemon-triggered lock events.
 
 ## Full Spec Coverage TODO — App/UI
 
