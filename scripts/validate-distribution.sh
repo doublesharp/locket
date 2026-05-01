@@ -23,6 +23,7 @@ skip_or_check() {
 check bash -n scripts/package-vscode-extension.sh
 check bash -n scripts/package-native-installers.sh
 check bash -n scripts/render-homebrew-formula.sh
+check bash -n scripts/release-operator-runbook.sh
 check bash -n tools/vsix-sign.sh
 
 check node -e '
@@ -39,6 +40,17 @@ const matrix = JSON.parse(fs.readFileSync("dist/installers/package-matrix.json",
 const required = new Set(["homebrew-formula", "cargo-install", "macos-pkg", "windows-msi", "linux-deb", "linux-rpm", "vscode-vsix"]);
 for (const target of matrix.targets || []) required.delete(target.id);
 if (required.size) throw new Error(`missing package targets: ${[...required].join(", ")}`);
+const runbook = fs.readFileSync("scripts/release-operator-runbook.sh", "utf8");
+for (const task of [
+  "homebrew-tap-publish-operator",
+  "cargo-install-publish-operator",
+  "macos-pkg-sign-notarize-operator",
+  "windows-msi-sign-operator",
+  "linux-deb-rpm-sign-operator",
+  "vsix-release-sign-operator",
+]) {
+  if (!runbook.includes(task)) throw new Error(`release operator runbook missing task: ${task}`);
+}
 const tauri = JSON.parse(fs.readFileSync("crates/locket-app/src-tauri/tauri.conf.json", "utf8"));
 if (!tauri.bundle || tauri.bundle.active !== true) throw new Error("Tauri bundle.active must be true");
 const vsix = JSON.parse(fs.readFileSync("extensions/vscode/package.json", "utf8"));

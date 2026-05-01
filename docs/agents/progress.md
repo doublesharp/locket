@@ -316,10 +316,19 @@ Re-verify file:line references before editing — they drift. Severity:
     Pre-req: sealed-bundle subtasks.
 - [ ] Distribution supply-chain gates. Offline-safe local commands,
   strict-mode hooks, cargo-vet, unsafe inventory, SBOM, exception
-  ledger, and provenance policy verifier exist. Remaining: auditable
-  builds and signing.
-- [ ] Package builders and signing for Homebrew, signed macOS pkg,
-  Windows MSI, and Linux packages (`docs/specs/operations.md:27-53`).
+  ledger, provenance policy verifier, and package signing runbooks
+  exist. Remaining: auditable builds and credentialed publication.
+  - [ ] **subtask** — release-credentialed-publish: run
+    `scripts/release-operator-runbook.sh --task all --execute
+    --confirm publish-v<version>` on the credentialed release hosts
+    after the signed tag, signed source tarball, and platform signing
+    credentials exist. Credential-only residual for
+    `homebrew-tap-publish-operator`,
+    `cargo-install-publish-operator`,
+    `macos-pkg-sign-notarize-operator`,
+    `windows-msi-sign-operator`,
+    `linux-deb-rpm-sign-operator`, and
+    `vsix-release-sign-operator`.
 - [ ] Cold-start budgets (`docs/specs/performance.md`). Each subtask
   adds one bench plus a regression that fails the budget:
 

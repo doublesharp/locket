@@ -575,6 +575,13 @@ Slices that have merged to `main` and verified. Open work tracked in
 - [x] **subtask** — proptest-dotenv: `.env` parser round-trip and rejection invariants in `crates/locket-cli/src/tests/proptest_dotenv.rs`.
 - [x] vscode-vsix-package: VS Code extension packaging now builds a VSIX
   artifact and release digest output.
+- [x] release-operator-runbooks: Credentialed release tasks now share
+  `scripts/release-operator-runbook.sh` with dry-run defaults and explicit
+  execute confirmation for Homebrew tap updates, crates.io package publish,
+  macOS pkg signing/notarization, Windows MSI signing, Linux deb/rpm signing,
+  and VSIX release signing. Local validation covers shell syntax and runbook
+  coverage for all six operator follow-ups; only real credentials remain
+  open.
 - [x] **subtask** — lk-resolve-policy-auth: ResolveReference now
   checks the caller policy before returning values.
 - [x] vscode-status: VS Code now shows a metadata-only Locket status
