@@ -284,6 +284,7 @@ fn get_copy_writes_metadata_only_audit_without_value_leakage()
         force: false,
         copy: true,
         verify_user: false,
+        use_dangerous: false,
     };
     let mut copy_output = Vec::new();
     let mut copy_stderr = Vec::new();
@@ -343,6 +344,7 @@ fn get_copy_wayland_limit_emits_targeted_warning_and_audit_reason()
         force: false,
         copy: true,
         verify_user: false,
+        use_dangerous: false,
     };
     let mut copy_output = Vec::new();
     let mut copy_stderr = Vec::new();
@@ -394,6 +396,7 @@ fn get_copy_direct_cli_limit_records_audit_reason() -> Result<(), Box<dyn std::e
         force: false,
         copy: true,
         verify_user: false,
+        use_dangerous: false,
     };
     let mut copy_output = Vec::new();
     let mut copy_stderr = Vec::new();
@@ -440,6 +443,7 @@ fn get_copy_unavailable_audits_unsupported_state_without_value_leakage()
         force: false,
         copy: true,
         verify_user: false,
+        use_dangerous: false,
     };
     let mut copy_output = Vec::new();
     let mut copy_stderr = Vec::new();
@@ -503,6 +507,7 @@ fn get_copy_verify_user_denial_audits_without_decrypting_or_copying()
         force: false,
         copy: true,
         verify_user: true,
+        use_dangerous: false,
     };
     let mut copy_output = Vec::new();
     let mut copy_stderr = Vec::new();

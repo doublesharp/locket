@@ -419,6 +419,9 @@ struct GetArgs {
     /// Require local user verification before reveal or copy.
     #[arg(long)]
     verify_user: bool,
+    /// Confirm read intent against a profile marked dangerous.
+    #[arg(long)]
+    use_dangerous: bool,
 }
 
 #[derive(Debug, Args)]

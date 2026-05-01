@@ -53,6 +53,7 @@ pub struct ValueAccessAudit<'a> {
     pub clipboard_clear_supported: Option<bool>,
     pub unsupported_reason: Option<&'a str>,
     pub denial_reason: Option<&'static str>,
+    pub failure_reason: Option<&'static str>,
     pub user_verification: UserVerificationAudit,
 }
 
@@ -393,6 +394,7 @@ pub fn write_value_access_audit_if_available(
         "clipboard_clear_supported": request.clipboard_clear_supported,
         "unsupported_reason": request.unsupported_reason,
         "denial_reason": request.denial_reason,
+        "failure_reason": request.failure_reason,
         "user_verification": &request.user_verification,
     });
     let audit = AuditWrite {
