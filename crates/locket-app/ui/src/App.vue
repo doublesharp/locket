@@ -5,6 +5,7 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 
 import AgentUnavailableBanner from './components/AgentUnavailableBanner.vue';
 import PolicyEditorForm from './components/PolicyEditorForm.vue';
+import ProfileSwitcherView from './views/ProfileSwitcherView.vue';
 import RevealModal from './components/RevealModal.vue';
 import {
   copySecret,
@@ -19,6 +20,7 @@ import {
   registerCommandPolicies,
   reveal as revealAgent,
   scan as scanKnownValues,
+  setActiveProfile,
   writeConfig,
   verifyAudit,
 } from './agent/client';
@@ -26,6 +28,10 @@ import {
   applyPolicyMutation,
   type PolicyFormMode,
 } from './policy/form';
+import {
+  rememberTarget,
+  type ProfileSwitchState,
+} from './profile/switcher';
 import type { CommandPolicySnapshotWire } from './agent/types';
 import { deviceMemberRow } from './agent/deviceMembers';
 import { commandPolicyRow } from './agent/policies';
@@ -79,6 +85,7 @@ type ViewKey =
   | 'audit'
   | 'scan'
   | 'policies'
+  | 'profiles'
   | 'recovery'
   | 'settings';
 
@@ -138,6 +145,7 @@ const navItems: ReadonlyArray<{ key: ViewKey; label: string }> = [
   { key: 'audit', label: 'Audit' },
   { key: 'scan', label: 'Scan' },
   { key: 'policies', label: 'Policies' },
+  { key: 'profiles', label: 'Profiles' },
   { key: 'recovery', label: 'Recovery' },
   { key: 'settings', label: 'Settings' },
 ];
@@ -392,8 +400,10 @@ async function handleTrayMenuAction(action: TrayMenuAction): Promise<void> {
       await refresh();
       break;
     case 'unlock-vault':
-    case 'switch-profile':
       currentView.value = 'settings';
+      break;
+    case 'switch-profile':
+      currentView.value = 'profiles';
       break;
     case 'run-policy':
       currentView.value = 'policies';
@@ -793,6 +803,71 @@ async function refreshPolicies(): Promise<void> {
 watch(policiesRequest, () => {
   void refreshPolicies();
 });
+
+const profileSwitchState = ref<ProfileSwitchState>({
+  activeProfile: null,
+  activeDangerous: false,
+  recentTargets: [],
+});
+const profileSwitchInProgress = ref<boolean>(false);
+const profileSwitchError = ref<string | null>(null);
+const profileSwitchLastAt = ref<string | undefined>(undefined);
+
+watch(
+  [
+    () => status.value?.profile_name ?? null,
+    () => settings.value.dangerousProfileFlag,
+  ],
+  ([nextProfile, nextDangerous]) => {
+    profileSwitchState.value = {
+      ...profileSwitchState.value,
+      activeProfile: nextProfile,
+      activeDangerous: nextDangerous,
+    };
+  },
+  { immediate: true },
+);
+
+async function handleProfileSwitch(payload: {
+  profileName: string;
+  confirmation: string | undefined;
+  dangerous: boolean;
+}): Promise<void> {
+  const projectId = status.value?.project_id;
+  if (projectId === null || projectId === undefined) {
+    profileSwitchError.value = 'Active project unavailable.';
+    return;
+  }
+  profileSwitchInProgress.value = true;
+  profileSwitchError.value = null;
+  const result = await setActiveProfile({
+    project_id: projectId,
+    profile_name: payload.profileName,
+    confirmation: payload.confirmation,
+    privacy_redact_names: settings.value.privacyRedactNames,
+  });
+  profileSwitchInProgress.value = false;
+  if (!result.ok) {
+    profileSwitchError.value = profileSwitchErrorLabel(result.error);
+    return;
+  }
+  profileSwitchState.value = rememberTarget(profileSwitchState.value, payload.profileName);
+  profileSwitchLastAt.value = new Date().toISOString();
+  await refresh();
+}
+
+function profileSwitchErrorLabel(err: AgentClientError): string {
+  switch (err.kind) {
+    case 'unavailable':
+      return 'Agent unavailable.';
+    case 'protocol':
+      return 'Profile switch failed.';
+    case 'rejected':
+      return err.code;
+    default:
+      return 'Profile switch failed.';
+  }
+}
 
 const policyFormMode = ref<PolicyFormMode | null>(null);
 const policyFormRow = ref<CommandPolicyRow | null>(null);
@@ -1284,6 +1359,16 @@ onUnmounted(() => {
         @create="openPolicyCreate"
         @edit="openPolicyEdit"
         @delete="openPolicyDelete"
+      />
+
+      <ProfileSwitcherView
+        v-else-if="currentView === 'profiles'"
+        :state="profileSwitchState"
+        :privacy-mode="settings.privacyRedactNames"
+        :switching="profileSwitchInProgress"
+        :error-message="profileSwitchError"
+        :last-switched-at="profileSwitchLastAt"
+        @switch="handleProfileSwitch"
       />
 
       <BackupRecovery v-else-if="currentView === 'recovery'" @action="triggerBackupAction" />

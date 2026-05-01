@@ -220,6 +220,34 @@ export interface RegisterCommandPoliciesRequest {
   audit_profile_id?: string;
 }
 
+/**
+ * Wire shape for `agent_set_active_profile`. Mirrors the desktop's
+ * `DesktopSetActiveProfileRequest` so the webview only fills the
+ * fields it actually owns; the Tauri command supplies defaults for
+ * the rest.
+ */
+export interface SetActiveProfileRequest {
+  config_path?: string;
+  store_path?: string;
+  project_id: string;
+  profile_name: string;
+  confirmation?: string;
+  privacy_redact_names?: boolean;
+  root_hash?: string;
+}
+
+export interface SetActiveProfileResponse {
+  changed: boolean;
+  profile_id: string;
+  profile_name: string;
+  profile_label: string;
+  dangerous: boolean;
+  prior_profile_id: string;
+  prior_profile_name: string;
+  prior_profile_label: string;
+  live_grants_revoked: number;
+}
+
 export interface ListDeviceMembersRequest {
   store_path?: string;
   project_id: string;

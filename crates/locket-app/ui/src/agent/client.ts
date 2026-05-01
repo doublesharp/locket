@@ -30,6 +30,8 @@ import type {
   RegisterCommandPoliciesRequest,
   ResolveRequest,
   ResolveResponse,
+  SetActiveProfileRequest,
+  SetActiveProfileResponse,
   RevealRequest,
   RevealResponse,
   ScanRequest,
@@ -237,6 +239,17 @@ export async function registerCommandPolicies(
   request: RegisterCommandPoliciesRequest,
 ): Promise<AgentResult<void>> {
   return callTyped<void>('agent_register_command_policies', { request });
+}
+
+/**
+ * Switch the active project profile. The agent enforces dangerous-
+ * profile gating via the typed `confirmation` field; the desktop
+ * surfaces a typed-confirmation modal before forwarding it.
+ */
+export async function setActiveProfile(
+  request: SetActiveProfileRequest,
+): Promise<AgentResult<SetActiveProfileResponse>> {
+  return callTyped<SetActiveProfileResponse>('agent_set_active_profile', { request });
 }
 
 export async function listDeviceMembers(
