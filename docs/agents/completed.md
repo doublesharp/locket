@@ -174,6 +174,8 @@ Slices that have merged to `main` and verified. Open work tracked in
   private keys are stored by metadata-only key references.
 - [x] clipboard-ttl-clear: clipboard copies schedule TTL clearing and
   clear only when the clipboard still contains the same value.
+- [x] lk-resolve-pinned-version: Pinned lk references now have focused resolver coverage
+  for selection and no-fallback behavior.
 
 ## Full Spec Coverage TODO — Security/Recovery/Team
 
