@@ -2,16 +2,23 @@
 
 use std::io::Write;
 
-use locket_crypto::KeyPurpose;
-use locket_store::{AuditWrite, PasskeyCredentialRecord, Store};
+use locket_crypto::{
+    KeyPurpose, WrappedKeyMaterial, generate_key, unwrap_master_key_with_passkey_prf,
+    wrap_master_key_with_passkey_prf,
+};
+use locket_platform::PlatformError;
+use locket_store::{AuditWrite, PasskeyCredentialRecord, PasskeyPrfWrapRecord, Store};
 use serde_json::json;
+use zeroize::Zeroizing;
 
+use crate::runtime::key_access::{load_master_key, store_master_key_with_fallback};
 use crate::runtime::user_verification::{UserVerificationAudit, require_user_verification};
 use crate::{
-    CliError, PasskeyCommand, PasskeyListArgs, ResolvedProject, RuntimeContext,
-    confirmation_failed_error, ensure_project_exists, format_hex, format_unix_nanos,
-    invalid_reference_error, load_project_key, metadata_invalid_error, now_unix_nanos, open_store,
-    require_project, unimplemented_in_build_error, yes_no,
+    CliError, PasskeyCommand, PasskeyListArgs, PasskeyRegisterArgs, ResolvedProject,
+    RuntimeContext, confirmation_failed_error, ensure_project_exists, format_hex,
+    format_unix_nanos, invalid_reference_error, load_project_key, metadata_invalid_error,
+    now_unix_nanos, open_store, require_project, unimplemented_in_build_error,
+    user_verification_failed_error, yes_no,
 };
 
 pub fn passkey_command(
@@ -20,11 +27,291 @@ pub fn passkey_command(
     command: PasskeyCommand,
 ) -> Result<(), CliError> {
     match command {
-        PasskeyCommand::Register => Err(unimplemented_in_build_error(
-            "passkey registration is not available in this build; no credential metadata was written",
-        )),
+        PasskeyCommand::Register(args) => passkey_register_command(context, output, &args),
         PasskeyCommand::List(args) => passkey_list_command(context, output, &args),
         PasskeyCommand::Remove { passkey } => passkey_remove_command(context, output, &passkey),
+        PasskeyCommand::Unlock { passkey } => {
+            passkey_unlock_command(context, output, passkey.as_deref())
+        }
+    }
+}
+
+fn passkey_register_command(
+    context: &RuntimeContext,
+    output: &mut impl Write,
+    args: &PasskeyRegisterArgs,
+) -> Result<(), CliError> {
+    let label = args.label.trim();
+    if label.is_empty() {
+        return Err(invalid_reference_error("passkey label cannot be empty"));
+    }
+    let relying_party_id = args.relying_party_id.trim();
+    if relying_party_id.is_empty() {
+        return Err(invalid_reference_error("relying_party_id cannot be empty"));
+    }
+    let resolved = require_project(context)?;
+    let mut store = open_store(context)?;
+    let project_id = resolved.config.project_id.as_str();
+    ensure_project_exists(&store, project_id)?;
+    let user_verification = require_user_verification(
+        context,
+        "passkey register",
+        format!("register passkey {label}"),
+    )?;
+
+    match context.passkey_registrar.register_passkey(label, relying_party_id) {
+        Ok(registration) => {
+            let timestamp = now_unix_nanos()?;
+            let passkey_id = generate_passkey_id()?;
+            let credential = PasskeyCredentialRecord {
+                id: passkey_id,
+                project_id: project_id.to_owned(),
+                label: label.to_owned(),
+                credential_id: registration.credential_id.clone(),
+                transports: registration.transports.clone(),
+                prf_capable: registration.prf_capable,
+                webauthn_relying_party_id: relying_party_id.to_owned(),
+                backup_eligible: registration.backup_eligible,
+                backup_state: registration.backup_state,
+                created_at: timestamp,
+                last_used_at: None,
+                revoked_at: None,
+            };
+            store.insert_passkey_credential(&credential)?;
+            let prf_wrapped = if credential.prf_capable {
+                wrap_master_key_with_prf_if_possible(context, &store, &credential, timestamp)?
+            } else {
+                false
+            };
+            write_passkey_register_audit(
+                context,
+                &mut store,
+                &resolved,
+                &credential,
+                "success",
+                user_verification,
+                timestamp,
+            )?;
+            writeln!(output, "passkey: registered")?;
+            writeln!(output, "passkey_id: {}", credential.id)?;
+            writeln!(output, "label: {}", credential.label)?;
+            writeln!(
+                output,
+                "credential_id_prefix: {}",
+                credential_id_prefix(&credential.credential_id)
+            )?;
+            writeln!(output, "rp_id: {}", credential.webauthn_relying_party_id)?;
+            writeln!(
+                output,
+                "transports: {}",
+                render_passkey_transports(&credential.transports)
+            )?;
+            writeln!(output, "prf_capable: {}", yes_no(credential.prf_capable))?;
+            writeln!(
+                output,
+                "backup_eligible: {}",
+                render_optional_bool(credential.backup_eligible)
+            )?;
+            writeln!(
+                output,
+                "backup_state: {}",
+                render_optional_bool(credential.backup_state)
+            )?;
+            writeln!(output, "registered_at: {}", format_unix_nanos(timestamp))?;
+            writeln!(output, "prf_wrapped: {}", yes_no(prf_wrapped))?;
+            writeln!(output, "private_key_material: never displayed")?;
+            Ok(())
+        }
+        Err(error) => {
+            let timestamp = now_unix_nanos()?;
+            write_passkey_register_failure_audit(
+                context,
+                &mut store,
+                &resolved,
+                label,
+                relying_party_id,
+                user_verification,
+                &error,
+                timestamp,
+            )
+            .ok();
+            Err(map_platform_passkey_error(&error))
+        }
+    }
+}
+
+fn map_platform_passkey_error(error: &PlatformError) -> CliError {
+    match error {
+        PlatformError::PasskeyUnsupported => unimplemented_in_build_error(
+            "passkey registration is not available on this platform; no credential metadata was written",
+        ),
+        PlatformError::PasskeyNotFound => invalid_reference_error("passkey credential not found"),
+        _ => user_verification_failed_error("passkey ceremony failed"),
+    }
+}
+
+fn generate_passkey_id() -> Result<String, CliError> {
+    let bytes = generate_key()?;
+    Ok(format!("lk_passkey_{}", format_hex(&bytes[..16])))
+}
+
+/// Generates a fresh PRF salt and wraps the project master key under the
+/// resulting PRF output. Returns `Ok(true)` on success and `Ok(false)` when
+/// the platform did not honour the PRF evaluation.
+fn wrap_master_key_with_prf_if_possible(
+    context: &RuntimeContext,
+    store: &Store,
+    credential: &PasskeyCredentialRecord,
+    timestamp: i64,
+) -> Result<bool, CliError> {
+    let prf_salt: [u8; 32] = locket_crypto::generate_passphrase_salt()?;
+    let Ok(prf_output) =
+        context.passkey_registrar.evaluate_prf(&credential.credential_id, &prf_salt)
+    else {
+        return Ok(false);
+    };
+    let (master_key, _) = load_master_key(context, &credential.project_id)?;
+    let wrapped = wrap_master_key_with_passkey_prf(&master_key, &prf_output, &credential.project_id)?;
+    let record = PasskeyPrfWrapRecord {
+        passkey_id: credential.id.clone(),
+        project_id: credential.project_id.clone(),
+        prf_salt: prf_salt.to_vec(),
+        wrapped_master_key: wrapped.ciphertext,
+        wrap_nonce: wrapped.nonce.to_vec(),
+        created_at: timestamp,
+    };
+    store.upsert_passkey_prf_wrap(&record)?;
+    Ok(true)
+}
+
+pub fn passkey_unlock_command(
+    context: &RuntimeContext,
+    output: &mut impl Write,
+    selector: Option<&str>,
+) -> Result<(), CliError> {
+    let resolved = require_project(context)?;
+    let mut store = open_store(context)?;
+    let project_id = resolved.config.project_id.as_str();
+    ensure_project_exists(&store, project_id)?;
+    let credential = resolve_unlock_candidate(&store, project_id, selector)?;
+    let wrap = store.get_passkey_prf_wrap(project_id, &credential.id)?.ok_or_else(|| {
+        invalid_reference_error("passkey is not configured for PRF-based unlock")
+    })?;
+    let timestamp = now_unix_nanos()?;
+    let master_key = recover_master_key_via_prf(
+        context,
+        &mut store,
+        &resolved,
+        &credential,
+        &wrap,
+        timestamp,
+    )?;
+    let source = store_master_key_with_fallback(context, project_id, &master_key, timestamp)?;
+    write_passkey_auth_audit(
+        context,
+        &mut store,
+        &resolved,
+        &credential,
+        "success",
+        timestamp,
+    )?;
+    writeln!(output, "passkey: unlocked")?;
+    writeln!(output, "passkey_id: {}", credential.id)?;
+    writeln!(
+        output,
+        "credential_id_prefix: {}",
+        credential_id_prefix(&credential.credential_id)
+    )?;
+    writeln!(output, "rp_id: {}", credential.webauthn_relying_party_id)?;
+    writeln!(output, "master_key_source: {}", source.as_str())?;
+    writeln!(output, "private_key_material: never displayed")?;
+    Ok(())
+}
+
+fn resolve_unlock_candidate(
+    store: &Store,
+    project_id: &str,
+    selector: Option<&str>,
+) -> Result<PasskeyCredentialRecord, CliError> {
+    let candidates = match selector {
+        Some(selector) => {
+            let trimmed = selector.trim();
+            if trimmed.is_empty() {
+                return Err(invalid_reference_error("passkey identifier cannot be empty"));
+            }
+            store
+                .find_passkey_credentials(project_id, trimmed)?
+                .into_iter()
+                .filter(|credential| credential.revoked_at.is_none())
+                .collect::<Vec<_>>()
+        }
+        None => store
+            .list_passkey_credentials(project_id, false)?
+            .into_iter()
+            .filter(|credential| credential.prf_capable)
+            .collect::<Vec<_>>(),
+    };
+    match candidates.as_slice() {
+        [] => Err(invalid_reference_error(
+            "passkey not found or no PRF-capable credentials registered for this project",
+        )),
+        [credential] => Ok(credential.clone()),
+        _ => Err(metadata_invalid_error(
+            "passkey identifier is ambiguous; use a longer credential id prefix",
+        )),
+    }
+}
+
+fn recover_master_key_via_prf(
+    context: &RuntimeContext,
+    store: &mut Store,
+    resolved: &ResolvedProject,
+    credential: &PasskeyCredentialRecord,
+    wrap: &PasskeyPrfWrapRecord,
+    timestamp: i64,
+) -> Result<Zeroizing<locket_crypto::KeyBytes>, CliError> {
+    let prf_output = match context
+        .passkey_registrar
+        .evaluate_prf(&credential.credential_id, &wrap.prf_salt)
+    {
+        Ok(output) => output,
+        Err(error) => {
+            write_passkey_auth_audit(
+                context,
+                store,
+                resolved,
+                credential,
+                "failed",
+                timestamp,
+            )
+            .ok();
+            return Err(map_platform_passkey_error(&error));
+        }
+    };
+    let wrap_nonce: [u8; locket_crypto::NONCE_LEN] =
+        wrap.wrap_nonce.as_slice().try_into().map_err(|_| {
+            metadata_invalid_error("stored passkey PRF wrap nonce has invalid length")
+        })?;
+    let wrapped_material =
+        WrappedKeyMaterial { ciphertext: wrap.wrapped_master_key.clone(), nonce: wrap_nonce };
+    match unwrap_master_key_with_passkey_prf(
+        &wrapped_material,
+        &prf_output,
+        resolved.config.project_id.as_str(),
+    ) {
+        Ok(key) => Ok(key),
+        Err(error) => {
+            write_passkey_auth_audit(
+                context,
+                store,
+                resolved,
+                credential,
+                "failed",
+                timestamp,
+            )
+            .ok();
+            Err(error.into())
+        }
     }
 }
 
@@ -134,6 +421,127 @@ fn render_passkey_transports(transports: &[String]) -> String {
 
 fn render_optional_bool(value: Option<bool>) -> &'static str {
     value.map_or("unknown", yes_no)
+}
+
+fn write_passkey_register_audit(
+    context: &RuntimeContext,
+    store: &mut Store,
+    resolved: &ResolvedProject,
+    credential: &PasskeyCredentialRecord,
+    auth_result: &str,
+    user_verification: UserVerificationAudit,
+    timestamp: i64,
+) -> Result<(), CliError> {
+    let audit_key =
+        load_project_key(context, store, resolved.config.project_id.as_str(), KeyPurpose::Audit)?;
+    let metadata = json!({
+        "schema_version": 1,
+        "action": "PASSKEY_REGISTER",
+        "status": "SUCCESS",
+        "command": "passkey register",
+        "passkey_id": credential.id,
+        "label": credential.label,
+        "credential_id_prefix": credential_id_prefix(&credential.credential_id),
+        "auth_result": auth_result,
+        "webauthn_relying_party_id": credential.webauthn_relying_party_id,
+        "transports": credential.transports,
+        "prf_capable": credential.prf_capable,
+        "backup_eligible": credential.backup_eligible,
+        "backup_state": credential.backup_state,
+        "user_verification": user_verification,
+    });
+    let audit = AuditWrite {
+        project_id: resolved.config.project_id.as_str(),
+        profile_id: None,
+        action: "PASSKEY_REGISTER",
+        status: "SUCCESS",
+        secret_name: None,
+        command: Some("passkey register"),
+        metadata_json: &metadata,
+        timestamp,
+    };
+    store.append_audit(audit_key.as_ref(), &audit)?;
+    Ok(())
+}
+
+fn write_passkey_register_failure_audit(
+    context: &RuntimeContext,
+    store: &mut Store,
+    resolved: &ResolvedProject,
+    label: &str,
+    relying_party_id: &str,
+    user_verification: UserVerificationAudit,
+    error: &PlatformError,
+    timestamp: i64,
+) -> Result<(), CliError> {
+    let audit_key =
+        load_project_key(context, store, resolved.config.project_id.as_str(), KeyPurpose::Audit)?;
+    let auth_result = match error {
+        PlatformError::PasskeyUnsupported => "unsupported",
+        _ => "denied",
+    };
+    let metadata = json!({
+        "schema_version": 1,
+        "action": "PASSKEY_REGISTER",
+        "status": "DENIED",
+        "command": "passkey register",
+        "passkey_id": serde_json::Value::Null,
+        "label": label,
+        "credential_id_prefix": serde_json::Value::Null,
+        "auth_result": auth_result,
+        "webauthn_relying_party_id": relying_party_id,
+        "user_verification": user_verification,
+        "failure_reason": error.to_string(),
+    });
+    let audit = AuditWrite {
+        project_id: resolved.config.project_id.as_str(),
+        profile_id: None,
+        action: "PASSKEY_REGISTER",
+        status: "DENIED",
+        secret_name: None,
+        command: Some("passkey register"),
+        metadata_json: &metadata,
+        timestamp,
+    };
+    store.append_audit(audit_key.as_ref(), &audit)?;
+    Ok(())
+}
+
+fn write_passkey_auth_audit(
+    context: &RuntimeContext,
+    store: &mut Store,
+    resolved: &ResolvedProject,
+    credential: &PasskeyCredentialRecord,
+    auth_result: &str,
+    timestamp: i64,
+) -> Result<(), CliError> {
+    let audit_key =
+        load_project_key(context, store, resolved.config.project_id.as_str(), KeyPurpose::Audit)?;
+    let status = if auth_result == "success" { "SUCCESS" } else { "DENIED" };
+    let metadata = json!({
+        "schema_version": 1,
+        "action": "PASSKEY_AUTH",
+        "status": status,
+        "command": "passkey unlock",
+        "passkey_id": credential.id,
+        "label": credential.label,
+        "credential_id_prefix": credential_id_prefix(&credential.credential_id),
+        "auth_result": auth_result,
+        "webauthn_relying_party_id": credential.webauthn_relying_party_id,
+        "prf_capable": credential.prf_capable,
+    });
+    let audit = AuditWrite {
+        project_id: resolved.config.project_id.as_str(),
+        profile_id: None,
+        action: "PASSKEY_AUTH",
+        status,
+        secret_name: None,
+        command: Some("passkey unlock"),
+        metadata_json: &metadata,
+        timestamp,
+    };
+    store.append_audit(audit_key.as_ref(), &audit)?;
+    Ok(())
 }
 
 fn write_passkey_remove_audit_if_available(

@@ -52,8 +52,14 @@ const fn platform_error_exit_code(error: &locket_platform::PlatformError) -> u8 
             LocketError::UnlockRequired.exit_code()
         }
         locket_platform::PlatformError::LocalUserVerificationFailed
-        | locket_platform::PlatformError::LocalUserVerificationUnavailable => {
+        | locket_platform::PlatformError::LocalUserVerificationUnavailable
+        | locket_platform::PlatformError::PasskeyAuthFailed
+        | locket_platform::PlatformError::PasskeyNotFound
+        | locket_platform::PlatformError::PasskeyRegistrationFailed => {
             LocketError::UserVerificationFailed.exit_code()
+        }
+        locket_platform::PlatformError::PasskeyUnsupported => {
+            LocketError::PolicyValidationIncomplete.exit_code()
         }
         locket_platform::PlatformError::ProcessStartTimeUnavailable => {
             LocketError::AgentUnavailable.exit_code()

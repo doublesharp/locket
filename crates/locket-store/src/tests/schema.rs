@@ -4,7 +4,7 @@ use tempfile::tempdir;
 
 use crate::{AUDIT_ACTION_SCHEMA_MIGRATE, SCHEMA_VERSION, Store, StoreError};
 
-use super::open_initialized_store;
+use super::{insert_project_profile, open_initialized_store};
 
 #[test]
 fn creates_schema_and_records_migration() -> Result<(), Box<dyn Error>> {
@@ -224,7 +224,11 @@ fn schema_initialization_is_idempotent() -> Result<(), Box<dyn Error>> {
     let mut test_store = open_initialized_store()?;
 
     assert_eq!(test_store.store.current_schema_version()?, Some(i64::from(SCHEMA_VERSION)));
-    test_store.store.initialize_schema()?;
+    let outcome = test_store.store.initialize_schema()?;
+    assert!(!outcome.advanced(), "no-op initialize must not advance the ledger");
+    assert!(outcome.applied_steps.is_empty());
+    assert_eq!(outcome.before, Some(SCHEMA_VERSION));
+    assert_eq!(outcome.after, SCHEMA_VERSION);
 
     let migration_rows = test_store.store.connection().query_row(
         "SELECT COUNT(*) FROM schema_migrations WHERE version = ?1",
@@ -232,6 +236,123 @@ fn schema_initialization_is_idempotent() -> Result<(), Box<dyn Error>> {
         |row| row.get::<_, i64>(0),
     )?;
     assert_eq!(migration_rows, 1);
+
+    Ok(())
+}
+
+#[test]
+fn fresh_initialize_reports_pending_schema_migration() -> Result<(), Box<dyn Error>> {
+    let directory = tempdir()?;
+    let path = directory.path().join("store.db");
+    let mut store = Store::open(path)?;
+
+    let outcome = store.initialize_schema()?;
+    assert!(outcome.advanced(), "fresh store must advance the ledger");
+    assert_eq!(outcome.before, None);
+    assert_eq!(outcome.after, SCHEMA_VERSION);
+    assert_eq!(outcome.applied_steps.as_slice(), &["schema.bootstrap_v1"]);
+
+    Ok(())
+}
+
+#[test]
+fn record_schema_migrate_audit_skips_when_no_steps_applied() -> Result<(), Box<dyn Error>> {
+    let mut test_store = open_initialized_store()?;
+    insert_project_profile(&test_store.store)?;
+
+    let outcome = test_store.store.initialize_schema()?;
+    assert!(!outcome.advanced());
+
+    let wrote = test_store.store.record_schema_migrate_audit(
+        "lk_proj_test",
+        &[42; 32],
+        &outcome,
+        1_700_000_000_000_000_000,
+    )?;
+    assert!(!wrote, "no row must be written when no steps were applied");
+
+    let actions = test_store.store.list_recent_audit_actions("lk_proj_test", 8)?;
+    assert!(actions.is_empty(), "no audit rows must be written");
+
+    Ok(())
+}
+
+#[test]
+fn record_schema_migrate_audit_writes_row_for_advancement() -> Result<(), Box<dyn Error>> {
+    let mut test_store = open_initialized_store()?;
+    insert_project_profile(&test_store.store)?;
+
+    // Simulate the fresh-initialize outcome (`before = None`, `after = 1`)
+    // produced when the schema bootstrap actually advanced the ledger. The
+    // outcome is constructed directly because v1 is the only schema family
+    // and the ledger created during fresh initialization has no project
+    // context yet to consume the row.
+    let outcome = crate::SchemaMigrationOutcome {
+        before: None,
+        after: SCHEMA_VERSION,
+        applied_steps: vec!["schema.bootstrap_v1"],
+    };
+
+    let wrote = test_store.store.record_schema_migrate_audit(
+        "lk_proj_test",
+        &[42; 32],
+        &outcome,
+        1_700_000_000_000_000_000,
+    )?;
+    assert!(wrote, "advancement must produce one audit row");
+
+    let actions = test_store.store.list_recent_audit_actions("lk_proj_test", 8)?;
+    assert_eq!(actions.as_slice(), &[AUDIT_ACTION_SCHEMA_MIGRATE.to_owned()]);
+
+    let metadata_json: String = test_store.store.connection().query_row(
+        "SELECT metadata_json FROM audit_log
+         WHERE project_id = ?1 AND action = ?2
+         ORDER BY sequence DESC
+         LIMIT 1",
+        ["lk_proj_test", AUDIT_ACTION_SCHEMA_MIGRATE],
+        |row| row.get::<_, String>(0),
+    )?;
+    let metadata: serde_json::Value = serde_json::from_str(&metadata_json)?;
+    assert_eq!(metadata["schema_versions"]["before"], serde_json::Value::Null);
+    assert_eq!(metadata["schema_versions"]["after"], 1);
+    assert_eq!(metadata["migration_count"], 1);
+    assert_eq!(metadata["check_names"][0], "schema.bootstrap_v1");
+    assert_eq!(metadata["status"], "SUCCESS");
+
+    Ok(())
+}
+
+#[test]
+fn record_schema_migrate_audit_writes_row_for_stale_schema() -> Result<(), Box<dyn Error>> {
+    let mut test_store = open_initialized_store()?;
+    insert_project_profile(&test_store.store)?;
+
+    let outcome = crate::SchemaMigrationOutcome {
+        before: Some(0),
+        after: SCHEMA_VERSION,
+        applied_steps: vec!["schema.bootstrap_v1"],
+    };
+
+    let wrote = test_store.store.record_schema_migrate_audit(
+        "lk_proj_test",
+        &[42; 32],
+        &outcome,
+        1_700_000_000_000_000_001,
+    )?;
+    assert!(wrote);
+
+    let metadata_json: String = test_store.store.connection().query_row(
+        "SELECT metadata_json FROM audit_log
+         WHERE project_id = ?1 AND action = ?2
+         ORDER BY sequence DESC
+         LIMIT 1",
+        ["lk_proj_test", AUDIT_ACTION_SCHEMA_MIGRATE],
+        |row| row.get::<_, String>(0),
+    )?;
+    let metadata: serde_json::Value = serde_json::from_str(&metadata_json)?;
+    assert_eq!(metadata["schema_versions"]["before"], 0);
+    assert_eq!(metadata["schema_versions"]["after"], SCHEMA_VERSION);
+    assert_eq!(metadata["migration_count"], 1);
 
     Ok(())
 }

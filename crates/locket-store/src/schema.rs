@@ -14,6 +14,34 @@ pub const AUDIT_ACTION_SCHEMA_MIGRATE: &str = "SCHEMA_MIGRATE";
 
 const BUSY_TIMEOUT_MS: u64 = 5_000;
 
+/// Result of running [`initialize_schema`], capturing the prior schema state and
+/// the migration steps that actually advanced the ledger.
+///
+/// Callers feed the outcome into
+/// [`Store::record_schema_migrate_audit`](crate::Store::record_schema_migrate_audit)
+/// once a project audit key is available. A no-op re-initialization records no
+/// applied steps and must not produce an audit row.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SchemaMigrationOutcome {
+    /// Highest schema version recorded prior to this run, or `None` for a
+    /// store with no migration ledger.
+    pub before: Option<u32>,
+    /// Highest schema version recorded after this run.
+    pub after: u32,
+    /// Names of the migration steps that actually advanced the ledger during
+    /// this run, in execution order. Empty when the store was already at the
+    /// target version.
+    pub applied_steps: Vec<&'static str>,
+}
+
+impl SchemaMigrationOutcome {
+    /// Returns `true` when the run actually advanced the schema ledger.
+    #[must_use]
+    pub const fn advanced(&self) -> bool {
+        !self.applied_steps.is_empty()
+    }
+}
+
 pub fn configure_connection(connection: &Connection) -> Result<(), rusqlite::Error> {
     connection.busy_timeout(Duration::from_millis(BUSY_TIMEOUT_MS))?;
     connection.pragma_update(None, "foreign_keys", "ON")?;
@@ -21,10 +49,19 @@ pub fn configure_connection(connection: &Connection) -> Result<(), rusqlite::Err
     Ok(())
 }
 
-pub fn initialize_schema(connection: &mut Connection) -> Result<(), StoreError> {
-    if let Some(version) = current_schema_version(connection)? {
-        fail_on_newer_schema(version)?;
-    }
+pub fn initialize_schema(
+    connection: &mut Connection,
+) -> Result<SchemaMigrationOutcome, StoreError> {
+    let before = match current_schema_version(connection)? {
+        Some(version) => {
+            fail_on_newer_schema(version)?;
+            Some(u32::try_from(version).map_err(|_| StoreError::UnsupportedSchema {
+                found: version,
+                supported: SCHEMA_VERSION,
+            })?)
+        }
+        None => None,
+    };
 
     let transaction = connection.transaction()?;
     transaction.execute_batch(SCHEMA_SQL)?;
@@ -35,11 +72,26 @@ pub fn initialize_schema(connection: &mut Connection) -> Result<(), StoreError> 
     )?;
     transaction.commit()?;
 
-    if let Some(version) = current_schema_version(connection)? {
-        fail_on_newer_schema(version)?;
-    }
+    let after = match current_schema_version(connection)? {
+        Some(version) => {
+            fail_on_newer_schema(version)?;
+            u32::try_from(version).map_err(|_| StoreError::UnsupportedSchema {
+                found: version,
+                supported: SCHEMA_VERSION,
+            })?
+        }
+        None => SCHEMA_VERSION,
+    };
 
-    Ok(())
+    let applied_steps = if before == Some(after) {
+        Vec::new()
+    } else {
+        // v1 is the only schema family. The single migration step is the
+        // bootstrap that creates the v1 tables and ledgers the version.
+        vec!["schema.bootstrap_v1"]
+    };
+
+    Ok(SchemaMigrationOutcome { before, after, applied_steps })
 }
 
 pub fn current_schema_version(connection: &Connection) -> Result<Option<i64>, StoreError> {
@@ -262,6 +314,19 @@ CREATE TABLE IF NOT EXISTS passkey_credentials (
 
 CREATE INDEX IF NOT EXISTS passkey_credentials_project_revoked_idx
   ON passkey_credentials(project_id, revoked_at);
+
+CREATE TABLE IF NOT EXISTS passkey_prf_wraps (
+  passkey_id TEXT PRIMARY KEY REFERENCES passkey_credentials(id) ON DELETE CASCADE,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  prf_salt BLOB NOT NULL CHECK (length(prf_salt) >= 16),
+  wrapped_master_key BLOB NOT NULL CHECK (length(wrapped_master_key) > 0),
+  wrap_nonce BLOB NOT NULL CHECK (length(wrap_nonce) = 24),
+  created_at INTEGER NOT NULL,
+  UNIQUE (project_id, passkey_id)
+);
+
+CREATE INDEX IF NOT EXISTS passkey_prf_wraps_project_idx
+  ON passkey_prf_wraps(project_id);
 
 CREATE TABLE IF NOT EXISTS teams (
   id TEXT PRIMARY KEY,

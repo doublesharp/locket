@@ -30,6 +30,18 @@ pub enum PlatformError {
     /// Local user verification was rejected or failed.
     #[error("local user verification failed")]
     LocalUserVerificationFailed,
+    /// Platform passkey/WebAuthn integration is not available in this build or platform.
+    #[error("platform passkey unsupported")]
+    PasskeyUnsupported,
+    /// No platform passkey was registered for the requested credential id.
+    #[error("platform passkey not found")]
+    PasskeyNotFound,
+    /// Platform passkey ceremony was rejected or failed without leaking detail.
+    #[error("platform passkey authentication failed")]
+    PasskeyAuthFailed,
+    /// Platform passkey registration was rejected, cancelled, or failed.
+    #[error("passkey registration failed")]
+    PasskeyRegistrationFailed,
     /// Local filesystem operation failed.
     #[error(transparent)]
     Io(#[from] std::io::Error),

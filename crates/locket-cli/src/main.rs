@@ -14,7 +14,7 @@ pub(crate) use runtime::error::{
     project_not_found_error, project_root_untrusted_error, scan_finding_blocked_error,
     secret_already_exists_error, secret_deleted_error, secret_not_found_error,
     secret_version_overflow_error, team_role_denied_error, tty_required_error,
-    unimplemented_in_build_error, unlock_required_error,
+    unimplemented_in_build_error, unlock_required_error, user_verification_failed_error,
 };
 pub(crate) use runtime::key_access::{
     MasterKeySource, default_profile, ensure_project_exists, load_master_key,
@@ -830,7 +830,7 @@ struct ConfigSetArgs {
 #[derive(Debug, Subcommand)]
 enum PasskeyCommand {
     /// Register a passkey authenticator.
-    Register,
+    Register(PasskeyRegisterArgs),
     /// List passkey authenticators.
     List(PasskeyListArgs),
     /// Remove a passkey authenticator.
@@ -838,6 +838,21 @@ enum PasskeyCommand {
         /// Passkey label or credential id prefix.
         passkey: String,
     },
+    /// Unlock the project master key using a registered passkey PRF wrap.
+    Unlock {
+        /// Optional passkey label or credential id prefix.
+        passkey: Option<String>,
+    },
+}
+
+#[derive(Debug, Args)]
+struct PasskeyRegisterArgs {
+    /// Human-readable label for this passkey.
+    #[arg(long)]
+    label: String,
+    /// `WebAuthn` relying party id used during registration.
+    #[arg(long, default_value = locket_store::DEFAULT_WEBAUTHN_RELYING_PARTY_ID)]
+    relying_party_id: String,
 }
 
 #[derive(Debug, Subcommand)]

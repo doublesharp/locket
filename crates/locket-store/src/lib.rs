@@ -34,7 +34,9 @@ pub use device::DeviceRecord;
 pub use error::StoreError;
 pub use grants::DirectoryGrantRecord;
 pub use keys::KeyRecord;
-pub use passkey::{DEFAULT_WEBAUTHN_RELYING_PARTY_ID, PasskeyCredentialRecord};
+pub use passkey::{
+    DEFAULT_WEBAUTHN_RELYING_PARTY_ID, PasskeyCredentialRecord, PasskeyPrfWrapRecord,
+};
 pub use profile::{ProfileDangerousAudit, ProfileDangerousChange, ProfileRecord};
 pub use project::ProjectRecord;
 pub use roots::ProjectRootRecord;
@@ -43,7 +45,7 @@ pub use runtime_session::{
     InvalidRuntimeSessionSecretNameRetention, RuntimeSessionRecord,
     RuntimeSessionSecretNameRetention,
 };
-pub use schema::{AUDIT_ACTION_SCHEMA_MIGRATE, SCHEMA_VERSION};
+pub use schema::{AUDIT_ACTION_SCHEMA_MIGRATE, SCHEMA_VERSION, SchemaMigrationOutcome};
 pub use secret::{
     SecretBlobRecord, SecretCopyTarget, SecretFingerprintRecord, SecretMetadataRecord,
     SecretMetadataUpdate, SecretRecord, SecretVersionRecord, VersionDeprecation,
@@ -74,14 +76,21 @@ impl Store {
         Ok(Self { connection })
     }
 
-    /// Runs the idempotent v1 schema bootstrap.
+    /// Runs the idempotent v1 schema bootstrap and reports which migration steps
+    /// actually advanced the ledger.
+    ///
+    /// Callers that hold a project audit key should pass the returned
+    /// [`SchemaMigrationOutcome`] to [`Self::record_schema_migrate_audit`] so a
+    /// `SCHEMA_MIGRATE` audit row is appended for any real version change. A
+    /// no-op re-initialization returns an outcome with no applied steps and
+    /// must not be audited.
     ///
     /// # Errors
     ///
     /// Returns [`StoreError::UnsupportedSchema`] when the database has already been
     /// migrated by a newer Locket binary. Returns [`StoreError::Sqlite`] for `SQLite`
     /// failures while creating or recording the schema.
-    pub fn initialize_schema(&mut self) -> Result<(), StoreError> {
+    pub fn initialize_schema(&mut self) -> Result<SchemaMigrationOutcome, StoreError> {
         schema::initialize_schema(&mut self.connection)
     }
 

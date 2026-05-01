@@ -1,13 +1,15 @@
 use super::{
     AAD_SCHEMA_V1, CryptoError, HKDF_WRAP_INFO_SCHEMA_V1, HkdfWrapInfo, KEY_LEN,
     KEY_WRAP_SCHEMA_V1, KeyPurpose, KeyWrapAad, KeyWrapPurpose, NONCE_LEN,
-    PASSPHRASE_FALLBACK_OUTPUT_LEN, PassphraseKdfParams, RECOVERY_CODE_BYTES,
-    RECOVERY_CODE_DATA_CHARS, RECOVERY_ENVELOPE_SCHEMA_V1, SecretBlobAad, TAG_LEN, canonical_field,
-    decrypt_secret_value_v1, derive_passphrase_fallback_key_v1, derive_wrapping_key_v1,
-    hkdf_wrap_info_v1, key_wrap_aad_v1, open_recovery_entry_v1, passphrase_fallback_aad_v1,
-    recovery_code_decode, recovery_code_encode, recovery_entry_aad_v1, recovery_entry_key_v1,
-    seal_recovery_entry_v1, secret_blob_aad_v1, secret_fingerprint_v1, unwrap_dek_v1,
-    unwrap_key_material_v1, wrap_dek_v1, wrap_key_material_v1,
+    PASSKEY_PRF_WRAP_SCHEMA_V1, PASSPHRASE_FALLBACK_OUTPUT_LEN, PassphraseKdfParams,
+    RECOVERY_CODE_BYTES, RECOVERY_CODE_DATA_CHARS, RECOVERY_ENVELOPE_SCHEMA_V1, SecretBlobAad,
+    TAG_LEN, canonical_field, decrypt_secret_value_v1, derive_passphrase_fallback_key_v1,
+    derive_wrapping_key_v1, hkdf_wrap_info_v1, key_wrap_aad_v1, open_recovery_entry_v1,
+    passkey_prf_wrap_aad_v1, passphrase_fallback_aad_v1, recovery_code_decode,
+    recovery_code_encode, recovery_entry_aad_v1, recovery_entry_key_v1, seal_recovery_entry_v1,
+    secret_blob_aad_v1, secret_fingerprint_v1, unwrap_dek_v1, unwrap_key_material_v1,
+    unwrap_master_key_with_passkey_prf, wrap_dek_v1, wrap_key_material_v1,
+    wrap_master_key_with_passkey_prf,
 };
 
 const PROFILE_SECRET_KEY: [u8; KEY_LEN] = [7; KEY_LEN];
@@ -752,4 +754,51 @@ fn canonical_field_rejects_oversized_field_value() {
     // The above is a no-op on 32-bit where the oversized string cannot be
     // allocated. The name-too-long path (covered elsewhere) exercises the same
     // error-code path for the v1 constraints.
+}
+
+#[test]
+fn passkey_prf_wrap_aad_includes_domain_separation_and_project() -> Result<(), CryptoError> {
+    let aad = passkey_prf_wrap_aad_v1("lk_proj_demo")?;
+    let expected = [
+        b"locket-passkey-prf-v1".as_slice(),
+        &PASSKEY_PRF_WRAP_SCHEMA_V1.to_le_bytes(),
+        &[10, 0],
+        b"project_id",
+        &[12, 0, 0, 0],
+        b"lk_proj_demo",
+    ]
+    .concat();
+    assert_eq!(aad, expected);
+    Ok(())
+}
+
+#[test]
+fn passkey_prf_wrap_round_trip_recovers_master_key() -> Result<(), CryptoError> {
+    let master_key = [42_u8; KEY_LEN];
+    let prf_output = [9_u8; 32];
+    let wrapped = wrap_master_key_with_passkey_prf(&master_key, &prf_output, "lk_proj_demo")?;
+    let recovered =
+        unwrap_master_key_with_passkey_prf(&wrapped, &prf_output, "lk_proj_demo")?;
+    assert_eq!(*recovered, master_key);
+    Ok(())
+}
+
+#[test]
+fn passkey_prf_unwrap_rejects_wrong_prf_output() -> Result<(), CryptoError> {
+    let master_key = [42_u8; KEY_LEN];
+    let wrapped = wrap_master_key_with_passkey_prf(&master_key, &[9_u8; 32], "lk_proj_demo")?;
+    let result =
+        unwrap_master_key_with_passkey_prf(&wrapped, &[10_u8; 32], "lk_proj_demo");
+    assert!(matches!(result, Err(CryptoError::DecryptionFailed)));
+    Ok(())
+}
+
+#[test]
+fn passkey_prf_unwrap_rejects_wrong_project_id() -> Result<(), CryptoError> {
+    let master_key = [42_u8; KEY_LEN];
+    let wrapped = wrap_master_key_with_passkey_prf(&master_key, &[9_u8; 32], "lk_proj_demo")?;
+    let result =
+        unwrap_master_key_with_passkey_prf(&wrapped, &[9_u8; 32], "lk_proj_other");
+    assert!(matches!(result, Err(CryptoError::DecryptionFailed)));
+    Ok(())
 }

@@ -4,11 +4,33 @@ use hkdf::Hkdf;
 use sha2::Sha256;
 use zeroize::Zeroizing;
 
-use crate::aad::{HkdfWrapInfo, hkdf_wrap_info_v1};
+use crate::aad::{
+    HkdfWrapInfo, append_canonical_field, append_u16_le, hkdf_wrap_info_v1,
+};
 use crate::aead::{aead_decrypt, aead_encrypt};
 use crate::error::{CryptoError, CryptoResult};
 use crate::random::random_bytes;
 use crate::{KEY_LEN, KeyBytes, NONCE_LEN, NonceBytes, TAG_LEN};
+
+/// Domain-separated AAD prefix for passkey-PRF master-key wraps.
+pub const PASSKEY_PRF_WRAP_V1_PREFIX: &[u8] = b"locket-passkey-prf-v1";
+
+/// AAD schema version for passkey-PRF master-key wraps.
+pub const PASSKEY_PRF_WRAP_SCHEMA_V1: u16 = 1;
+
+/// Constructs canonical AAD for a passkey-PRF master-key wrap.
+///
+/// # Errors
+///
+/// Returns an error if any field cannot be represented by the canonical v1
+/// length prefixes.
+pub fn passkey_prf_wrap_aad_v1(project_id: &str) -> CryptoResult<Vec<u8>> {
+    let mut aad = Vec::new();
+    aad.extend_from_slice(PASSKEY_PRF_WRAP_V1_PREFIX);
+    append_u16_le(&mut aad, PASSKEY_PRF_WRAP_SCHEMA_V1);
+    append_canonical_field(&mut aad, "project_id", project_id)?;
+    Ok(aad)
+}
 
 /// Encrypted stored key material for a `keys` row.
 #[derive(Clone, Eq, PartialEq)]
@@ -114,4 +136,50 @@ pub fn unwrap_dek_v1(
     let mut dek = Zeroizing::new([0_u8; KEY_LEN]);
     dek.copy_from_slice(&plaintext);
     Ok(dek)
+}
+
+/// Wraps a master key under the 32-byte `WebAuthn` PRF output for `project_id`.
+///
+/// The PRF output is treated as the wrapping key directly. AAD ties the wrap
+/// to the project plus the `locket-passkey-prf-v1` domain-separation prefix
+/// so a wrap from a different project or domain cannot be confused with this
+/// one.
+///
+/// # Errors
+///
+/// Returns an error if random generation, AAD construction, or encryption
+/// fails.
+pub fn wrap_master_key_with_passkey_prf(
+    master_key: &KeyBytes,
+    prf_output: &[u8; 32],
+    project_id: &str,
+) -> CryptoResult<WrappedKeyMaterial> {
+    let aad = passkey_prf_wrap_aad_v1(project_id)?;
+    let nonce = random_bytes::<NONCE_LEN>()?;
+    let ciphertext = aead_encrypt(prf_output, &nonce, master_key, &aad)?;
+    Ok(WrappedKeyMaterial { ciphertext, nonce })
+}
+
+/// Unwraps a master key previously wrapped under a passkey PRF output.
+///
+/// # Errors
+///
+/// Returns [`CryptoError::DecryptionFailed`] when the PRF output, project id,
+/// AAD, or wrap material does not authenticate, and
+/// [`CryptoError::InvalidWrappedKey`] when the wrapped plaintext length is
+/// not the expected master-key size.
+pub fn unwrap_master_key_with_passkey_prf(
+    wrapped: &WrappedKeyMaterial,
+    prf_output: &[u8; 32],
+    project_id: &str,
+) -> CryptoResult<Zeroizing<KeyBytes>> {
+    let aad = passkey_prf_wrap_aad_v1(project_id)?;
+    let plaintext =
+        Zeroizing::new(aead_decrypt(prf_output, &wrapped.nonce, &wrapped.ciphertext, &aad)?);
+    if plaintext.len() != KEY_LEN {
+        return Err(CryptoError::InvalidWrappedKey);
+    }
+    let mut key = Zeroizing::new([0_u8; KEY_LEN]);
+    key.copy_from_slice(&plaintext);
+    Ok(key)
 }

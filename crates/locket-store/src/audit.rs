@@ -10,6 +10,7 @@ use sha2::Sha256;
 
 use crate::Store;
 use crate::error::StoreError;
+use crate::schema::{AUDIT_ACTION_SCHEMA_MIGRATE, SchemaMigrationOutcome};
 
 /// Maximum serialized `metadata_json` byte length per audit row.
 ///
@@ -591,6 +592,7 @@ fn required_fields_for_action(action: &str) -> &'static [&'static str] {
         "TEAM_INVITE" | "TEAM_ACCEPT" | "TEAM_REMOVE" => &["team_id", "member_id"],
         "RECOVER" | "RECOVERY_ROTATE" => &["device_id"],
         "BACKUP_EXPORT" | "BACKUP_IMPORT" | "BUNDLE_VERIFY" => &["bundle_digest"],
+        "SCHEMA_MIGRATE" => &["check_names", "schema_versions", "migration_count"],
         "DOCTOR" => &["check_names"],
         "HOOK_INSTALL" => &["hook_path_kind", "hook_path_hash"],
         _ => &[],
@@ -714,6 +716,7 @@ const KNOWN_AUDIT_METADATA_FIELDS: &[&str] = &[
     "member_id",
     "member_role",
     "method",
+    "migration_count",
     "new_dangerous",
     "new_profile_dangerous",
     "new_profile_id",
@@ -783,6 +786,7 @@ const KNOWN_AUDIT_METADATA_FIELDS: &[&str] = &[
     "root_kind",
     "rows_verified",
     "schema_version",
+    "schema_versions",
     "scope",
     "secret_name",
     "secret_name_count",
@@ -848,6 +852,63 @@ impl Store {
         append_audit(&transaction, audit_key, audit)?;
         transaction.commit()?;
         Ok(())
+    }
+
+    /// Appends a `SCHEMA_MIGRATE` audit row describing a schema bootstrap that
+    /// actually advanced the migration ledger.
+    ///
+    /// Returns `Ok(false)` and writes nothing when `outcome` reports no applied
+    /// steps (idempotent re-init). On any real version change the helper writes
+    /// one row to the project's audit chain and returns `Ok(true)`.
+    ///
+    /// `initialize_schema` runs before any project exists, so the migration row
+    /// itself is deferred to the first call site that holds a project audit
+    /// key. This sidesteps the chicken-and-egg between the schema bootstrap
+    /// (which creates the `audit_log` table) and the audit chain (which needs
+    /// the bootstrapped table plus a project key).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] when the audit row cannot be canonicalized,
+    /// signed, or inserted.
+    pub fn record_schema_migrate_audit(
+        &mut self,
+        project_id: &str,
+        audit_key: &[u8],
+        outcome: &SchemaMigrationOutcome,
+        timestamp: i64,
+    ) -> Result<bool, StoreError> {
+        if !outcome.advanced() {
+            return Ok(false);
+        }
+        let before = outcome.before.map_or(Value::Null, Value::from);
+        let metadata = json!({
+            "schema_version": 1,
+            "action": AUDIT_ACTION_SCHEMA_MIGRATE,
+            "status": "SUCCESS",
+            "check_names": outcome
+                .applied_steps
+                .iter()
+                .map(|step| (*step).to_owned())
+                .collect::<Vec<_>>(),
+            "schema_versions": json!({
+                "before": before,
+                "after": outcome.after,
+            }),
+            "migration_count": outcome.applied_steps.len() as u64,
+        });
+        let audit = AuditWrite {
+            project_id,
+            profile_id: None,
+            action: AUDIT_ACTION_SCHEMA_MIGRATE,
+            status: "SUCCESS",
+            secret_name: None,
+            command: None,
+            metadata_json: &metadata,
+            timestamp,
+        };
+        self.append_audit(audit_key, &audit)?;
+        Ok(true)
     }
 
     /// Lists recent metadata-only audit action names for a project.

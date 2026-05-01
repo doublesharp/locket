@@ -732,7 +732,7 @@ mod tests {
 
     use locket_platform::{
         KeyringAutomationClientKeyStore, KeyringMasterKeyStore, PassphraseFallbackMasterKeyStore,
-        UnavailableLocalUserVerifier,
+        UnavailableLocalUserVerifier, UnavailablePlatformPasskeyRegistrar,
     };
     use serde_json::json;
     use tempfile::{TempDir, tempdir};
@@ -802,6 +802,7 @@ mod tests {
             confirmation_reader: Arc::new(StdinConfirmationReader),
             secret_value_reader: Arc::new(StdinOrPromptSecretValueReader),
             user_verifier: Arc::new(UnavailableLocalUserVerifier),
+            passkey_registrar: Arc::new(UnavailablePlatformPasskeyRegistrar),
         }
     }
 

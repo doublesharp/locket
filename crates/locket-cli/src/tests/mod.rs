@@ -4,7 +4,8 @@ pub(super) use clap::Parser;
 pub(super) use locket_platform::{
     LocalUserVerifier, MasterKeyStore, MemoryAutomationClientKeyStore, MemoryLocalUserVerifier,
     MemoryMasterKeyStore, MockMasterKeyStore, MockMasterKeyStoreFailure,
-    PassphraseFallbackMasterKeyStore, PlatformError,
+    PassphraseFallbackMasterKeyStore, PlatformError, PlatformPasskeyRegistrar,
+    UnavailablePlatformPasskeyRegistrar,
 };
 pub(super) use serde_json::json;
 pub(super) use std::collections::BTreeSet;
@@ -238,7 +239,15 @@ pub(super) fn test_context_with_key_store_confirmation_and_secret(
         confirmation_reader: Arc::new(StaticConfirmationReader::new(confirmation)),
         secret_value_reader: Arc::new(StaticSecretValueReader::new(secret_value)),
         user_verifier: Arc::new(MemoryLocalUserVerifier::allowing()),
+        passkey_registrar: Arc::new(UnavailablePlatformPasskeyRegistrar),
     }
+}
+
+pub(super) fn context_with_passkey_registrar(
+    context: &RuntimeContext,
+    registrar: Arc<dyn PlatformPasskeyRegistrar + Send + Sync>,
+) -> RuntimeContext {
+    RuntimeContext { passkey_registrar: registrar, ..context.clone() }
 }
 
 pub(super) fn context_with_user_verifier(

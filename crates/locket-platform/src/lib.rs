@@ -20,6 +20,7 @@ mod macos_local_authentication;
 mod macos_user_verifier;
 mod master_key;
 mod memory_lock;
+mod passkey;
 mod passphrase;
 mod process;
 mod recovery;
@@ -50,6 +51,10 @@ pub use master_key::{
     MockMasterKeyStoreFailure,
 };
 pub use memory_lock::{MemoryLockHardening, lock_process_memory, memory_lock_hardening_state};
+pub use passkey::{
+    MemoryPlatformPasskeyOutcome, MemoryPlatformPasskeyRegistrar, PasskeyRegistration,
+    PlatformPasskeyRegistrar, UnavailablePlatformPasskeyRegistrar,
+};
 pub use passphrase::PassphraseFallbackMasterKeyStore;
 pub use process::{
     ProcessBinding, current_process_binding, process_binding_for_pid,

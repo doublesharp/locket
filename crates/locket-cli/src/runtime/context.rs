@@ -7,8 +7,8 @@ use std::sync::Arc;
 use directories::{BaseDirs, ProjectDirs};
 use locket_platform::{
     AutomationClientKeyStore, KeyringAutomationClientKeyStore, KeyringMasterKeyStore,
-    LocalUserVerifier, MasterKeyStore, PassphraseFallbackMasterKeyStore,
-    default_local_user_verifier,
+    LocalUserVerifier, MasterKeyStore, PassphraseFallbackMasterKeyStore, PlatformPasskeyRegistrar,
+    UnavailablePlatformPasskeyRegistrar, default_local_user_verifier,
 };
 
 use crate::CONFIG_TOML;
@@ -33,6 +33,7 @@ pub struct RuntimeContext {
     pub confirmation_reader: Arc<dyn ConfirmationReader + Send + Sync>,
     pub secret_value_reader: Arc<dyn SecretValueReader + Send + Sync>,
     pub user_verifier: Arc<dyn LocalUserVerifier + Send + Sync>,
+    pub passkey_registrar: Arc<dyn PlatformPasskeyRegistrar + Send + Sync>,
 }
 
 impl RuntimeContext {
@@ -63,6 +64,7 @@ impl RuntimeContext {
             confirmation_reader: Arc::new(StdinConfirmationReader),
             secret_value_reader: Arc::new(StdinOrPromptSecretValueReader),
             user_verifier: default_local_user_verifier(),
+            passkey_registrar: Arc::new(UnavailablePlatformPasskeyRegistrar),
         })
     }
 }

@@ -9,6 +9,23 @@ use crate::error::StoreError;
 /// Default `WebAuthn` relying party id for optional PRF credentials.
 pub const DEFAULT_WEBAUTHN_RELYING_PARTY_ID: &str = "locket.localhost";
 
+/// Stored passkey PRF wrap of the project master key.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PasskeyPrfWrapRecord {
+    /// Passkey credential metadata id this wrap belongs to.
+    pub passkey_id: String,
+    /// Parent project identifier.
+    pub project_id: String,
+    /// PRF salt passed to the platform authenticator.
+    pub prf_salt: Vec<u8>,
+    /// AEAD ciphertext of the wrapped master key.
+    pub wrapped_master_key: Vec<u8>,
+    /// AEAD nonce used for the wrap.
+    pub wrap_nonce: Vec<u8>,
+    /// Creation timestamp in nanoseconds since the Unix epoch.
+    pub created_at: i64,
+}
+
 /// Passkey/WebAuthn credential public metadata row.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PasskeyCredentialRecord {
@@ -161,6 +178,86 @@ impl Store {
             .collect::<Result<Vec<_>, _>>()?;
 
         Ok(credentials)
+    }
+
+    /// Inserts or replaces a passkey PRF wrap of the project master key.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Sqlite`] when `SQLite` rejects the insert.
+    pub fn upsert_passkey_prf_wrap(
+        &self,
+        wrap: &PasskeyPrfWrapRecord,
+    ) -> Result<(), StoreError> {
+        self.connection.execute(
+            "INSERT INTO passkey_prf_wraps(
+               passkey_id, project_id, prf_salt, wrapped_master_key, wrap_nonce, created_at
+             )
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(passkey_id) DO UPDATE SET
+               prf_salt = excluded.prf_salt,
+               wrapped_master_key = excluded.wrapped_master_key,
+               wrap_nonce = excluded.wrap_nonce,
+               created_at = excluded.created_at",
+            params![
+                wrap.passkey_id.as_str(),
+                wrap.project_id.as_str(),
+                wrap.prf_salt.as_slice(),
+                wrap.wrapped_master_key.as_slice(),
+                wrap.wrap_nonce.as_slice(),
+                wrap.created_at,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Returns the passkey PRF wrap for a given passkey credential id.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Sqlite`] when `SQLite` cannot query rows.
+    pub fn get_passkey_prf_wrap(
+        &self,
+        project_id: &str,
+        passkey_id: &str,
+    ) -> Result<Option<PasskeyPrfWrapRecord>, StoreError> {
+        let mut statement = self.connection.prepare(
+            "SELECT passkey_id, project_id, prf_salt, wrapped_master_key, wrap_nonce, created_at
+             FROM passkey_prf_wraps
+             WHERE project_id = ?1 AND passkey_id = ?2",
+        )?;
+        let row = statement
+            .query_row(params![project_id, passkey_id], |row| {
+                Ok(PasskeyPrfWrapRecord {
+                    passkey_id: row.get(0)?,
+                    project_id: row.get(1)?,
+                    prf_salt: row.get(2)?,
+                    wrapped_master_key: row.get(3)?,
+                    wrap_nonce: row.get(4)?,
+                    created_at: row.get(5)?,
+                })
+            })
+            .ok();
+        Ok(row)
+    }
+
+    /// Lists active (non-revoked) passkey PRF wraps for a project.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Sqlite`] when `SQLite` cannot query rows.
+    pub fn list_active_passkey_prf_wraps(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<(PasskeyCredentialRecord, PasskeyPrfWrapRecord)>, StoreError> {
+        let credentials = self.list_passkey_credentials(project_id, false)?;
+        let mut pairs = Vec::new();
+        for credential in credentials {
+            if let Some(wrap) = self.get_passkey_prf_wrap(project_id, &credential.id)? {
+                pairs.push((credential, wrap));
+            }
+        }
+        Ok(pairs)
     }
 
     /// Marks a passkey credential revoked.

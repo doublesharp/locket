@@ -3,12 +3,14 @@ use locket_crypto::{KEY_LEN, NONCE_LEN};
 use super::{
     LocalDevicePrivateKeyStorage, LocalUserVerificationMethod, LocalUserVerificationRequest,
     LocalUserVerifier, MasterKeyStore, MemoryDevicePrivateKeyStorage, MemoryLocalUserVerifier,
-    MemoryMasterKeyStore, MockMasterKeyStore, MockMasterKeyStoreFailure,
-    PassphraseFallbackMasterKeyStore, PlatformError, ProcessBinding, RecoveryEnvelope,
+    MemoryMasterKeyStore, MemoryPlatformPasskeyRegistrar, MockMasterKeyStore,
+    MockMasterKeyStoreFailure, PassphraseFallbackMasterKeyStore, PasskeyRegistration,
+    PlatformError, PlatformPasskeyRegistrar, ProcessBinding, RecoveryEnvelope,
     RecoveryEnvelopeEntry, RecoveryKdfToml, UnavailableLocalUserVerifier,
-    WrappedLocalFileDevicePrivateKeyStorage, current_process_binding, decode_key, encode_key,
-    load_recovery_envelope, load_recovery_kdf_toml, master_key_account,
-    process_binding_matches_live_process, save_recovery_envelope, save_recovery_kdf_toml,
+    UnavailablePlatformPasskeyRegistrar, WrappedLocalFileDevicePrivateKeyStorage,
+    current_process_binding, decode_key, encode_key, load_recovery_envelope,
+    load_recovery_kdf_toml, master_key_account, process_binding_matches_live_process,
+    save_recovery_envelope, save_recovery_kdf_toml,
 };
 
 const PROJECT_ID: &str = "lk_proj_test";
@@ -565,4 +567,48 @@ fn memory_device_private_key_round_trips() -> Result<(), PlatformError> {
         Err(PlatformError::DevicePrivateKeyNotFound)
     ));
     Ok(())
+}
+
+#[test]
+fn unavailable_passkey_registrar_reports_unsupported() {
+    let registrar = UnavailablePlatformPasskeyRegistrar;
+    assert!(matches!(
+        registrar.register_passkey("label", "rp"),
+        Err(PlatformError::PasskeyUnsupported)
+    ));
+    assert!(matches!(
+        registrar.evaluate_prf(&[1_u8; 4], &[2_u8; 32]),
+        Err(PlatformError::PasskeyUnsupported)
+    ));
+}
+
+#[test]
+fn memory_passkey_registrar_round_trips_register_then_prf() {
+    let registration = PasskeyRegistration {
+        credential_id: vec![0x01, 0x02, 0x03, 0x04],
+        public_key: vec![0xaa, 0xbb],
+        transports: vec!["internal".to_owned()],
+        prf_capable: true,
+        backup_eligible: Some(true),
+        backup_state: Some(false),
+    };
+    let registrar = MemoryPlatformPasskeyRegistrar::allowing(registration.clone(), [5_u8; 32]);
+    let result = registrar.register_passkey("label", "rp").expect("registers");
+    assert_eq!(result.credential_id, registration.credential_id);
+    let prf =
+        registrar.evaluate_prf(&registration.credential_id, &[0xcc; 16]).expect("prf evaluates");
+    assert_eq!(*prf, [5_u8; 32]);
+    assert!(matches!(
+        registrar.evaluate_prf(&[0x99; 4], &[0xcc; 16]),
+        Err(PlatformError::PasskeyNotFound)
+    ));
+}
+
+#[test]
+fn memory_passkey_registrar_unsupported_outcome_blocks_register() {
+    let registrar = MemoryPlatformPasskeyRegistrar::unsupported();
+    assert!(matches!(
+        registrar.register_passkey("label", "rp"),
+        Err(PlatformError::PasskeyUnsupported)
+    ));
 }

@@ -401,15 +401,266 @@ fn passkey_register_is_unavailable_without_writing_metadata()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempdir()?;
     let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    let resolved = crate::resolve_project(&context.cwd)?.ok_or("project should resolve")?;
+    let project_id = resolved.config.project_id.to_string();
 
     let mut register_output = Vec::new();
     let register = run_with_context(
-        Cli::try_parse_from(["locket", "passkey", "register"])?,
+        Cli::try_parse_from([
+            "locket",
+            "passkey",
+            "register",
+            "--label",
+            "work-laptop",
+        ])?,
         &context,
         &mut register_output,
     );
-    assert_error_contains(register, "not available");
+    let Err(error) = register else {
+        return Err("registration must fail without a platform passkey integration".into());
+    };
+    assert_eq!(
+        error.exit_code(),
+        locket_core::LocketError::PolicyValidationIncomplete.exit_code(),
+    );
     assert!(register_output.is_empty());
+
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let credentials = store.list_passkey_credentials(&project_id, true)?;
+    assert!(credentials.is_empty());
+    let denied: i64 = store.connection().query_row(
+        "SELECT COUNT(*) FROM audit_log WHERE action = 'PASSKEY_REGISTER' AND status = 'DENIED'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(denied, 1);
+    Ok(())
+}
+
+#[test]
+fn passkey_register_via_memory_registrar_writes_credential_and_audit()
+-> Result<(), Box<dyn std::error::Error>> {
+    use locket_platform::{MemoryPlatformPasskeyRegistrar, PasskeyRegistration};
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    let resolved = crate::resolve_project(&context.cwd)?.ok_or("project should resolve")?;
+    let project_id = resolved.config.project_id.to_string();
+    let registration = PasskeyRegistration {
+        credential_id: vec![0xab, 0xcd, 0xef, 0x12, 0x34, 0x56, 0x78, 0x9a],
+        public_key: vec![0x01, 0x02, 0x03, 0x04],
+        transports: vec!["internal".to_owned(), "hybrid".to_owned()],
+        prf_capable: true,
+        backup_eligible: Some(true),
+        backup_state: Some(false),
+    };
+    let registrar = Arc::new(MemoryPlatformPasskeyRegistrar::allowing(registration, [7_u8; 32]));
+    let registered_context = super::context_with_passkey_registrar(&context, registrar);
+
+    let mut register_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from([
+            "locket",
+            "passkey",
+            "register",
+            "--label",
+            "work-laptop",
+        ])?,
+        &registered_context,
+        &mut register_output,
+    )?;
+    let register_output = String::from_utf8(register_output)?;
+    assert!(register_output.contains("passkey: registered"));
+    assert!(register_output.contains("credential_id_prefix: abcdef123456"));
+    assert!(register_output.contains("rp_id: locket.localhost"));
+    assert!(register_output.contains("prf_capable: yes"));
+    assert!(register_output.contains("prf_wrapped: yes"));
+
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let credentials = store.list_passkey_credentials(&project_id, false)?;
+    assert_eq!(credentials.len(), 1);
+    assert_eq!(credentials[0].label, "work-laptop");
+    assert_eq!(credentials[0].transports, vec!["internal".to_owned(), "hybrid".to_owned()]);
+    assert!(credentials[0].prf_capable);
+    assert!(store.get_passkey_prf_wrap(&project_id, &credentials[0].id)?.is_some());
+    let metadata: String = store.connection().query_row(
+        "SELECT metadata_json FROM audit_log WHERE action = 'PASSKEY_REGISTER' AND status = 'SUCCESS'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert!(metadata.contains("\"auth_result\":\"success\""));
+    assert!(metadata.contains("\"credential_id_prefix\":\"abcdef123456\""));
+    assert!(metadata.contains("\"prf_capable\":true"));
+    Ok(())
+}
+
+#[test]
+fn passkey_unlock_round_trips_master_key_through_prf()
+-> Result<(), Box<dyn std::error::Error>> {
+    use locket_platform::{MemoryPlatformPasskeyRegistrar, PasskeyRegistration};
+
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    let resolved = crate::resolve_project(&context.cwd)?.ok_or("project should resolve")?;
+    let project_id = resolved.config.project_id.to_string();
+
+    let registration = PasskeyRegistration {
+        credential_id: vec![0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0],
+        public_key: vec![0x01, 0x02],
+        transports: vec!["internal".to_owned()],
+        prf_capable: true,
+        backup_eligible: Some(false),
+        backup_state: Some(false),
+    };
+    let registrar = Arc::new(MemoryPlatformPasskeyRegistrar::allowing(registration, [13_u8; 32]));
+    let registered_context = super::context_with_passkey_registrar(&context, registrar);
+    run_with_context(
+        Cli::try_parse_from([
+            "locket",
+            "passkey",
+            "register",
+            "--label",
+            "work-laptop",
+        ])?,
+        &registered_context,
+        &mut Vec::new(),
+    )?;
+
+    let stored_master =
+        registered_context.key_store.load_master_key(&project_id).map(|key| *key)?;
+    registered_context.key_store.delete_master_key(&project_id)?;
+    assert!(registered_context.key_store.load_master_key(&project_id).is_err());
+
+    let mut unlock_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "passkey", "unlock"])?,
+        &registered_context,
+        &mut unlock_output,
+    )?;
+    let unlock_output = String::from_utf8(unlock_output)?;
+    assert!(unlock_output.contains("passkey: unlocked"));
+    assert!(unlock_output.contains("master_key_source:"));
+
+    let recovered = registered_context.key_store.load_master_key(&project_id)?;
+    assert_eq!(*recovered, stored_master);
+
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let metadata: String = store.connection().query_row(
+        "SELECT metadata_json FROM audit_log WHERE action = 'PASSKEY_AUTH' AND status = 'SUCCESS'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert!(metadata.contains("\"auth_result\":\"success\""));
+    assert!(metadata.contains("\"credential_id_prefix\":\"123456789abc\""));
+    Ok(())
+}
+
+#[test]
+fn passkey_unlock_with_wrong_prf_output_fails_integrity()
+-> Result<(), Box<dyn std::error::Error>> {
+    use locket_platform::{MemoryPlatformPasskeyRegistrar, PasskeyRegistration};
+
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+
+    let credential_id = vec![0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0];
+    let registration = PasskeyRegistration {
+        credential_id: credential_id.clone(),
+        public_key: vec![0x01, 0x02],
+        transports: vec!["internal".to_owned()],
+        prf_capable: true,
+        backup_eligible: Some(false),
+        backup_state: Some(false),
+    };
+    let registered_context = super::context_with_passkey_registrar(
+        &context,
+        Arc::new(MemoryPlatformPasskeyRegistrar::allowing(registration, [7_u8; 32])),
+    );
+    run_with_context(
+        Cli::try_parse_from([
+            "locket",
+            "passkey",
+            "register",
+            "--label",
+            "work-laptop",
+        ])?,
+        &registered_context,
+        &mut Vec::new(),
+    )?;
+
+    let wrong_context = super::context_with_passkey_registrar(
+        &registered_context,
+        Arc::new(MemoryPlatformPasskeyRegistrar::with_known_credential(
+            [99_u8; 32],
+            credential_id,
+        )),
+    );
+    let mut output = Vec::new();
+    let result = run_with_context(
+        Cli::try_parse_from(["locket", "passkey", "unlock"])?,
+        &wrong_context,
+        &mut output,
+    );
+    let Err(error) = result else {
+        return Err("wrong PRF output must fail unlock".into());
+    };
+    assert!(matches!(
+        error,
+        crate::CliError::Crypto(locket_crypto::CryptoError::DecryptionFailed)
+    ));
+
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let denied: i64 = store.connection().query_row(
+        "SELECT COUNT(*) FROM audit_log WHERE action = 'PASSKEY_AUTH' AND status = 'DENIED'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(denied, 1);
+    Ok(())
+}
+
+#[test]
+fn passkey_unlock_without_registered_passkey_fails() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    let mut output = Vec::new();
+    let result = run_with_context(
+        Cli::try_parse_from(["locket", "passkey", "unlock"])?,
+        &context,
+        &mut output,
+    );
+    let Err(error) = result else {
+        return Err("unlock without registered passkeys must fail".into());
+    };
+    assert_eq!(
+        error.exit_code(),
+        locket_core::LocketError::InvalidReference.exit_code(),
+    );
+    assert!(error.to_string().to_lowercase().contains("passkey"));
     Ok(())
 }
 

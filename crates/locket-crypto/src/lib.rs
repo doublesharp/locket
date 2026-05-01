@@ -27,8 +27,10 @@ pub use aad::{
 };
 pub use error::{CryptoError, CryptoResult};
 pub use key_wrap::{
-    WrappedKeyMaterial, derive_wrapping_key_v1, unwrap_dek_v1, unwrap_key_material_v1, wrap_dek_v1,
-    wrap_key_material_v1,
+    PASSKEY_PRF_WRAP_SCHEMA_V1, PASSKEY_PRF_WRAP_V1_PREFIX, WrappedKeyMaterial,
+    derive_wrapping_key_v1, passkey_prf_wrap_aad_v1, unwrap_dek_v1, unwrap_key_material_v1,
+    unwrap_master_key_with_passkey_prf, wrap_dek_v1, wrap_key_material_v1,
+    wrap_master_key_with_passkey_prf,
 };
 pub use passphrase::{PassphraseKdfParams, derive_passphrase_fallback_key_v1};
 pub use purpose::{KeyPurpose, KeyWrapPurpose};
