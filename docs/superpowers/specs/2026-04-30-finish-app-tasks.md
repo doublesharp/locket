@@ -105,7 +105,7 @@ ship. Each bullet has spec ref + code ref + suggested touches.
   creation. `team/client.rs:40-181` + `store_client_private_key:276-347`
   only write to keychain/local file. Result: `recover_command`
   always counts those as `skipped_automation_client_private`.
-- [ ] **bootstrap-checklist-coverage-incomplete**:
+- [~] (in-flight: Codex bootstrap worker) **bootstrap-checklist-coverage-incomplete**:
   `team-sync-recovery.md:31-42` enumerates 9 required `locket
   bootstrap` checks. `project/bootstrap.rs:62-150` implements only
   7. Missing: agent running-or-startable check, active-profile-
