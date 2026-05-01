@@ -1,4 +1,8 @@
 <script setup lang="ts">
+// TODO(desktop-search-filter): add a search input plus filter controls
+// for state (running/completed/failed/stale), profile, and policy.
+// The runtime-sessions metadata is already loaded; client-side
+// predicate filtering belongs in this view.
 import { computed } from 'vue';
 
 import type { RuntimeSessionRow } from '../types/views';

@@ -1,4 +1,9 @@
 <script setup lang="ts">
+// TODO(desktop-search-filter): add filter controls for action (REVEAL,
+// COPY, RUN_POLICY, TEAM_*, etc.), status (OK / DENIED / FAILED),
+// profile, and a date range picker. The current view ships text
+// search; the structured filters are wired through `agent_list_audit`
+// request fields and should be exposed as chips above the table.
 import { computed, ref } from 'vue';
 
 import type { AuditLogRow } from '../types/views';

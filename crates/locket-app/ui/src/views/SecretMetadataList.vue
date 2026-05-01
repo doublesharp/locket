@@ -2,6 +2,15 @@
 import { computed, ref } from 'vue';
 
 import type { SecretRowMeta } from '../types/views';
+import {
+  defaultSecretFilter,
+  filterSecretRows,
+  isSecretFilterActive,
+  type SecretDeprecationFilter,
+  type SecretFilterState,
+  type SecretRequiredFilter,
+  type SecretSourceFilter,
+} from '../secret/filter';
 
 interface Props {
   rows: SecretRowMeta[];
@@ -19,14 +28,38 @@ const emit = defineEmits<{
 }>();
 
 const searchQuery = ref<string>('');
+const filterState = ref<SecretFilterState>(defaultSecretFilter());
+
+const metadataFilteredRows = computed<SecretRowMeta[]>(() =>
+  filterSecretRows(props.rows, filterState.value),
+);
 
 const filteredRows = computed<SecretRowMeta[]>(() => {
   const query = searchQuery.value.trim().toLowerCase();
   if (query.length === 0) {
-    return props.rows;
+    return metadataFilteredRows.value;
   }
-  return props.rows.filter((row) => searchText(row).includes(query));
+  return metadataFilteredRows.value.filter((row) => searchText(row).includes(query));
 });
+
+const filtersActive = computed<boolean>(() => isSecretFilterActive(filterState.value));
+
+function setSourceFilter(value: SecretSourceFilter): void {
+  filterState.value = { ...filterState.value, source: value };
+}
+
+function setRequiredFilter(value: SecretRequiredFilter): void {
+  filterState.value = { ...filterState.value, required: value };
+}
+
+function setDeprecationFilter(value: SecretDeprecationFilter): void {
+  filterState.value = { ...filterState.value, deprecation: value };
+}
+
+function clearFilters(): void {
+  filterState.value = defaultSecretFilter();
+  searchQuery.value = '';
+}
 
 const isEmpty = computed<boolean>(() => !props.loading && props.rows.length === 0);
 const isFilteredEmpty = computed<boolean>(
@@ -107,6 +140,70 @@ function onKey(event: KeyboardEvent, row: SecretRowMeta): void {
         />
       </label>
     </header>
+
+    <fieldset class="view__filters" aria-labelledby="secret-filter-legend">
+      <legend id="secret-filter-legend" class="view__filters-legend">Filters (metadata only)</legend>
+      <div class="view__filter-group" role="group" aria-label="Filter by source">
+        <span class="view__filter-label">Source</span>
+        <button
+          v-for="option in [
+            { value: 'all', label: 'All' },
+            { value: 'team', label: 'Team' },
+            { value: 'user-local', label: 'User-local' },
+            { value: 'machine-local', label: 'Machine-local' },
+          ] as const"
+          :key="option.value"
+          type="button"
+          :class="['view__filter-chip', { 'view__filter-chip--active': filterState.source === option.value }]"
+          :aria-pressed="filterState.source === option.value"
+          @click="setSourceFilter(option.value)"
+        >
+          {{ option.label }}
+        </button>
+      </div>
+      <div class="view__filter-group" role="group" aria-label="Filter by required">
+        <span class="view__filter-label">Required</span>
+        <button
+          v-for="option in [
+            { value: 'all', label: 'All' },
+            { value: 'required', label: 'Required' },
+            { value: 'optional', label: 'Optional' },
+          ] as const"
+          :key="option.value"
+          type="button"
+          :class="['view__filter-chip', { 'view__filter-chip--active': filterState.required === option.value }]"
+          :aria-pressed="filterState.required === option.value"
+          @click="setRequiredFilter(option.value)"
+        >
+          {{ option.label }}
+        </button>
+      </div>
+      <div class="view__filter-group" role="group" aria-label="Filter by deprecation">
+        <span class="view__filter-label">Status</span>
+        <button
+          v-for="option in [
+            { value: 'all', label: 'All' },
+            { value: 'current', label: 'Current' },
+            { value: 'deprecated', label: 'Deprecated grace' },
+          ] as const"
+          :key="option.value"
+          type="button"
+          :class="['view__filter-chip', { 'view__filter-chip--active': filterState.deprecation === option.value }]"
+          :aria-pressed="filterState.deprecation === option.value"
+          @click="setDeprecationFilter(option.value)"
+        >
+          {{ option.label }}
+        </button>
+      </div>
+      <button
+        v-if="filtersActive || searchQuery.length > 0"
+        type="button"
+        class="view__filter-clear"
+        @click="clearFilters"
+      >
+        Clear filters
+      </button>
+    </fieldset>
 
     <p v-if="errorMessage" class="view__error">{{ errorMessage }}</p>
 
@@ -269,6 +366,67 @@ function onKey(event: KeyboardEvent, row: SecretRowMeta): void {
 
 .view__search input::placeholder {
   color: #667085;
+}
+
+.view__filters {
+  margin: 0 0 0.75rem;
+  padding: 0.625rem 0.75rem;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 0.375rem;
+  background: rgba(255, 255, 255, 0.02);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 0.875rem;
+  align-items: center;
+}
+.view__filters-legend {
+  padding: 0 0.25rem;
+  color: #9aa3b2;
+  font-size: 0.7rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.view__filter-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  flex-wrap: wrap;
+}
+.view__filter-label {
+  font-size: 0.7rem;
+  color: #9aa3b2;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  margin-right: 0.25rem;
+}
+.view__filter-chip {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.04);
+  color: #c5cbd6;
+  font: inherit;
+  font-size: 0.75rem;
+  padding: 0.125rem 0.5rem;
+  border-radius: 999px;
+  cursor: pointer;
+}
+.view__filter-chip--active {
+  background: rgba(248, 215, 122, 0.16);
+  color: #f8d77a;
+  border-color: rgba(248, 215, 122, 0.5);
+}
+.view__filter-chip:focus-visible {
+  outline: 2px solid #f8d77a;
+  outline-offset: 1px;
+}
+.view__filter-clear {
+  margin-left: auto;
+  border: 0;
+  background: transparent;
+  color: #9aa3b2;
+  font: inherit;
+  font-size: 0.75rem;
+  text-decoration: underline;
+  cursor: pointer;
 }
 
 .view__loading,

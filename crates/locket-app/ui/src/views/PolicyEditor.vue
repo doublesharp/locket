@@ -1,4 +1,8 @@
 <script setup lang="ts">
+// TODO(desktop-search-filter): add filter controls for command kind
+// (argv vs shell), env mode, override mode, and dangerous gates
+// (require_user_verification / allow_remote_docker / confirm). Today
+// only free-text search runs over policy metadata.
 import { computed, ref } from 'vue';
 
 import type { CommandPolicyRow } from '../types/views';

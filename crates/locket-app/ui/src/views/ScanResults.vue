@@ -1,4 +1,8 @@
 <script setup lang="ts">
+// TODO(desktop-search-filter): add filter controls for severity
+// (critical/high/medium/low), rule, and suppression state
+// (suppressed-by-marker vs unsuppressed). Today only free-text search
+// runs over the redacted finding summaries.
 import { computed, ref } from 'vue';
 
 import type { ScanFindingRow } from '../types/views';

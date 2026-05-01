@@ -1,4 +1,8 @@
 <script setup lang="ts">
+// TODO(desktop-search-filter): add filter controls for kind
+// (device vs member), role (owner/maintainer/developer/read-only), and
+// status (active/revoked/removed/pending). Today only free-text search
+// runs over device-and-member metadata.
 import { computed, ref } from 'vue';
 
 import type { DeviceMemberRow } from '../types/views';

@@ -1,4 +1,7 @@
 <script setup lang="ts">
+// TODO(desktop-search-filter): add a search input and a dangerous-flag
+// filter so large profile lists stay manageable; today only the
+// recent-targets list is surfaced and free-text search is missing.
 import { computed, ref } from 'vue';
 
 import {
