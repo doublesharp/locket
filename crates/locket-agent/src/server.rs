@@ -604,7 +604,9 @@ pub async fn dispatch(envelope: &RequestEnvelope, state: &AgentSocketState) -> R
         Ok(AgentMethod::ExpireGrant) => handle_expire_grant(envelope, state).await,
         Ok(AgentMethod::Reveal) => crate::reveal::handle_reveal(envelope),
         Ok(AgentMethod::Copy) => crate::reveal::handle_copy(envelope),
-        Ok(AgentMethod::ScanKnownValues) => crate::scan::handle_scan(envelope),
+        Ok(AgentMethod::ScanKnownValues) => {
+            crate::scan::handle_scan(envelope, state, current_unix_nanos()).await
+        }
         Ok(AgentMethod::ListRuntimeSessions) => handle_list_runtime_sessions(envelope, state).await,
         Ok(AgentMethod::ListPolicies) => handle_list_policies(envelope, state).await,
         Ok(AgentMethod::ResolveReference) => {
