@@ -10,8 +10,11 @@ import type {
   AgentConfigSettings,
   AgentStatus,
   AgentStatusEvent,
+  BackupActionResponse,
   CopyRequest,
   CopyResponse,
+  ExportBundleRequest,
+  ImportBundleRequest,
   ListDeviceMembersRequest,
   ListDeviceMembersResponse,
   ListAuditRequest,
@@ -29,6 +32,7 @@ import type {
   PrepareExecRequest,
   PrepareExecResponse,
   ReadConfigRequest,
+  RecoveryRotateRequest,
   RegisterCommandPoliciesRequest,
   ResolveRequest,
   ResolveResponse,
@@ -42,6 +46,8 @@ import type {
   WriteConfigResponse,
   VerifyAuditRequest,
   VerifyAuditResponse,
+  VerifyBundleRequest,
+  VerifyBundleResponse,
 } from './types';
 
 export type AgentStatusResult =
@@ -224,6 +230,30 @@ export async function policyDoctor(
   request: PolicyDoctorRequest,
 ): Promise<AgentResult<PolicyDoctorResponse>> {
   return callTyped<PolicyDoctorResponse>('agent_policy_doctor', { request });
+}
+
+export async function exportBundle(
+  request: ExportBundleRequest,
+): Promise<AgentResult<BackupActionResponse>> {
+  return callTyped<BackupActionResponse>('agent_export_bundle', { request });
+}
+
+export async function importBundle(
+  request: ImportBundleRequest,
+): Promise<AgentResult<BackupActionResponse>> {
+  return callTyped<BackupActionResponse>('agent_import_bundle', { request });
+}
+
+export async function verifyBundle(
+  request: VerifyBundleRequest,
+): Promise<AgentResult<VerifyBundleResponse>> {
+  return callTyped<VerifyBundleResponse>('agent_verify_bundle', { request });
+}
+
+export async function recoveryRotate(
+  request: RecoveryRotateRequest,
+): Promise<AgentResult<BackupActionResponse>> {
+  return callTyped<BackupActionResponse>('agent_recovery_rotate', { request });
 }
 
 export async function listRuntimeSessions(

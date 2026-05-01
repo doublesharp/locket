@@ -92,27 +92,40 @@ ship. Each bullet has spec ref + code ref + suggested touches.
   and add on-Windows ACL/transport integration coverage.
 ### D. Desktop / integrations / scan
 
-- [~] (in-flight: feature/desktop-backup-actions) **backup-recovery-view-not-wired**: `BackupRecovery.vue`
-  renders forms for export/import/verify/recovery-rotate but
-  `@action` events all funnel into `App.vue:1212-1214`'s
-  `triggerBackupAction` which only calls `refresh()`. No agent RPC
-  invoked. `desktop.md:20` lists this as a primary view. Touches:
-  add Tauri commands wrapping `ExportBundle`/`ImportBundle`/
-  `VerifyBundle`/`RecoveryRotate` (some need new agent RPCs — none
-  in `agent/method.rs:9-72`); typed-confirmation for destructive
-  paths.
+- Shipped: **backup-recovery-view-wired** — `BackupRecovery.vue`
+  now emits typed export/import/verify/recovery-rotate requests,
+  `App.vue` calls scoped Tauri commands, and the agent method
+  registry/dispatch includes `ExportBundle`, `ImportBundle`,
+  `VerifyBundle`, and `RecoveryRotate`. `VerifyBundle` performs
+  structural container + age-payload validation; the other
+  destructive/material-writing paths fail closed with typed
+  metadata-only `not-implemented` responses until the CLI bundle and
+  recovery core is shared with the agent.
+- [ ] **agent-export-bundle-core**: `ExportBundle` reaches the typed
+  agent path but does not yet create a sealed bundle. Extract the
+  export implementation from `locket-cli/src/commands/team/bundle.rs`
+  into shared core usable by `locket-agent`, preserving recipient
+  descriptor validation, selected profile scope, audit metadata, and
+  metadata-only responses.
+- [ ] **agent-import-bundle-core**: `ImportBundle` reaches the typed
+  agent path, validates unlock state and input path, then returns
+  `not-implemented`. Extract/apply the bundle import core in the
+  agent with conflict policies (`review`, `accept-incoming`,
+  `accept-local`) and local audit writes.
+- [ ] **agent-recovery-rotate-core**: `RecoveryRotate` reaches the
+  typed agent path and enforces one-time-display acknowledgement, but
+  still lacks fresh platform/current-code verification and recovery
+  envelope rewrite from `vault/recovery.rs`.
 - [ ] **secret-row-cross-reference-deprecation**: `desktop.md:34`
   requires secret rows to surface version-level deprecation warnings
   when current policy/command-preview/`lk://...@vN` reference
   depends on a deprecated version with active or expired grace.
   `SecretMetadataList.vue` only shows per-row `hasDeprecatedGrace`
   badge from row's own state.
-- [~] (in-flight: feature/desktop-backup-actions) **tray-privacy-alias-not-applied**: `desktop.md:37,72-73,94-95`
-  requires tray tooltip + notifications to use stable local aliases
-  when `privacy.redact_names = true`. Rust `tray::tooltip_for`
-  (`tray.rs:345-347`) returns static `descriptor().label`
-  regardless. Forward-looking gap once `status-payload-tray-fields`
-  lands and tooltips include project/profile context.
+- Shipped: **tray-privacy-aliases** — the webview now pushes
+  redaction-aware tray privacy context, and Rust tray tooltip/status
+  rendering aliases active project/profile labels with the canonical
+  `locket_core::privacy_alias` when `privacy.redact_names = true`.
 
 ### E. Quality / ops / build
 

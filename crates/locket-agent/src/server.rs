@@ -830,6 +830,12 @@ pub async fn dispatch(envelope: &RequestEnvelope, state: &AgentSocketState) -> R
         Ok(AgentMethod::PolicyDoctor) => {
             crate::policies::handle_policy_doctor(envelope, state, current_unix_nanos()).await
         }
+        Ok(AgentMethod::ExportBundle) => crate::backup::handle_export_bundle(envelope, state).await,
+        Ok(AgentMethod::ImportBundle) => crate::backup::handle_import_bundle(envelope, state).await,
+        Ok(AgentMethod::VerifyBundle) => crate::backup::handle_verify_bundle(envelope),
+        Ok(AgentMethod::RecoveryRotate) => {
+            crate::backup::handle_recovery_rotate(envelope, state).await
+        }
         Ok(AgentMethod::ResolveReference) => {
             crate::resolve::handle_resolve(envelope, state, current_unix_nanos()).await
         }

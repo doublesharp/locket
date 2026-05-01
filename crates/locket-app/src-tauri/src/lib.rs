@@ -35,8 +35,9 @@ pub use clipboard::{
 };
 pub use tray::{
     LOCKET_TRAY_ID, TRAY_MENU_ACTION_EVENT, TrayMenuAction, TrayMenuItemEnablement,
-    TrayMenuSideEffect, TraySelectionState, TrayState, icon_bytes_for, refresh_tray_menu,
-    setup_tray, store_selection_state, tooltip_for, tray_menu_action_enablement,
+    TrayMenuSideEffect, TrayPrivacyContext, TraySelectionState, TrayState, icon_bytes_for,
+    refresh_tray_menu, refresh_tray_tooltip, setup_tray, store_privacy_context,
+    store_selection_state, tooltip_for, tooltip_for_context, tray_menu_action_enablement,
     tray_menu_action_for_id, tray_menu_action_side_effect, tray_menu_action_view,
     tray_menu_actions, tray_state_for_status, tray_state_for_status_event, update_tray_state,
 };
@@ -480,6 +481,42 @@ async fn agent_policy_doctor(
         .await
 }
 
+/// Tauri command exposing the agent's typed sealed-bundle export path.
+#[tauri::command]
+async fn agent_export_bundle(
+    request: locket_agent::ExportBundleRequest,
+) -> Result<locket_agent::BackupActionResponse, AgentClientError> {
+    let path = agent_client::resolve_socket_path();
+    agent_client::invoke_method(&path, locket_agent::AgentMethod::ExportBundle, &request).await
+}
+
+/// Tauri command exposing the agent's typed sealed-bundle import path.
+#[tauri::command]
+async fn agent_import_bundle(
+    request: locket_agent::ImportBundleRequest,
+) -> Result<locket_agent::BackupActionResponse, AgentClientError> {
+    let path = agent_client::resolve_socket_path();
+    agent_client::invoke_method(&path, locket_agent::AgentMethod::ImportBundle, &request).await
+}
+
+/// Tauri command exposing non-destructive sealed-bundle verification.
+#[tauri::command]
+async fn agent_verify_bundle(
+    request: locket_agent::VerifyBundleRequest,
+) -> Result<locket_agent::VerifyBundleResponse, AgentClientError> {
+    let path = agent_client::resolve_socket_path();
+    agent_client::invoke_method(&path, locket_agent::AgentMethod::VerifyBundle, &request).await
+}
+
+/// Tauri command exposing the agent's typed recovery-code rotation path.
+#[tauri::command]
+async fn agent_recovery_rotate(
+    request: locket_agent::RecoveryRotateRequest,
+) -> Result<locket_agent::BackupActionResponse, AgentClientError> {
+    let path = agent_client::resolve_socket_path();
+    agent_client::invoke_method(&path, locket_agent::AgentMethod::RecoveryRotate, &request).await
+}
+
 /// Tauri command exposing the agent's metadata-only runtime session list.
 #[tauri::command]
 async fn agent_list_runtime_sessions(
@@ -825,6 +862,19 @@ async fn tray_set_selection(
     tray::refresh_tray_menu(&app).map_err(|error| error.to_string())
 }
 
+/// Tauri command pushing redaction-aware tray tooltip context from the webview.
+#[tauri::command]
+async fn tray_set_privacy_context(
+    app: tauri::AppHandle,
+    context: TrayPrivacyContext,
+) -> Result<(), String> {
+    let previous = tray::store_privacy_context(context.clone());
+    if previous == context {
+        return Ok(());
+    }
+    tray::refresh_tray_tooltip(&app).map_err(|error| error.to_string())
+}
+
 /// Run the Locket desktop application.
 ///
 /// Builds the Tauri 2 app, registers the scoped IPC handlers, sets up
@@ -851,6 +901,10 @@ pub fn run() -> tauri::Result<()> {
             agent_resolve,
             agent_prepare_exec,
             agent_policy_doctor,
+            agent_export_bundle,
+            agent_import_bundle,
+            agent_verify_bundle,
+            agent_recovery_rotate,
             agent_list_runtime_sessions,
             agent_list_policies,
             agent_register_command_policies,
@@ -866,6 +920,7 @@ pub fn run() -> tauri::Result<()> {
             agent_copy_secret,
             tray_set_state,
             tray_set_selection,
+            tray_set_privacy_context,
         ])
         .setup(|app| {
             #[cfg(debug_assertions)]

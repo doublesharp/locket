@@ -8,8 +8,12 @@ import { describe, expect, it } from 'vitest';
 
 import { privacyAlias } from './privacy';
 
+function digestInput(bytes: Uint8Array): ArrayBuffer {
+  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+}
+
 async function sha256First4Hex(bytes: Uint8Array): Promise<string> {
-  const digest = await crypto.subtle.digest('SHA-256', bytes);
+  const digest = await crypto.subtle.digest('SHA-256', digestInput(bytes));
   return Array.from(new Uint8Array(digest).slice(0, 4))
     .map((byte) => byte.toString(16).padStart(2, '0'))
     .join('');
@@ -70,9 +74,7 @@ describe('privacyAlias', () => {
   });
 
   it('differs from legacy unprefixed body', async () => {
-    const legacyBody = new TextEncoder().encode(
-      `locket-privacy-alias-v1kind:profile;id:prod`,
-    );
+    const legacyBody = new TextEncoder().encode(`locket-privacy-alias-v1kind:profile;id:prod`);
     const legacyHex = await sha256First4Hex(legacyBody);
     const alias = await privacyAlias('profile', 'prod');
     expect(alias).not.toBe(`profile-${legacyHex}`);

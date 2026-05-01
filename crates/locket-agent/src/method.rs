@@ -69,6 +69,14 @@ pub enum AgentMethod {
     RegisterCommandPolicies,
     /// Dry-run validate a command policy through the agent.
     PolicyDoctor,
+    /// Export a sealed backup bundle through the desktop agent path.
+    ExportBundle,
+    /// Import a sealed backup bundle through the desktop agent path.
+    ImportBundle,
+    /// Verify a sealed backup bundle through the desktop agent path.
+    VerifyBundle,
+    /// Rotate the recovery code through the desktop agent path.
+    RecoveryRotate,
 }
 
 impl AgentMethod {
@@ -107,6 +115,10 @@ impl AgentMethod {
             Self::IdeEnvSession => "IdeEnvSession",
             Self::RegisterCommandPolicies => "RegisterCommandPolicies",
             Self::PolicyDoctor => "PolicyDoctor",
+            Self::ExportBundle => "ExportBundle",
+            Self::ImportBundle => "ImportBundle",
+            Self::VerifyBundle => "VerifyBundle",
+            Self::RecoveryRotate => "RecoveryRotate",
         }
     }
 }
@@ -147,6 +159,10 @@ impl FromStr for AgentMethod {
             "IdeEnvSession" => Ok(Self::IdeEnvSession),
             "RegisterCommandPolicies" => Ok(Self::RegisterCommandPolicies),
             "PolicyDoctor" => Ok(Self::PolicyDoctor),
+            "ExportBundle" => Ok(Self::ExportBundle),
+            "ImportBundle" => Ok(Self::ImportBundle),
+            "VerifyBundle" => Ok(Self::VerifyBundle),
+            "RecoveryRotate" => Ok(Self::RecoveryRotate),
             other => Err(UnknownMethod { method: other.to_owned() }),
         }
     }

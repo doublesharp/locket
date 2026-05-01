@@ -1,40 +1,15 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
 
+import type {
+  BundleAction,
+  ExportDraft,
+  ImportDraft,
+  RotateDraft,
+  VerifyDraft,
+} from '../backup/actions';
+
 defineOptions({ name: 'BackupRecovery' });
-
-type ExportScope = 'active-profile' | 'all-profiles';
-type ConflictMode = 'review' | 'accept-incoming' | 'accept-local';
-type RecoveryVerification = 'platform' | 'current-code';
-
-interface BundleAction {
-  kind: 'export' | 'import' | 'verify' | 'rotate';
-  label: string;
-}
-
-interface ExportDraft {
-  recipientDescriptor: string;
-  scope: ExportScope;
-  includeAudit: boolean;
-  outputPath: string;
-}
-
-interface ImportDraft {
-  bundlePath: string;
-  includeAudit: boolean;
-  conflictMode: ConflictMode;
-}
-
-interface VerifyDraft {
-  bundlePath: string;
-  requireDecryptable: boolean;
-}
-
-interface RotateDraft {
-  verification: RecoveryVerification;
-  acknowledgedOneTimeDisplay: boolean;
-  clearAfterDisplay: boolean;
-}
 
 const emit = defineEmits<{
   (e: 'action', action: BundleAction): void;
@@ -69,8 +44,36 @@ const canImport = computed<boolean>(() => importDraft.value.bundlePath.trim().le
 const canVerify = computed<boolean>(() => verifyDraft.value.bundlePath.trim().length > 0);
 const canRotate = computed<boolean>(() => rotateDraft.value.acknowledgedOneTimeDisplay);
 
-function emitAction(kind: BundleAction['kind'], label: string): void {
-  emit('action', { kind, label });
+function exportAction(): void {
+  emit('action', {
+    kind: 'export',
+    label: 'export sealed bundle',
+    request: { ...exportDraft.value },
+  });
+}
+
+function importAction(): void {
+  emit('action', {
+    kind: 'import',
+    label: 'import bundle',
+    request: { ...importDraft.value },
+  });
+}
+
+function verifyAction(): void {
+  emit('action', {
+    kind: 'verify',
+    label: 'verify bundle',
+    request: { ...verifyDraft.value },
+  });
+}
+
+function rotateAction(): void {
+  emit('action', {
+    kind: 'rotate',
+    label: 'rotate recovery code',
+    request: { ...rotateDraft.value },
+  });
 }
 </script>
 
@@ -120,12 +123,7 @@ function emitAction(kind: BundleAction['kind'], label: string): void {
           <input v-model.trim="exportDraft.outputPath" type="text" autocomplete="off" />
         </label>
 
-        <button
-          type="button"
-          class="view__action"
-          :disabled="!canExport"
-          @click="emitAction('export', 'export sealed bundle')"
-        >
+        <button type="button" class="view__action" :disabled="!canExport" @click="exportAction">
           Export
         </button>
       </section>
@@ -162,12 +160,7 @@ function emitAction(kind: BundleAction['kind'], label: string): void {
           </label>
         </fieldset>
 
-        <button
-          type="button"
-          class="view__action"
-          :disabled="!canImport"
-          @click="emitAction('import', 'import bundle')"
-        >
+        <button type="button" class="view__action" :disabled="!canImport" @click="importAction">
           Import
         </button>
       </section>
@@ -199,12 +192,7 @@ function emitAction(kind: BundleAction['kind'], label: string): void {
           </div>
         </dl>
 
-        <button
-          type="button"
-          class="view__action"
-          :disabled="!canVerify"
-          @click="emitAction('verify', 'verify bundle')"
-        >
+        <button type="button" class="view__action" :disabled="!canVerify" @click="verifyAction">
           Verify
         </button>
       </section>
@@ -241,7 +229,7 @@ function emitAction(kind: BundleAction['kind'], label: string): void {
           type="button"
           class="view__action view__action--danger"
           :disabled="!canRotate"
-          @click="emitAction('rotate', 'rotate recovery code')"
+          @click="rotateAction"
         >
           Rotate
         </button>

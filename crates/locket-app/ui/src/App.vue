@@ -9,6 +9,8 @@ import ProfileSwitcherView from './views/ProfileSwitcherView.vue';
 import RevealModal from './components/RevealModal.vue';
 import {
   copySecret,
+  exportBundle,
+  importBundle,
   listAudit,
   listDeviceMembers,
   listPolicies,
@@ -17,6 +19,7 @@ import {
   listVersions,
   lockVault,
   readConfig,
+  recoveryRotate,
   registerCommandPolicies,
   reveal as revealAgent,
   rotateSecret,
@@ -25,16 +28,11 @@ import {
   setSecret,
   writeConfig,
   verifyAudit,
+  verifyBundle,
 } from './agent/client';
 import type { SetSecretRequest, SetSecretResponse } from './agent/client';
-import {
-  applyPolicyMutation,
-  type PolicyFormMode,
-} from './policy/form';
-import {
-  rememberTarget,
-  type ProfileSwitchState,
-} from './profile/switcher';
+import { applyPolicyMutation, type PolicyFormMode } from './policy/form';
+import { rememberTarget, type ProfileSwitchState } from './profile/switcher';
 import type { CommandPolicySnapshotWire } from './agent/types';
 import { deviceMemberRow } from './agent/deviceMembers';
 import { commandPolicyRow } from './agent/policies';
@@ -45,6 +43,7 @@ import { useAgent } from './composables/useAgent';
 import { useTray } from './composables/useTray';
 import AuditLog from './views/AuditLog.vue';
 import BackupRecovery from './views/BackupRecovery.vue';
+import type { BundleAction } from './backup/actions';
 import DeviceMemberDirectory from './views/DeviceMemberDirectory.vue';
 import ExecutionMonitor from './views/ExecutionMonitor.vue';
 import PolicyEditor from './views/PolicyEditor.vue';
@@ -232,6 +231,9 @@ const scanning = ref<boolean>(false);
 const scanLocked = ref<boolean>(false);
 const scanError = ref<string | null>(null);
 const lastScanAt = ref<string | undefined>(undefined);
+const backupBusy = ref<boolean>(false);
+const backupNotice = ref<string | null>(null);
+const backupError = ref<string | null>(null);
 const auditChainOk = ref<boolean>(true);
 
 const settings = ref<SettingsState>({
@@ -473,13 +475,40 @@ async function pushTraySelection(): Promise<void> {
   }
 }
 
+async function pushTrayPrivacyContext(): Promise<void> {
+  if (!isTauri()) {
+    return;
+  }
+  try {
+    await invoke<void>('tray_set_privacy_context', {
+      context: {
+        project_id: status.value?.project_id ?? null,
+        profile_name: status.value?.profile_name ?? null,
+        privacy_redact_names: settings.value.privacyRedactNames,
+      },
+    });
+  } catch {
+    // Tray tooltip refresh failures are local-only; the next status or
+    // settings change retries with the current context.
+  }
+}
+
 watch(
-  [
-    () => status.value?.lock_state,
-    selectedSecret,
-  ],
+  [() => status.value?.lock_state, selectedSecret],
   () => {
     void pushTraySelection();
+  },
+  { immediate: true },
+);
+
+watch(
+  [
+    () => status.value?.project_id,
+    () => status.value?.profile_name,
+    () => settings.value.privacyRedactNames,
+  ],
+  () => {
+    void pushTrayPrivacyContext();
   },
   { immediate: true },
 );
@@ -827,10 +856,7 @@ const profileSwitchError = ref<string | null>(null);
 const profileSwitchLastAt = ref<string | undefined>(undefined);
 
 watch(
-  [
-    () => status.value?.profile_name ?? null,
-    () => settings.value.dangerousProfileFlag,
-  ],
+  [() => status.value?.profile_name ?? null, () => settings.value.dangerousProfileFlag],
   ([nextProfile, nextDangerous]) => {
     profileSwitchState.value = {
       ...profileSwitchState.value,
@@ -1209,8 +1235,95 @@ async function triggerRescan(): Promise<void> {
   scanning.value = false;
 }
 
-function triggerBackupAction(): void {
-  void refresh();
+function backupErrorLabel(error: AgentClientError): string {
+  switch (error.kind) {
+    case 'unavailable':
+      return 'Agent unavailable.';
+    case 'protocol':
+      return 'Backup request failed.';
+    case 'rejected':
+      return error.code;
+    default:
+      return 'Backup request failed.';
+  }
+}
+
+async function triggerBackupAction(action: BundleAction): Promise<void> {
+  backupBusy.value = true;
+  backupNotice.value = null;
+  backupError.value = null;
+  const projectId = status.value?.project_id;
+  if (projectId === null || projectId === undefined) {
+    backupError.value = 'Active project unavailable.';
+    backupBusy.value = false;
+    return;
+  }
+
+  switch (action.kind) {
+    case 'export': {
+      const result = await exportBundle({
+        project_id: projectId,
+        profile_id: status.value?.profile_name ?? null,
+        recipient_descriptor: action.request.recipientDescriptor,
+        scope: action.request.scope,
+        include_audit: action.request.includeAudit,
+        output_path: action.request.outputPath || null,
+      });
+      if (result.ok) {
+        backupNotice.value = `${result.value.status}: ${result.value.message}`;
+        await refresh();
+      } else {
+        backupError.value = backupErrorLabel(result.error);
+      }
+      break;
+    }
+    case 'import': {
+      const result = await importBundle({
+        project_id: projectId,
+        bundle_path: action.request.bundlePath,
+        include_audit: action.request.includeAudit,
+        conflict_mode: action.request.conflictMode,
+      });
+      if (result.ok) {
+        backupNotice.value = `${result.value.status}: ${result.value.message}`;
+        await refresh();
+      } else {
+        backupError.value = backupErrorLabel(result.error);
+      }
+      break;
+    }
+    case 'verify': {
+      const result = await verifyBundle({
+        bundle_path: action.request.bundlePath,
+        require_decryptable: action.request.requireDecryptable,
+      });
+      if (result.ok) {
+        backupNotice.value = result.value.message;
+        await refresh();
+      } else {
+        backupError.value = backupErrorLabel(result.error);
+      }
+      break;
+    }
+    case 'rotate': {
+      const result = await recoveryRotate({
+        project_id: projectId,
+        verification: action.request.verification,
+        acknowledged_one_time_display: action.request.acknowledgedOneTimeDisplay,
+        clear_after_display: action.request.clearAfterDisplay,
+      });
+      if (result.ok) {
+        backupNotice.value = `${result.value.status}: ${result.value.message}`;
+        await refresh();
+      } else {
+        backupError.value = backupErrorLabel(result.error);
+      }
+      break;
+    }
+    default:
+      break;
+  }
+  backupBusy.value = false;
 }
 
 async function handleSetSecret(
@@ -1290,7 +1403,8 @@ onUnmounted(() => {
               :data-connected="connected ? 'true' : 'false'"
               role="status"
               aria-live="polite"
-            >{{ connectionLabel }}</span>
+              >{{ connectionLabel }}</span
+            >
           </dd>
         </dl>
         <section class="shell__activity" aria-label="Recent activity">
@@ -1457,7 +1571,12 @@ onUnmounted(() => {
         @revoke="handleTeamInviteRevoke"
       />
 
-      <BackupRecovery v-else-if="currentView === 'recovery'" @action="triggerBackupAction" />
+      <template v-else-if="currentView === 'recovery'">
+        <BackupRecovery @action="triggerBackupAction" />
+        <p v-if="backupBusy" class="shell__notice">Backup action running…</p>
+        <p v-if="backupNotice" class="shell__notice">{{ backupNotice }}</p>
+        <p v-if="backupError" role="alert" class="shell__notice">{{ backupError }}</p>
+      </template>
 
       <Settings
         v-else-if="currentView === 'settings'"

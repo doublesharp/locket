@@ -8,6 +8,7 @@ mod audit;
 mod audit_deny;
 mod audit_verify;
 mod auth;
+mod backup;
 #[cfg(unix)]
 mod clients;
 mod config;
@@ -41,6 +42,11 @@ mod versions;
 pub use audit::{AuditChainStatus, ListAuditRequest, ListAuditResponse, ListAuditRow};
 pub use audit_verify::{VerifyAuditRequest, VerifyAuditResponse};
 pub use auth::{ClientHelloRequest, ClientHelloResponse};
+pub use backup::{
+    BackupActionResponse, BundleConflictMode, BundleExportScope, ExportBundleRequest,
+    ImportBundleRequest, RecoveryRotateRequest, RecoveryVerification, VerifyBundleRequest,
+    VerifyBundleResponse,
+};
 #[cfg(unix)]
 pub use clients::{
     RegisterClientRequest, RegisterClientResponse, RevokeClientRequest, RevokeClientResponse,

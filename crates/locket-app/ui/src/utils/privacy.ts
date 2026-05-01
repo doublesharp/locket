@@ -59,13 +59,17 @@ function concatBytes(...chunks: Uint8Array[]): Uint8Array {
   return out;
 }
 
+function digestInput(bytes: Uint8Array): ArrayBuffer {
+  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+}
+
 export async function privacyAlias(kind: PrivacyAliasKind, id: string): Promise<string> {
   const payload = concatBytes(
     textEncoder.encode(ALIAS_DOMAIN),
     encodeField('kind', kind),
     encodeField('id', id),
   );
-  const digest = await crypto.subtle.digest('SHA-256', payload);
+  const digest = await crypto.subtle.digest('SHA-256', digestInput(payload));
   return `${kind}-${toHex(new Uint8Array(digest).slice(0, 4))}`;
 }
 

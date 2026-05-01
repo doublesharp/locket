@@ -15,6 +15,10 @@ commands.allow = [
   "agent_resolve",
   "agent_prepare_exec",
   "agent_policy_doctor",
+  "agent_export_bundle",
+  "agent_import_bundle",
+  "agent_verify_bundle",
+  "agent_recovery_rotate",
   "agent_list_runtime_sessions",
   "agent_list_policies",
   "agent_register_command_policies",
@@ -30,5 +34,6 @@ commands.allow = [
   "agent_copy_secret",
   "tray_set_state",
   "tray_set_selection",
+  "tray_set_privacy_context",
 ]
 commands.deny = []

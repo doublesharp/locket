@@ -58,6 +58,10 @@ fn agent_methods_round_trip_through_wire_names() -> Result<(), UnknownMethod> {
         AgentMethod::IdeEnvSession,
         AgentMethod::RegisterCommandPolicies,
         AgentMethod::PolicyDoctor,
+        AgentMethod::ExportBundle,
+        AgentMethod::ImportBundle,
+        AgentMethod::VerifyBundle,
+        AgentMethod::RecoveryRotate,
     ];
 
     for method in methods {

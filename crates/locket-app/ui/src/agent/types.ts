@@ -243,6 +243,55 @@ export interface PolicyDoctorResponse {
   env_mode_denied: string[];
 }
 
+export type BundleExportScope = 'active-profile' | 'all-profiles';
+export type BundleConflictMode = 'review' | 'accept-incoming' | 'accept-local';
+export type RecoveryVerification = 'platform' | 'current-code';
+
+export interface ExportBundleRequest {
+  project_id: string;
+  profile_id?: string | null;
+  recipient_descriptor: string;
+  scope: BundleExportScope;
+  include_audit: boolean;
+  output_path?: string | null;
+}
+
+export interface ImportBundleRequest {
+  project_id: string;
+  bundle_path: string;
+  include_audit: boolean;
+  conflict_mode: BundleConflictMode;
+}
+
+export interface VerifyBundleRequest {
+  bundle_path: string;
+  require_decryptable: boolean;
+}
+
+export interface RecoveryRotateRequest {
+  project_id: string;
+  verification: RecoveryVerification;
+  acknowledged_one_time_display: boolean;
+  clear_after_display: boolean;
+}
+
+export interface BackupActionResponse {
+  action: string;
+  status: string;
+  message: string;
+}
+
+export interface VerifyBundleResponse {
+  structural_valid: boolean;
+  schema_version: number;
+  project_id: string;
+  profile_count: number;
+  recipient_count: number;
+  payload_digest: string;
+  decryptable_by_this_device?: boolean | null;
+  message: string;
+}
+
 /**
  * Wire shape for `agent_set_active_profile`. Mirrors the desktop's
  * `DesktopSetActiveProfileRequest` so the webview only fills the

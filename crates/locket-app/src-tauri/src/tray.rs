@@ -21,6 +21,7 @@
 
 use locket_agent::{LockState, StatusEvent, StatusPayload};
 use locket_app::TrayIconState;
+use locket_core::privacy_alias;
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 use tauri::image::Image;
@@ -136,6 +137,32 @@ pub struct TraySelectionState {
     /// list. Carries no name or value — selection identity is owned by
     /// the webview, the tray module only needs the boolean predicate.
     pub secret_selected: bool,
+}
+
+/// Potentially sensitive status context used to render tray hover text.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Deserialize, Serialize)]
+pub struct TrayPrivacyContext {
+    /// Active project id/name from the agent status payload.
+    pub project_id: Option<String>,
+    /// Active profile id/name from the agent status payload.
+    pub profile_name: Option<String>,
+    /// Whether names should be replaced with stable local aliases.
+    #[serde(default)]
+    pub privacy_redact_names: bool,
+}
+
+impl TrayPrivacyContext {
+    fn project_label(&self) -> Option<String> {
+        self.project_id.as_ref().map(|value| {
+            if self.privacy_redact_names { privacy_alias("project", value) } else { value.clone() }
+        })
+    }
+
+    fn profile_label(&self) -> Option<String> {
+        self.profile_name.as_ref().map(|value| {
+            if self.privacy_redact_names { privacy_alias("profile", value) } else { value.clone() }
+        })
+    }
 }
 
 impl TraySelectionState {
@@ -346,6 +373,20 @@ pub fn tooltip_for(state: TrayIconState) -> &'static str {
     state.descriptor().label
 }
 
+/// Render tray tooltip text using the generic state plus redaction-aware
+/// active project/profile context.
+#[must_use]
+pub fn tooltip_for_context(state: TrayIconState, context: &TrayPrivacyContext) -> String {
+    let mut parts = vec![tooltip_for(state).to_owned()];
+    if let Some(project) = context.project_label() {
+        parts.push(format!("project: {project}"));
+    }
+    if let Some(profile) = context.profile_label() {
+        parts.push(format!("profile: {profile}"));
+    }
+    parts.join(" | ")
+}
+
 /// Pure mapping from agent status metadata to the generic tray state.
 #[must_use]
 pub const fn tray_state_for_status(status: &StatusPayload) -> TrayIconState {
@@ -360,10 +401,18 @@ pub const fn tray_state_for_status(status: &StatusPayload) -> TrayIconState {
 }
 
 /// Metadata-only tooltip for a status-derived tray update.
+#[allow(dead_code)]
 #[must_use]
 pub fn tooltip_for_status(status: &StatusPayload) -> String {
+    tooltip_for_status_context(status, &TrayPrivacyContext::default())
+}
+
+/// Metadata-only tooltip for a status-derived tray update with
+/// redaction-aware project/profile context.
+#[must_use]
+pub fn tooltip_for_status_context(status: &StatusPayload, context: &TrayPrivacyContext) -> String {
     let state = tray_state_for_status(status);
-    format!(
+    let mut tooltip = format!(
         "{}; running sessions: {}; scan warnings: {}; audit: {:?}; pinned reference warnings: {}",
         tooltip_for(state),
         status.running_session_count,
@@ -371,7 +420,14 @@ pub fn tooltip_for_status(status: &StatusPayload) -> String {
         status.recent_audit_status,
         status.pinned_reference_warning_count
     )
-    .to_lowercase()
+    .to_lowercase();
+    if let Some(project) = context.project_label() {
+        tooltip.push_str(&format!("; project: {project}"));
+    }
+    if let Some(profile) = context.profile_label() {
+        tooltip.push_str(&format!("; profile: {profile}"));
+    }
+    tooltip
 }
 
 /// Pure mapping from a stream event to a tray state update.
@@ -485,11 +541,27 @@ pub fn setup_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
 static CURRENT_SELECTION: Mutex<TraySelectionState> =
     Mutex::new(TraySelectionState { vault_unlocked: false, secret_selected: false });
 
+static CURRENT_PRIVACY_CONTEXT: Mutex<TrayPrivacyContext> = Mutex::new(TrayPrivacyContext {
+    project_id: None,
+    profile_name: None,
+    privacy_redact_names: false,
+});
+
+static CURRENT_TRAY_STATE: Mutex<TrayIconState> = Mutex::new(TrayIconState::AgentStopped);
+
 fn current_selection_state() -> TraySelectionState {
     CURRENT_SELECTION
         .lock()
         .map(|guard| *guard)
         .unwrap_or(TraySelectionState { vault_unlocked: false, secret_selected: false })
+}
+
+fn current_privacy_context() -> TrayPrivacyContext {
+    CURRENT_PRIVACY_CONTEXT.lock().map(|guard| guard.clone()).unwrap_or_default()
+}
+
+fn current_tray_state() -> TrayIconState {
+    CURRENT_TRAY_STATE.lock().map(|guard| *guard).unwrap_or(TrayIconState::AgentStopped)
 }
 
 /// Replace the cached tray selection state. Returns the previous value
@@ -501,6 +573,33 @@ pub fn store_selection_state(state: TraySelectionState) -> TraySelectionState {
     let previous = *guard;
     *guard = state;
     previous
+}
+
+/// Replace the cached tray privacy context. Returns the previous value
+/// so callers can decide whether to update the tooltip.
+pub fn store_privacy_context(context: TrayPrivacyContext) -> TrayPrivacyContext {
+    let Ok(mut guard) = CURRENT_PRIVACY_CONTEXT.lock() else {
+        return context;
+    };
+    let previous = guard.clone();
+    *guard = context;
+    previous
+}
+
+/// Refresh the registered tray tooltip using the current icon state and
+/// cached privacy context.
+///
+/// # Errors
+///
+/// Returns any `tauri::Error` produced while updating the OS tray tooltip.
+pub fn refresh_tray_tooltip<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
+    let Some(tray) = app.tray_by_id(LOCKET_TRAY_ID) else {
+        return Ok(());
+    };
+    let state = current_tray_state();
+    let context = current_privacy_context();
+    tray.set_tooltip(Some(tooltip_for_context(state, &context)))?;
+    Ok(())
 }
 
 /// Build the metadata-only tray menu against an explicit selection
@@ -638,7 +737,11 @@ fn update_tray_status<R: Runtime>(app: &AppHandle<R>, status: &StatusPayload) ->
     let bytes = platform_icon_bytes(app, state);
     let image = Image::from_bytes(bytes)?;
     tray.set_icon(Some(image))?;
-    tray.set_tooltip(Some(&tooltip_for_status(status)))?;
+    if let Ok(mut guard) = CURRENT_TRAY_STATE.lock() {
+        *guard = state;
+    }
+    let context = current_privacy_context();
+    tray.set_tooltip(Some(tooltip_for_status_context(status, &context)))?;
     Ok(())
 }
 
@@ -666,18 +769,22 @@ pub fn update_tray_state<R: Runtime>(
     let bytes = platform_icon_bytes(app, state);
     let image = Image::from_bytes(bytes)?;
     tray.set_icon(Some(image))?;
-    tray.set_tooltip(Some(tooltip_for(state)))?;
+    if let Ok(mut guard) = CURRENT_TRAY_STATE.lock() {
+        *guard = state;
+    }
+    let context = current_privacy_context();
+    tray.set_tooltip(Some(tooltip_for_context(state, &context)))?;
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        TrayMenuAction, TrayMenuSideEffect, TraySelectionState, TrayState, dark_bytes,
-        icon_bytes_for, light_bytes, macos_bytes, tooltip_for, tooltip_for_status,
-        tray_menu_action_enablement, tray_menu_action_for_id, tray_menu_action_side_effect,
-        tray_menu_action_view, tray_menu_actions, tray_state_for_status,
-        tray_state_for_status_event,
+        TrayMenuAction, TrayMenuSideEffect, TrayPrivacyContext, TraySelectionState, TrayState,
+        dark_bytes, icon_bytes_for, light_bytes, macos_bytes, tooltip_for, tooltip_for_context,
+        tooltip_for_status, tooltip_for_status_context, tray_menu_action_enablement,
+        tray_menu_action_for_id, tray_menu_action_side_effect, tray_menu_action_view,
+        tray_menu_actions, tray_state_for_status, tray_state_for_status_event,
     };
     use locket_agent::{LockState, StatusEvent, StatusPayload};
     use locket_app::{TrayIconState, tray_icon_states};
@@ -747,6 +854,20 @@ mod tests {
             assert_eq!(tooltip_for(*state), state.descriptor().label);
             assert!(!tooltip_for(*state).is_empty());
         }
+    }
+
+    #[test]
+    fn tooltip_context_applies_privacy_aliases_when_redaction_is_enabled() {
+        let context = TrayPrivacyContext {
+            project_id: Some("payments-api".to_owned()),
+            profile_name: Some("prod".to_owned()),
+            privacy_redact_names: true,
+        };
+        let tooltip = tooltip_for_context(TrayIconState::AgentUnlocked, &context);
+        assert!(tooltip.contains("project-"));
+        assert!(tooltip.contains("profile-"));
+        assert!(!tooltip.contains("payments-api"));
+        assert!(!tooltip.contains("prod"));
     }
 
     #[test]
@@ -917,6 +1038,24 @@ mod tests {
         assert!(tooltip.contains("running sessions: 2"));
         assert!(tooltip.contains("scan warnings: 3"));
         assert!(tooltip.contains("pinned reference warnings: 1"));
+    }
+
+    #[test]
+    fn status_tooltip_context_applies_privacy_aliases_when_redaction_is_enabled() {
+        let mut status = StatusPayload::locked("test-version");
+        status.project_id = Some("payments-api".to_owned());
+        status.profile_name = Some("prod".to_owned());
+        let context = TrayPrivacyContext {
+            project_id: status.project_id.clone(),
+            profile_name: status.profile_name.clone(),
+            privacy_redact_names: true,
+        };
+
+        let tooltip = tooltip_for_status_context(&status, &context);
+        assert!(tooltip.contains("project-"));
+        assert!(tooltip.contains("profile-"));
+        assert!(!tooltip.contains("payments-api"));
+        assert!(!tooltip.contains("prod"));
     }
 
     #[test]
