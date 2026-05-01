@@ -176,6 +176,8 @@ Slices that have merged to `main` and verified. Open work tracked in
   clear only when the clipboard still contains the same value.
 - [x] lk-resolve-pinned-version: Pinned lk references now have focused resolver coverage
   for selection and no-fallback behavior.
+- [x] e2e-agent-rpc: Agent RPC coverage now drives the socket through the core
+  lifecycle. The test keeps the flow metadata-only and closes the subscription cleanly.
 
 ## Full Spec Coverage TODO — Security/Recovery/Team
 

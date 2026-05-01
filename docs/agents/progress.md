@@ -236,7 +236,6 @@ Re-verify file:line references before editing — they drift. Severity:
   `e2e-dotenv-migration`, `e2e-policy-run`, `e2e-docker-compose`,
   `e2e-recovery-roundtrip` shipped. Remaining
   (`docs/specs/testing.md:38`):
-  - [~] [4ab55ee9] branch agent-4ab55ee9/e2e-agent-rpc, worktree .worktrees/agent-4ab55ee9-e2e-agent-rpc; agent RPC e2e covers status, grants, subscription.
   - [~] [90b9f58a] branch agent-90b9f58a/e2e-team-invite-accept, worktree .worktrees/agent-90b9f58a-e2e-team-invite-accept; **subtask** — e2e-team-invite-accept: team invite happy path and revoke failure path.
   - [ ] **subtask** — e2e-bundle-roundtrip: `export --sealed` →
     `import-bundle` (fresh / identical / newer-incoming /
