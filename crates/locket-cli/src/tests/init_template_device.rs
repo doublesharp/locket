@@ -2386,6 +2386,13 @@ fn team_accept_verifies_invite_displays_trust_summary_and_records_audit()
     assert_eq!(metadata["recipient_device_fingerprint"], local_device.fingerprint);
     assert_eq!(metadata["role"], "developer");
     assert_eq!(metadata["profiles"], json!(["dev"]));
+    // The configured-user-verification gate runs after the fingerprint
+    // confirmation. With the default test runtime context (no
+    // `user_verification_required_for.team_accept` config) the gate is a
+    // no-op and emits a `not_required` audit block rather than calling
+    // the verifier.
+    assert_eq!(metadata["user_verification"]["required"], false);
+    assert_eq!(metadata["user_verification"]["satisfied"], false);
 
     // SPEC-CLARIFICATION lock-in (see crates/locket-cli/src/commands/team/members.rs
     // above team_accept_command): the spec describes `team accept` as
@@ -2601,6 +2608,133 @@ fn team_accept_confirmation_mismatch_fails_closed_with_denial_audit()
         "confirmation_mismatch",
         locket_core::LocketError::ConfirmationFailed,
     )?;
+    Ok(())
+}
+
+#[test]
+fn team_accept_user_verification_denied_fails_closed_with_denial_audit()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = team_accept_invite_fixture(
+        "lk_invite_accept_user_verify_deny",
+        4_102_444_800,
+        None,
+        None,
+        None,
+        None,
+    )?;
+    // Opt the project into requiring user verification on team_accept,
+    // then point the runtime context at a denying user verifier so the
+    // configured gate trips.
+    run_with_context(
+        Cli::try_parse_from([
+            "locket",
+            "config",
+            "set",
+            "user_verification_required_for.team_accept",
+            "true",
+        ])?,
+        &fixture.context,
+        &mut Vec::new(),
+    )?;
+    let confirmation = format!("{}\n", fixture.issuer_fingerprint);
+    let confirming_context = context_with_confirmation(&fixture.context, &confirmation);
+    let denying_context = context_with_user_verifier(
+        &confirming_context,
+        Arc::new(MemoryLocalUserVerifier::denying()),
+    );
+
+    let result = run_with_context(
+        Cli::try_parse_from([
+            "locket",
+            "team",
+            "accept",
+            fixture.invite_path.to_str().ok_or("non-utf8 invite path")?,
+        ])?,
+        &denying_context,
+        &mut Vec::new(),
+    );
+    assert_typed_error(
+        result,
+        locket_core::LocketError::UserVerificationFailed,
+        "team accept: local user verification failed",
+    )?;
+    assert_invite_not_accepted(&fixture.directory, &fixture.invite_id)?;
+
+    let store = locket_store::Store::open(fixture.directory.path().join("store.db"))?;
+    let metadata: String = store.connection().query_row(
+        "SELECT metadata_json FROM audit_log
+         WHERE action = 'TEAM_ACCEPT' AND status = 'DENIED'
+         ORDER BY sequence DESC LIMIT 1",
+        [],
+        |row| row.get(0),
+    )?;
+    let metadata: serde_json::Value = serde_json::from_str(&metadata)?;
+    assert_eq!(metadata["status"], "DENIED");
+    assert_eq!(metadata["command"], "team accept");
+    assert_eq!(metadata["failure_reason"], "user_verification_failed");
+    assert_eq!(metadata["user_verification"]["required"], true);
+    assert_eq!(metadata["user_verification"]["satisfied"], false);
+    assert_eq!(
+        metadata["exit_code"],
+        locket_core::LocketError::UserVerificationFailed.exit_code(),
+    );
+    Ok(())
+}
+
+#[test]
+fn team_accept_user_verification_satisfied_records_audit_block()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = team_accept_invite_fixture(
+        "lk_invite_accept_user_verify_ok",
+        4_102_444_800,
+        None,
+        None,
+        None,
+        None,
+    )?;
+    run_with_context(
+        Cli::try_parse_from([
+            "locket",
+            "config",
+            "set",
+            "user_verification_required_for.team_accept",
+            "true",
+        ])?,
+        &fixture.context,
+        &mut Vec::new(),
+    )?;
+    let confirmation = format!("{}\n", fixture.issuer_fingerprint);
+    let confirming_context = context_with_confirmation(&fixture.context, &confirmation);
+    let allowing_context = context_with_user_verifier(
+        &confirming_context,
+        Arc::new(MemoryLocalUserVerifier::allowing()),
+    );
+
+    let mut output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from([
+            "locket",
+            "team",
+            "accept",
+            fixture.invite_path.to_str().ok_or("non-utf8 invite path")?,
+        ])?,
+        &allowing_context,
+        &mut output,
+    )?;
+
+    let store = locket_store::Store::open(fixture.directory.path().join("store.db"))?;
+    let metadata: String = store.connection().query_row(
+        "SELECT metadata_json FROM audit_log
+         WHERE action = 'TEAM_ACCEPT' AND status = 'SUCCESS'
+         ORDER BY sequence DESC LIMIT 1",
+        [],
+        |row| row.get(0),
+    )?;
+    let metadata: serde_json::Value = serde_json::from_str(&metadata)?;
+    assert_eq!(metadata["status"], "SUCCESS");
+    assert_eq!(metadata["user_verification"]["required"], true);
+    assert_eq!(metadata["user_verification"]["satisfied"], true);
+    assert_eq!(metadata["user_verification"]["method"], "test");
     Ok(())
 }
 

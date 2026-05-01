@@ -17,6 +17,7 @@ use locket_store::{
 use serde_json::json;
 
 use super::device;
+use crate::runtime::user_verification::{UserVerificationAudit, configured_user_verification};
 use crate::support::time::NANOS_PER_SECOND;
 use crate::{
     CliError, RuntimeContext, TeamAcceptArgs, TeamCommand, TeamInitArgs, TeamInviteArgs,
@@ -307,7 +308,34 @@ fn team_accept_command(
 
     write_accept_summary(output, &invite)?;
     confirm_team_accept(context, &mut store, &project_id, &invite)?;
-    accept_invite_with_audit(context, &mut store, &project_id, &local_device, &invite)?;
+    let user_verification = match configured_user_verification(
+        context,
+        "user_verification_required_for.team_accept",
+        "team accept",
+        "accept team invite",
+    ) {
+        Ok(audit) => audit,
+        Err(error) => {
+            append_team_accept_denial_with_user_verification(
+                context,
+                &mut store,
+                &project_id,
+                &invite,
+                "user_verification_failed",
+                LocketError::UserVerificationFailed,
+                Some(UserVerificationAudit::failed_required()),
+            )?;
+            return Err(error);
+        }
+    };
+    accept_invite_with_audit(
+        context,
+        &mut store,
+        &project_id,
+        &local_device,
+        &invite,
+        user_verification,
+    )?;
 
     writeln!(output, "team_accept: accepted")?;
     writeln!(output, "metadata_only: yes")?;
@@ -495,6 +523,7 @@ fn accept_invite_with_audit(
     project_id: &str,
     local_device: &DeviceRecord,
     invite: &SignedInvite,
+    user_verification: UserVerificationAudit,
 ) -> Result<(), CliError> {
     let audit_key = load_project_key(context, store, project_id, KeyPurpose::Audit)?;
     let accepted_at = now_unix_nanos()?;
@@ -519,6 +548,7 @@ fn accept_invite_with_audit(
         "profiles": &invite.payload.profiles,
         "expires_at": invite.payload.expires_at,
         "accepted_at": accepted_at,
+        "user_verification": user_verification,
     });
     let audit = AuditWrite {
         project_id,
@@ -606,12 +636,32 @@ fn append_team_accept_denial(
     failure_reason: &'static str,
     kind: LocketError,
 ) -> Result<(), CliError> {
+    append_team_accept_denial_with_user_verification(
+        context,
+        store,
+        project_id,
+        invite,
+        failure_reason,
+        kind,
+        None,
+    )
+}
+
+fn append_team_accept_denial_with_user_verification(
+    context: &RuntimeContext,
+    store: &mut locket_store::Store,
+    project_id: &str,
+    invite: &SignedInvite,
+    failure_reason: &'static str,
+    kind: LocketError,
+    user_verification: Option<UserVerificationAudit>,
+) -> Result<(), CliError> {
     let timestamp = now_unix_nanos()?;
     let audit_key = load_project_key(context, store, project_id, KeyPurpose::Audit)?;
     let team_id = store
         .get_team_by_project(project_id)?
         .map_or_else(|| "unknown".to_owned(), |team| team.id);
-    let metadata = json!({
+    let mut metadata = json!({
         "schema_version": 1,
         "action": "TEAM_ACCEPT",
         "status": "DENIED",
@@ -629,6 +679,10 @@ fn append_team_accept_denial(
         "failure_reason": failure_reason,
         "exit_code": kind.exit_code(),
     });
+    if let Some(audit) = user_verification {
+        metadata["user_verification"] = serde_json::to_value(audit)
+            .map_err(|error| metadata_invalid_error(format!("user_verification encode: {error}")))?;
+    }
     let audit = AuditWrite {
         project_id,
         profile_id: None,
