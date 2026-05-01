@@ -241,23 +241,19 @@ protected use cases:
 - Device registration (`team/device.rs` init/add) gates via
   `configured_user_verification` (shipped).
 
-Remaining gates with no enforcement (subtasks):
+All previously-tracked gates now shipped:
 
-- [~] **vault-unlock-verify-user** (in-flight: agent 13b): `locket vault unlock
-  --verify-user` currently returns `unimplemented_in_build_error`
-  (`crates/locket-cli/src/commands/vault/lock.rs:90-93`). Spec line
-  205 ("Unlocking the vault with local user verification") requires
-  the gate to call `LocalUserVerifier` before unlocking and emit a
-  satisfied `user_verification` block in the `UNLOCK` audit row.
-- [~] **team-accept-verify-user** (in-flight: agent 13b): `team_accept_command`
-  (`crates/locket-cli/src/commands/team/members.rs:299`) does not
-  call any user-verification helper. Spec line 206 ("Requiring
-  presence/verification before … team invite acceptance") requires
-  a `require_user_verification` (or `configured_user_verification`
-  via the `team_invite_accept` policy key) call after the
-  fingerprint confirmation prompt, with the resulting
-  `UserVerificationAudit` propagated into the `TEAM_ACCEPT` audit
-  metadata.
+(`vault-unlock-verify-user` shipped — `lock.rs` calls
+`require_user_verification(context, "vault unlock", "unlock vault")`
+and serializes the returned `UserVerificationAudit` into the
+`UNLOCK` row's `user_verification` block. Allow/deny tests added
+to `config_passkey_lock.rs`. Commit `842b48ca`.)
+(`team-accept-verify-user` shipped — `team_accept_command` calls
+`configured_user_verification(...)` after the fingerprint
+confirmation, embeds the verification block in `TEAM_ACCEPT`
+metadata, and emits a `DENIED` row with
+`failure_reason: "user_verification_failed"` on rejection. Commit
+`19e1a672`.)
 
 ### Agent / process hardening
 `harden-peer-cred`, `harden-socket-perms`, `harden-memory-lock`,
@@ -479,8 +475,8 @@ the spec.
   validator entry, tracked above).
 - `storage.md` — (audit clean 2026-04-30 except `team_members.device_id`
   FK verification, tracked above).
-- `crypto.md` — (open: `vault-unlock-verify-user`,
-  `team-accept-verify-user`, passkey real-platform backends).
+- `crypto.md` — (open: passkey real-platform backends only;
+  `vault-unlock-verify-user` and `team-accept-verify-user` shipped).
 - `project-cli.md` — pending.
 - `policy.md` — (open: `schema_version` enforcement landed; TOML deep
   audit pass otherwise clean).
@@ -494,8 +490,9 @@ the spec.
   with TODO markers, tray-panel deep audit pending).
 - `audit.md` — (audit clean 2026-05-01; all four 2026-04-30 emission
   gaps shipped — see "Audit coverage" above).
-- `team-sync-recovery.md` — (open: `bundle-include-audit-import`,
-  `bundle-team-accept-parity-test`, `invite-sealed-payload-import`).
+- `team-sync-recovery.md` — (open: `invite-sealed-payload-import`
+  apply path; `bundle-include-audit-import` and
+  `bundle-team-accept-parity-test` shipped).
 - `operations.md` — (open: signing items pre-req on
   `release-key-offline`).
 - `performance.md` — (open: per-budget benches in sibling task list).
