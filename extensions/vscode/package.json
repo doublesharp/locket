@@ -89,6 +89,7 @@
     "watch": "tsc -p . --watch",
     "lint": "eslint src --ext .ts",
     "test": "pnpm run build && node --test out/*.test.js",
+    "test:smoke": "pnpm run build && node --test out/*.smoke.test.js",
     "package": "vsce package --no-dependencies"
   },
   "devDependencies": {

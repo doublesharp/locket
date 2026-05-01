@@ -150,6 +150,14 @@ export const LOCKET_COMMAND_ROUTES: ReadonlyArray<{
   { commandId: 'locket.openAuditView', agentMethod: 'ListAudit' },
 ];
 
+// Full VS Code command contribution set. Most entries are agent RPC
+// routes above; `locket.createTerminal` is registered by the terminal
+// autobind surface and is intentionally not an agent route.
+export const LOCKET_EDITOR_COMMAND_IDS: readonly string[] = [
+  ...LOCKET_COMMAND_ROUTES.map((route) => route.commandId),
+  'locket.createTerminal',
+];
+
 // Build a `Lock` request. The extension always reports the `desktop`
 // session-lock source so the agent's audit row reflects the editor.
 export function buildLockRequest(): LockRequestPayload {

@@ -20,6 +20,7 @@ import {
   AUDIT_VIEW_LIMIT,
   IDE_SESSION_DEFAULT_TTL_SECONDS,
   LOCKET_COMMAND_ROUTES,
+  LOCKET_EDITOR_COMMAND_IDS,
   buildListAuditRequest,
   buildListPoliciesRequest,
   buildLockRequest,
@@ -209,7 +210,7 @@ test('AgentMethod union covers every method id the registrar dispatches', () => 
   }
 });
 
-test('every routed command id appears in package.json contributes.commands', () => {
+test('every editor command id appears in package.json contributes.commands', () => {
   // Compiled tests live in `out/`; the manifest is one level up.
   const manifestPath = path.resolve(__dirname, '..', 'package.json');
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as {
@@ -218,17 +219,19 @@ test('every routed command id appears in package.json contributes.commands', () 
   const declared = new Set(
     (manifest.contributes?.commands ?? []).map((entry) => entry.command),
   );
-  for (const route of LOCKET_COMMAND_ROUTES) {
+  for (const commandId of LOCKET_EDITOR_COMMAND_IDS) {
     assert.ok(
-      declared.has(route.commandId),
-      `package.json missing contributes.commands entry for ${route.commandId}`,
+      declared.has(commandId),
+      `package.json missing contributes.commands entry for ${commandId}`,
     );
   }
   // Reverse direction: package.json must not contribute commands the
-  // registrar will ignore.
+  // command or terminal registrars will ignore.
   for (const id of declared) {
-    const route = LOCKET_COMMAND_ROUTES.find((row) => row.commandId === id);
-    assert.ok(route, `package.json contributes ${id} with no registrar route`);
+    assert.ok(
+      LOCKET_EDITOR_COMMAND_IDS.includes(id),
+      `package.json contributes ${id} with no registrar route`,
+    );
   }
 });
 

@@ -74,10 +74,6 @@ ship. Each bullet has spec ref + code ref + suggested touches.
 
 ### A. Crypto / recovery / bundle correctness
 
-- [~] (in-flight: feature/quality-e2e-final) **bootstrap-shell-tool-presence-follow-up**: bootstrap reports shell
-  policy tool checks as `tools_unchecked: shell:<first-token>` because
-  safely and portably identifying every referenced tool inside arbitrary
-  shell snippets requires shell-aware parsing beyond the local argv check.
 ### B. Schema / data-model alignment
 
 ### C. CLI / runtime / agent
@@ -115,13 +111,10 @@ ship. Each bullet has spec ref + code ref + suggested touches.
   badge from row's own state.
 ### E. Quality / ops / build
 
-- [~] (in-flight: feature/quality-e2e-final) **canary-harness-os-e2e-residual**: lightweight canary coverage
-  now includes CLI, scan/redaction, agent reveal/copy audit surfaces,
-  Docker/Compose argv metadata, tray notifications, and VS Code audit
-  webview rendering. Remaining heavier surfaces need OS/e2e jobs:
-  real desktop webview/browser smoke, OS clipboard/tray integration,
-  packaged VSIX execution, and full recovery restore e2e with artifact
-  scanning.
+- [ ] **canary-packaged-os-follow-up**: remaining canary surfaces that
+  genuinely require OS/manual packaging jobs: signed desktop webview
+  smoke, OS clipboard/tray integration on each target, packaged VSIX
+  execution, and full recovery restore e2e with artifact scanning.
 ## P0 — Correctness / Security Drift (audit findings)
 
 These are spec contracts the code currently violates or silently
@@ -308,10 +301,8 @@ and branch coverage 68.84%.
 ### End-to-end coverage
 Spec ref: `docs/specs/testing.md:38`.
 `e2e-greenfield-init`, `e2e-dotenv-migration`, `e2e-policy-run`,
-`e2e-docker-compose`, `e2e-recovery-roundtrip` shipped.
-
-- [~] (in-flight: feature/quality-e2e-final) **e2e-ui-editor-smoke**: smoke flows in the desktop app and
-  the VS Code extension. Pre-req: desktop-* and vscode-* items.
+`e2e-docker-compose`, `e2e-recovery-roundtrip`, and
+`e2e-ui-editor-smoke` shipped.
 
 ### Distribution supply-chain gates
 Offline-safe local commands, strict-mode hooks, cargo-vet, unsafe

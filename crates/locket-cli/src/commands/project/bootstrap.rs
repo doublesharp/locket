@@ -219,7 +219,16 @@ fn check_policy_tools(policies: &[&CommandPolicy]) -> ToolReport {
                 }
             }
             CommandSpec::Shell(script) => {
-                unchecked.insert(format!("shell:{}", first_shell_token(script).unwrap_or("*")));
+                let shell_tools = collect_shell_tools(script);
+                for program in shell_tools.programs {
+                    checked.insert(program.clone());
+                    if !tool_is_present(&program) {
+                        missing.insert(program);
+                    }
+                }
+                for reason in shell_tools.unchecked {
+                    unchecked.insert(format!("shell:{reason}"));
+                }
             }
         }
     }
@@ -239,11 +248,351 @@ fn tool_is_present(program: &str) -> bool {
     let Some(path) = std::env::var_os("PATH") else {
         return false;
     };
-    std::env::split_paths(&path).any(|dir| dir.join(program).is_file())
+    std::env::split_paths(&path).any(|dir| {
+        if dir.join(program).is_file() {
+            return true;
+        }
+        #[cfg(windows)]
+        {
+            if Path::new(program).extension().is_some() {
+                return false;
+            }
+            let pathext = std::env::var_os("PATHEXT")
+                .unwrap_or_else(|| std::ffi::OsString::from(".COM;.EXE;.BAT;.CMD"));
+            return pathext.to_string_lossy().split(';').any(|extension| {
+                !extension.is_empty() && dir.join(format!("{program}{extension}")).is_file()
+            });
+        }
+        #[cfg(not(windows))]
+        {
+            false
+        }
+    })
 }
 
-fn first_shell_token(script: &str) -> Option<&str> {
-    script.split_ascii_whitespace().next()
+#[derive(Debug, Default)]
+struct ShellToolReport {
+    programs: BTreeSet<String>,
+    unchecked: BTreeSet<&'static str>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+enum ShellToken {
+    Word { text: String, has_expansion: bool },
+    Separator,
+    Redirection,
+    Compound,
+}
+
+fn collect_shell_tools(script: &str) -> ShellToolReport {
+    let tokens = tokenize_shell_script(script);
+    let mut report = ShellToolReport::default();
+    let mut at_command = true;
+    let mut skip_redirection_operand = false;
+
+    for token in tokens {
+        match token {
+            ShellToken::Separator => {
+                at_command = true;
+                skip_redirection_operand = false;
+            }
+            ShellToken::Redirection => {
+                skip_redirection_operand = true;
+            }
+            ShellToken::Compound => {
+                report.unchecked.insert("compound");
+                at_command = true;
+                skip_redirection_operand = false;
+            }
+            ShellToken::Word { text, has_expansion } => {
+                if skip_redirection_operand {
+                    skip_redirection_operand = false;
+                    continue;
+                }
+                if !at_command {
+                    continue;
+                }
+                if is_shell_assignment(&text) {
+                    if has_expansion {
+                        report.unchecked.insert("dynamic");
+                    }
+                    continue;
+                }
+                if has_expansion || text.is_empty() {
+                    report.unchecked.insert("dynamic");
+                    at_command = false;
+                    continue;
+                }
+                if is_shell_keyword(&text) {
+                    report.unchecked.insert("compound");
+                    at_command = false;
+                    continue;
+                }
+                if is_shell_builtin(&text) {
+                    at_command = false;
+                    continue;
+                }
+                report.programs.insert(text);
+                at_command = false;
+            }
+        }
+    }
+
+    report
+}
+
+fn tokenize_shell_script(script: &str) -> Vec<ShellToken> {
+    let chars = script.chars().collect::<Vec<_>>();
+    let mut tokens = Vec::new();
+    let mut index = 0;
+    let mut at_word_boundary = true;
+
+    while index < chars.len() {
+        let ch = chars[index];
+        if ch.is_ascii_whitespace() {
+            if ch == '\n' {
+                tokens.push(ShellToken::Separator);
+            }
+            index += 1;
+            at_word_boundary = true;
+            continue;
+        }
+        if ch == '#' && at_word_boundary {
+            while index < chars.len() && chars[index] != '\n' {
+                index += 1;
+            }
+            continue;
+        }
+        if ch == '&' && chars.get(index + 1) == Some(&'&') {
+            tokens.push(ShellToken::Separator);
+            index += 2;
+            at_word_boundary = true;
+            continue;
+        }
+        if ch == '|' {
+            tokens.push(ShellToken::Separator);
+            index += if chars.get(index + 1) == Some(&'|') { 2 } else { 1 };
+            at_word_boundary = true;
+            continue;
+        }
+        if ch == ';' || ch == '&' {
+            tokens.push(ShellToken::Separator);
+            index += 1;
+            at_word_boundary = true;
+            continue;
+        }
+        if ch == '(' || ch == ')' || ch == '{' || ch == '}' {
+            tokens.push(ShellToken::Compound);
+            index += 1;
+            at_word_boundary = true;
+            continue;
+        }
+        if is_redirection_at(&chars, index) {
+            tokens.push(ShellToken::Redirection);
+            index = consume_redirection(&chars, index);
+            at_word_boundary = true;
+            continue;
+        }
+
+        let (word, has_expansion, next_index) = consume_shell_word(&chars, index);
+        tokens.push(ShellToken::Word { text: word, has_expansion });
+        index = next_index;
+        at_word_boundary = false;
+    }
+
+    tokens
+}
+
+fn consume_shell_word(chars: &[char], start: usize) -> (String, bool, usize) {
+    let mut word = String::new();
+    let mut has_expansion = false;
+    let mut index = start;
+
+    while index < chars.len() {
+        let ch = chars[index];
+        if ch.is_ascii_whitespace()
+            || ch == ';'
+            || ch == '&'
+            || ch == '|'
+            || ch == '('
+            || ch == ')'
+            || ch == '<'
+            || ch == '>'
+        {
+            break;
+        }
+        match ch {
+            '\'' => {
+                index += 1;
+                while index < chars.len() && chars[index] != '\'' {
+                    word.push(chars[index]);
+                    index += 1;
+                }
+                if index < chars.len() {
+                    index += 1;
+                }
+            }
+            '"' => {
+                index += 1;
+                while index < chars.len() && chars[index] != '"' {
+                    match chars[index] {
+                        '\\' if index + 1 < chars.len() => {
+                            index += 1;
+                            word.push(chars[index]);
+                            index += 1;
+                        }
+                        '$' | '`' => {
+                            has_expansion = true;
+                            word.push(chars[index]);
+                            index += 1;
+                        }
+                        other => {
+                            word.push(other);
+                            index += 1;
+                        }
+                    }
+                }
+                if index < chars.len() {
+                    index += 1;
+                }
+            }
+            '\\' if index + 1 < chars.len() => {
+                index += 1;
+                word.push(chars[index]);
+                index += 1;
+            }
+            '$' | '`' => {
+                has_expansion = true;
+                word.push(ch);
+                index += 1;
+            }
+            other => {
+                word.push(other);
+                index += 1;
+            }
+        }
+    }
+
+    (word, has_expansion, index)
+}
+
+fn is_redirection_at(chars: &[char], index: usize) -> bool {
+    let ch = chars[index];
+    if ch == '<' || ch == '>' {
+        return true;
+    }
+    if ch.is_ascii_digit() {
+        let mut cursor = index;
+        while cursor < chars.len() && chars[cursor].is_ascii_digit() {
+            cursor += 1;
+        }
+        return matches!(chars.get(cursor), Some('<' | '>'));
+    }
+    false
+}
+
+fn consume_redirection(chars: &[char], index: usize) -> usize {
+    let mut cursor = index;
+    while cursor < chars.len() && chars[cursor].is_ascii_digit() {
+        cursor += 1;
+    }
+    if cursor < chars.len() && (chars[cursor] == '<' || chars[cursor] == '>') {
+        cursor += 1;
+    }
+    if cursor < chars.len()
+        && (chars[cursor] == '<' || chars[cursor] == '>' || chars[cursor] == '&')
+    {
+        cursor += 1;
+    }
+    cursor
+}
+
+fn is_shell_assignment(word: &str) -> bool {
+    let Some((name, _)) = word.split_once('=') else {
+        return false;
+    };
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    (first == '_' || first.is_ascii_alphabetic())
+        && chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
+}
+
+fn is_shell_keyword(word: &str) -> bool {
+    matches!(
+        word,
+        "!" | "[["
+            | "case"
+            | "do"
+            | "done"
+            | "elif"
+            | "else"
+            | "esac"
+            | "fi"
+            | "for"
+            | "function"
+            | "if"
+            | "in"
+            | "select"
+            | "then"
+            | "until"
+            | "while"
+    )
+}
+
+fn is_shell_builtin(word: &str) -> bool {
+    matches!(
+        word,
+        "." | ":"
+            | "["
+            | "alias"
+            | "bg"
+            | "break"
+            | "cd"
+            | "command"
+            | "continue"
+            | "declare"
+            | "dirs"
+            | "disown"
+            | "echo"
+            | "eval"
+            | "exec"
+            | "exit"
+            | "export"
+            | "fc"
+            | "fg"
+            | "getopts"
+            | "hash"
+            | "help"
+            | "history"
+            | "jobs"
+            | "kill"
+            | "let"
+            | "local"
+            | "logout"
+            | "popd"
+            | "printf"
+            | "pushd"
+            | "pwd"
+            | "read"
+            | "readonly"
+            | "return"
+            | "set"
+            | "shift"
+            | "shopt"
+            | "source"
+            | "test"
+            | "times"
+            | "trap"
+            | "type"
+            | "typeset"
+            | "ulimit"
+            | "umask"
+            | "unalias"
+            | "unset"
+            | "wait"
+    )
 }
 
 fn write_tool_report(output: &mut impl Write, report: &BootstrapReport) -> Result<(), CliError> {

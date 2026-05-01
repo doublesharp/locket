@@ -22,7 +22,10 @@ import {
   defaultRotateForm,
   defaultSetForm,
   deleteFormToRequest,
+  deleteUnavailableNotice,
+  rotateSecretSuccessNotice,
   rotateFormToPayload,
+  setSecretSuccessNotice,
   setFormToPayload,
   validateDeleteForm,
   validateRotateForm,
@@ -167,7 +170,7 @@ async function onSet(): Promise<void> {
     setError.value = errorLabel(result.error);
     return;
   }
-  setNotice.value = `Created ${payload.secret_name} v${result.value.version.toString()}.`;
+  setNotice.value = setSecretSuccessNotice(payload.secret_name, result.value.version);
   setForm.value = defaultSetForm();
   refresh();
 }
@@ -200,7 +203,7 @@ async function onRotate(): Promise<void> {
     rotateError.value = errorLabel(result.error);
     return;
   }
-  rotateNotice.value = `Rotated ${payload.secret_name} to v${result.value.version.toString()}.`;
+  rotateNotice.value = rotateSecretSuccessNotice(payload.secret_name, result.value.version);
   rotateForm.value = defaultRotateForm();
   refresh();
 }
@@ -215,9 +218,7 @@ function onDelete(): void {
     projectId: props.projectId ?? '',
     profileId: props.profileId ?? '',
   });
-  deleteError.value =
-    `Agent does not yet expose DeleteSecret/PurgeSecret. Staged request for ` +
-    `${request.secret_name} but submit is blocked until the RPC ships.`;
+  deleteError.value = deleteUnavailableNotice(request.secret_name);
 }
 
 function onReveal(row: SecretRowMeta): void {

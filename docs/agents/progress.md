@@ -291,15 +291,12 @@ Re-verify file:line references before editing — they drift. Severity:
     comment. Pre-req: all four `coverage-<crate>-90` subtasks.
 - [ ] End-to-end coverage. `e2e-greenfield-init`,
   `e2e-dotenv-migration`, `e2e-policy-run`, `e2e-docker-compose`,
-  `e2e-recovery-roundtrip` shipped. Remaining
+  `e2e-recovery-roundtrip`, `e2e-ui-editor-smoke` shipped. Remaining
   (`docs/specs/testing.md:38`):
   - [ ] **subtask** — e2e-bundle-roundtrip: `export --sealed` →
     `import-bundle` (fresh / identical / newer-incoming /
     divergent), `bundle verify` structural-only and decryptable.
     Pre-req: sealed-bundle subtasks.
-  - [ ] **subtask** — e2e-ui-editor-smoke: smoke flows in the
-    desktop app and the VS Code extension. Pre-req: desktop-* and
-    vscode-* items.
 - [ ] Distribution supply-chain gates. Offline-safe local commands,
   strict-mode hooks, cargo-vet, unsafe inventory, SBOM, exception
   ledger, and provenance policy verifier exist. Remaining: auditable

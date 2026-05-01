@@ -16,6 +16,10 @@ Slices that have merged to `main` and verified. Open work tracked in
 - [x] `locket emit-example` spec coverage.
 - [x] `locket completion <shell>`.
 - [x] `locket bootstrap` command surface and checklist behavior.
+- [x] bootstrap-shell-tool-presence-follow-up: bootstrap now parses
+  simple shell policy snippets conservatively, checks straightforward
+  command words, and reports only dynamic/compound shell surfaces as
+  `tools_unchecked`.
 - [x] `locket import` spec coverage.
 - [x] `locket redact` spec coverage.
 - [x] `locket redact --stdin` streams as bytes; non-UTF-8 segments pass
@@ -572,6 +576,14 @@ Slices that have merged to `main` and verified. Open work tracked in
   bar driven by SubscribeStatus; the agent stream path has coverage.
 - [x] recover-automation-client-keys: Recovery now restores managed
   automation-client key entries from the envelope.
+- [x] canary-harness-os-e2e-residual: lightweight canary coverage now
+  includes the desktop editor smoke path in addition to existing CLI,
+  scan/redaction, agent, Docker/Compose, tray, and VS Code webview
+  surfaces; only packaged OS/manual jobs remain tracked.
+- [x] **subtask** — e2e-ui-editor-smoke: dependency-aware
+  `scripts/editor-smoke.sh`, desktop editor pure-model smoke, and VS
+  Code editor command smoke run without Tauri packaging or a live VS
+  Code window.
 
 ## Spec-by-Spec Completion Gates
 

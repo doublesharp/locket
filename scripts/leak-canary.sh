@@ -16,6 +16,15 @@ fi
 "${cargo_bin}" test -p locket-docker canary "${offline_args[@]}" -j "${jobs}"
 "${cargo_bin}" test -p locket-app canary "${offline_args[@]}" -j "${jobs}"
 
+if command -v pnpm >/dev/null 2>&1 && [[ -d crates/locket-app/ui/node_modules ]]; then
+  (
+    cd crates/locket-app/ui
+    pnpm run test:smoke
+  )
+else
+  echo "Desktop UI canary skipped; pnpm or crates/locket-app/ui/node_modules unavailable"
+fi
+
 if command -v pnpm >/dev/null 2>&1 && [[ -d extensions/vscode/node_modules ]]; then
   (
     cd extensions/vscode

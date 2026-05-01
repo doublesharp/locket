@@ -160,7 +160,7 @@ profiles = ["dev"]
 argv = ["definitely-missing-locket-bootstrap-tool", "--version"]
 
 [commands.shellish]
-shell = "pnpm test"
+shell = "LOCKET_BOOTSTRAP=1 cargo --version && definitely-missing-locket-shell-tool --version && $LOCKET_BOOTSTRAP_RUNNER test"
 "#,
     )?;
     let mut output = Vec::new();
@@ -181,16 +181,14 @@ shell = "pnpm test"
     let bootstrap_output = String::from_utf8(bootstrap_output)?;
     assert!(bootstrap_output.contains("profile_ready: yes"));
     assert!(bootstrap_output.contains("profile_unlocked: no"));
-    assert!(
-        bootstrap_output
-            .contains("tools_present: missing (definitely-missing-locket-bootstrap-tool)")
-    );
-    assert!(bootstrap_output.contains("tools_unchecked: shell:pnpm"));
+    assert!(bootstrap_output.contains(
+        "tools_present: missing (definitely-missing-locket-bootstrap-tool,definitely-missing-locket-shell-tool)"
+    ));
+    assert!(bootstrap_output.contains("tools_unchecked: shell:dynamic"));
     assert!(bootstrap_output.contains("- run locket unlock for the active profile"));
-    assert!(
-        bootstrap_output
-            .contains("- install missing tool(s): definitely-missing-locket-bootstrap-tool")
-    );
+    assert!(bootstrap_output.contains(
+        "- install missing tool(s): definitely-missing-locket-bootstrap-tool, definitely-missing-locket-shell-tool"
+    ));
     Ok(())
 }
 
