@@ -10,6 +10,7 @@
 //!
 //! Windows named-pipe support stays a separate `[ ]` follow-up.
 
+use std::collections::BTreeMap;
 use std::io;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -223,6 +224,8 @@ pub struct AgentSocketState {
     pub runtime_sessions: Arc<Mutex<Vec<crate::runtime_sessions::RuntimeSessionSnapshot>>>,
     /// Metadata-only saved command policy snapshots used by desktop views.
     pub command_policies: Arc<Mutex<Vec<crate::policies::CommandPolicySnapshot>>>,
+    /// In-memory automation-client challenges issued by `ClientHello`.
+    pub automation_challenges: Arc<Mutex<BTreeMap<String, crate::auth::IssuedChallenge>>>,
     /// Server-side fan-out hub for `SubscribeStatus` streams.
     pub status_hub: StatusHub,
     /// Test hook overriding the heartbeat cadence so unit tests can run
@@ -260,6 +263,7 @@ impl AgentSocketState {
             grants: Arc::new(Mutex::new(crate::grant::GrantTable::default())),
             runtime_sessions: Arc::new(Mutex::new(Vec::new())),
             command_policies: Arc::new(Mutex::new(Vec::new())),
+            automation_challenges: Arc::new(Mutex::new(BTreeMap::new())),
             status_hub,
             #[cfg(test)]
             test_heartbeat_interval: Arc::new(Mutex::new(None)),
@@ -286,6 +290,7 @@ impl AgentSocketState {
             grants: Arc::new(Mutex::new(crate::grant::GrantTable::default())),
             runtime_sessions: Arc::new(Mutex::new(Vec::new())),
             command_policies: Arc::new(Mutex::new(Vec::new())),
+            automation_challenges: Arc::new(Mutex::new(BTreeMap::new())),
             status_hub,
             test_heartbeat_interval: Arc::new(Mutex::new(None)),
             peer_credential_validator: Arc::new(crate::peer_cred::validate_peer_stream),
@@ -559,6 +564,11 @@ fn error_response(envelope: &RequestEnvelope, error: &str, message: &str) -> Res
 }
 
 pub async fn dispatch(envelope: &RequestEnvelope, state: &AgentSocketState) -> ResponseEnvelope {
+    if let Some(response) =
+        crate::auth::authenticate_request_if_present(envelope, state, current_unix_nanos()).await
+    {
+        return response;
+    }
     match envelope.method() {
         Ok(AgentMethod::Status) => {
             let snapshot = state.status_snapshot(current_unix_nanos()).await;
@@ -599,6 +609,7 @@ pub async fn dispatch(envelope: &RequestEnvelope, state: &AgentSocketState) -> R
                 serde_json::Value::Null,
             ))
         }
+        Ok(AgentMethod::ClientHello) => crate::auth::handle_client_hello(envelope, state).await,
         Ok(AgentMethod::RequestGrant) => handle_request_grant(envelope, state).await,
         Ok(AgentMethod::RevokeGrant) => handle_revoke_grant(envelope, state).await,
         Ok(AgentMethod::ExpireGrant) => handle_expire_grant(envelope, state).await,

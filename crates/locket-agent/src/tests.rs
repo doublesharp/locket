@@ -1272,6 +1272,309 @@ async fn expire_grant_leaves_live_grant_intact() {
     );
 }
 
+fn automation_signing_key() -> ed25519_dalek::SigningKey {
+    ed25519_dalek::SigningKey::from_bytes(&[7_u8; 32])
+}
+
+fn seed_automation_client_store(
+    store_path: &std::path::Path,
+    public_key: &[u8; 32],
+) -> Result<locket_store::Store, Box<dyn std::error::Error>> {
+    let mut store = locket_store::Store::open(store_path)?;
+    store.initialize_schema()?;
+    store.insert_project_if_absent("lk_proj_auth", "auth", 1)?;
+    store.insert_automation_client(&locket_store::AutomationClientRecord {
+        id: "lk_client_auth".to_owned(),
+        project_id: "lk_proj_auth".to_owned(),
+        name: "ci".to_owned(),
+        public_key: public_key.to_vec(),
+        fingerprint: "auth-fingerprint".to_owned(),
+        storage: "external".to_owned(),
+        allowed_actions: vec!["run-policy".to_owned()],
+        allowed_policies: vec!["deploy".to_owned()],
+        created_at: 1,
+        last_used_at: None,
+        revoked_at: None,
+    })?;
+    Ok(store)
+}
+
+async fn unlock_auth_project(state: &crate::server::AgentSocketState) {
+    use crate::unlock_cache::{UnlockEntry, UnlockMethod};
+    use std::time::Duration;
+
+    state.unlock_cache.lock().await.insert(
+        "lk_proj_auth".to_owned(),
+        UnlockEntry::new(
+            vec![42_u8; 32],
+            crate::server::current_unix_nanos(),
+            Duration::from_secs(60),
+            UnlockMethod::Passphrase,
+        ),
+    );
+}
+
+fn auth_now_i64() -> i64 {
+    i64::try_from(crate::server::current_unix_nanos()).unwrap_or(i64::MAX)
+}
+
+fn canonical_test_hash(
+    request: &crate::RequestEnvelope,
+) -> Result<[u8; 32], Box<dyn std::error::Error>> {
+    use sha2::Digest;
+
+    let mut value = serde_json::to_value(request)?;
+    if let Some(payload) = value.get_mut("payload").and_then(serde_json::Value::as_object_mut) {
+        payload.remove("auth");
+    }
+    let mut bytes = Vec::new();
+    write_test_canonical_json(&value, &mut bytes)?;
+    Ok(sha2::Sha256::digest(&bytes).into())
+}
+
+fn write_test_canonical_json(
+    value: &serde_json::Value,
+    out: &mut Vec<u8>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    match value {
+        serde_json::Value::Null => out.extend_from_slice(b"null"),
+        serde_json::Value::Bool(true) => out.extend_from_slice(b"true"),
+        serde_json::Value::Bool(false) => out.extend_from_slice(b"false"),
+        serde_json::Value::Number(number) => out.extend_from_slice(number.to_string().as_bytes()),
+        serde_json::Value::String(text) => {
+            out.extend_from_slice(serde_json::to_string(text)?.as_bytes());
+        }
+        serde_json::Value::Array(items) => {
+            out.push(b'[');
+            for (index, item) in items.iter().enumerate() {
+                if index > 0 {
+                    out.push(b',');
+                }
+                write_test_canonical_json(item, out)?;
+            }
+            out.push(b']');
+        }
+        serde_json::Value::Object(map) => {
+            out.push(b'{');
+            let sorted: std::collections::BTreeMap<_, _> = map.iter().collect();
+            for (index, (key, item)) in sorted.into_iter().enumerate() {
+                if index > 0 {
+                    out.push(b',');
+                }
+                write_test_canonical_json(&serde_json::Value::String(key.clone()), out)?;
+                out.push(b':');
+                write_test_canonical_json(item, out)?;
+            }
+            out.push(b'}');
+        }
+    }
+    Ok(())
+}
+
+fn sign_auth_payload(
+    signing_key: &ed25519_dalek::SigningKey,
+    request: &crate::RequestEnvelope,
+    client_id: &str,
+    challenge_id: &str,
+    nonce: &str,
+    request_timestamp: i64,
+) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    use ed25519_dalek::Signer;
+
+    let nonce_bytes = data_encoding::BASE64URL_NOPAD.decode(nonce.as_bytes())?;
+    let canonical_hash = canonical_test_hash(request)?;
+    let mut signed = Vec::new();
+    signed.extend_from_slice(b"locket-client-auth-v1");
+    signed.extend_from_slice(client_id.as_bytes());
+    signed.extend_from_slice(challenge_id.as_bytes());
+    signed.extend_from_slice(&nonce_bytes);
+    signed.extend_from_slice(request_timestamp.to_string().as_bytes());
+    signed.extend_from_slice(request.id.as_bytes());
+    signed.extend_from_slice(&canonical_hash);
+    let signature = signing_key.sign(&signed);
+    Ok(json!({
+        "client_id": client_id,
+        "challenge_id": challenge_id,
+        "nonce": nonce,
+        "request_timestamp": request_timestamp,
+        "signature": data_encoding::BASE64URL_NOPAD.encode(&signature.to_bytes()),
+    }))
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn automation_client_auth_accepts_signed_request_and_audits()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::server::{AgentSocketState, dispatch};
+
+    let directory = tempfile::tempdir()?;
+    let store_path = directory.path().join("store.db");
+    let signing_key = automation_signing_key();
+    let verifying_key = signing_key.verifying_key();
+    seed_automation_client_store(&store_path, verifying_key.as_bytes())?;
+
+    let state = AgentSocketState::locked("test-version");
+    unlock_auth_project(&state).await;
+    let hello = RequestEnvelope::new(
+        "hello",
+        AgentMethod::ClientHello,
+        json!({ "client_id": "lk_client_auth" }),
+    );
+    let ResponseEnvelope::Success(success) = dispatch(&hello, &state).await else {
+        return Err("ClientHello should succeed".into());
+    };
+    let challenge_id = success.payload["challenge_id"].as_str().ok_or("missing challenge_id")?;
+    let nonce = success.payload["nonce"].as_str().ok_or("missing nonce")?;
+    assert_eq!(data_encoding::BASE64URL_NOPAD.decode(nonce.as_bytes())?.len(), 24);
+
+    let payload = json!({
+        "project_id": "lk_proj_auth",
+        "store_path": store_path,
+        "requested_action": "run-policy",
+        "policy_name": "deploy"
+    });
+    let unsigned = RequestEnvelope::new("signed-1", AgentMethod::Status, payload.clone());
+    let mut signed_payload = payload;
+    signed_payload.as_object_mut().ok_or("payload object")?.insert(
+        "auth".to_owned(),
+        sign_auth_payload(
+            &signing_key,
+            &unsigned,
+            "lk_client_auth",
+            challenge_id,
+            nonce,
+            auth_now_i64(),
+        )?,
+    );
+    let signed = RequestEnvelope::new("signed-1", AgentMethod::Status, signed_payload);
+    let ResponseEnvelope::Success(_) = dispatch(&signed, &state).await else {
+        return Err("signed request should authenticate and dispatch".into());
+    };
+
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let nonce_count: i64 = store.connection().query_row(
+        "SELECT COUNT(*) FROM automation_client_nonces WHERE client_id = 'lk_client_auth'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(nonce_count, 1);
+    let last_used_at: Option<i64> = store.connection().query_row(
+        "SELECT last_used_at FROM automation_clients WHERE id = 'lk_client_auth'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert!(last_used_at.is_some());
+    let metadata: String = store.connection().query_row(
+        "SELECT metadata_json FROM audit_log WHERE action = 'CLIENT_AUTH'",
+        [],
+        |row| row.get(0),
+    )?;
+    let metadata: serde_json::Value = serde_json::from_str(&metadata)?;
+    assert_eq!(metadata["status"], json!("SUCCESS"));
+    assert_eq!(metadata["client_id"], json!("lk_client_auth"));
+    assert_eq!(metadata["request_id"], json!("signed-1"));
+    assert_eq!(metadata["requested_action"], json!("run-policy"));
+    assert_eq!(metadata["requested_policy"], json!("deploy"));
+    assert_eq!(metadata["auth_result"], json!("verified"));
+    assert!(metadata.get("secret_name").is_none());
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn automation_client_auth_rejects_policy_mismatch_and_replay()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::auth::IssuedChallenge;
+    use crate::server::{AgentSocketState, dispatch};
+
+    let directory = tempfile::tempdir()?;
+    let store_path = directory.path().join("store.db");
+    let signing_key = automation_signing_key();
+    let verifying_key = signing_key.verifying_key();
+    seed_automation_client_store(&store_path, verifying_key.as_bytes())?;
+
+    let state = AgentSocketState::locked("test-version");
+    unlock_auth_project(&state).await;
+    let bad_policy_payload = json!({
+        "project_id": "lk_proj_auth",
+        "store_path": store_path,
+        "requested_action": "run-policy",
+        "policy_name": "prod"
+    });
+    let bad_unsigned =
+        RequestEnvelope::new("signed-deny", AgentMethod::Status, bad_policy_payload.clone());
+    state.automation_challenges.lock().await.insert(
+        "deny-challenge".to_owned(),
+        IssuedChallenge {
+            client_id: "lk_client_auth".to_owned(),
+            challenge_id: "deny-challenge".to_owned(),
+            nonce: [1; 24],
+            issued_at: crate::server::current_unix_nanos(),
+        },
+    );
+    let mut bad_signed_payload = bad_policy_payload;
+    bad_signed_payload.as_object_mut().ok_or("payload object")?.insert(
+        "auth".to_owned(),
+        sign_auth_payload(
+            &signing_key,
+            &bad_unsigned,
+            "lk_client_auth",
+            "deny-challenge",
+            &data_encoding::BASE64URL_NOPAD.encode(&[1; 24]),
+            auth_now_i64(),
+        )?,
+    );
+    let bad_signed = RequestEnvelope::new("signed-deny", AgentMethod::Status, bad_signed_payload);
+    let ResponseEnvelope::Error(error) = dispatch(&bad_signed, &state).await else {
+        return Err("policy mismatch should fail".into());
+    };
+    assert_eq!(error.error, "AutomationClientNotTrusted");
+
+    let replay_payload = json!({
+        "project_id": "lk_proj_auth",
+        "store_path": directory.path().join("store.db"),
+        "requested_action": "run-policy",
+        "policy_name": "deploy"
+    });
+    let replay_unsigned =
+        RequestEnvelope::new("signed-replay", AgentMethod::Status, replay_payload.clone());
+    state.automation_challenges.lock().await.insert(
+        "replay-challenge".to_owned(),
+        IssuedChallenge {
+            client_id: "lk_client_auth".to_owned(),
+            challenge_id: "replay-challenge".to_owned(),
+            nonce: [2; 24],
+            issued_at: crate::server::current_unix_nanos(),
+        },
+    );
+    let nonce_record = locket_store::AutomationClientNonceRecord {
+        client_id: "lk_client_auth".to_owned(),
+        nonce: [2; 24],
+        request_timestamp: auth_now_i64(),
+        seen_at: auth_now_i64(),
+        expires_at: i64::MAX,
+    };
+    let replay_store = locket_store::Store::open(directory.path().join("store.db"))?;
+    replay_store.insert_automation_client_nonce(&nonce_record)?;
+    let mut replay_signed_payload = replay_payload;
+    replay_signed_payload.as_object_mut().ok_or("payload object")?.insert(
+        "auth".to_owned(),
+        sign_auth_payload(
+            &signing_key,
+            &replay_unsigned,
+            "lk_client_auth",
+            "replay-challenge",
+            &data_encoding::BASE64URL_NOPAD.encode(&[2; 24]),
+            nonce_record.request_timestamp,
+        )?,
+    );
+    let replay_signed =
+        RequestEnvelope::new("signed-replay", AgentMethod::Status, replay_signed_payload);
+    let ResponseEnvelope::Error(error) = dispatch(&replay_signed, &state).await else {
+        return Err("replayed nonce should fail".into());
+    };
+    assert_eq!(error.error, "AutomationClientReplayDetected");
+    Ok(())
+}
+
 #[cfg(unix)]
 mod server_tests {
     use std::os::unix::fs::PermissionsExt;

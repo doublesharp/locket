@@ -2460,9 +2460,12 @@ dependencies = [
 name = "locket-agent"
 version = "0.1.0"
 dependencies = [
+ "data-encoding",
+ "ed25519-dalek",
  "locket-core",
  "locket-crypto",
  "locket-store",
+ "rand 0.9.4",
  "rustix",
  "serde",
  "serde_bytes",

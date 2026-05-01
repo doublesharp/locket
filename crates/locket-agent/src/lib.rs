@@ -6,6 +6,7 @@
 
 mod audit;
 mod audit_verify;
+mod auth;
 mod config;
 mod envelope;
 mod error;
@@ -31,6 +32,7 @@ mod versions;
 
 pub use audit::{AuditChainStatus, ListAuditRequest, ListAuditResponse, ListAuditRow};
 pub use audit_verify::{VerifyAuditRequest, VerifyAuditResponse};
+pub use auth::{ClientHelloRequest, ClientHelloResponse};
 pub use config::{
     AgentConfigSettings, DangerousProfileSetting, EffectiveUserVerificationSettings,
     ReadConfigRequest, UserVerificationSettings, WriteConfigChanges, WriteConfigRequest,

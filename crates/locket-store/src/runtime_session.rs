@@ -9,6 +9,7 @@ use serde_json::json;
 use thiserror::Error;
 
 use crate::Store;
+use crate::audit::{AuditWrite, append_audit};
 use crate::error::StoreError;
 
 /// Metadata-only runtime process/session row.
@@ -647,6 +648,45 @@ impl Store {
                 nonce.expires_at,
             ],
         )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    /// Records an accepted automation-client nonce, updates client usage, and appends audit.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] when the nonce, usage update, or audit row cannot be written.
+    pub fn record_automation_client_auth_with_audit(
+        &mut self,
+        nonce: &AutomationClientNonceRecord,
+        now: i64,
+        audit_key: &[u8],
+        audit: &AuditWrite<'_>,
+    ) -> Result<(), StoreError> {
+        let transaction = self.connection.transaction()?;
+        transaction
+            .execute("DELETE FROM automation_client_nonces WHERE expires_at <= ?1", [now])?;
+        transaction.execute(
+            "INSERT INTO automation_client_nonces(
+               client_id, nonce, request_timestamp, seen_at, expires_at
+             )
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                nonce.client_id.as_str(),
+                nonce.nonce.as_slice(),
+                nonce.request_timestamp,
+                nonce.seen_at,
+                nonce.expires_at,
+            ],
+        )?;
+        transaction.execute(
+            "UPDATE automation_clients
+             SET last_used_at = ?2
+             WHERE id = ?1",
+            params![nonce.client_id.as_str(), now],
+        )?;
+        append_audit(&transaction, audit_key, audit)?;
         transaction.commit()?;
         Ok(())
     }
