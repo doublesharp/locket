@@ -1,11 +1,11 @@
-//! End-to-end coverage for the sealed-bundle export → verify → import
-//! roundtrip. The decrypt half (`bundle-import-decrypt`) and the apply
-//! half (`bundle-import-apply-rows` / `bundle-apply-and-conflicts`) are
-//! still pending; these tests pin the metadata-only path that ships
-//! today and leave a TODO breadcrumb for the cases that depend on the
-//! decrypted import emitting structured counts.
+//! End-to-end coverage for the sealed-bundle export -> verify ->
+//! decrypt-import roundtrip. The decrypt step ships today
+//! (`bundle-import-decrypt`); the apply step
+//! (`bundle-import-apply-rows` / `bundle-apply-and-conflicts`) does
+//! not, so these tests assert the four payload counts the import
+//! command emits and leave a TODO breadcrumb for the conflict matrix.
 //!
-//! Spec: `docs/specs/testing.md` — e2e bundle-roundtrip target.
+//! Spec: `docs/specs/testing.md` -- e2e bundle-roundtrip target.
 //! Existing siblings: `cli_basics::sealed_bundle_export_verify_and_import_are_metadata_only`,
 //! `cli_basics::bundle_verify_rejects_tampered_digest`, and
 //! `cli_basics::bundle_verify_rejects_unsupported_schema_as_config_error`.
@@ -14,8 +14,9 @@
 use super::*;
 
 /// Inline analogue of the `setup_initialized_project` helper referenced
-/// from the planning doc — kept local so this file is self-contained
-/// and uses the same exported helpers as the existing bundle tests.
+/// from the planning doc: init project, write one secret, init device,
+/// export a sealed bundle. Returns the runtime context, the device
+/// descriptor, the bundle path, and the export stdout.
 fn export_sealed_bundle(
     directory: &tempfile::TempDir,
     bundle_filename: &str,
@@ -63,7 +64,7 @@ fn export_sealed_bundle(
     Ok((context, descriptor, bundle_path, export_output))
 }
 
-fn parse_export_field<'a>(output: &'a str, key: &str) -> Option<&'a str> {
+fn parse_field<'a>(output: &'a str, key: &str) -> Option<&'a str> {
     output.lines().find_map(|line| line.strip_prefix(&format!("{key}: ")))
 }
 
@@ -74,22 +75,18 @@ fn fresh_export_then_decrypt_roundtrips_payload_counts()
     let (context, _descriptor, bundle_path, export_output) =
         export_sealed_bundle(&directory, "fresh.locket-bundle")?;
 
-    // Export reports the canonical payload counts that the (eventual)
-    // decrypted import should mirror.
     assert!(export_output.contains("bundle: exported"));
-    let exported_digest = parse_export_field(&export_output, "digest")
-        .ok_or("export missing digest field")?
-        .to_owned();
-    let exported_profiles = parse_export_field(&export_output, "profiles")
+    let exported_digest =
+        parse_field(&export_output, "digest").ok_or("export missing digest field")?.to_owned();
+    let exported_profiles = parse_field(&export_output, "profiles")
         .ok_or("export missing profiles field")?
         .to_owned();
-    let exported_secrets = parse_export_field(&export_output, "secret_count")
+    let exported_secrets = parse_field(&export_output, "secret_count")
         .ok_or("export missing secret_count field")?
         .to_owned();
-    let exported_blobs = parse_export_field(&export_output, "blob_count")
-        .ok_or("export missing blob_count field")?
-        .to_owned();
-    let exported_command_policies = parse_export_field(&export_output, "command_policy_count")
+    let exported_blobs =
+        parse_field(&export_output, "blob_count").ok_or("export missing blob_count field")?.to_owned();
+    let exported_command_policies = parse_field(&export_output, "command_policy_count")
         .ok_or("export missing command_policy_count field")?
         .to_owned();
 
@@ -106,8 +103,7 @@ fn fresh_export_then_decrypt_roundtrips_payload_counts()
     )?;
     let verify_output = String::from_utf8(verify_output)?;
     assert!(verify_output.contains("bundle: valid"));
-    let verify_digest =
-        parse_export_field(&verify_output, "digest").ok_or("verify missing digest")?;
+    let verify_digest = parse_field(&verify_output, "digest").ok_or("verify missing digest")?;
     assert_eq!(
         verify_digest, exported_digest,
         "manifest digest must match between export and verify"
@@ -127,26 +123,32 @@ fn fresh_export_then_decrypt_roundtrips_payload_counts()
     )?;
     let import_output = String::from_utf8(import_output)?;
     assert!(import_output.contains("bundle: verified"));
-
-    // Import currently emits the metadata-only stub. When
-    // `bundle-import-decrypt` ships, the assertion block below should
-    // flip to assert `import: decrypted` plus matching counts.
-    assert!(import_output.contains("import: not_applied"));
-    assert!(import_output.contains("metadata_only: yes"));
-    let import_profiles =
-        parse_export_field(&import_output, "profiles").ok_or("import missing profiles")?;
-    assert_eq!(
-        import_profiles, exported_profiles,
-        "import must report the same profile count as export (metadata-only)"
-    );
-
-    // Document the expected post-decrypt-counts contract so the next
-    // agent has a clear target. These are not yet emitted.
     assert!(
-        !import_output.contains("import: decrypted"),
-        "if decrypted-counts shipped, update this test to assert counts: \
-         profiles={exported_profiles} secrets={exported_secrets} \
-         blobs={exported_blobs} command_policies={exported_command_policies}"
+        import_output.contains("import: decrypted"),
+        "import must report decrypted status: {import_output}"
+    );
+    assert!(import_output.contains("metadata_only: yes"));
+
+    // The four counts the decrypted-import surface emits must mirror
+    // the export-side counts. Profile counts and secret counts are the
+    // same field name on both sides; blobs and command_policies are
+    // renamed in the import surface (export uses `blob_count` /
+    // `command_policy_count`, import uses `blobs` / `command_policies`).
+    let import_profiles =
+        parse_field(&import_output, "profiles").ok_or("import missing profiles")?;
+    let import_secrets =
+        parse_field(&import_output, "secrets").ok_or("import missing secrets")?;
+    let import_blobs =
+        parse_field(&import_output, "blobs").ok_or("import missing blobs")?;
+    let import_command_policies = parse_field(&import_output, "command_policies")
+        .ok_or("import missing command_policies")?;
+
+    assert_eq!(import_profiles, exported_profiles, "profiles count must match");
+    assert_eq!(import_secrets, exported_secrets, "secrets count must match");
+    assert_eq!(import_blobs, exported_blobs, "blobs count must match");
+    assert_eq!(
+        import_command_policies, exported_command_policies,
+        "command_policies count must match"
     );
     Ok(())
 }
@@ -154,16 +156,14 @@ fn fresh_export_then_decrypt_roundtrips_payload_counts()
 #[test]
 fn identical_bundle_decrypt_emits_consistent_counts() -> Result<(), Box<dyn std::error::Error>> {
     // Two independently-initialised projects with the same scripted
-    // inputs should produce bundles whose manifest counts agree. The
-    // payload digests differ because age encryption is randomised and
-    // the project_id / device key are freshly generated, but the
-    // metadata-only counts shown in the export and import surfaces are
-    // deterministic.
+    // inputs should produce exports whose manifest counts agree, and
+    // the decrypted-import counts on each side should agree both with
+    // the export-side counts and with each other.
     let directory_a = tempdir()?;
     let directory_b = tempdir()?;
-    let (_ctx_a, _desc_a, _path_a, export_a) =
+    let (ctx_a, _desc_a, path_a, export_a) =
         export_sealed_bundle(&directory_a, "a.locket-bundle")?;
-    let (_ctx_b, _desc_b, _path_b, export_b) =
+    let (ctx_b, _desc_b, path_b, export_b) =
         export_sealed_bundle(&directory_b, "b.locket-bundle")?;
 
     for field in [
@@ -179,13 +179,49 @@ fn identical_bundle_decrypt_emits_consistent_counts() -> Result<(), Box<dyn std:
         "metadata_only",
         "payload_status",
     ] {
-        let value_a = parse_export_field(&export_a, field)
-            .ok_or_else(|| format!("export A missing {field}"))?;
-        let value_b = parse_export_field(&export_b, field)
-            .ok_or_else(|| format!("export B missing {field}"))?;
+        let value_a =
+            parse_field(&export_a, field).ok_or_else(|| format!("export A missing {field}"))?;
+        let value_b =
+            parse_field(&export_b, field).ok_or_else(|| format!("export B missing {field}"))?;
         assert_eq!(
             value_a, value_b,
             "field {field} must agree between identical exports (a={value_a}, b={value_b})"
+        );
+    }
+
+    // Decrypted-import counts must also agree across the two projects.
+    let mut import_a = Vec::new();
+    run_with_context(
+        Cli::try_parse_from([
+            "locket",
+            "import-bundle",
+            path_a.to_str().ok_or("utf8 path")?,
+            "--accept-local",
+        ])?,
+        &ctx_a,
+        &mut import_a,
+    )?;
+    let mut import_b = Vec::new();
+    run_with_context(
+        Cli::try_parse_from([
+            "locket",
+            "import-bundle",
+            path_b.to_str().ok_or("utf8 path")?,
+            "--accept-local",
+        ])?,
+        &ctx_b,
+        &mut import_b,
+    )?;
+    let import_a = String::from_utf8(import_a)?;
+    let import_b = String::from_utf8(import_b)?;
+    for field in ["profiles", "secrets", "blobs", "command_policies"] {
+        let value_a =
+            parse_field(&import_a, field).ok_or_else(|| format!("import A missing {field}"))?;
+        let value_b =
+            parse_field(&import_b, field).ok_or_else(|| format!("import B missing {field}"))?;
+        assert_eq!(
+            value_a, value_b,
+            "decrypted import field {field} must agree (a={value_a}, b={value_b})"
         );
     }
     Ok(())
@@ -194,23 +230,21 @@ fn identical_bundle_decrypt_emits_consistent_counts() -> Result<(), Box<dyn std:
 #[test]
 fn bundle_with_corrupt_age_payload_fails_verification()
 -> Result<(), Box<dyn std::error::Error>> {
-    // Sibling test `bundle_verify_rejects_tampered_digest` covers the
-    // case where the manifest digest field is replaced. This test
-    // covers the dual: the encrypted payload bytes themselves are
-    // tampered while the manifest digest is left alone, so digest
-    // verification trips first. Both paths return `BundleVerificationFailed`
-    // (exit code 110); the wording differs.
+    // Sibling test `bundle_verify_rejects_tampered_digest` covers
+    // tampering the manifest's `payload_digest` field. This test
+    // tampers the encrypted payload bytes themselves while leaving
+    // the manifest digest alone, so digest verification trips first.
+    // Both paths return `BundleVerificationFailed` (exit code 110).
     let directory = tempdir()?;
     let (context, _descriptor, bundle_path, _export_output) =
         export_sealed_bundle(&directory, "corrupt.locket-bundle")?;
 
     let bundle_bytes = fs::read(&bundle_path)?;
     let mut container = locket_core::BundleContainer::deserialize(&bundle_bytes)?;
-    // Flip a byte deep in the encrypted payload — past the age v1
-    // magic and recipient stanzas — so the corruption is in the
-    // ciphertext body rather than the framing header.
     let payload_len = container.encrypted_payload.len();
     assert!(payload_len > 0, "encrypted payload must be non-empty");
+    // Flip a byte deep in the encrypted payload so the corruption is
+    // in the ciphertext body rather than the framing header.
     let target = payload_len - 1;
     container.encrypted_payload[target] ^= 0xFF;
     fs::write(&bundle_path, container.serialize()?)?;
@@ -230,7 +264,8 @@ fn bundle_with_corrupt_age_payload_fails_verification()
     };
     assert_eq!(
         error.exit_code(),
-        locket_core::LocketError::BundleVerificationFailed.exit_code()
+        locket_core::LocketError::BundleVerificationFailed.exit_code(),
+        "exit code must be BundleVerificationFailed (110)"
     );
     match &error {
         crate::CliError::Typed { kind, .. } => {
@@ -248,22 +283,25 @@ fn bundle_with_corrupt_age_payload_fails_verification()
 #[test]
 fn bundle_without_device_private_key_fails_verification()
 -> Result<(), Box<dyn std::error::Error>> {
-    // Today, *every* import fails to apply because device-private-key
-    // storage and the decrypt step are not wired (`import: not_applied`,
-    // reason: `local device private-key import is not implemented in
-    // this build`). Once `device-private-key-storage` and
-    // `bundle-import-decrypt` ship, this case must transition into a
-    // hard-fail import that returns `BundleVerificationFailed` with
-    // reason `device private-key storage not initialized`.
+    // After `device-private-key-storage` and `bundle-import-decrypt`
+    // shipped, the import command loads the device private-key
+    // envelope from `<store_root>/devices/<device_id>.priv`. If that
+    // envelope is missing, the import must fail with
+    // `BundleVerificationFailed` and the explicit reason
+    // `device private-key storage not initialized`.
     //
-    // For now, pin the current contract: the metadata-only stub is the
-    // only thing that runs without device-private-key storage.
+    // Reproduction recipe: run a normal export (which calls
+    // `device init` and writes the envelope), then delete the
+    // `devices/` directory before invoking `import-bundle`.
     let directory = tempdir()?;
     let (context, _descriptor, bundle_path, _export_output) =
         export_sealed_bundle(&directory, "no-priv-key.locket-bundle")?;
 
-    let mut import_output = Vec::new();
-    run_with_context(
+    let devices_dir = directory.path().join("devices");
+    assert!(devices_dir.exists(), "device init must have populated devices/");
+    fs::remove_dir_all(&devices_dir)?;
+
+    let result = run_with_context(
         Cli::try_parse_from([
             "locket",
             "import-bundle",
@@ -271,49 +309,58 @@ fn bundle_without_device_private_key_fails_verification()
             "--accept-local",
         ])?,
         &context,
-        &mut import_output,
-    )?;
-    let import_output = String::from_utf8(import_output)?;
-    assert!(import_output.contains("import: not_applied"));
+        &mut Vec::new(),
+    );
+    let Err(error) = result else {
+        return Err("expected bundle import to fail without device private key".into());
+    };
+    assert_eq!(
+        error.exit_code(),
+        locket_core::LocketError::BundleVerificationFailed.exit_code(),
+        "exit code must be BundleVerificationFailed (110)"
+    );
+    match &error {
+        crate::CliError::Typed { kind, .. } => {
+            assert_eq!(*kind, locket_core::LocketError::BundleVerificationFailed);
+        }
+        other => return Err(format!("expected typed BundleVerificationFailed, got {other:?}").into()),
+    }
     assert!(
-        import_output.contains("local device private-key import is not implemented"),
-        "import should explain why decrypt is unavailable: {import_output}"
+        error.to_string().contains("device private-key storage not initialized"),
+        "missing-private-key import should report storage-not-initialized: {error}"
     );
     Ok(())
 }
 
 // TODO(bundle-apply-and-conflicts): the cases below depend on the
-// apply/conflict matrix and the `bundle-import-decrypt` step. Each is
-// scaffolded in a sentence so the next agent can lift them straight
-// into tests once the underlying behaviour ships.
+// row-application + conflict matrix that follows
+// `bundle-import-decrypt` (already shipped) and
+// `bundle-import-apply-rows` (still pending). Each is scaffolded in
+// a sentence so the next agent can lift them straight into tests.
 //
-// 1. `decrypted_counts_match_exported_counts`: once `import: decrypted`
-//    is emitted, assert the four counts (profiles, secrets, blobs,
-//    command_policies) literally match the export field values rather
-//    than the metadata-only stub. Replace the negative assertion in
-//    `fresh_export_then_decrypt_roundtrips_payload_counts`.
+// 1. `applied_rows_persist_across_reopen`: after a successful
+//    `--accept-incoming` apply, reopen the store and assert the
+//    decrypted profile_keys, command_policies, secret_versions, and
+//    blobs are visible with the imported counts. Today the import
+//    command stops at decrypt and never writes rows.
 //
 // 2. `newer_incoming_replaces_active_with_rotation`: import a bundle
-//    whose secret_version is newer than the local active version with
-//    `--accept-incoming`; assert the local row rotates with no grace
-//    and the prior version is marked deprecated.
+//    whose secret_version is newer than the local active version
+//    with `--accept-incoming`; assert the local row rotates with no
+//    grace and the prior version is marked deprecated.
 //
-// 3. `divergent_versions_require_explicit_resolution`: import a bundle
-//    whose secret_version diverges from local (same version number,
-//    different ciphertext); assert the default conflict policy
-//    `interactive-required` exits without writing.
+// 3. `divergent_versions_require_explicit_resolution`: import a
+//    bundle whose secret_version diverges from local (same version
+//    number, different ciphertext); assert the default conflict
+//    policy `interactive-required` exits without writing.
 //
 // 4. `deleted_local_vs_active_incoming_records_tombstone`: local row
 //    is tombstoned, incoming bundle still has the active version;
-//    assert `--accept-local` keeps the tombstone and `--accept-incoming`
-//    revives the row with a fresh version chain.
+//    assert `--accept-local` keeps the tombstone and
+//    `--accept-incoming` revives the row with a fresh version chain.
 //
-// 5. `applied_rows_persist_across_reopen`: after a successful apply,
-//    reopen the store and assert profile_keys, command_policies,
-//    secret_versions, and blobs are visible with the imported counts.
-//
-// 6. `missing_device_private_key_fails_with_typed_error`: replace the
-//    metadata-only assertion in
-//    `bundle_without_device_private_key_fails_verification` with a
-//    hard error assertion: `BundleVerificationFailed` and message
-//    `device private-key storage not initialized`.
+// 5. `imported_audit_chain_appends_to_imported_audit_chains`: when
+//    `--include-audit` is set on both export and import, the imported
+//    audit rows must land in `imported_audit_chains` with structural
+//    verification. Today the import command only emits
+//    `bundle_include_audit: yes/no` and does not persist rows.
