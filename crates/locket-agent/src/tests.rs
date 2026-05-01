@@ -1675,6 +1675,177 @@ mod server_tests {
         Ok(())
     }
 
+    async fn read_required_response_frame(
+        client: &mut UnixStream,
+        buffer: &mut Vec<u8>,
+        label: &str,
+    ) -> Result<ResponseEnvelope, Box<dyn std::error::Error>> {
+        read_one_response_frame(client, buffer)
+            .await?
+            .ok_or_else(|| format!("server closed before {label} response").into())
+    }
+
+    fn expect_success(
+        response: ResponseEnvelope,
+        label: &str,
+    ) -> Result<SuccessEnvelope, Box<dyn std::error::Error>> {
+        let ResponseEnvelope::Success(success) = response else {
+            return Err(format!("expected {label} success, got {response:?}").into());
+        };
+        Ok(success)
+    }
+
+    async fn request_success_frame(
+        client: &mut UnixStream,
+        buffer: &mut Vec<u8>,
+        request: &RequestEnvelope,
+        label: &str,
+    ) -> Result<SuccessEnvelope, Box<dyn std::error::Error>> {
+        write_request_frame(client, request).await?;
+        let response = read_required_response_frame(client, buffer, label).await?;
+        expect_success(response, label)
+    }
+
+    async fn assert_locked_status(
+        client: &mut UnixStream,
+        buffer: &mut Vec<u8>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let status_locked = request_success_frame(
+            client,
+            buffer,
+            &RequestEnvelope::new("status-locked", AgentMethod::Status, Value::Null),
+            "initial Status",
+        )
+        .await?;
+        assert_eq!(status_locked.payload["lock_state"], "locked");
+        assert_eq!(status_locked.payload["live_grant_count"], 0);
+        Ok(())
+    }
+
+    async fn unlock_agent_for_e2e(
+        client: &mut UnixStream,
+        buffer: &mut Vec<u8>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        request_success_frame(
+            client,
+            buffer,
+            &RequestEnvelope::new(
+                "unlock",
+                AgentMethod::Unlock,
+                serde_json::json!({
+                    "project_id": "project-main",
+                    "key": [3, 3, 3, 3, 3, 3, 3, 3,
+                            3, 3, 3, 3, 3, 3, 3, 3,
+                            3, 3, 3, 3, 3, 3, 3, 3,
+                            3, 3, 3, 3, 3, 3, 3, 3],
+                    "ttl_seconds": 60,
+                    "method": "Passphrase"
+                }),
+            ),
+            "Unlock",
+        )
+        .await?;
+        Ok(())
+    }
+
+    async fn assert_unlocked_status(
+        client: &mut UnixStream,
+        buffer: &mut Vec<u8>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let status_unlocked = request_success_frame(
+            client,
+            buffer,
+            &RequestEnvelope::new("status-unlocked", AgentMethod::Status, Value::Null),
+            "unlocked Status",
+        )
+        .await?;
+        assert_eq!(status_unlocked.payload["lock_state"], "unlocked");
+        let ttl = status_unlocked.payload["unlock_ttl_seconds"].as_u64().unwrap_or_default();
+        assert!((1..=60).contains(&ttl), "unlock ttl should remain live, got {ttl}");
+        Ok(())
+    }
+
+    async fn request_e2e_grant(
+        client: &mut UnixStream,
+        buffer: &mut Vec<u8>,
+    ) -> Result<String, Box<dyn std::error::Error>> {
+        let grant = request_success_frame(
+            client,
+            buffer,
+            &RequestEnvelope::new(
+                "grant",
+                AgentMethod::RequestGrant,
+                serde_json::json!({
+                    "project_id": "project-main",
+                    "profile_id": "profile-main",
+                    "action": "RunPolicy",
+                    "ttl_seconds": 30,
+                    "binding": {
+                        "pid": std::process::id(),
+                        "process_start_time": "e2e-start"
+                    }
+                }),
+            ),
+            "RequestGrant",
+        )
+        .await?;
+        let grant_id = grant.payload["grant_id"].as_str().unwrap_or_default().to_owned();
+        assert!(!grant_id.is_empty());
+        Ok(grant_id)
+    }
+
+    async fn assert_live_grant_count(
+        client: &mut UnixStream,
+        buffer: &mut Vec<u8>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let status_granted = request_success_frame(
+            client,
+            buffer,
+            &RequestEnvelope::new("status-granted", AgentMethod::Status, Value::Null),
+            "granted Status",
+        )
+        .await?;
+        assert_eq!(status_granted.payload["live_grant_count"], 1);
+        Ok(())
+    }
+
+    async fn revoke_e2e_grant(
+        client: &mut UnixStream,
+        buffer: &mut Vec<u8>,
+        grant_id: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        request_success_frame(
+            client,
+            buffer,
+            &RequestEnvelope::new(
+                "revoke",
+                AgentMethod::RevokeGrant,
+                serde_json::json!({ "grant_id": grant_id }),
+            ),
+            "RevokeGrant",
+        )
+        .await?;
+        Ok(())
+    }
+
+    async fn assert_subscription_status(
+        client: &mut UnixStream,
+        buffer: &mut Vec<u8>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let subscription = request_success_frame(
+            client,
+            buffer,
+            &RequestEnvelope::new("subscribe", AgentMethod::SubscribeStatus, serde_json::json!({})),
+            "SubscribeStatus",
+        )
+        .await?;
+        assert_eq!(subscription.id, "subscribe");
+        assert_eq!(subscription.payload["kind"], "status");
+        assert_eq!(subscription.payload["lock_state"], "unlocked");
+        assert_eq!(subscription.payload["live_grant_count"], 0);
+        Ok(())
+    }
+
     #[tokio::test]
     async fn e2e_agent_rpc_drives_status_unlock_grants_and_subscription()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -1700,126 +1871,13 @@ mod server_tests {
         let mut client = UnixStream::connect(&socket_path).await?;
         let mut buffer = Vec::new();
 
-        write_request_frame(
-            &mut client,
-            &RequestEnvelope::new("status-locked", AgentMethod::Status, Value::Null),
-        )
-        .await?;
-        let Some(status_locked) = read_one_response_frame(&mut client, &mut buffer).await? else {
-            return Err("server closed before initial Status response".into());
-        };
-        let ResponseEnvelope::Success(status_locked) = status_locked else {
-            return Err(format!("expected initial Status success, got {status_locked:?}").into());
-        };
-        assert_eq!(status_locked.payload["lock_state"], "locked");
-        assert_eq!(status_locked.payload["live_grant_count"], 0);
-
-        write_request_frame(
-            &mut client,
-            &RequestEnvelope::new(
-                "unlock",
-                AgentMethod::Unlock,
-                serde_json::json!({
-                    "project_id": "project-main",
-                    "key": [3, 3, 3, 3, 3, 3, 3, 3,
-                            3, 3, 3, 3, 3, 3, 3, 3,
-                            3, 3, 3, 3, 3, 3, 3, 3,
-                            3, 3, 3, 3, 3, 3, 3, 3],
-                    "ttl_seconds": 60,
-                    "method": "Passphrase"
-                }),
-            ),
-        )
-        .await?;
-        let Some(unlock) = read_one_response_frame(&mut client, &mut buffer).await? else {
-            return Err("server closed before Unlock response".into());
-        };
-        assert!(matches!(unlock, ResponseEnvelope::Success(_)));
-
-        write_request_frame(
-            &mut client,
-            &RequestEnvelope::new("status-unlocked", AgentMethod::Status, Value::Null),
-        )
-        .await?;
-        let Some(status_unlocked) = read_one_response_frame(&mut client, &mut buffer).await? else {
-            return Err("server closed before unlocked Status response".into());
-        };
-        let ResponseEnvelope::Success(status_unlocked) = status_unlocked else {
-            return Err(format!("expected unlocked Status success, got {status_unlocked:?}").into());
-        };
-        assert_eq!(status_unlocked.payload["lock_state"], "unlocked");
-        let ttl = status_unlocked.payload["unlock_ttl_seconds"].as_u64().unwrap_or_default();
-        assert!((1..=60).contains(&ttl), "unlock ttl should remain live, got {ttl}");
-
-        write_request_frame(
-            &mut client,
-            &RequestEnvelope::new(
-                "grant",
-                AgentMethod::RequestGrant,
-                serde_json::json!({
-                    "project_id": "project-main",
-                    "profile_id": "profile-main",
-                    "action": "RunPolicy",
-                    "ttl_seconds": 30,
-                    "binding": {
-                        "pid": std::process::id(),
-                        "process_start_time": "e2e-start"
-                    }
-                }),
-            ),
-        )
-        .await?;
-        let Some(grant) = read_one_response_frame(&mut client, &mut buffer).await? else {
-            return Err("server closed before RequestGrant response".into());
-        };
-        let ResponseEnvelope::Success(grant) = grant else {
-            return Err(format!("expected RequestGrant success, got {grant:?}").into());
-        };
-        let grant_id = grant.payload["grant_id"].as_str().unwrap_or_default().to_owned();
-        assert!(!grant_id.is_empty());
-
-        write_request_frame(
-            &mut client,
-            &RequestEnvelope::new("status-granted", AgentMethod::Status, Value::Null),
-        )
-        .await?;
-        let Some(status_granted) = read_one_response_frame(&mut client, &mut buffer).await? else {
-            return Err("server closed before granted Status response".into());
-        };
-        let ResponseEnvelope::Success(status_granted) = status_granted else {
-            return Err(format!("expected granted Status success, got {status_granted:?}").into());
-        };
-        assert_eq!(status_granted.payload["live_grant_count"], 1);
-
-        write_request_frame(
-            &mut client,
-            &RequestEnvelope::new(
-                "revoke",
-                AgentMethod::RevokeGrant,
-                serde_json::json!({ "grant_id": grant_id }),
-            ),
-        )
-        .await?;
-        let Some(revoke) = read_one_response_frame(&mut client, &mut buffer).await? else {
-            return Err("server closed before RevokeGrant response".into());
-        };
-        assert!(matches!(revoke, ResponseEnvelope::Success(_)));
-
-        write_request_frame(
-            &mut client,
-            &RequestEnvelope::new("subscribe", AgentMethod::SubscribeStatus, serde_json::json!({})),
-        )
-        .await?;
-        let Some(subscription) = read_one_response_frame(&mut client, &mut buffer).await? else {
-            return Err("server closed before SubscribeStatus event".into());
-        };
-        let ResponseEnvelope::Success(subscription) = subscription else {
-            return Err(format!("expected SubscribeStatus event, got {subscription:?}").into());
-        };
-        assert_eq!(subscription.id, "subscribe");
-        assert_eq!(subscription.payload["kind"], "status");
-        assert_eq!(subscription.payload["lock_state"], "unlocked");
-        assert_eq!(subscription.payload["live_grant_count"], 0);
+        assert_locked_status(&mut client, &mut buffer).await?;
+        unlock_agent_for_e2e(&mut client, &mut buffer).await?;
+        assert_unlocked_status(&mut client, &mut buffer).await?;
+        let grant_id = request_e2e_grant(&mut client, &mut buffer).await?;
+        assert_live_grant_count(&mut client, &mut buffer).await?;
+        revoke_e2e_grant(&mut client, &mut buffer, &grant_id).await?;
+        assert_subscription_status(&mut client, &mut buffer).await?;
 
         write_request_frame(
             &mut client,
