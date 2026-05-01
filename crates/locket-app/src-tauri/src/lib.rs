@@ -7,6 +7,7 @@
 use std::path::PathBuf;
 
 use directories::ProjectDirs;
+use serde::Deserialize;
 
 #[cfg(debug_assertions)]
 use tauri::Manager as _;
@@ -27,13 +28,70 @@ pub use tray::{
     tray_state_for_status_event, update_tray_state,
 };
 
-#[derive(serde::Deserialize)]
+const CONFIG_TOML: &str = "config.toml";
+
+#[derive(Deserialize)]
 struct DesktopListSecretsRequest {
     store_path: Option<PathBuf>,
     project_id: String,
     profile_id: String,
     #[serde(default)]
     redact_names: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct DesktopReadConfigRequest {
+    config_path: Option<PathBuf>,
+    store_path: Option<PathBuf>,
+    project_id: Option<String>,
+    profile_name: Option<String>,
+}
+
+impl DesktopReadConfigRequest {
+    fn into_agent_request(self) -> Result<locket_agent::ReadConfigRequest, AgentClientError> {
+        Ok(locket_agent::ReadConfigRequest {
+            config_path: self.config_path.unwrap_or(default_config_path()?),
+            store_path: self.store_path,
+            project_id: self.project_id,
+            profile_name: self.profile_name,
+        })
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct DesktopWriteConfigRequest {
+    config_path: Option<PathBuf>,
+    store_path: Option<PathBuf>,
+    project_id: String,
+    profile_name: Option<String>,
+    #[serde(default)]
+    changes: locket_agent::WriteConfigChanges,
+}
+
+impl DesktopWriteConfigRequest {
+    fn into_agent_request(self) -> Result<locket_agent::WriteConfigRequest, AgentClientError> {
+        Ok(locket_agent::WriteConfigRequest {
+            config_path: self.config_path.unwrap_or(default_config_path()?),
+            store_path: self.store_path.unwrap_or(default_store_path()?),
+            project_id: self.project_id,
+            profile_name: self.profile_name,
+            changes: self.changes,
+        })
+    }
+}
+
+fn project_dirs() -> Result<ProjectDirs, AgentClientError> {
+    ProjectDirs::from("dev", "0xdoublesharp", "Locket").ok_or_else(|| AgentClientError::Protocol {
+        reason: "could not resolve the default Locket data directory".to_owned(),
+    })
+}
+
+fn default_config_path() -> Result<PathBuf, AgentClientError> {
+    Ok(project_dirs()?.config_dir().join(CONFIG_TOML))
+}
+
+fn default_store_path() -> Result<PathBuf, AgentClientError> {
+    Ok(project_dirs()?.data_dir().join("store.db"))
 }
 
 /// Tauri command exposing the agent client to the webview.
@@ -133,13 +191,24 @@ async fn agent_list_secrets(
     agent_client::invoke_method(&path, locket_agent::AgentMethod::ListSecrets, &request).await
 }
 
-fn default_store_path() -> Result<PathBuf, AgentClientError> {
-    let Some(project_dirs) = ProjectDirs::from("dev", "0xdoublesharp", "Locket") else {
-        return Err(AgentClientError::Protocol {
-            reason: "could not resolve Locket data directory".to_owned(),
-        });
-    };
-    Ok(project_dirs.data_dir().join("store.db"))
+/// Tauri command exposing metadata-only desktop settings.
+#[tauri::command]
+async fn agent_read_config(
+    request: DesktopReadConfigRequest,
+) -> Result<locket_agent::AgentConfigSettings, AgentClientError> {
+    let request = request.into_agent_request()?;
+    let path = agent_client::resolve_socket_path();
+    agent_client::invoke_method(&path, locket_agent::AgentMethod::ReadConfig, &request).await
+}
+
+/// Tauri command writing desktop settings through the agent.
+#[tauri::command]
+async fn agent_write_config(
+    request: DesktopWriteConfigRequest,
+) -> Result<locket_agent::WriteConfigResponse, AgentClientError> {
+    let request = request.into_agent_request()?;
+    let path = agent_client::resolve_socket_path();
+    agent_client::invoke_method(&path, locket_agent::AgentMethod::WriteConfig, &request).await
 }
 
 /// Tauri command pushing a new tray icon state from the webview.
@@ -178,6 +247,8 @@ pub fn run() -> tauri::Result<()> {
             agent_prepare_exec,
             agent_list_runtime_sessions,
             agent_list_secrets,
+            agent_read_config,
+            agent_write_config,
             tray_set_state,
         ])
         .setup(|app| {

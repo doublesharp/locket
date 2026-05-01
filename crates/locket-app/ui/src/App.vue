@@ -7,7 +7,9 @@ import {
   listRuntimeSessions,
   listSecrets,
   lockVault,
+  readConfig,
   scan as scanKnownValues,
+  writeConfig,
 } from './agent/client';
 import { runtimeSessionRow } from './agent/runtimeSessions';
 import { secretRow } from './agent/secrets';
@@ -35,9 +37,11 @@ import type {
 } from './types/views';
 import type {
   AgentClientError,
+  AgentConfigSettings,
   ListRuntimeSessionsRequest,
   ListSecretsRequest,
   ScanFinding,
+  WriteConfigChanges,
 } from './agent/types';
 import { privacyAlias, privacyLabel } from './utils/privacy';
 
@@ -134,6 +138,8 @@ const secretsLastRefreshed = ref<string | undefined>(undefined);
 const sessionsLoading = ref<boolean>(false);
 const sessionsError = ref<string | null>(null);
 const sessionsLastRefreshed = ref<string | undefined>(undefined);
+const settingsLoading = ref<boolean>(false);
+const settingsError = ref<string | null>(null);
 const scanning = ref<boolean>(false);
 const scanLocked = ref<boolean>(false);
 const scanError = ref<string | null>(null);
@@ -186,6 +192,122 @@ watch(
 function applySettingsPatch(patch: Partial<SettingsState>): void {
   settings.value = { ...settings.value, ...patch };
 }
+
+function durationSeconds(value: string | null): number {
+  if (value === null) {
+    return 0;
+  }
+  const match = /^(\d+)(ms|s|m|h)?$/.exec(value.trim());
+  if (match === null) {
+    return 0;
+  }
+  const amount = Number.parseInt(match[1] ?? '0', 10);
+  switch (match[2] ?? 's') {
+    case 'ms':
+      return Math.ceil(amount / 1000);
+    case 'm':
+      return amount * 60;
+    case 'h':
+      return amount * 3600;
+    default:
+      return amount;
+  }
+}
+
+function verificationRequired(settings: AgentConfigSettings): boolean {
+  return Object.values(settings.user_verification_required_for).some((value) => value);
+}
+
+function applyAgentConfig(config: AgentConfigSettings): void {
+  settings.value = {
+    ...settings.value,
+    privacyRedactNames: config.privacy_redact_names,
+    unlockTtlSeconds: durationSeconds(config.agent_unlock_ttl),
+    requireUserVerification: verificationRequired(config),
+    dangerousProfileFlag: config.dangerous_profile?.dangerous ?? false,
+    agentVersion: status.value?.agent_version ?? settings.value.agentVersion,
+  };
+}
+
+function settingsErrorLabel(error: AgentClientError): string {
+  switch (error.kind) {
+    case 'unavailable':
+      return 'Agent unavailable.';
+    case 'protocol':
+      return 'Settings request failed.';
+    case 'rejected':
+      return error.code;
+    default:
+      return 'Settings request failed.';
+  }
+}
+
+async function refreshSettings(): Promise<void> {
+  settingsLoading.value = true;
+  settingsError.value = null;
+  const currentStatus = status.value;
+  const result = await readConfig({
+    project_id: currentStatus?.project_id ?? null,
+    profile_name: currentStatus?.profile_name ?? null,
+  });
+  if (result.ok) {
+    applyAgentConfig(result.value);
+  } else {
+    settingsError.value = settingsErrorLabel(result.error);
+  }
+  settingsLoading.value = false;
+}
+
+async function handleSettingsPatch(patch: Partial<SettingsState>): Promise<void> {
+  applySettingsPatch(patch);
+
+  if (!('privacyRedactNames' in patch)) {
+    return;
+  }
+  const projectId = status.value?.project_id;
+  if (projectId === null || projectId === undefined) {
+    return;
+  }
+  const changes: WriteConfigChanges = {
+    privacy_redact_names: patch.privacyRedactNames ?? false,
+  };
+  settingsLoading.value = true;
+  settingsError.value = null;
+  const result = await writeConfig({
+    project_id: projectId,
+    profile_name: status.value?.profile_name ?? null,
+    changes,
+  });
+  if (result.ok) {
+    applyAgentConfig(result.value.settings);
+  } else {
+    settingsError.value = settingsErrorLabel(result.error);
+  }
+  settingsLoading.value = false;
+}
+
+const settingsContextKey = computed<string>(
+  () => `${status.value?.project_id ?? ''}:${status.value?.profile_name ?? ''}`,
+);
+
+watch(
+  status,
+  () => {
+    settings.value = {
+      ...settings.value,
+      agentVersion: status.value?.agent_version ?? 'unknown',
+    };
+  },
+  { immediate: true },
+);
+
+watch(
+  settingsContextKey,
+  () => {
+    void refreshSettings();
+  },
+  { immediate: true },
+);
 
 function selectView(key: ViewKey): void {
   currentView.value = key;
@@ -540,7 +662,9 @@ onUnmounted(() => {
       <Settings
         v-else-if="currentView === 'settings'"
         :state="settings"
-        @update="applySettingsPatch"
+        :loading="settingsLoading"
+        :error-message="settingsError"
+        @update="handleSettingsPatch"
       />
     </main>
   </div>

@@ -165,6 +165,47 @@ async fn stream_status_events_decodes_subscribe_status_frames() {
     server.await.expect("server task");
 }
 
+#[tokio::test]
+async fn config_settings_round_trip_and_locked_write_rejection() {
+    let dir = tempdir_user_only();
+    let socket_path = dir.path().join("agent.sock");
+    let config_path = dir.path().join("config.toml");
+    let store_path = dir.path().join("store.db");
+
+    let server = TestServer::start_at(&socket_path).await;
+    let read_request = locket_agent::ReadConfigRequest {
+        config_path: config_path.clone(),
+        store_path: None,
+        project_id: None,
+        profile_name: None,
+    };
+    let response: locket_agent::AgentConfigSettings =
+        invoke_method(&server.socket_path, AgentMethod::ReadConfig, &read_request)
+            .await
+            .expect("read config round-trip");
+    assert!(!response.privacy_redact_names);
+    assert_eq!(response.agent_unlock_ttl, None);
+
+    let write_request = locket_agent::WriteConfigRequest {
+        config_path,
+        store_path,
+        project_id: "project-main".to_owned(),
+        profile_name: None,
+        changes: locket_agent::WriteConfigChanges {
+            privacy_redact_names: Some(true),
+            ..locket_agent::WriteConfigChanges::default()
+        },
+    };
+    let result: Result<locket_agent::WriteConfigResponse, AgentClientError> =
+        invoke_method(&server.socket_path, AgentMethod::WriteConfig, &write_request).await;
+    let err = result.expect_err("locked config writes require unlock");
+    match err {
+        AgentClientError::Rejected { code, .. } => assert_eq!(code, "UnlockRequired"),
+        other => panic!("expected UnlockRequired rejection, got {other:?}"),
+    }
+    server.stop().await;
+}
+
 #[test]
 fn resolve_socket_path_returns_a_value() {
     // Sanity check: the helper must produce a path even when no env

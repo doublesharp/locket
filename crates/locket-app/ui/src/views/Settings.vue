@@ -7,6 +7,8 @@ defineOptions({ name: 'AppSettings' });
 
 interface Props {
   state: SettingsState;
+  loading: boolean;
+  errorMessage: string | null;
 }
 
 const props = defineProps<Props>();
@@ -45,11 +47,13 @@ function dangerousProfileLabel(value: boolean): string {
         <input
           type="checkbox"
           :checked="redactNames"
+          :disabled="loading"
           aria-describedby="settings-privacy-help"
           @change="onToggleRedact"
         />
         <span>Redact names with local aliases</span>
       </label>
+      <p v-if="errorMessage" class="view__error" role="status">{{ errorMessage }}</p>
       <p id="settings-privacy-help" class="view__help">
         Affects dashboard, tray, shell status, and notifications.
       </p>
@@ -81,6 +85,7 @@ function dangerousProfileLabel(value: boolean): string {
     <footer class="view__footer">
       <span class="view__muted">Agent version</span>
       <code class="view__version">{{ state.agentVersion }}</code>
+      <span v-if="loading" class="view__muted">Syncing</span>
     </footer>
   </section>
 </template>
@@ -156,6 +161,12 @@ function dangerousProfileLabel(value: boolean): string {
   margin: 0;
   font-size: 0.75rem;
   color: #9aa3b2;
+}
+
+.view__error {
+  margin: 0;
+  font-size: 0.75rem;
+  color: #f2b879;
 }
 
 .view__definitions {

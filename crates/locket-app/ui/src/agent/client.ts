@@ -6,6 +6,7 @@ import { invoke, isTauri } from '@tauri-apps/api/core';
 
 import type {
   AgentClientError,
+  AgentConfigSettings,
   AgentStatus,
   CopyRequest,
   CopyResponse,
@@ -15,12 +16,15 @@ import type {
   ListRuntimeSessionsResponse,
   PrepareExecRequest,
   PrepareExecResponse,
+  ReadConfigRequest,
   ResolveRequest,
   ResolveResponse,
   RevealRequest,
   RevealResponse,
   ScanRequest,
   ScanResponse,
+  WriteConfigRequest,
+  WriteConfigResponse,
 } from './types';
 
 export type AgentStatusResult =
@@ -128,4 +132,16 @@ export async function listSecrets(
   request: ListSecretsRequest,
 ): Promise<AgentResult<ListSecretsResponse>> {
   return callTyped<ListSecretsResponse>('agent_list_secrets', { request });
+}
+
+export async function readConfig(
+  request: ReadConfigRequest,
+): Promise<AgentResult<AgentConfigSettings>> {
+  return callTyped<AgentConfigSettings>('agent_read_config', { request });
+}
+
+export async function writeConfig(
+  request: WriteConfigRequest,
+): Promise<AgentResult<WriteConfigResponse>> {
+  return callTyped<WriteConfigResponse>('agent_write_config', { request });
 }

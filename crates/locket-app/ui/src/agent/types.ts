@@ -175,3 +175,63 @@ export interface SecretWireRow {
 export interface ListSecretsResponse {
   rows: SecretWireRow[];
 }
+
+export interface ReadConfigRequest {
+  config_path?: string | null;
+  store_path?: string | null;
+  project_id?: string | null;
+  profile_name?: string | null;
+}
+
+export interface WriteConfigRequest {
+  config_path?: string | null;
+  store_path?: string | null;
+  project_id: string;
+  profile_name?: string | null;
+  changes: WriteConfigChanges;
+}
+
+export interface WriteConfigChanges {
+  privacy_redact_names?: boolean | null;
+  agent_unlock_ttl?: string | null;
+  user_verification_required_for?: UserVerificationSettings | null;
+  dangerous_profile?: boolean | null;
+}
+
+export interface UserVerificationSettings {
+  unlock?: boolean | null;
+  reveal?: boolean | null;
+  copy?: boolean | null;
+  dangerous_profile_switch?: boolean | null;
+  recovery?: boolean | null;
+  team_accept?: boolean | null;
+  device_register?: boolean | null;
+}
+
+export interface EffectiveUserVerificationSettings {
+  unlock: boolean;
+  reveal: boolean;
+  copy: boolean;
+  dangerous_profile_switch: boolean;
+  recovery: boolean;
+  team_accept: boolean;
+  device_register: boolean;
+}
+
+export interface DangerousProfileSetting {
+  profile_id: string;
+  profile_name: string;
+  dangerous: boolean;
+}
+
+export interface AgentConfigSettings {
+  privacy_redact_names: boolean;
+  agent_unlock_ttl: string | null;
+  user_verification_required_for: EffectiveUserVerificationSettings;
+  dangerous_profile: DangerousProfileSetting | null;
+}
+
+export interface WriteConfigResponse {
+  settings: AgentConfigSettings;
+  changed_keys: string[];
+}
