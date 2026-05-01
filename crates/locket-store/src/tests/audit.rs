@@ -216,6 +216,7 @@ fn audit_rows_since_filters_profile_and_timestamp() -> Result<(), Box<dyn Error>
         "action": "DOCTOR",
         "status": "SUCCESS",
         "command": "doctor",
+        "check_names": ["smoke"],
     });
     let rotate_metadata = json!({
         "schema_version": 1,
@@ -594,6 +595,10 @@ fn append_audit_rejects_metadata_json_above_64_kib_cap() -> Result<(), Box<dyn s
         "action": "SCAN",
         "status": "SUCCESS",
         "command": "scan",
+        "scope": "repo",
+        "known_value_coverage": "full",
+        "finding_counts": {"high": 0},
+        "pattern_only": false,
         "diagnostics": oversized,
     });
     let audit = AuditWrite {
@@ -650,6 +655,10 @@ fn append_audit_accepts_metadata_json_at_or_below_cap() -> Result<(), Box<dyn st
         "action": "SCAN",
         "status": "SUCCESS",
         "command": "scan",
+        "scope": "repo",
+        "known_value_coverage": "full",
+        "finding_counts": {"high": 0},
+        "pattern_only": false,
         "diagnostics": comfortable,
     });
     let audit = AuditWrite {
@@ -759,6 +768,7 @@ fn append_audit_rejects_metadata_json_shape_mismatches() -> Result<(), Box<dyn E
                 "schema_version": 1,
                 "action": "DOCTOR",
                 "status": "SUCCESS",
+                "check_names": ["smoke"],
                 "unexpected": true,
             }),
             action: "DOCTOR",
@@ -835,6 +845,7 @@ fn append_audit_allows_unknown_metadata_fields_after_schema_bump() -> Result<(),
         "schema_version": 2,
         "action": "DOCTOR",
         "status": "SUCCESS",
+        "check_names": ["smoke"],
         "new_schema_field": "accepted by schema bump",
     });
     let audit = AuditWrite {
@@ -869,6 +880,7 @@ fn audit_verify_fails_when_stored_schema_version_is_mutated() -> Result<(), Box<
         "action": "DOCTOR",
         "status": "SUCCESS",
         "command": "doctor",
+        "check_names": ["smoke"],
     });
     let audit = AuditWrite {
         project_id: "lk_proj_test",
@@ -963,5 +975,322 @@ fn audit_verify_processes_each_row_with_its_own_stored_schema_version() -> Resul
     let verified =
         test_store.store.verify_audit_chain_and_append("lk_proj_test", &[42; 32], 300)?;
     assert_eq!(verified, 2);
+    Ok(())
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn append_audit_enforces_required_fields_for_each_action_family()
+-> Result<(), Box<dyn Error>> {
+    struct Family {
+        action: &'static str,
+        profile_id: Option<&'static str>,
+        secret_name: Option<&'static str>,
+        command: Option<&'static str>,
+        complete: serde_json::Value,
+        drop_field: &'static str,
+    }
+
+    let families = [
+        // Secret value lifecycle (DELETE/IMPORT new in arm).
+        Family {
+            action: "DELETE",
+            profile_id: Some("lk_prof_test"),
+            secret_name: Some("DATABASE_URL"),
+            command: None,
+            complete: json!({
+                "schema_version": 1,
+                "action": "DELETE",
+                "status": "SUCCESS",
+                "secret_name": "DATABASE_URL",
+                "profile_id": "lk_prof_test",
+                "source": "user-local",
+            }),
+            drop_field: "source",
+        },
+        // Secret value access.
+        Family {
+            action: "GET",
+            profile_id: Some("lk_prof_test"),
+            secret_name: Some("DATABASE_URL"),
+            command: None,
+            complete: json!({
+                "schema_version": 1,
+                "action": "GET",
+                "status": "SUCCESS",
+                "secret_name": "DATABASE_URL",
+                "profile_id": "lk_prof_test",
+                "source": "user-local",
+                "access_mode": "stdout",
+            }),
+            drop_field: "access_mode",
+        },
+        // Scan/redaction.
+        Family {
+            action: "SCAN",
+            profile_id: None,
+            secret_name: None,
+            command: None,
+            complete: json!({
+                "schema_version": 1,
+                "action": "SCAN",
+                "status": "SUCCESS",
+                "scope": "repo",
+                "known_value_coverage": "full",
+                "finding_counts": {"high": 0},
+                "pattern_only": false,
+            }),
+            drop_field: "scope",
+        },
+        // Project/profile/policy/config/bootstrap: TRUST_ROOT representative.
+        Family {
+            action: "TRUST_ROOT",
+            profile_id: None,
+            secret_name: None,
+            command: None,
+            complete: json!({
+                "schema_version": 1,
+                "action": "TRUST_ROOT",
+                "status": "SUCCESS",
+                "root_hash": "abcd",
+                "trust_operation": "add",
+            }),
+            drop_field: "trust_operation",
+        },
+        Family {
+            action: "POLICY_UPDATE",
+            profile_id: None,
+            secret_name: None,
+            command: None,
+            complete: json!({
+                "schema_version": 1,
+                "action": "POLICY_UPDATE",
+                "status": "SUCCESS",
+                "policy_name": "deploy",
+                "change_kind": "create",
+            }),
+            drop_field: "change_kind",
+        },
+        Family {
+            action: "CONFIG_UPDATE",
+            profile_id: None,
+            secret_name: None,
+            command: None,
+            complete: json!({
+                "schema_version": 1,
+                "action": "CONFIG_UPDATE",
+                "status": "SUCCESS",
+                "config_path_hash": "hh",
+                "config_keys": ["safe_mode"],
+            }),
+            drop_field: "config_keys",
+        },
+        Family {
+            action: "EXAMPLE_EMIT",
+            profile_id: None,
+            secret_name: None,
+            command: None,
+            complete: json!({
+                "schema_version": 1,
+                "action": "EXAMPLE_EMIT",
+                "status": "SUCCESS",
+                "example_path_kind": "repo-relative",
+                "example_path_hash": "hh",
+                "secret_name_count": 3,
+            }),
+            drop_field: "example_path_hash",
+        },
+        Family {
+            action: "BOOTSTRAP",
+            profile_id: None,
+            secret_name: None,
+            command: None,
+            complete: json!({
+                "schema_version": 1,
+                "action": "BOOTSTRAP",
+                "status": "SUCCESS",
+                "project_id": "lk_proj_test",
+                "default_profile_id": "lk_prof_test",
+                "recovery_code_displayed": true,
+            }),
+            drop_field: "recovery_code_displayed",
+        },
+        // Directory grants.
+        Family {
+            action: "ALLOW_DIRECTORY",
+            profile_id: Some("lk_prof_test"),
+            secret_name: None,
+            command: None,
+            complete: json!({
+                "schema_version": 1,
+                "action": "ALLOW_DIRECTORY",
+                "status": "SUCCESS",
+                "project_id": "lk_proj_test",
+                "profile_id": "lk_prof_test",
+                "root_hash": "rh",
+                "directory_hash": "dh",
+                "grant_scope": "this-only",
+            }),
+            drop_field: "grant_scope",
+        },
+        // Agent/grants.
+        Family {
+            action: "UNLOCK",
+            profile_id: None,
+            secret_name: None,
+            command: None,
+            complete: json!({
+                "schema_version": 1,
+                "action": "UNLOCK",
+                "status": "SUCCESS",
+                "client_kind": "cli",
+                "grant_actions": ["GET"],
+                "ttl_seconds": 600,
+            }),
+            drop_field: "grant_actions",
+        },
+        // Passkeys/automation clients: passkey arm.
+        Family {
+            action: "PASSKEY_AUTH",
+            profile_id: None,
+            secret_name: None,
+            command: None,
+            complete: json!({
+                "schema_version": 1,
+                "action": "PASSKEY_AUTH",
+                "status": "SUCCESS",
+                "passkey_id": "pk_1",
+                "credential_id_prefix": "abc12345",
+                "auth_result": "success",
+            }),
+            drop_field: "credential_id_prefix",
+        },
+        // Passkeys/automation clients: client arm.
+        Family {
+            action: "CLIENT_AUTH",
+            profile_id: None,
+            secret_name: None,
+            command: None,
+            complete: json!({
+                "schema_version": 1,
+                "action": "CLIENT_AUTH",
+                "status": "SUCCESS",
+                "client_id": "cl_1",
+                "request_id": "req_1",
+                "auth_result": "success",
+            }),
+            drop_field: "request_id",
+        },
+        // Team/device/recovery: invite.
+        Family {
+            action: "TEAM_INVITE",
+            profile_id: None,
+            secret_name: None,
+            command: None,
+            complete: json!({
+                "schema_version": 1,
+                "action": "TEAM_INVITE",
+                "status": "SUCCESS",
+                "team_id": "team_1",
+                "member_id": "mem_1",
+            }),
+            drop_field: "member_id",
+        },
+        // Team/device/recovery: recover.
+        Family {
+            action: "RECOVER",
+            profile_id: None,
+            secret_name: None,
+            command: None,
+            complete: json!({
+                "schema_version": 1,
+                "action": "RECOVER",
+                "status": "SUCCESS",
+                "device_id": "dev_1",
+            }),
+            drop_field: "device_id",
+        },
+        // Diagnostics: HOOK_INSTALL (DOCTOR is exercised elsewhere).
+        Family {
+            action: "HOOK_INSTALL",
+            profile_id: None,
+            secret_name: None,
+            command: None,
+            complete: json!({
+                "schema_version": 1,
+                "action": "HOOK_INSTALL",
+                "status": "SUCCESS",
+                "hook_path_kind": "repo-relative",
+                "hook_path_hash": "hh",
+            }),
+            drop_field: "hook_path_kind",
+        },
+    ];
+
+    for family in &families {
+        // Accept: complete metadata writes successfully.
+        let mut test_store = open_initialized_store()?;
+        insert_project_profile(&test_store.store)?;
+        let audit = AuditWrite {
+            project_id: "lk_proj_test",
+            profile_id: family.profile_id,
+            action: family.action,
+            status: "SUCCESS",
+            secret_name: family.secret_name,
+            command: family.command,
+            metadata_json: &family.complete,
+            timestamp: 100,
+        };
+        test_store
+            .store
+            .append_audit(&[42; 32], &audit)
+            .map_err(|error| format!("{}: full metadata must be accepted: {error:?}", family.action))?;
+
+        // Reject: dropping the chosen required field surfaces a clear reason.
+        let mut without_field = family
+            .complete
+            .as_object()
+            .ok_or("family.complete must be a JSON object")?
+            .clone();
+        without_field.remove(family.drop_field);
+        let metadata_missing = serde_json::Value::Object(without_field);
+        let mut reject_store = open_initialized_store()?;
+        insert_project_profile(&reject_store.store)?;
+        let audit_missing = AuditWrite {
+            project_id: "lk_proj_test",
+            profile_id: family.profile_id,
+            action: family.action,
+            status: "SUCCESS",
+            secret_name: family.secret_name,
+            command: family.command,
+            metadata_json: &metadata_missing,
+            timestamp: 200,
+        };
+        let error = match reject_store.store.append_audit(&[42; 32], &audit_missing) {
+            Ok(()) => {
+                return Err(format!(
+                    "{}: dropping {} should be rejected",
+                    family.action, family.drop_field
+                )
+                .into());
+            }
+            Err(error) => error,
+        };
+        let StoreError::AuditMetadataInvalid { action, reason } = error else {
+            return Err(format!(
+                "{}: expected AuditMetadataInvalid, got {error:?}",
+                family.action
+            )
+            .into());
+        };
+        assert_eq!(action, family.action);
+        assert!(
+            reason.contains(family.drop_field),
+            "{}: expected reason to mention {:?}, got {reason:?}",
+            family.action,
+            family.drop_field
+        );
+    }
+
     Ok(())
 }

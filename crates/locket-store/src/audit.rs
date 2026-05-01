@@ -518,18 +518,50 @@ fn audit_metadata_invalid<T>(action: &str, reason: impl Into<String>) -> Result<
 
 fn required_fields_for_action(action: &str) -> &'static [&'static str] {
     match action {
-        "SET" | "ROTATE" | "PURGE" | "REVEAL" | "COPY" | "SECRET_META_UPDATE" => {
+        "SET" | "ROTATE" | "PURGE" | "SECRET_META_UPDATE" | "DELETE" | "IMPORT" => {
             &["secret_name", "profile_id", "source"]
+        }
+        "REVEAL" | "COPY" | "GET" => {
+            &["secret_name", "profile_id", "source", "access_mode"]
         }
         "SECRET_COPY" => &["secret_name", "from_profile_id", "to_profile_id"],
         "RUN" | "RUN_POLICY" | "EXEC" => &["command"],
+        "SCAN" | "REDACT" => {
+            &["scope", "known_value_coverage", "finding_counts", "pattern_only"]
+        }
+        "TRUST_ROOT" => &["root_hash", "trust_operation"],
+        "POLICY_UPDATE" => &["policy_name", "change_kind"],
+        "CONFIG_UPDATE" => &["config_path_hash", "config_keys"],
+        "EXAMPLE_EMIT" => {
+            &["example_path_kind", "example_path_hash", "secret_name_count"]
+        }
+        "BOOTSTRAP" => {
+            &["project_id", "default_profile_id", "recovery_code_displayed"]
+        }
         "PROFILE_CREATE" => &["project_id", "profile_id", "profile_name"],
         "PROFILE_CHANGE" => &["operation"],
+        "ALLOW_DIRECTORY" | "DENY_DIRECTORY" => &[
+            "project_id",
+            "profile_id",
+            "root_hash",
+            "directory_hash",
+            "grant_scope",
+        ],
+        "UNLOCK" | "LOCK" | "AGENT_GRANT" | "AGENT_REVOKE" | "GRANT_EXPIRED" => {
+            &["client_kind", "grant_actions", "ttl_seconds"]
+        }
+        "PASSKEY_REGISTER" | "PASSKEY_REMOVE" | "PASSKEY_AUTH" => {
+            &["passkey_id", "credential_id_prefix", "auth_result"]
+        }
+        "CLIENT_AUTH" => &["client_id", "request_id", "auth_result"],
         "DEVICE_ADD" | "DEVICE_REVOKE" => &["device_id", "fingerprint"],
         "CLIENT_ADD" | "CLIENT_REVOKE" => &["client_id", "public_key_fingerprint"],
         "TEAM_INIT" => &["project_id", "team_id", "team_name"],
-        "TEAM_REMOVE" => &["team_id", "member_id"],
+        "TEAM_INVITE" | "TEAM_ACCEPT" | "TEAM_REMOVE" => &["team_id", "member_id"],
+        "RECOVER" | "RECOVERY_ROTATE" => &["device_id"],
         "BACKUP_EXPORT" | "BACKUP_IMPORT" | "BUNDLE_VERIFY" => &["bundle_digest"],
+        "DOCTOR" => &["check_names"],
+        "HOOK_INSTALL" => &["hook_path_kind", "hook_path_hash"],
         _ => &[],
     }
 }
@@ -564,6 +596,7 @@ const KNOWN_AUDIT_METADATA_FIELDS: &[&str] = &[
     "client_kind",
     "client_name",
     "challenge_id",
+    "change_kind",
     "clipboard_clear_supported",
     "clipboard_supported",
     "command",
@@ -596,6 +629,8 @@ const KNOWN_AUDIT_METADATA_FIELDS: &[&str] = &[
     "docker_context_class",
     "env_mode",
     "envelope_checksum_sha256",
+    "example_path_hash",
+    "example_path_kind",
     "expires_at",
     "exit_code",
     "expected_secret_count",
@@ -751,6 +786,7 @@ const KNOWN_AUDIT_METADATA_FIELDS: &[&str] = &[
     "to_profile_id",
     "to_source",
     "transports",
+    "trust_operation",
     "trust_root_recorded",
     "ttl_seconds",
     "unsupported_reason",
