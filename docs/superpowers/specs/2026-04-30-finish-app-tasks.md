@@ -82,16 +82,6 @@ ship. Each bullet has spec ref + code ref + suggested touches.
 
 ### C. CLI / runtime / agent
 
-- [x] **agent-windows-named-pipe-sid-path-partial**: follow-up from shipped
-  14c socket placement work. `agent.md:20` requires
-  `\\.\pipe\locket-agent-<sid>` with a current-user-only DACL.
-  Current production startup now uses `$XDG_RUNTIME_DIR/locket` on
-  Linux and `~/Library/Application Support/locket` on macOS, but the
-  Windows/non-Unix branch still falls back to `<HOME>/.locket` because
-  the CLI/agent surface is Unix-socket-only and does not resolve the
-  user's SID. Touches: Windows pipe listener/client transport,
-  `resolve_default_agent_data_dir`, startup diagnostics, and pipe ACL
-  tests.
 - [ ] **agent-windows-named-pipe-transport**: finish the remaining hard
   transport work after `agent-windows-named-pipe-sid-path-partial`.
   The partial shipped shared SID-based pipe path helpers, protected
