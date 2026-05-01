@@ -124,13 +124,24 @@ detached `.sig` file.
 When `--sign` is omitted the script behaves exactly as before: it produces an
 unsigned `locket-<version>.vsix` plus its `.sha256` digest and exits.
 
+The operator checklist wraps the signing path and keeps local validation
+non-publishing by default:
+
+```sh
+scripts/release-operator-runbook.sh --task vsix-release-sign-operator
+```
+
+On the offline signing host, set `LOCKET_RELEASE_KEY_ID` and
+`LOCKET_MINISIGN_SECRET_KEY`, then add
+`--execute --confirm publish-v<version>`.
+
 ## 5. Operational notes
 
 - The signing host has no network and no shell history that survives a
   ceremony.
-- `tools/vsix-sign.sh` is intentionally not committed yet; it is provisioned
-  on the signing host during the ceremony described in `release-key-offline.md`.
-  CI must never invoke it.
+- `tools/vsix-sign.sh` is committed so local syntax checks and offline-host
+  execution use the same interface. CI may lint it, but must never run it with
+  `LOCKET_MINISIGN_SECRET_KEY`.
 - When the release key rotates, both the old and new keys sign the next VSIX
   release so clients pinned to either key continue to verify successfully
   (mirrors the dual-signed update-manifest rotation policy from

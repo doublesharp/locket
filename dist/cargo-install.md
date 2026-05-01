@@ -111,9 +111,22 @@ By default this checks Cargo metadata and the release package manifest. Set
 `LOCKET_VALIDATE_CARGO_PACKAGE=1` to additionally run:
 
 ```sh
-cargo package -p locket-cli --locked --allow-dirty --list
+scripts/validate-distribution.sh
 ```
 
-The actual crates.io publish remains an operator step because it requires a
-`CARGO_REGISTRY_TOKEN`, signed release tag, and the internal `locket-*` crate
-publication order to be complete.
+With that environment variable set, the gate runs `cargo package --list` for
+each publish crate in registry order:
+
+```text
+locket-core, locket-crypto, locket-scan, locket-exec, locket-docker,
+locket-store, locket-platform, locket-agent, locket-cli
+```
+
+The credentialed publish is deterministic through the operator runbook:
+
+```sh
+scripts/release-operator-runbook.sh --task cargo-install-publish-operator
+```
+
+It is dry-run by default. On the credentialed release host, set
+`CARGO_REGISTRY_TOKEN` and add `--execute --confirm publish-v0.1.0`.

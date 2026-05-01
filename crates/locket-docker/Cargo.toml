@@ -14,5 +14,5 @@ version.workspace = true
 workspace = true
 
 [dependencies]
-locket-core = { path = "../locket-core" }
+locket-core = { version = "0.1.0", path = "../locket-core" }
 thiserror = { workspace = true }

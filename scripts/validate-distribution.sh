@@ -56,6 +56,22 @@ if (!tauri.bundle || tauri.bundle.active !== true) throw new Error("Tauri bundle
 const vsix = JSON.parse(fs.readFileSync("extensions/vscode/package.json", "utf8"));
 if (vsix.private !== false) throw new Error("VSIX package must be publishable: private=false");
 if (!vsix.publisher || !vsix.repository) throw new Error("VSIX package metadata is incomplete");
+const publishCrates = new Set(["locket-exec", "locket-docker", "locket-store", "locket-platform", "locket-agent", "locket-cli"]);
+for (const dir of fs.readdirSync("crates")) {
+  const manifest = `crates/${dir}/Cargo.toml`;
+  if (!fs.existsSync(manifest)) continue;
+  const text = fs.readFileSync(manifest, "utf8");
+  const name = text.match(/^name\s*=\s*"([^"]+)"/m)?.[1];
+  if (!publishCrates.has(name)) continue;
+  const depPattern = /^locket-[a-z-]+\s*=\s*\{([^}]+)\}/gm;
+  let match;
+  while ((match = depPattern.exec(text)) !== null) {
+    const body = match[1];
+    if (body.includes("path =") && !body.includes("version =")) {
+      throw new Error(`${manifest}: ${match[0]} must include version for crates.io publication`);
+    }
+  }
+}
 '
 
 skip_or_check ruby ruby -c dist/homebrew/locket.rb
@@ -71,9 +87,11 @@ if command -v cargo >/dev/null 2>&1; then
   echo "==> cargo metadata --no-deps --locked --format-version 1"
   cargo metadata --no-deps --locked --format-version 1 >/dev/null
   if [[ "${LOCKET_VALIDATE_CARGO_PACKAGE:-0}" == "1" ]]; then
-    check cargo package -p locket-cli --locked --allow-dirty --list
+    for package in locket-core locket-crypto locket-scan locket-exec locket-docker locket-store locket-platform locket-agent locket-cli; do
+      check cargo package -p "${package}" --locked --allow-dirty --list
+    done
   else
-    echo "skip: set LOCKET_VALIDATE_CARGO_PACKAGE=1 to run cargo package --list"
+    echo "skip: set LOCKET_VALIDATE_CARGO_PACKAGE=1 to run cargo package --list for publish crates"
   fi
 else
   echo "skip: cargo not on PATH"

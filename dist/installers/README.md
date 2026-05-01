@@ -21,6 +21,18 @@ scripts/package-native-installers.sh --target linux-deb
 scripts/package-native-installers.sh --target linux-rpm
 ```
 
+Operator runbook commands:
+
+```sh
+scripts/release-operator-runbook.sh --task macos-pkg-sign-notarize-operator
+scripts/release-operator-runbook.sh --task windows-msi-sign-operator
+scripts/release-operator-runbook.sh --task linux-deb-rpm-sign-operator
+```
+
+These commands are dry-run by default. On credentialed platform hosts, add
+`--execute --confirm publish-v0.1.0` after setting the signing environment
+listed in `dist/installers/package-matrix.json`.
+
 The canonical target list and signing inputs live in
 `dist/installers/package-matrix.json`. CI runs the dry-run validator so
 missing credentials do not block pull requests, while release operators get a

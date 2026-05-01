@@ -42,7 +42,7 @@ unwrap_used = "deny"
 data-encoding = { workspace = true }
 hmac = { workspace = true }
 keyring = { workspace = true }
-locket-crypto = { path = "../locket-crypto" }
+locket-crypto = { version = "0.1.0", path = "../locket-crypto" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
