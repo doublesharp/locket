@@ -1,0 +1,76 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+  attestations: write
+
+env:
+  CARGO_INCREMENTAL: "1"
+  CARGO_JOBS: "2"
+  LOCKET_RELEASE_RUNNER_ATTESTED: ${{ vars.LOCKET_RELEASE_RUNNER_ID }}
+  RUST_BACKTRACE: "1"
+
+jobs:
+  build:
+    name: auditable release build
+    runs-on: ${{ fromJSON(vars.LOCKET_RELEASE_RUNNER_LABELS || '["ubuntu-24.04"]') }}
+    environment: release
+    steps:
+      - name: Require release tag
+        if: github.event_name != 'workflow_dispatch' && !startsWith(github.ref, 'refs/tags/v')
+        run: exit 1
+
+      - name: Require isolated runner attestation
+        run: test -n "${LOCKET_RELEASE_RUNNER_ATTESTED}"
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        run: rustup show
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-release-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: |
+            cargo-release-${{ runner.os }}-
+
+      - name: Install release audit tools
+        run: |
+          cargo install cargo-auditable --locked
+          cargo install cargo-audit --locked
+
+      - name: Build auditable binaries
+        run: make release-auditable
+
+      - name: Upload release binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: locket-release-${{ github.ref_name }}
+          path: |
+            target/release/locket
+            target/release/locket-desktop
+          if-no-files-found: error
+
+      - name: Attest release binaries
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            target/release/locket
+            target/release/locket-desktop
+

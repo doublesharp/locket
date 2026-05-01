@@ -138,13 +138,6 @@ ship. Each bullet has spec ref + code ref + suggested touches.
 
 ### E. Quality / ops / build
 
-- [~] (in-flight: feature/quality-ci-workflows) **github-actions-workflows-missing**: repo has **no
-  `.github/` directory at all**. `dist/release-ci-runners.md` and
-  `operations.md:39` document `release.yml`; `fuzzing.md:39`
-  requires nightly fuzz CI; coverage/SLSA gates are documented but
-  not enforced anywhere outside local `make` invocation. Ship
-  `.github/workflows/{ci.yml,release.yml,fuzz-nightly.yml}` matching
-  the existing `make` targets.
 - [~] (in-flight: feature/reference-runner-fuzz-quality) **reference-runner-setup-scripts**:
   `performance-reference-runner.md:87,99` mandates
   `scripts/reference-runners/` per-class setup scripts that record
@@ -163,11 +156,6 @@ ship. Each bullet has spec ref + code ref + suggested touches.
   `locket-scan/tests/leak_canary.rs`. Extend into agent reveal/copy,
   Docker compose helper, audit row writer, desktop UI smoke, VSIX
   integration.
-- [~] (in-flight: feature/quality-ci-workflows) **fuzz-nightly-ci-job**: subtask of
-  `github-actions-workflows-missing`. Schedule `make fuzz-nightly`
-  with artifact upload of `fuzz/artifacts/` and `fuzz/corpus/` per
-  `fuzzing.md:39`.
-
 ## P0 — Correctness / Security Drift (audit findings)
 
 These are spec contracts the code currently violates or silently
@@ -363,9 +351,6 @@ Spec ref: `docs/specs/testing.md:38`.
 Offline-safe local commands, strict-mode hooks, cargo-vet, unsafe
 inventory, SBOM, exception ledger, and provenance policy verifier
 exist. Remaining: auditable builds and signing.
-
-- [~] (in-flight: feature/quality-ci-workflows) **release-ci-isolated-runners**: public release artifacts
-  built on isolated runners. Spec: `docs/specs/operations.md:39`.
 
 ### Package builders and signing
 Spec ref: `docs/specs/operations.md:27-53`.

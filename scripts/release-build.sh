@@ -35,6 +35,11 @@
 #   scripts/release-build.sh                 # build all shipped binaries
 #   scripts/release-build.sh --print-deps    # build, then print embedded SBOM
 #   scripts/release-build.sh --skip-missing  # skip steps whose tool is absent
+#
+# CI release builds must set LOCKET_RELEASE_RUNNER_ATTESTED to the repository
+# variable that identifies the isolated runner pool. For local release-build
+# debugging only, set LOCKET_RELEASE_RUNNER_ATTESTED=local-dev; artifacts built
+# that way must not be signed or published.
 
 set -euo pipefail
 
@@ -43,6 +48,7 @@ cargo_auditable_cmd="${CARGO_AUDITABLE:-cargo auditable}"
 cargo_audit_cmd="${CARGO_AUDIT:-cargo audit}"
 target_dir="${CARGO_TARGET_DIR:-target}"
 release_dir="${target_dir}/release"
+runner_attested="${LOCKET_RELEASE_RUNNER_ATTESTED:-}"
 print_deps=0
 skip_missing=0
 
@@ -66,6 +72,18 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+if [[ -z "${runner_attested}" ]]; then
+  echo "LOCKET_RELEASE_RUNNER_ATTESTED is required for auditable release builds" >&2
+  echo "set it from the isolated release runner identity, or use local-dev for local debugging only" >&2
+  exit 2
+fi
+
+if [[ "${runner_attested}" == "local-dev" ]]; then
+  echo "warning: local-dev release build guard bypass; do not sign or publish these artifacts" >&2
+else
+  echo "release runner attested: ${runner_attested}"
+fi
 
 # Shipped binaries. Keep this list in sync with [[bin]] entries in
 # crates/*/Cargo.toml that are part of the public release.

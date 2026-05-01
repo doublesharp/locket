@@ -1,0 +1,62 @@
+name: fuzz-nightly
+
+on:
+  schedule:
+    - cron: "17 9 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_INCREMENTAL: "1"
+  CARGO_JOBS: "2"
+  FUZZ_TIME: "900"
+  FUZZ_MAX_LEN: "65536"
+  FUZZ_TIMEOUT: "30"
+  FUZZ_RSS_LIMIT_MB: "2048"
+  RUST_BACKTRACE: "1"
+
+jobs:
+  fuzz:
+    name: nightly fuzz
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install nightly Rust
+        run: rustup toolchain install nightly --profile minimal
+
+      - name: Cache cargo and fuzz state
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+            fuzz/target
+          key: fuzz-nightly-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'fuzz/Cargo.toml') }}
+          restore-keys: |
+            fuzz-nightly-${{ runner.os }}-
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+
+      - name: Run nightly fuzz budget
+        run: make fuzz-nightly
+
+      - name: Upload fuzz artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-nightly-artifacts
+          path: |
+            fuzz/artifacts/**
+            fuzz/corpus/**
+          if-no-files-found: ignore
+          retention-days: 14
+

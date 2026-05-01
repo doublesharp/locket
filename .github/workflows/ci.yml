@@ -1,0 +1,55 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+env:
+  CARGO_INCREMENTAL: "1"
+  CARGO_JOBS: "2"
+  RUST_BACKTRACE: "1"
+
+jobs:
+  static:
+    name: static checks
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        run: rustup show
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-ci-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: |
+            cargo-ci-${{ runner.os }}-
+
+      - name: Check supply-chain exception ledger
+        run: make supply-chain-exceptions
+
+      - name: Cargo check workspace
+        run: cargo check --workspace --all-targets --all-features --locked
+
+      - name: Upload quality reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-quality-reports
+          path: |
+            target/quality/**
+            supply-chain-exceptions.json
+          if-no-files-found: ignore
