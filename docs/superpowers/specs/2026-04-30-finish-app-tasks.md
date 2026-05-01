@@ -312,10 +312,6 @@ exist. Remaining: auditable builds and signing.
 ### Package builders and signing
 Spec ref: `docs/specs/operations.md:27-53`.
 
-- [x] **package-dry-run-manifests**: repository-side package manifests,
-  validators, signing-input contracts, and CI hooks now cover Homebrew,
-  cargo install / crates.io, signed VSIX, macOS pkg, Windows MSI, and
-  Linux deb/rpm. Local readiness command: `make distribution-check`.
 - [ ] **homebrew-tap-publish-operator**: with signed source tarball URL
   and SHA-256, run `scripts/render-homebrew-formula.sh`, run
   `LOCKET_HOMEBREW_AUDIT=1`, and open the tap PR using tap credentials.
