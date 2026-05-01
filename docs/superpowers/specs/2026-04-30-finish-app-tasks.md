@@ -64,22 +64,6 @@ are unblocked. One remaining critical-path item.
 | - | --- | --- |
 | 1 | LocalUserVerifier Windows + Linux backends | `--verify-user` works without a memory-only stub on Windows / Linux hosts (macOS shipped) |
 
-## Deferred integrations (worktree branches preserved)
-
-Two worktrees ship completed work but couldn't be cleanly merged
-to `main` in this round due to stale-base destructive diffs. Their
-content is preserved in worktree branches; integration is a careful
-manual surgical task for a future session.
-
-- **`worktree-agent-a99ced59da21af66c` (passkey suite):** `PlatformPasskeyRegistrar`
-  trait, `MemoryPlatformPasskeyRegistrar`, PRF-wrap master-key
-  helper, `passkey register` + `passkey unlock` CLI commands. Touches
-  platform/store/cli/crypto crates.
-- **`worktree-agent-a89ec54e30f394cc3` (SCHEMA_MIGRATE + passkey-register-emission):**
-  `Store::initialize_schema` returns `SchemaMigrationOutcome` and a
-  helper appends a `SCHEMA_MIGRATE` audit row when a real version
-  bump occurs. Adds `passkey register` audit emission scaffold.
-
 ## P0 — Correctness / Security Drift (audit findings)
 
 These are spec contracts the code currently violates or silently
@@ -148,32 +132,24 @@ attempt found three structural blockers that need separate slices
 before the apply chain can ship cleanly:
 
 All three preconditions shipped — see "Recently shipped" above.
-The apply chain below is the one remaining slice in this section
-(round-trip same-store test requires identical-arm conflict
-resolution in the same commit, so apply + conflicts + rotate are
-inseparable):
 
-- [ ] **bundle-apply-and-conflicts**: insert decrypted profile keys
-  (via `bundle-profile-key-rewrap-helper`), command policies,
-  secret metadata, secret_versions, and blobs in one SQLite tx,
-  including the full conflict matrix in the same commit (identical
-  / newer-incoming / divergent / deleted-vs-active with
-  `--accept-incoming` / `--accept-local` / `interactive-required`)
-  and the rotate-with-no-grace lifecycle for the newer-incoming
-  arm against active local versions. Round-trip same-store tests
-  require identical-arm resolution at apply time, which is why
-  these three originally-separate tasks have to ship together.
-  Audit: extend the existing `BACKUP_IMPORT` row's `metadata_json`
-  with applied counts and `conflict_counts`.
-  Pre-req: `bundle-profile-key-rewrap-helper`.
+(`bundle-apply-and-conflicts` shipped — commit `c0fba305` lands the
+single-transaction apply path with the full conflict matrix
+(identical / newer-incoming / divergent / deleted-vs-active) and
+extends `BACKUP_IMPORT` `metadata_json` with applied counts and
+`conflict_counts`. E2E coverage in
+`crates/locket-cli/src/tests/e2e_bundle_roundtrip.rs` exercises
+each conflict arm.)
+
 - [~] **bundle-include-audit-import** (in-flight: agent 13c): append imported audit rows
   to `imported_audit_chains` with HMAC structural verification.
-  Pre-req: `bundle-payload-include-audit-rows`,
-  `bundle-apply-and-conflicts`.
-- [ ] **bundle-team-accept-parity-test**: integration test
-  asserting `team accept` and `import-bundle` produce identical
-  store state for newer-incoming. Pre-req:
-  `team-accept-row-apply-path`, `bundle-apply-and-conflicts`.
+  Pre-req: `bundle-payload-include-audit-rows` (shipped),
+  `bundle-apply-and-conflicts` (shipped).
+- [~] **bundle-team-accept-parity-test** (in-flight: agent 13b):
+  integration test asserting `team accept` and `import-bundle`
+  produce identical store state for newer-incoming. Pre-req:
+  `team-accept-row-apply-path`, `bundle-apply-and-conflicts`
+  (shipped).
 
 ### Team command surfaces
 Spec ref: `docs/specs/team-sync-recovery.md:5-110`.
@@ -340,19 +316,18 @@ actions on commit dbf6ab52.)
 - Shipped: **desktop-clipboard-copy** — copy + scheduled clear
   after TTL with re-check; Wayland degraded path emits
   `unsupported_reason`.
-- [ ] **desktop-tray-reveal-copy**: tray context menu actions for
-  the selected secret. Pre-req: `tray-menu-actions`,
-  `desktop-reveal-modal` (shipped), `desktop-clipboard-copy`
-  (shipped). (Slice 8.)
 - [ ] **agent-policy-doctor-rpc**: RPC exercising `lk://`
   resolution + env-mode expansion. Pre-req:
   `agent-prepare-exec-impl`.
-- [ ] **desktop-policy-editor-write**: create/edit/delete forms
-  backed by `agent-policy-write` RPC. Dangerous-profile requires
-  typed confirmation; `POLICY_UPDATE` audit.
-- [ ] **desktop-profile-switcher-view**: switch profile +
-  dangerous-profile typed confirmation through a desktop Tauri
-  wrapper for shipped `agent-set-active-profile`.
+
+(`desktop-tray-reveal-copy` shipped — commit `7302818f` adds
+selection-aware reveal/copy tray context-menu items.)
+(`desktop-policy-editor-write` shipped — commit `0a9e5f96` adds
+create/edit/delete forms backed by `RegisterCommandPolicies` RPC
+with dangerous-profile typed confirmation and `POLICY_UPDATE`
+audit emission.)
+(`desktop-profile-switcher-view` shipped — commit `4676a61a` adds
+the switch-profile view with dangerous-profile typed confirmation.)
 
 (`desktop-team-invite-view` shipped — `TeamInviteView.vue` +
 `team/invite.ts` cover issue/accept/revoke with dangerous-profile
@@ -423,10 +398,12 @@ Spec ref: `docs/specs/testing.md:38`.
 `e2e-greenfield-init`, `e2e-dotenv-migration`, `e2e-policy-run`,
 `e2e-docker-compose`, `e2e-recovery-roundtrip` shipped.
 
-- [ ] **e2e-bundle-roundtrip**: `export --sealed` → `import-bundle`
-  (fresh / identical / newer-incoming / divergent),
-  `bundle verify` structural-only and decryptable.
-  Pre-req: sealed-bundle subtasks above.
+(`e2e-bundle-roundtrip` shipped —
+`crates/locket-cli/src/tests/e2e_bundle_roundtrip.rs` exercises
+fresh / identical / newer-incoming / divergent / deleted-vs-active
+arms plus corrupt-payload + missing-private-key verification
+failures.)
+
 - [ ] **e2e-ui-editor-smoke**: smoke flows in the desktop app and
   the VS Code extension. Pre-req: desktop-* and vscode-* items.
 
@@ -517,12 +494,13 @@ the spec.
 - `integrations.md` — (audit clean 2026-04-30).
 - `scan-redaction.md` — (audit clean 2026-04-30; inline-suppression
   syntax shipped).
-- `desktop.md` — (open: tray menu actions, policy editor write,
-  search/filter UI; tray-panel deep audit pending).
-- `audit.md` — (open: `passkey-register-emission`,
-  `schema-migrate-emission`).
-- `team-sync-recovery.md` — (open: `bundle-apply-and-conflicts`,
-  `invite-sealed-payload-import`).
+- `desktop.md` — (open: tray-menu-actions agent-call wiring beyond
+  lock, per-surface filter chips for the six surfaces with TODO
+  markers, tray-panel deep audit pending).
+- `audit.md` — (audit clean 2026-05-01; all four 2026-04-30 emission
+  gaps shipped — see "Audit coverage" above).
+- `team-sync-recovery.md` — (open: `bundle-include-audit-import`,
+  `bundle-team-accept-parity-test`, `invite-sealed-payload-import`).
 - `operations.md` — (open: signing items pre-req on
   `release-key-offline`).
 - `performance.md` — (open: per-budget benches in sibling task list).
