@@ -198,6 +198,8 @@ Slices that have merged to `main` and verified. Open work tracked in
   bound to the release signature.
 - [x] run-ttl-grant: Policy runs now issue TTL-bound live grants for the spawned
   process. Run audit metadata records the grant TTL and process binding without values.
+- [x] agent-reveal-copy-impl: Implemented gated agent reveal and copy value handlers
+  with metadata-only audit rows.
 
 ## Full Spec Coverage TODO — Security/Recovery/Team
 
