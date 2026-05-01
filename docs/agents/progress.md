@@ -218,7 +218,6 @@ Slices 1+2 shipped (agent client, tray binding, 6 view scaffolds,
 - [ ] Search/filter UI (`docs/specs/desktop.md`). Each subtask
   renders one surface; never exposes values; pre-req is the
   relevant view's data RPC.
-- [~] [90b9f58a] branch agent-90b9f58a/tray-template-policy, worktree .worktrees/agent-90b9f58a-tray-template-policy; Tray template-image policy: macOS template-image (alpha-mask) vs Windows/Linux full-color light/dark variants.
 - [~] [4ab55ee9] branch agent-4ab55ee9/cross-surface-error-parity, worktree .worktrees/agent-4ab55ee9-cross-surface-error-parity; Cross-surface error-text parity for VS Code typed agent errors.
 
 ### Code Health and Bug Fixes

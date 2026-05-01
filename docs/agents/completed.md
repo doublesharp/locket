@@ -352,6 +352,7 @@ Slices that have merged to `main` and verified. Open work tracked in
   filtered without exposing secret values.
 - [x] vscode-reveal-webview: VS Code exposes a gated short-lived reveal
   webview for allowed references.
+- [x] tray-template-policy: Added tray icon asset policy coverage for macOS template masks and full-color desktop variants.
 
 ## Full Spec Coverage TODO — Code Health and Bug Fixes
 
