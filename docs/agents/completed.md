@@ -191,6 +191,8 @@ Slices that have merged to `main` and verified. Open work tracked in
 - [x] mutation-platform-mocks: Platform abstraction mocks now run under the mutation
   smoke default. The fallback gate exercises the platform package when cargo-mutants is
   unavailable.
+- [x] perf-agent-idle-memory: Agent idle memory now has a release-profile RSS perf gate.
+  The harness isolates HOME, warms status, samples RSS, and fails above budget.
 
 ## Full Spec Coverage TODO — Security/Recovery/Team
 

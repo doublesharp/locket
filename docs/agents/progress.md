@@ -245,8 +245,6 @@ Re-verify file:line references before editing — they drift. Severity:
   Windows MSI, and Linux packages (`docs/specs/operations.md:27-53`).
 - [ ] Cold-start budgets (`docs/specs/performance.md`). Each subtask
   adds one bench plus a regression that fails the budget:
-  - [~] [90b9f58a] branch agent-90b9f58a/perf-agent-idle-memory, worktree .worktrees/agent-90b9f58a-perf-agent-idle-memory; **subtask** — perf-agent-idle-memory: ≤50 MB RSS after documented warmup.
-    Pre-req: agent daemon subtasks.
 - [~] [90b9f58a] branch agent-90b9f58a/proptest-update-manifest, worktree .worktrees/agent-90b9f58a-proptest-update-manifest; Property-test harness for signed update manifest invariants.
   All current `proptest-*` subtasks shipped.
   Add new harnesses as uncovered invariants surface
