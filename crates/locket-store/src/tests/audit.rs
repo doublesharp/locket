@@ -870,6 +870,24 @@ fn append_audit_rejects_metadata_json_shape_mismatches() -> Result<(), Box<dyn E
             command: Some("doctor"),
             expected_reason: "command must be a string",
         },
+        Case {
+            name: "audit_verify_missing_skip_count",
+            metadata: json!({
+                "schema_version": 1,
+                "action": "AUDIT_VERIFY",
+                "status": "SUCCESS",
+                "check_names": ["audit_hmac_chain"],
+                "pass_count": 1,
+                "warn_count": 0,
+                "fail_count": 0,
+            }),
+            action: "AUDIT_VERIFY",
+            status: "SUCCESS",
+            profile_id: None,
+            secret_name: None,
+            command: None,
+            expected_reason: "missing required field skip_count",
+        },
     ];
 
     for case in cases {
