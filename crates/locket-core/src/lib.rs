@@ -30,8 +30,8 @@ pub use bundle::{
     BUNDLE_MAGIC, BUNDLE_MANIFEST_ALLOWED_FIELDS, BUNDLE_MAX_MANIFEST_LEN, BUNDLE_MAX_PAYLOAD_LEN,
     BUNDLE_SCHEMA_V1, BundleContainer, BundleContainerError, BundleContainerResult,
     BundleEncryptionError, BundleEncryptionResult, BundleManifest,
-    decrypt_bundle_payload_with_age_identity, encrypt_bundle_payload_for_age_recipients,
-    verify_age_payload_structure,
+    decrypt_bundle_payload_with_age_identity, decrypt_bundle_payload_with_x25519_secret,
+    encrypt_bundle_payload_for_age_recipients, verify_age_payload_structure,
 };
 pub use env::{
     EnvMap, EnvMergeError, EnvMode, EnvOverrideMode, EnvValue, InvalidEnvMode,

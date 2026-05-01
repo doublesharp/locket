@@ -8,9 +8,13 @@ use std::path::{Path, PathBuf};
 use data_encoding::BASE64URL_NOPAD;
 use locket_core::{
     BUNDLE_SCHEMA_V1, BundleContainer, BundleContainerError, BundleManifest, CommandPolicy,
-    CommandSpec, encrypt_bundle_payload_for_age_recipients, verify_age_payload_structure,
+    CommandSpec, decrypt_bundle_payload_with_x25519_secret,
+    encrypt_bundle_payload_for_age_recipients, verify_age_payload_structure,
 };
 use locket_crypto::KeyPurpose;
+use locket_platform::{
+    LocalDevicePrivateKeyStorage, PlatformError, WrappedLocalFileDevicePrivateKeyStorage,
+};
 use locket_store::{AuditWrite, ProfileRecord, SecretBlobRecord, SecretRecord, Store};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -141,6 +145,16 @@ struct ExportedBundleV1 {
 
 struct VerifiedBundleV1 {
     manifest: BundleManifest,
+    encrypted_payload: Vec<u8>,
+}
+
+#[derive(Debug, Default)]
+#[allow(clippy::struct_field_names)]
+struct ImportedBundleCounts {
+    profile_count: usize,
+    secret_count: usize,
+    blob_count: usize,
+    command_policy_count: usize,
 }
 
 pub fn bundle_command(
@@ -220,6 +234,7 @@ pub fn export_bundle_command(
             timestamp,
             include_audit_requested: None,
             user_verification,
+            decrypted_counts: None,
         },
     )?;
 
@@ -247,10 +262,11 @@ pub fn import_bundle_command(
 ) -> Result<(), CliError> {
     let resolved = require_project(context)?;
     let mut store = open_store(context)?;
-    ensure_project_exists(&store, resolved.config.project_id.as_str())?;
+    let project_id = resolved.config.project_id.as_str();
+    ensure_project_exists(&store, project_id)?;
     ensure_trusted_project_root(&store, &resolved)?;
     let bundle = verify_bundle_file(&args.bundle)?;
-    if bundle.manifest.project_id != resolved.config.project_id.as_str() {
+    if bundle.manifest.project_id != project_id {
         return Err(bundle_verification_error("bundle project id does not match current project"));
     }
     let conflict_policy = if args.accept_incoming {
@@ -260,6 +276,26 @@ pub fn import_bundle_command(
     } else {
         "interactive-required"
     };
+
+    let device = store
+        .get_active_local_device(project_id)?
+        .ok_or_else(|| bundle_verification_error("local device is not initialized"))?;
+    let storage = build_import_device_private_key_storage(context, project_id)?;
+    let private_key = storage.load(&device.id).map_err(map_private_key_load_error)?;
+    let plaintext =
+        decrypt_bundle_payload_with_x25519_secret(&bundle.encrypted_payload, &private_key)
+            .map_err(|error| {
+                bundle_verification_error(format!("bundle verification failed: {error}"))
+            })?;
+    let payload: SealedBundlePayloadV1 = serde_json::from_slice(&plaintext)
+        .map_err(|error| bundle_verification_error(format!("bundle verification failed: {error}")))?;
+    let counts = ImportedBundleCounts {
+        profile_count: payload.profile_count,
+        secret_count: payload.secret_count,
+        blob_count: payload.blob_count,
+        command_policy_count: payload.command_policy_count,
+    };
+
     write_bundle_audit_if_available(
         context,
         &mut store,
@@ -272,19 +308,51 @@ pub fn import_bundle_command(
             timestamp: now_unix_nanos()?,
             include_audit_requested: Some(args.include_audit),
             user_verification: UserVerificationAudit::not_required(),
+            decrypted_counts: Some(&counts),
         },
     )?;
 
     writeln!(output, "bundle: verified")?;
-    writeln!(output, "import: not_applied")?;
-    writeln!(output, "reason: local device private-key import is not implemented in this build")?;
-    writeln!(output, "profiles: {}", bundle.manifest.profile_count)?;
-    writeln!(output, "active_secret_count: encrypted")?;
+    writeln!(output, "import: decrypted")?;
+    writeln!(output, "profiles: {}", counts.profile_count)?;
+    writeln!(output, "secrets: {}", counts.secret_count)?;
+    writeln!(output, "blobs: {}", counts.blob_count)?;
+    writeln!(output, "command_policies: {}", counts.command_policy_count)?;
+    writeln!(output, "active_secret_count: {}", payload.active_secret_count)?;
     writeln!(output, "include_audit_requested: {}", if args.include_audit { "yes" } else { "no" })?;
-    writeln!(output, "bundle_include_audit: encrypted")?;
+    writeln!(output, "bundle_include_audit: {}", if payload.audit_rows_included { "yes" } else { "no" })?;
     writeln!(output, "conflict_policy: {conflict_policy}")?;
     writeln!(output, "metadata_only: yes")?;
+    // TODO(bundle-import-apply-rows): apply decrypted profiles/secrets/blobs/command_policies
+    // to the local store using `payload`, honoring `conflict_policy` and `args.include_audit`.
     Ok(())
+}
+
+fn build_import_device_private_key_storage(
+    context: &RuntimeContext,
+    project_id: &str,
+) -> Result<WrappedLocalFileDevicePrivateKeyStorage, CliError> {
+    let directory = context
+        .store_path
+        .parent()
+        .map(std::path::Path::to_path_buf)
+        .ok_or_else(|| {
+            crate::runtime::error::corrupt_db_error("could not resolve device private key root")
+        })?;
+    Ok(WrappedLocalFileDevicePrivateKeyStorage::new(
+        directory,
+        project_id.to_owned(),
+        std::sync::Arc::clone(&context.key_store),
+    ))
+}
+
+fn map_private_key_load_error(error: PlatformError) -> CliError {
+    match error {
+        PlatformError::DevicePrivateKeyNotFound => bundle_verification_error(
+            "device private-key storage not initialized",
+        ),
+        other => CliError::Platform(other),
+    }
 }
 
 fn bundle_verify_command(
@@ -571,7 +639,10 @@ fn verify_bundle_file(path: &Path) -> Result<VerifiedBundleV1, CliError> {
     }
     verify_age_payload_structure(&container.encrypted_payload)
         .map_err(|error| bundle_verification_error(error.to_string()))?;
-    Ok(VerifiedBundleV1 { manifest: container.manifest })
+    Ok(VerifiedBundleV1 {
+        manifest: container.manifest,
+        encrypted_payload: container.encrypted_payload,
+    })
 }
 
 fn bundle_container_cli_error(error: &BundleContainerError) -> CliError {
@@ -602,6 +673,7 @@ struct BundleAuditRequest<'a> {
     timestamp: i64,
     include_audit_requested: Option<bool>,
     user_verification: UserVerificationAudit,
+    decrypted_counts: Option<&'a ImportedBundleCounts>,
 }
 
 trait BundleAuditSubject {
@@ -769,6 +841,13 @@ fn write_bundle_audit_if_available(
     }
     if let Some(include_audit_requested) = request.include_audit_requested {
         metadata.insert("include_audit_requested".to_owned(), Value::from(include_audit_requested));
+    }
+    if let Some(counts) = request.decrypted_counts {
+        metadata.insert("profile_count".to_owned(), Value::from(counts.profile_count));
+        metadata.insert("secret_count".to_owned(), Value::from(counts.secret_count));
+        metadata.insert("blob_count".to_owned(), Value::from(counts.blob_count));
+        metadata
+            .insert("command_policy_count".to_owned(), Value::from(counts.command_policy_count));
     }
     metadata
         .insert("user_verification".to_owned(), serde_json::to_value(request.user_verification)?);

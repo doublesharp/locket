@@ -235,6 +235,31 @@ pub fn decrypt_bundle_payload_with_age_identity(
     Ok(plaintext)
 }
 
+/// Decrypts an age-encrypted bundle payload using a 32-byte X25519 secret key.
+///
+/// Convenience wrapper over [`decrypt_bundle_payload_with_age_identity`] for
+/// callers (such as `locket-cli`) that receive raw key bytes from the device
+/// private-key storage and don't depend on the `age` crate directly.
+///
+/// # Errors
+///
+/// Returns [`BundleEncryptionError::Decrypt`] if the secret cannot be encoded
+/// as a bech32 age identity, the payload is malformed, is not addressed to
+/// the identity, or fails authentication.
+pub fn decrypt_bundle_payload_with_x25519_secret(
+    encrypted_payload: &[u8],
+    secret_key: &[u8; 32],
+) -> BundleEncryptionResult<Vec<u8>> {
+    let encoded =
+        bech32::encode("AGE-SECRET-KEY-", secret_key.to_base32(), Variant::Bech32).map_err(
+            |error| BundleEncryptionError::Decrypt(format!("invalid x25519 secret: {error}")),
+        )?;
+    let identity: age::x25519::Identity = encoded
+        .parse()
+        .map_err(|message: &'static str| BundleEncryptionError::Decrypt(message.to_owned()))?;
+    decrypt_bundle_payload_with_age_identity(encrypted_payload, &identity)
+}
+
 impl BundleContainer {
     /// Constructs a container, validating that the manifest carries
     /// only allow-listed fields and a sane schema version.
