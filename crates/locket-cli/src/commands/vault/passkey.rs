@@ -53,6 +53,15 @@ fn passkey_register_command(
     let mut store = open_store(context)?;
     let project_id = resolved.config.project_id.as_str();
     ensure_project_exists(&store, project_id)?;
+    let local_device = store.get_active_local_device(project_id)?.ok_or_else(|| {
+        invalid_reference_error("active local device required for passkey registration")
+    })?;
+    let member_id = match store.get_team_by_project(project_id)? {
+        Some(team) => store
+            .get_active_team_member_by_device(&team.id, &local_device.id)?
+            .map(|member| member.id),
+        None => None,
+    };
     let user_verification = require_user_verification(
         context,
         "passkey register",
@@ -66,8 +75,12 @@ fn passkey_register_command(
             let credential = PasskeyCredentialRecord {
                 id: passkey_id,
                 project_id: project_id.to_owned(),
+                device_id: local_device.id.clone(),
+                member_id,
                 label: label.to_owned(),
                 credential_id: registration.credential_id.clone(),
+                public_key: registration.public_key.clone(),
+                user_handle: registration.user_handle.clone(),
                 transports: registration.transports.clone(),
                 prf_capable: registration.prf_capable,
                 webauthn_relying_party_id: relying_party_id.to_owned(),

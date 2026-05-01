@@ -31,6 +31,8 @@ pub struct PasskeyRegistration {
     pub credential_id: Vec<u8>,
     /// Public key bytes for the credential. Never private key material.
     pub public_key: Vec<u8>,
+    /// Stable random WebAuthn user handle for this credential.
+    pub user_handle: Vec<u8>,
     /// Transport hints reported by the platform/authenticator.
     pub transports: Vec<String>,
     /// Whether the authenticator supports the `WebAuthn` PRF/hmac-secret extension.
@@ -129,6 +131,7 @@ impl PlatformPasskeyRegistrar for KeyringPlatformPasskeyRegistrar {
         Ok(PasskeyRegistration {
             credential_id,
             public_key: public_metadata_key(&secret),
+            user_handle: random_bytes::<32>()?.to_vec(),
             transports: vec![
                 PASSKEY_TRANSPORT_INTERNAL.to_owned(),
                 PASSKEY_TRANSPORT_KEYRING.to_owned(),

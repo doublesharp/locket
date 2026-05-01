@@ -573,6 +573,7 @@ fn memory_passkey_registrar_round_trips_register_then_prf() -> Result<(), Platfo
     let registration = PasskeyRegistration {
         credential_id: vec![0x01, 0x02, 0x03, 0x04],
         public_key: vec![0xaa, 0xbb],
+        user_handle: vec![0xcc; 32],
         transports: vec!["internal".to_owned()],
         prf_capable: true,
         backup_eligible: Some(true),

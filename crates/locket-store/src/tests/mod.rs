@@ -165,8 +165,12 @@ pub(super) fn test_passkey_credential() -> PasskeyCredentialRecord {
     PasskeyCredentialRecord {
         id: "lk_passkey_test".to_owned(),
         project_id: "lk_proj_test".to_owned(),
+        device_id: "lk_dev_test".to_owned(),
+        member_id: Some("lk_member_test".to_owned()),
         label: "work-laptop".to_owned(),
         credential_id: vec![0xab, 0xcd, 0xef, 0x12, 0x34, 0x56],
+        public_key: vec![0x42; 65],
+        user_handle: vec![0x77; 32],
         transports: vec!["internal".to_owned(), "usb".to_owned()],
         prf_capable: true,
         webauthn_relying_party_id: crate::DEFAULT_WEBAUTHN_RELYING_PARTY_ID.to_owned(),

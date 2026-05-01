@@ -352,11 +352,15 @@ CREATE UNIQUE INDEX IF NOT EXISTS devices_one_active_local_idx
 CREATE TABLE IF NOT EXISTS passkey_credentials (
   id TEXT PRIMARY KEY,
   project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+  member_id TEXT REFERENCES team_members(id) ON DELETE SET NULL,
   label TEXT NOT NULL,
   credential_id BLOB NOT NULL CHECK (length(credential_id) > 0),
+  public_key BLOB NOT NULL CHECK (length(public_key) > 0),
   transports_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(transports_json)),
   prf_capable INTEGER NOT NULL CHECK (prf_capable IN (0, 1)),
   webauthn_relying_party_id TEXT NOT NULL DEFAULT 'locket.localhost',
+  user_handle BLOB NOT NULL CHECK (length(user_handle) = 32),
   backup_eligible INTEGER CHECK (backup_eligible IN (0, 1)),
   backup_state INTEGER CHECK (backup_state IN (0, 1)),
   created_at INTEGER NOT NULL,
@@ -368,6 +372,14 @@ CREATE TABLE IF NOT EXISTS passkey_credentials (
 
 CREATE INDEX IF NOT EXISTS passkey_credentials_project_revoked_idx
   ON passkey_credentials(project_id, revoked_at);
+
+CREATE INDEX IF NOT EXISTS passkey_credentials_device_idx
+  ON passkey_credentials(project_id, device_id)
+  WHERE revoked_at IS NULL;
+
+CREATE INDEX IF NOT EXISTS passkey_credentials_member_idx
+  ON passkey_credentials(project_id, member_id)
+  WHERE member_id IS NOT NULL AND revoked_at IS NULL;
 
 CREATE TABLE IF NOT EXISTS passkey_prf_wraps (
   passkey_id TEXT PRIMARY KEY REFERENCES passkey_credentials(id) ON DELETE CASCADE,

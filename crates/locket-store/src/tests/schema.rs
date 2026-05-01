@@ -59,6 +59,21 @@ fn creates_schema_and_records_migration() -> Result<(), Box<dyn Error>> {
     )?;
     assert_eq!(rp_id_column, 1, "passkey credentials must persist the WebAuthn RP ID");
 
+    for (name, type_name, notnull) in [
+        ("device_id", "TEXT", 1),
+        ("member_id", "TEXT", 0),
+        ("public_key", "BLOB", 1),
+        ("user_handle", "BLOB", 1),
+    ] {
+        let column = connection.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('passkey_credentials')
+             WHERE name = ?1 AND type = ?2 AND \"notnull\" = ?3",
+            (name, type_name, notnull),
+            |row| row.get::<_, i64>(0),
+        )?;
+        assert_eq!(column, 1, "passkey_credentials.{name} must match the data model");
+    }
+
     let foreign_keys =
         connection.query_row("PRAGMA foreign_keys", [], |row| row.get::<_, i64>(0))?;
     assert_eq!(foreign_keys, 1);

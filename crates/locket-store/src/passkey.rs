@@ -33,10 +33,18 @@ pub struct PasskeyCredentialRecord {
     pub id: String,
     /// Parent project identifier.
     pub project_id: String,
+    /// Local device this credential is bound to.
+    pub device_id: String,
+    /// Team member this credential is bound to, when the project has a team.
+    pub member_id: Option<String>,
     /// Human-readable authenticator label.
     pub label: String,
     /// Public `WebAuthn` credential id bytes. Never private key material.
     pub credential_id: Vec<u8>,
+    /// Public key bytes for WebAuthn assertion verification.
+    pub public_key: Vec<u8>,
+    /// Stable random WebAuthn user handle. Never printed by default.
+    pub user_handle: Vec<u8>,
     /// Transport hints exposed by the platform/authenticator.
     pub transports: Vec<String>,
     /// Whether PRF/hmac-secret key-wrapping is supported.
@@ -58,23 +66,27 @@ pub struct PasskeyCredentialRecord {
 fn passkey_credential_from_row(
     row: &rusqlite::Row<'_>,
 ) -> rusqlite::Result<PasskeyCredentialRecord> {
-    let transports_json = row.get::<_, String>(4)?;
+    let transports_json = row.get::<_, String>(7)?;
     let transports = serde_json::from_str::<Vec<String>>(&transports_json).map_err(|error| {
-        rusqlite::Error::FromSqlConversionFailure(4, Type::Text, Box::new(error))
+        rusqlite::Error::FromSqlConversionFailure(7, Type::Text, Box::new(error))
     })?;
     Ok(PasskeyCredentialRecord {
         id: row.get(0)?,
         project_id: row.get(1)?,
-        label: row.get(2)?,
-        credential_id: row.get(3)?,
+        device_id: row.get(2)?,
+        member_id: row.get(3)?,
+        label: row.get(4)?,
+        credential_id: row.get(5)?,
+        public_key: row.get(6)?,
         transports,
-        prf_capable: row.get(5)?,
-        webauthn_relying_party_id: row.get(6)?,
-        backup_eligible: row.get(7)?,
-        backup_state: row.get(8)?,
-        created_at: row.get(9)?,
-        last_used_at: row.get(10)?,
-        revoked_at: row.get(11)?,
+        prf_capable: row.get(8)?,
+        webauthn_relying_party_id: row.get(9)?,
+        user_handle: row.get(10)?,
+        backup_eligible: row.get(11)?,
+        backup_state: row.get(12)?,
+        created_at: row.get(13)?,
+        last_used_at: row.get(14)?,
+        revoked_at: row.get(15)?,
     })
 }
 
@@ -92,19 +104,23 @@ impl Store {
         let transports_json = serde_json::to_string(&credential.transports)?;
         self.connection.execute(
             "INSERT INTO passkey_credentials(
-               id, project_id, label, credential_id, transports_json, prf_capable,
-               webauthn_relying_party_id, backup_eligible, backup_state, created_at,
-               last_used_at, revoked_at
+               id, project_id, device_id, member_id, label, credential_id, public_key,
+               transports_json, prf_capable, webauthn_relying_party_id, user_handle,
+               backup_eligible, backup_state, created_at, last_used_at, revoked_at
              )
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
             params![
                 credential.id.as_str(),
                 credential.project_id.as_str(),
+                credential.device_id.as_str(),
+                credential.member_id.as_deref(),
                 credential.label.as_str(),
                 credential.credential_id.as_slice(),
+                credential.public_key.as_slice(),
                 transports_json.as_str(),
                 credential.prf_capable,
                 credential.webauthn_relying_party_id.as_str(),
+                credential.user_handle.as_slice(),
                 credential.backup_eligible,
                 credential.backup_state,
                 credential.created_at,
@@ -127,16 +143,16 @@ impl Store {
         include_revoked: bool,
     ) -> Result<Vec<PasskeyCredentialRecord>, StoreError> {
         let sql = if include_revoked {
-            "SELECT id, project_id, label, credential_id, transports_json, prf_capable,
-                    webauthn_relying_party_id, backup_eligible, backup_state, created_at,
-                    last_used_at, revoked_at
+            "SELECT id, project_id, device_id, member_id, label, credential_id, public_key,
+                    transports_json, prf_capable, webauthn_relying_party_id, user_handle,
+                    backup_eligible, backup_state, created_at, last_used_at, revoked_at
              FROM passkey_credentials
              WHERE project_id = ?1
              ORDER BY created_at, id"
         } else {
-            "SELECT id, project_id, label, credential_id, transports_json, prf_capable,
-                    webauthn_relying_party_id, backup_eligible, backup_state, created_at,
-                    last_used_at, revoked_at
+            "SELECT id, project_id, device_id, member_id, label, credential_id, public_key,
+                    transports_json, prf_capable, webauthn_relying_party_id, user_handle,
+                    backup_eligible, backup_state, created_at, last_used_at, revoked_at
              FROM passkey_credentials
              WHERE project_id = ?1 AND revoked_at IS NULL
              ORDER BY created_at, id"
@@ -162,9 +178,9 @@ impl Store {
         let selector = selector.trim();
         let credential_hex_prefix = selector.strip_prefix("0x").unwrap_or(selector).to_uppercase();
         let mut statement = self.connection.prepare(
-            "SELECT id, project_id, label, credential_id, transports_json, prf_capable,
-                    webauthn_relying_party_id, backup_eligible, backup_state, created_at,
-                    last_used_at, revoked_at
+            "SELECT id, project_id, device_id, member_id, label, credential_id, public_key,
+                    transports_json, prf_capable, webauthn_relying_party_id, user_handle,
+                    backup_eligible, backup_state, created_at, last_used_at, revoked_at
              FROM passkey_credentials
              WHERE project_id = ?1
                AND (label = ?2 OR id = ?2 OR hex(credential_id) LIKE (?3 || '%'))

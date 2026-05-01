@@ -396,16 +396,24 @@ fn config_security_relevant_updates_write_metadata_only_audit_when_project_exist
     Ok(())
 }
 
+fn initialize_project_and_device(
+    context: &RuntimeContext,
+) -> Result<(), Box<dyn std::error::Error>> {
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        context,
+        &mut Vec::new(),
+    )?;
+    run_with_context(Cli::try_parse_from(["locket", "device", "init"])?, context, &mut Vec::new())?;
+    Ok(())
+}
+
 #[test]
 fn passkey_register_is_unavailable_without_writing_metadata()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempdir()?;
     let context = test_context(&directory);
-    run_with_context(
-        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
-        &context,
-        &mut Vec::new(),
-    )?;
+    initialize_project_and_device(&context)?;
     let resolved = crate::resolve_project(&context.cwd)?.ok_or("project should resolve")?;
     let project_id = resolved.config.project_id.to_string();
 
@@ -458,16 +466,13 @@ fn passkey_register_via_memory_registrar_writes_credential_and_audit()
     use locket_platform::{MemoryPlatformPasskeyRegistrar, PasskeyRegistration};
     let directory = tempdir()?;
     let context = test_context(&directory);
-    run_with_context(
-        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
-        &context,
-        &mut Vec::new(),
-    )?;
+    initialize_project_and_device(&context)?;
     let resolved = crate::resolve_project(&context.cwd)?.ok_or("project should resolve")?;
     let project_id = resolved.config.project_id.to_string();
     let registration = PasskeyRegistration {
         credential_id: vec![0xab, 0xcd, 0xef, 0x12, 0x34, 0x56, 0x78, 0x9a],
         public_key: vec![0x01, 0x02, 0x03, 0x04],
+        user_handle: vec![0x55; 32],
         transports: vec!["internal".to_owned(), "hybrid".to_owned()],
         prf_capable: true,
         backup_eligible: Some(true),
@@ -493,6 +498,9 @@ fn passkey_register_via_memory_registrar_writes_credential_and_audit()
     let credentials = store.list_passkey_credentials(&project_id, false)?;
     assert_eq!(credentials.len(), 1);
     assert_eq!(credentials[0].label, "work-laptop");
+    assert!(!register_output.contains("555555555555"));
+    assert_eq!(credentials[0].public_key, vec![0x01, 0x02, 0x03, 0x04]);
+    assert_eq!(credentials[0].user_handle, vec![0x55; 32]);
     assert_eq!(credentials[0].transports, vec!["internal".to_owned(), "hybrid".to_owned()]);
     assert!(credentials[0].prf_capable);
     assert!(store.get_passkey_prf_wrap(&project_id, &credentials[0].id)?.is_some());
@@ -527,17 +535,14 @@ fn passkey_unlock_round_trips_master_key_through_prf() -> Result<(), Box<dyn std
 
     let directory = tempdir()?;
     let context = test_context(&directory);
-    run_with_context(
-        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
-        &context,
-        &mut Vec::new(),
-    )?;
+    initialize_project_and_device(&context)?;
     let resolved = crate::resolve_project(&context.cwd)?.ok_or("project should resolve")?;
     let project_id = resolved.config.project_id.to_string();
 
     let registration = PasskeyRegistration {
         credential_id: vec![0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0],
         public_key: vec![0x01, 0x02],
+        user_handle: vec![0x66; 32],
         transports: vec!["internal".to_owned()],
         prf_capable: true,
         backup_eligible: Some(false),
@@ -587,16 +592,13 @@ fn passkey_unlock_with_wrong_prf_output_fails_integrity() -> Result<(), Box<dyn 
 
     let directory = tempdir()?;
     let context = test_context(&directory);
-    run_with_context(
-        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
-        &context,
-        &mut Vec::new(),
-    )?;
+    initialize_project_and_device(&context)?;
 
     let credential_id = vec![0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0];
     let registration = PasskeyRegistration {
         credential_id: credential_id.clone(),
         public_key: vec![0x01, 0x02],
+        user_handle: vec![0x77; 32],
         transports: vec!["internal".to_owned()],
         prf_capable: true,
         backup_eligible: Some(false),
@@ -664,19 +666,22 @@ fn passkey_unlock_without_registered_passkey_fails() -> Result<(), Box<dyn std::
 fn passkey_list_and_remove_use_project_store_and_audit() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempdir()?;
     let context = test_context_with_confirmation(&directory, "work-laptop\n");
-    let mut init_output = Vec::new();
-    run_with_context(
-        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
-        &context,
-        &mut init_output,
-    )?;
+    initialize_project_and_device(&context)?;
     let resolved = crate::resolve_project(&context.cwd)?.ok_or("project should resolve")?;
     let project_id = resolved.config.project_id.to_string();
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
     let credential = locket_store::PasskeyCredentialRecord {
         id: "lk_passkey_test".to_owned(),
         project_id: project_id.clone(),
+        device_id: store
+            .get_active_local_device(&project_id)?
+            .ok_or("local device should exist")?
+            .id,
+        member_id: None,
         label: "work-laptop".to_owned(),
         credential_id: vec![0xab, 0xcd, 0xef, 0x12, 0x34, 0x56],
+        public_key: vec![0x01, 0x02, 0x03, 0x04],
+        user_handle: vec![0x88; 32],
         transports: vec!["internal".to_owned(), "usb".to_owned()],
         prf_capable: true,
         webauthn_relying_party_id: locket_store::DEFAULT_WEBAUTHN_RELYING_PARTY_ID.to_owned(),
@@ -686,7 +691,6 @@ fn passkey_list_and_remove_use_project_store_and_audit() -> Result<(), Box<dyn s
         last_used_at: Some(200),
         revoked_at: None,
     };
-    let store = locket_store::Store::open(directory.path().join("store.db"))?;
     store.insert_passkey_credential(&credential)?;
 
     let mut list_output = Vec::new();
@@ -744,18 +748,22 @@ fn passkey_remove_requires_fresh_user_verification_before_revocation()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempdir()?;
     let context = test_context_with_confirmation(&directory, "work-laptop\n");
-    run_with_context(
-        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
-        &context,
-        &mut Vec::new(),
-    )?;
+    initialize_project_and_device(&context)?;
     let resolved = crate::resolve_project(&context.cwd)?.ok_or("project should resolve")?;
     let project_id = resolved.config.project_id.to_string();
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
     let credential = locket_store::PasskeyCredentialRecord {
         id: "lk_passkey_test".to_owned(),
         project_id: project_id.clone(),
+        device_id: store
+            .get_active_local_device(&project_id)?
+            .ok_or("local device should exist")?
+            .id,
+        member_id: None,
         label: "work-laptop".to_owned(),
         credential_id: vec![0xab, 0xcd, 0xef, 0x12, 0x34, 0x56],
+        public_key: vec![0x01, 0x02, 0x03, 0x04],
+        user_handle: vec![0x99; 32],
         transports: vec!["internal".to_owned()],
         prf_capable: true,
         webauthn_relying_party_id: locket_store::DEFAULT_WEBAUTHN_RELYING_PARTY_ID.to_owned(),
@@ -765,7 +773,6 @@ fn passkey_remove_requires_fresh_user_verification_before_revocation()
         last_used_at: None,
         revoked_at: None,
     };
-    let store = locket_store::Store::open(directory.path().join("store.db"))?;
     store.insert_passkey_credential(&credential)?;
 
     let denied_context =

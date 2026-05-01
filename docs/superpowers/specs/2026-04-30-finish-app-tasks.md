@@ -122,13 +122,14 @@ ship. Each bullet has spec ref + code ref + suggested touches.
 ### B. Schema / data-model alignment
 
 (`audit-verify-validator-arm` shipped — AUDIT_VERIFY arm added to required_fields_for_action; rejection test covers stripped metadata.)
-- [~] (in-flight: Codex passkey schema worker) **passkey-credentials-missing-cols**: `passkey_credentials`
+- [x] **passkey-credentials-missing-cols**: `passkey_credentials`
   (`schema.rs:298-313`) lacks `device_id`, `member_id`, `public_key`,
   `user_handle` per `data-model.md:267-285`. WebAuthn assertion
   needs `public_key`; `user_handle` is the stable random handle.
   Touches: schema migration + `PasskeyCredentialRecord` updates in
   `locket-store/src/passkey.rs` + registrar plumbing in
-  `locket-platform`.
+  `locket-platform`. Completed by Codex passkey schema worker on
+  2026-05-01.
 (`directory-grants-missing-revoked-and-granted-by` shipped —
 `directory_grants` now persists nullable `granted_by` + `revoked_at`,
 deny paths soft-revoke rows instead of deleting, active lookups
