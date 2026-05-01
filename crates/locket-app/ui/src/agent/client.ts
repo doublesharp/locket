@@ -268,3 +268,28 @@ export async function listVersions(
 ): Promise<AgentResult<ListVersionsResponse>> {
   return callTyped<ListVersionsResponse>('agent_list_versions', { request });
 }
+
+/**
+ * Wire shape for the `agent_copy_secret` Tauri command. The desktop
+ * shell calls the agent's `Copy` RPC, writes the returned value to the
+ * clipboard, and schedules a TTL-bound clear; the webview only sees
+ * the metadata-only outcome.
+ */
+export interface CopySecretRequest {
+  secret_name: string;
+  profile_id: string;
+  project_id?: string;
+  store_path?: string;
+  grant_id?: string;
+  ttl_seconds?: number;
+}
+
+export type CopySecretResponse =
+  | { kind: 'copied'; ttl_seconds: number }
+  | { kind: 'unsupported'; unsupported_reason: string };
+
+export async function copySecret(
+  request: CopySecretRequest,
+): Promise<AgentResult<CopySecretResponse>> {
+  return callTyped<CopySecretResponse>('agent_copy_secret', { request });
+}

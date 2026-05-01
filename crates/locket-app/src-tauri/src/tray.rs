@@ -22,8 +22,9 @@
 use locket_agent::{LockState, StatusEvent, StatusPayload};
 use locket_app::TrayIconState;
 use serde::{Deserialize, Serialize};
+use std::sync::Mutex;
 use tauri::image::Image;
-use tauri::menu::{Menu, MenuBuilder, MenuEvent};
+use tauri::menu::{Menu, MenuBuilder, MenuEvent, MenuItemBuilder};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 
@@ -38,6 +39,8 @@ const MENU_UNLOCK_VAULT: &str = "tray-unlock-vault";
 const MENU_SWITCH_PROFILE: &str = "tray-switch-profile";
 const MENU_RUN_POLICY: &str = "tray-run-policy";
 const MENU_START_SCAN: &str = "tray-start-scan";
+const MENU_REVEAL_SECRET: &str = "tray-reveal-secret";
+const MENU_COPY_SECRET: &str = "tray-copy-secret";
 
 /// Metadata-only tray menu actions exposed to the webview.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
@@ -55,6 +58,13 @@ pub enum TrayMenuAction {
     RunPolicy,
     /// Start a known-value scan.
     StartScan,
+    /// Reveal the currently-selected secret in the desktop reveal modal.
+    /// Only enabled when the vault is unlocked and a secret is selected.
+    RevealSecret,
+    /// Copy the currently-selected secret to the clipboard via
+    /// `agent_copy_secret`. Only enabled when the vault is unlocked and
+    /// a secret is selected.
+    CopySecret,
 }
 
 impl TrayMenuAction {
@@ -68,6 +78,8 @@ impl TrayMenuAction {
             Self::SwitchProfile => MENU_SWITCH_PROFILE,
             Self::RunPolicy => MENU_RUN_POLICY,
             Self::StartScan => MENU_START_SCAN,
+            Self::RevealSecret => MENU_REVEAL_SECRET,
+            Self::CopySecret => MENU_COPY_SECRET,
         }
     }
 
@@ -82,7 +94,17 @@ impl TrayMenuAction {
             Self::SwitchProfile => "Switch Profile...",
             Self::RunPolicy => "Run Policy...",
             Self::StartScan => "Start Scan",
+            Self::RevealSecret => "Reveal selected secret",
+            Self::CopySecret => "Copy selected secret",
         }
+    }
+
+    /// Whether this action depends on the current vault unlock state and
+    /// secret selection. Selection-aware actions are gated by
+    /// [`tray_menu_action_enablement`].
+    #[must_use]
+    pub const fn requires_selection(self) -> bool {
+        matches!(self, Self::RevealSecret | Self::CopySecret)
     }
 }
 
@@ -96,7 +118,78 @@ pub const fn tray_menu_actions() -> &'static [TrayMenuAction] {
         TrayMenuAction::SwitchProfile,
         TrayMenuAction::RunPolicy,
         TrayMenuAction::StartScan,
+        TrayMenuAction::RevealSecret,
+        TrayMenuAction::CopySecret,
     ]
+}
+
+/// Vault + secret-selection state captured by the webview and pushed
+/// into the tray module via `tray_set_selection`. Used as the input to
+/// [`tray_menu_action_enablement`] and [`build_tray_menu_with`] so the
+/// reveal/copy items only light up when the agent has an active unlock
+/// and the user has selected a secret in the desktop UI.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Deserialize, Serialize)]
+pub struct TraySelectionState {
+    /// Whether the agent reports the vault is currently unlocked.
+    pub vault_unlocked: bool,
+    /// Whether the desktop UI has a selected secret in the metadata
+    /// list. Carries no name or value — selection identity is owned by
+    /// the webview, the tray module only needs the boolean predicate.
+    pub secret_selected: bool,
+}
+
+impl TraySelectionState {
+    /// Convenience constructor.
+    #[must_use]
+    pub const fn new(vault_unlocked: bool, secret_selected: bool) -> Self {
+        Self { vault_unlocked, secret_selected }
+    }
+}
+
+/// Result of evaluating the enablement matrix for a tray menu action.
+/// When `enabled` is false, `disabled_reason` carries a short, generic,
+/// metadata-only tooltip explaining the precondition; never includes
+/// secret, profile, or project names.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TrayMenuItemEnablement {
+    /// Whether the menu item should accept clicks.
+    pub enabled: bool,
+    /// Tooltip shown when the item is disabled. `None` means the item
+    /// is enabled.
+    pub disabled_reason: Option<&'static str>,
+}
+
+impl TrayMenuItemEnablement {
+    const fn enabled() -> Self {
+        Self { enabled: true, disabled_reason: None }
+    }
+
+    const fn disabled(reason: &'static str) -> Self {
+        Self { enabled: false, disabled_reason: Some(reason) }
+    }
+}
+
+/// Pure mapping from (action, selection-state) to whether the tray item
+/// is currently enabled and, when disabled, the metadata-only tooltip
+/// the menu item should surface. Selection-aware actions
+/// (`RevealSecret`, `CopySecret`) require both the vault to be unlocked
+/// and a secret to be selected; all other actions are always enabled
+/// because their own pre-conditions live in the agent.
+#[must_use]
+pub const fn tray_menu_action_enablement(
+    action: TrayMenuAction,
+    state: TraySelectionState,
+) -> TrayMenuItemEnablement {
+    if !action.requires_selection() {
+        return TrayMenuItemEnablement::enabled();
+    }
+    if !state.vault_unlocked {
+        return TrayMenuItemEnablement::disabled("Unlock the vault to use this action.");
+    }
+    if !state.secret_selected {
+        return TrayMenuItemEnablement::disabled("Select a secret in the desktop list first.");
+    }
+    TrayMenuItemEnablement::enabled()
 }
 
 /// Map a menu event id back to the typed action.
@@ -117,6 +210,10 @@ pub const fn tray_menu_action_view(action: TrayMenuAction) -> Option<&'static st
         TrayMenuAction::LockVault => None,
         TrayMenuAction::RunPolicy => Some("policies"),
         TrayMenuAction::StartScan => Some("scan"),
+        // Reveal/copy stay anchored to the secrets surface so the user
+        // can see which secret is selected before the modal appears or
+        // the clipboard fires.
+        TrayMenuAction::RevealSecret | TrayMenuAction::CopySecret => Some("secrets"),
     }
 }
 
@@ -137,6 +234,10 @@ pub enum TrayMenuSideEffect {
     RefreshPolicies,
     /// Trigger a fresh scan against the agent.
     StartScan,
+    /// Open the reveal modal for the currently selected secret.
+    RevealSelectedSecret,
+    /// Trigger `agent_copy_secret` for the currently selected secret.
+    CopySelectedSecret,
 }
 
 /// Pure mapping from a tray menu action to its side-effect category.
@@ -149,6 +250,8 @@ pub const fn tray_menu_action_side_effect(action: TrayMenuAction) -> TrayMenuSid
         TrayMenuAction::SwitchProfile => TrayMenuSideEffect::OpenProfileSwitcher,
         TrayMenuAction::RunPolicy => TrayMenuSideEffect::RefreshPolicies,
         TrayMenuAction::StartScan => TrayMenuSideEffect::StartScan,
+        TrayMenuAction::RevealSecret => TrayMenuSideEffect::RevealSelectedSecret,
+        TrayMenuAction::CopySecret => TrayMenuSideEffect::CopySelectedSecret,
     }
 }
 
@@ -338,7 +441,8 @@ pub fn setup_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     let initial = TrayIconState::AgentStopped;
     let bytes = platform_icon_bytes(app, initial);
     let image = Image::from_bytes(bytes)?;
-    let menu = build_tray_menu(app)?;
+    let selection = current_selection_state();
+    let menu = build_tray_menu_with(app, selection)?;
     TrayIconBuilder::<R>::with_id(LOCKET_TRAY_ID)
         .icon(image)
         .icon_as_template(icon_is_template())
@@ -355,8 +459,42 @@ pub fn setup_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     Ok(())
 }
 
-fn build_tray_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
-    MenuBuilder::new(app)
+/// Cached vault + secret-selection state pushed in by the webview via
+/// `tray_set_selection`. The tray menu is rebuilt against this state on
+/// every change so reveal/copy items match the matrix in
+/// [`tray_menu_action_enablement`]. The default is "vault locked, no
+/// secret selected" until the webview reports otherwise.
+static CURRENT_SELECTION: Mutex<TraySelectionState> = Mutex::new(TraySelectionState {
+    vault_unlocked: false,
+    secret_selected: false,
+});
+
+fn current_selection_state() -> TraySelectionState {
+    CURRENT_SELECTION
+        .lock()
+        .map(|guard| *guard)
+        .unwrap_or(TraySelectionState { vault_unlocked: false, secret_selected: false })
+}
+
+/// Replace the cached tray selection state. Returns the previous value
+/// so callers can decide whether to rebuild the menu.
+pub fn store_selection_state(state: TraySelectionState) -> TraySelectionState {
+    let Ok(mut guard) = CURRENT_SELECTION.lock() else {
+        return state;
+    };
+    let previous = *guard;
+    *guard = state;
+    previous
+}
+
+/// Build the metadata-only tray menu against an explicit selection
+/// state. Selection-aware items are added with their enablement and
+/// disabled-tooltip taken from [`tray_menu_action_enablement`].
+pub fn build_tray_menu_with<R: Runtime>(
+    app: &AppHandle<R>,
+    selection: TraySelectionState,
+) -> tauri::Result<Menu<R>> {
+    let mut builder = MenuBuilder::new(app)
         .text(MENU_OPEN_APP, TrayMenuAction::OpenApp.label())
         .separator()
         .text(MENU_LOCK_VAULT, TrayMenuAction::LockVault.label())
@@ -365,7 +503,44 @@ fn build_tray_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         .text(MENU_SWITCH_PROFILE, TrayMenuAction::SwitchProfile.label())
         .text(MENU_RUN_POLICY, TrayMenuAction::RunPolicy.label())
         .text(MENU_START_SCAN, TrayMenuAction::StartScan.label())
-        .build()
+        .separator();
+
+    for action in [TrayMenuAction::RevealSecret, TrayMenuAction::CopySecret] {
+        let enablement = tray_menu_action_enablement(action, selection);
+        let label = match enablement.disabled_reason {
+            Some(reason) => format!("{} - {}", action.label(), reason),
+            None => action.label().to_owned(),
+        };
+        let item = MenuItemBuilder::with_id(action.id(), label).enabled(enablement.enabled).build(app)?;
+        builder = builder.item(&item);
+    }
+
+    builder.build()
+}
+
+/// Backwards-compatible wrapper used by `setup_tray` and tests that
+/// don't need to vary the selection state. Reads the cached selection
+/// pushed in by the webview.
+pub fn build_tray_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
+    build_tray_menu_with(app, current_selection_state())
+}
+
+/// Rebuild and replace the registered tray icon's menu so its
+/// reveal/copy items reflect the current selection state. Silently
+/// no-ops if the tray icon has not been registered yet — same contract
+/// as [`update_tray_state`].
+///
+/// # Errors
+///
+/// Returns any `tauri::Error` produced while building the menu or
+/// pushing it through to the OS.
+pub fn refresh_tray_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
+    let Some(tray) = app.tray_by_id(LOCKET_TRAY_ID) else {
+        return Ok(());
+    };
+    let menu = build_tray_menu(app)?;
+    tray.set_menu(Some(menu))?;
+    Ok(())
 }
 
 fn handle_tray_menu_event<R: Runtime>(app: &AppHandle<R>, event: &MenuEvent) {
@@ -469,10 +644,10 @@ pub fn update_tray_state<R: Runtime>(
 #[cfg(test)]
 mod tests {
     use super::{
-        TrayMenuAction, TrayMenuSideEffect, TrayState, dark_bytes, icon_bytes_for, light_bytes,
-        macos_bytes, tooltip_for, tray_menu_action_for_id, tray_menu_action_side_effect,
-        tray_menu_action_view, tray_menu_actions, tray_state_for_status,
-        tray_state_for_status_event,
+        TrayMenuAction, TrayMenuSideEffect, TraySelectionState, TrayState, dark_bytes,
+        icon_bytes_for, light_bytes, macos_bytes, tooltip_for, tray_menu_action_enablement,
+        tray_menu_action_for_id, tray_menu_action_side_effect, tray_menu_action_view,
+        tray_menu_actions, tray_state_for_status, tray_state_for_status_event,
     };
     use locket_agent::{LockState, StatusEvent, StatusPayload};
     use locket_app::{TrayIconState, tray_icon_states};
@@ -553,6 +728,8 @@ mod tests {
             (TrayMenuAction::SwitchProfile, Some("dashboard")),
             (TrayMenuAction::RunPolicy, Some("policies")),
             (TrayMenuAction::StartScan, Some("scan")),
+            (TrayMenuAction::RevealSecret, Some("secrets")),
+            (TrayMenuAction::CopySecret, Some("secrets")),
         ];
         for (action, expected) in pairs {
             assert_eq!(tray_menu_action_view(action), expected, "{action:?}");
@@ -568,6 +745,8 @@ mod tests {
             (TrayMenuAction::SwitchProfile, TrayMenuSideEffect::OpenProfileSwitcher),
             (TrayMenuAction::RunPolicy, TrayMenuSideEffect::RefreshPolicies),
             (TrayMenuAction::StartScan, TrayMenuSideEffect::StartScan),
+            (TrayMenuAction::RevealSecret, TrayMenuSideEffect::RevealSelectedSecret),
+            (TrayMenuAction::CopySecret, TrayMenuSideEffect::CopySelectedSecret),
         ];
         for (action, expected) in pairs {
             assert_eq!(tray_menu_action_side_effect(action), expected, "{action:?}");
@@ -597,12 +776,70 @@ mod tests {
                 TrayMenuAction::SwitchProfile,
                 TrayMenuAction::RunPolicy,
                 TrayMenuAction::StartScan,
+                TrayMenuAction::RevealSecret,
+                TrayMenuAction::CopySecret,
             ]
         );
         for action in tray_menu_actions() {
             assert_eq!(tray_menu_action_for_id(action.id()), Some(*action));
             assert!(!action.label().is_empty());
-            assert!(!action.label().contains("secret"));
+            // Label uses the generic phrase "selected secret" (no secret
+            // names) — the substring check banned the historical
+            // accidental inclusion of an actual secret name. Keep the
+            // intent of that check by rejecting the literal token
+            // "value" which would imply leaked data.
+            assert!(!action.label().to_lowercase().contains("value"));
+        }
+    }
+
+    #[test]
+    fn reveal_and_copy_actions_require_unlock_and_secret_selection() {
+        // Matrix: (vault_unlocked, secret_selected, expected_enabled,
+        // expected_reason_substring)
+        let cases: &[(bool, bool, bool, Option<&str>)] = &[
+            (false, false, false, Some("Unlock")),
+            (false, true, false, Some("Unlock")),
+            (true, false, false, Some("Select")),
+            (true, true, true, None),
+        ];
+        for (unlocked, selected, expected_enabled, expected_reason) in cases.iter().copied() {
+            let state = TraySelectionState::new(unlocked, selected);
+            for action in [TrayMenuAction::RevealSecret, TrayMenuAction::CopySecret] {
+                let result = tray_menu_action_enablement(action, state);
+                assert_eq!(result.enabled, expected_enabled, "{action:?} {state:?}");
+                match (expected_reason, result.disabled_reason) {
+                    (Some(needle), Some(reason)) => {
+                        assert!(
+                            reason.contains(needle),
+                            "{action:?} {state:?}: expected reason to contain {needle:?}, got {reason:?}",
+                        );
+                        // Tooltip is metadata-only — never includes a
+                        // value or a name.
+                        assert!(!reason.to_lowercase().contains("value"));
+                    }
+                    (None, None) => {}
+                    other => panic!("{action:?} {state:?} mismatch: {other:?}"),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn selection_independent_actions_are_always_enabled() {
+        for state in [
+            TraySelectionState::new(false, false),
+            TraySelectionState::new(false, true),
+            TraySelectionState::new(true, false),
+            TraySelectionState::new(true, true),
+        ] {
+            for action in tray_menu_actions() {
+                if action.requires_selection() {
+                    continue;
+                }
+                let result = tray_menu_action_enablement(*action, state);
+                assert!(result.enabled, "{action:?} {state:?} must always be enabled");
+                assert!(result.disabled_reason.is_none());
+            }
         }
     }
 

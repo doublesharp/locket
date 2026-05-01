@@ -1,9 +1,12 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
+import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 
 import AgentUnavailableBanner from './components/AgentUnavailableBanner.vue';
+import RevealModal from './components/RevealModal.vue';
 import {
+  copySecret,
   listAudit,
   listDeviceMembers,
   listPolicies,
@@ -12,6 +15,7 @@ import {
   listVersions,
   lockVault,
   readConfig,
+  reveal as revealAgent,
   scan as scanKnownValues,
   writeConfig,
   verifyAudit,
@@ -103,6 +107,9 @@ function formatLastSeen(iso: string): string {
 }
 
 const currentView = ref<ViewKey>('dashboard');
+const revealModal = ref<InstanceType<typeof RevealModal> | null>(null);
+const copyError = ref<string | null>(null);
+const revealError = ref<string | null>(null);
 let unlistenTrayMenu: UnlistenFn | null = null;
 
 type TrayMenuAction =
@@ -111,7 +118,9 @@ type TrayMenuAction =
   | 'unlock-vault'
   | 'switch-profile'
   | 'run-policy'
-  | 'start-scan';
+  | 'start-scan'
+  | 'reveal-secret'
+  | 'copy-secret';
 
 const navItems: ReadonlyArray<{ key: ViewKey; label: string }> = [
   { key: 'dashboard', label: 'Dashboard' },
@@ -386,13 +395,129 @@ async function handleTrayMenuAction(action: TrayMenuAction): Promise<void> {
       currentView.value = 'scan';
       await triggerRescan();
       break;
+    case 'reveal-secret':
+      currentView.value = 'secrets';
+      await handleRevealSelectedSecret();
+      break;
+    case 'copy-secret':
+      currentView.value = 'secrets';
+      await handleCopySelectedSecret();
+      break;
     default:
       break;
   }
 }
 
-function selectSecret(): void {
+const selectedSecret = ref<SecretRowMeta | null>(null);
+
+function selectSecret(row?: SecretRowMeta): void {
+  if (row !== undefined) {
+    selectedSecret.value = row;
+  }
   currentView.value = 'versions';
+}
+
+/** Generic, name-free label for the reveal modal heading. */
+function secretLabel(row: SecretRowMeta | null, redactNames: boolean): string {
+  if (row === null) {
+    return 'Secret';
+  }
+  if (redactNames) {
+    return row.alias ?? 'Secret';
+  }
+  return row.name;
+}
+
+async function pushTraySelection(): Promise<void> {
+  if (!isTauri()) {
+    return;
+  }
+  const selection = {
+    vault_unlocked: status.value?.lock_state === 'unlocked',
+    secret_selected: selectedSecret.value !== null,
+  };
+  try {
+    await invoke<void>('tray_set_selection', { selection });
+  } catch {
+    // Tray refresh failures are local-only; the next change will retry.
+  }
+}
+
+watch(
+  [
+    () => status.value?.lock_state,
+    selectedSecret,
+  ],
+  () => {
+    void pushTraySelection();
+  },
+  { immediate: true },
+);
+
+async function handleRevealSelectedSecret(): Promise<void> {
+  revealError.value = null;
+  const target = selectedSecret.value;
+  if (target === null) {
+    revealError.value = 'Select a secret in the list before revealing.';
+    return;
+  }
+  const profileId = status.value?.profile_name;
+  if (profileId === null || profileId === undefined) {
+    revealError.value = 'Active profile unavailable.';
+    return;
+  }
+  const result = await revealAgent({
+    secret_name: target.name,
+    profile_id: profileId,
+  });
+  if (!result.ok) {
+    revealError.value = revealErrorLabel(result.error);
+    return;
+  }
+  revealModal.value?.show({
+    secretLabel: secretLabel(target, settings.value.privacyRedactNames),
+    value: result.value.value,
+    ttlSeconds: result.value.ttl_seconds,
+  });
+}
+
+function revealErrorLabel(err: AgentClientError): string {
+  switch (err.kind) {
+    case 'unavailable':
+      return 'Agent unavailable.';
+    case 'protocol':
+      return 'Reveal request failed.';
+    case 'rejected':
+      return err.code;
+    default:
+      return 'Reveal request failed.';
+  }
+}
+
+async function handleCopySelectedSecret(): Promise<void> {
+  copyError.value = null;
+  const target = selectedSecret.value;
+  if (target === null) {
+    copyError.value = 'Select a secret in the list before copying.';
+    return;
+  }
+  const profileId = status.value?.profile_name;
+  if (profileId === null || profileId === undefined) {
+    copyError.value = 'Active profile unavailable.';
+    return;
+  }
+  const result = await copySecret({
+    secret_name: target.name,
+    profile_id: profileId,
+    project_id: status.value?.project_id ?? undefined,
+  });
+  if (!result.ok) {
+    copyError.value = revealErrorLabel(result.error);
+    return;
+  }
+  if (result.value.kind === 'unsupported') {
+    copyError.value = `Clipboard unavailable: ${result.value.unsupported_reason}.`;
+  }
 }
 
 function triggerVerify(): void {
@@ -522,6 +647,7 @@ async function refreshSecrets(): Promise<void> {
 }
 
 watch(secretsRequest, () => {
+  selectedSecret.value = null;
   void refreshSecrets();
 });
 
@@ -1077,7 +1203,12 @@ onUnmounted(() => {
         :error-message="settingsError"
         @update="handleSettingsPatch"
       />
+
+      <p v-if="revealError" role="alert" class="shell__notice">{{ revealError }}</p>
+      <p v-if="copyError" role="alert" class="shell__notice">{{ copyError }}</p>
     </main>
+
+    <RevealModal ref="revealModal" />
   </div>
 </template>
 
@@ -1260,5 +1391,15 @@ html,
   flex-direction: column;
   gap: 1.5rem;
   overflow: auto;
+}
+
+.shell__notice {
+  margin: 0;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid rgba(248, 215, 122, 0.32);
+  background: rgba(248, 215, 122, 0.08);
+  color: #f8d77a;
+  border-radius: 0.375rem;
+  font-size: 0.85rem;
 }
 </style>

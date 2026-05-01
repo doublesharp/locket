@@ -34,10 +34,11 @@ pub use clipboard::{
     ClipboardSession, clipboard_platform, decide_clear,
 };
 pub use tray::{
-    LOCKET_TRAY_ID, TRAY_MENU_ACTION_EVENT, TrayMenuAction, TrayMenuSideEffect, TrayState,
-    icon_bytes_for, setup_tray, tooltip_for, tray_menu_action_for_id, tray_menu_action_side_effect,
-    tray_menu_action_view, tray_menu_actions, tray_state_for_status, tray_state_for_status_event,
-    update_tray_state,
+    LOCKET_TRAY_ID, TRAY_MENU_ACTION_EVENT, TrayMenuAction, TrayMenuItemEnablement,
+    TrayMenuSideEffect, TraySelectionState, TrayState, icon_bytes_for, refresh_tray_menu,
+    setup_tray, store_selection_state, tooltip_for, tray_menu_action_enablement,
+    tray_menu_action_for_id, tray_menu_action_side_effect, tray_menu_action_view,
+    tray_menu_actions, tray_state_for_status, tray_state_for_status_event, update_tray_state,
 };
 
 const CONFIG_TOML: &str = "config.toml";
@@ -658,6 +659,26 @@ async fn tray_set_state(app: tauri::AppHandle, state: TrayState) -> Result<(), S
     tray::update_tray_state(&app, state.into()).map_err(|error| error.to_string())
 }
 
+/// Tauri command pushing the current vault + secret-selection state
+/// into the tray module. The webview invokes this every time the
+/// agent's lock state changes or the user picks a different row in the
+/// metadata list, so the tray's reveal/copy items stay in sync with
+/// [`tray_menu_action_enablement`].
+///
+/// Carries booleans only — never a secret name, value, or id — so the
+/// tray surface remains metadata-only per the desktop spec.
+#[tauri::command]
+async fn tray_set_selection(
+    app: tauri::AppHandle,
+    selection: TraySelectionState,
+) -> Result<(), String> {
+    let previous = tray::store_selection_state(selection);
+    if previous == selection {
+        return Ok(());
+    }
+    tray::refresh_tray_menu(&app).map_err(|error| error.to_string())
+}
+
 /// Run the Locket desktop application.
 ///
 /// Builds the Tauri 2 app, registers the scoped IPC handlers, sets up
@@ -694,6 +715,7 @@ pub fn run() -> tauri::Result<()> {
             agent_list_versions,
             agent_copy_secret,
             tray_set_state,
+            tray_set_selection,
         ])
         .setup(|app| {
             #[cfg(debug_assertions)]

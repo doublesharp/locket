@@ -11,9 +11,27 @@ import {
   RevealModalModel,
   type RevealModalEvent,
   type RevealModalState,
+  type RevealRequest,
 } from '../reveal/model';
 
 const model = new RevealModalModel();
+
+defineExpose({
+  /**
+   * Imperative entry point used by App.vue to drive the reveal flow
+   * from a tray menu action. The component still owns the modal state
+   * and TTL countdown — this just forwards the resolved value into the
+   * pure model.
+   */
+  show(request: RevealRequest): void {
+    model.show(request);
+  },
+  /** Manually scrub the displayed value (e.g. on view switch). */
+  scrub(reason: 'manual-scrub' | 'component-unmount' = 'manual-scrub'): void {
+    model.scrub(reason);
+  },
+});
+
 const state = ref<RevealModalState>(model.snapshot());
 const remaining = ref<number>(0);
 

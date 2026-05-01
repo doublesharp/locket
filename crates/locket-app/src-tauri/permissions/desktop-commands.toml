@@ -25,5 +25,6 @@ commands.allow = [
   "agent_list_versions",
   "agent_copy_secret",
   "tray_set_state",
+  "tray_set_selection",
 ]
 commands.deny = []
