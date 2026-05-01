@@ -38,6 +38,10 @@ todo = "deny"
 unimplemented = "deny"
 unwrap_used = "deny"
 
+[features]
+default = []
+linux-fido2 = []
+
 [dependencies]
 data-encoding = { workspace = true }
 hmac = { workspace = true }

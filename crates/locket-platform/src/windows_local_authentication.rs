@@ -250,6 +250,15 @@ mod tests {
 
     #[cfg(target_os = "windows")]
     #[test]
+    #[ignore = "requires an enrolled Windows Hello user and an interactive desktop prompt"]
+    fn real_host_windows_hello_user_consent() {
+        with_test_override(None, || {
+            assert!(matches!(evaluate_local_user("Validate Locket Windows Hello"), Ok(true)));
+        });
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
     fn windows_result_mapping_covers_user_rejection_and_unavailable() {
         use windows::Security::Credentials::UI::{
             UserConsentVerificationResult, UserConsentVerifierAvailability,

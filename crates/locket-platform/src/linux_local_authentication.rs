@@ -9,16 +9,19 @@
 //!      Secret Service feature enabled. A locked keyring should trigger
 //!      the desktop unlock prompt; a headless or missing D-Bus service
 //!      reports [`LocalAuthError::Unavailable`].
-//!   2. FIDO2 / `libfido2-sys` user-presence remains a targeted follow-up
-//!      because no FIDO2 binding is present in the workspace dependency
-//!      graph today.
+//!   2. If Secret Service is unavailable, fall through to the
+//!      `linux-fido2` feature-gated FIDO2 user-presence scaffold. The
+//!      feature is intentionally dependency-free until the real
+//!      `libfido2-sys` ceremony is validated on a Linux host with a
+//!      physical key.
 //!
 //! This file contains no `unsafe`. The `unsafe_code = "deny"` lint at
 //! the crate level is therefore upheld here without any local exception.
 //!
-//! Tests honor the `LOCKET_TEST_LOCAL_AUTH=allow|deny|unavailable`
+//! Tests honor the
+//! `LOCKET_TEST_LOCAL_AUTH=allow|deny|unavailable|fido2-allow|fido2-deny|fido2-unavailable`
 //! environment variable so callers can drive the wrapper
-//! deterministically without invoking Secret Service.
+//! deterministically without invoking Secret Service or a hardware key.
 
 use std::sync::mpsc;
 use std::time::Duration;
@@ -70,29 +73,53 @@ pub enum LocalAuthError {
 /// Test-only override applied before any backend call.
 fn test_override() -> Option<Result<bool, LocalAuthError>> {
     let value = std::env::var(TEST_OVERRIDE_ENV).ok()?;
-    Some(match value.as_str() {
-        "allow" => Ok(true),
-        "deny" => Ok(false),
-        "unavailable" => Err(LocalAuthError::Unavailable("test override".to_owned())),
-        "timeout" => Err(LocalAuthError::Timeout),
-        other => Err(LocalAuthError::Framework(format!(
+    match value.as_str() {
+        "allow" => Some(Ok(true)),
+        "deny" => Some(Ok(false)),
+        "unavailable" => Some(Err(LocalAuthError::Unavailable("test override".to_owned()))),
+        "timeout" => Some(Err(LocalAuthError::Timeout)),
+        "fido2-allow" | "fido2-deny" | "fido2-unavailable" => None,
+        other => Some(Err(LocalAuthError::Framework(format!(
             "unrecognized {TEST_OVERRIDE_ENV} override: {other}"
-        ))),
-    })
+        )))),
+    }
+}
+
+fn secret_service_test_override() -> Option<Result<bool, LocalAuthError>> {
+    let value = std::env::var(TEST_OVERRIDE_ENV).ok()?;
+    match value.as_str() {
+        "fido2-allow" | "fido2-deny" | "fido2-unavailable" => {
+            Some(Err(LocalAuthError::Unavailable("test Secret Service override".to_owned())))
+        }
+        _ => None,
+    }
+}
+
+fn fido2_test_override() -> Option<Result<bool, LocalAuthError>> {
+    let value = std::env::var(TEST_OVERRIDE_ENV).ok()?;
+    match value.as_str() {
+        "fido2-allow" => Some(Ok(true)),
+        "fido2-deny" => Some(Ok(false)),
+        "fido2-unavailable" => {
+            Some(Err(LocalAuthError::Unavailable("test FIDO2 override".to_owned())))
+        }
+        _ => None,
+    }
 }
 
 /// Evaluate a local user-verification ceremony on Linux.
 ///
-/// This performs a Secret Service challenge through the platform
+/// This first performs a Secret Service challenge through the platform
 /// keyring. It creates a short-lived random credential, reads it back,
 /// and deletes it. If Secret Service is locked, the desktop environment
 /// may prompt the user to unlock it before the read/write completes.
+/// If Secret Service is unavailable, the FIDO2 fallback path is tried.
 ///
 /// # Errors
 ///
 /// Returns [`LocalAuthError::EmptyReason`] when `reason` is blank, and
-/// [`LocalAuthError::Unavailable`] when Secret Service is not available
-/// to this process or the test override selected `unavailable`.
+/// [`LocalAuthError::Unavailable`] when neither Secret Service nor the
+/// FIDO2 fallback is available to this process.
 pub fn evaluate_local_user(reason: &str) -> Result<bool, LocalAuthError> {
     if reason.trim().is_empty() {
         return Err(LocalAuthError::EmptyReason);
@@ -102,10 +129,25 @@ pub fn evaluate_local_user(reason: &str) -> Result<bool, LocalAuthError> {
         return outcome;
     }
 
-    evaluate_local_user_via_secret_service()
+    match evaluate_local_user_via_secret_service() {
+        Err(LocalAuthError::Unavailable(secret_service_reason)) => {
+            evaluate_local_user_via_fido2(reason).map_err(|error| match error {
+                LocalAuthError::Unavailable(fido2_reason) => LocalAuthError::Unavailable(format!(
+                    "Secret Service unavailable ({secret_service_reason}); \
+                     FIDO2 fallback unavailable ({fido2_reason})"
+                )),
+                other => other,
+            })
+        }
+        result => result,
+    }
 }
 
 fn evaluate_local_user_via_secret_service() -> Result<bool, LocalAuthError> {
+    if let Some(outcome) = secret_service_test_override() {
+        return outcome;
+    }
+
     let (tx, rx) = mpsc::channel();
     let _join = std::thread::Builder::new()
         .name("locket-linux-local-auth".to_owned())
@@ -140,6 +182,30 @@ fn run_secret_service_challenge() -> Result<bool, LocalAuthError> {
     }
 
     Ok(read_back == challenge)
+}
+
+fn evaluate_local_user_via_fido2(reason: &str) -> Result<bool, LocalAuthError> {
+    if let Some(outcome) = fido2_test_override() {
+        return outcome;
+    }
+
+    evaluate_local_user_via_libfido2(reason)
+}
+
+#[cfg(feature = "linux-fido2")]
+fn evaluate_local_user_via_libfido2(reason: &str) -> Result<bool, LocalAuthError> {
+    let _ = reason;
+    Err(LocalAuthError::Unavailable(
+        "linux-fido2 feature is scaffold-only until the libfido2-sys ceremony \
+         is validated on a Linux host with a physical security key"
+            .to_owned(),
+    ))
+}
+
+#[cfg(not(feature = "linux-fido2"))]
+fn evaluate_local_user_via_libfido2(reason: &str) -> Result<bool, LocalAuthError> {
+    let _ = reason;
+    Err(LocalAuthError::Unavailable("linux-fido2 feature is not enabled in this build".to_owned()))
 }
 
 fn map_keyring_entry_error(error: KeyringError) -> LocalAuthError {
@@ -247,9 +313,44 @@ mod tests {
     }
 
     #[test]
+    fn fido2_fallback_allow_runs_after_secret_service_unavailable() {
+        with_test_override(Some("fido2-allow"), || {
+            assert!(matches!(evaluate_local_user("Unlock vault"), Ok(true)));
+        });
+    }
+
+    #[test]
+    fn fido2_fallback_deny_runs_after_secret_service_unavailable() {
+        with_test_override(Some("fido2-deny"), || {
+            assert!(matches!(evaluate_local_user("Unlock vault"), Ok(false)));
+        });
+    }
+
+    #[test]
+    fn fido2_fallback_unavailable_preserves_both_backend_reasons() {
+        with_test_override(Some("fido2-unavailable"), || {
+            let result = evaluate_local_user("Unlock vault");
+            assert!(matches!(
+                result,
+                Err(LocalAuthError::Unavailable(reason))
+                    if reason.contains("Secret Service unavailable")
+                        && reason.contains("FIDO2 fallback unavailable")
+            ));
+        });
+    }
+
+    #[test]
     fn blank_reason_is_rejected_before_backend() {
         with_test_override(None, || {
             assert!(matches!(evaluate_local_user("   "), Err(LocalAuthError::EmptyReason)));
+        });
+    }
+
+    #[test]
+    #[ignore = "requires a Linux desktop session with Secret Service and a user prompt"]
+    fn real_host_secret_service_presence_challenge() {
+        with_test_override(None, || {
+            assert!(matches!(evaluate_local_user("Validate Locket Secret Service"), Ok(true)));
         });
     }
 }
