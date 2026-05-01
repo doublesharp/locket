@@ -687,6 +687,7 @@ env_mode = "strict"
         &locket_exec::EnvMap::new(),
         project_root.path(),
         &command,
+        None,
     )?;
 
     assert_eq!(external_env.len(), 4);
@@ -721,6 +722,7 @@ env_mode = "strict"
         &locket_exec::EnvMap::new(),
         project_root.path(),
         &command,
+        None,
     );
 
     let Err(error) = result else {
@@ -755,6 +757,7 @@ env_mode = "strict"
         &locket_exec::EnvMap::new(),
         project_root.path(),
         &command,
+        None,
     );
 
     let Err(error) = result else {
@@ -786,6 +789,7 @@ env_mode = "strict"
         &locket_exec::EnvMap::new(),
         project_root.path(),
         &command,
+        None,
     );
 
     let Err(error) = result else {
@@ -797,8 +801,12 @@ env_mode = "strict"
 }
 
 #[test]
-fn ide_external_env_source_returns_typed_ide_env_session_unavailable()
+fn ide_external_env_source_without_agent_context_returns_typed_error()
 -> Result<(), Box<dyn std::error::Error>> {
+    // The `env` and `env inspect` paths call resolve_policy_external_env
+    // without bringing an agent socket; they must still surface a typed
+    // IdeEnvSessionUnavailable so the operator is told to switch to
+    // `locket run`.
     let document = locket_core::PolicyDocument::from_toml_str(
         r#"
 [commands.env_check]
@@ -818,7 +826,7 @@ env_mode = "strict"
     );
 
     let Err(error) = result else {
-        return Err("ide external env source must fail until handler is wired".into());
+        return Err("ide external env source must fail without agent context".into());
     };
     assert_eq!(error.exit_code(), locket_core::LocketError::IdeEnvSessionUnavailable.exit_code());
     assert_eq!(error.exit_code(), 80);
@@ -828,8 +836,8 @@ env_mode = "strict"
         "error must be typed, got: {message}"
     );
     assert!(
-        message.contains("agent IDE env-session handler not yet implemented"),
-        "error must carry the reason, got: {message}"
+        message.contains("requires `locket run`") || message.contains("LOCKET_IDE_ENV_SESSION"),
+        "error must carry an actionable reason, got: {message}"
     );
     Ok(())
 }

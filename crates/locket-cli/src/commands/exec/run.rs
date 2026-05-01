@@ -96,7 +96,8 @@ struct PreparedPolicyExecution {
     prepared: locket_exec::PreparedExecution,
 }
 
-struct AgentPolicyAccess {
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) struct AgentPolicyAccess {
     resolve_grant_id: Option<String>,
     binding: locket_agent::GrantBinding,
 }
@@ -197,7 +198,36 @@ fn prepare_policy_execution(
     let parent_env = std::env::vars()
         .map(|(name, value)| (name, locket_exec::env_value(value)))
         .collect::<locket_exec::EnvMap>();
-    let external_env = resolve_policy_external_env(policy, &parent_env, &resolved.root)?;
+
+    // The agent must be live before we resolve the IDE external-env
+    // source (it talks to the agent for both the session map and the
+    // per-name `ResolveReference`). Detect that need up front so the
+    // unlock + grant dance happens before external-env resolution
+    // rather than after.
+    let has_ide_source = policy_has_ide_source(policy);
+    let agent_required =
+        policy.require_agent || policy_command_has_lk_references(policy) || has_ide_source;
+    let agent_access = if agent_required {
+        Some(prepare_agent_policy_access(context, resolved, profile, policy, &selections)?)
+    } else {
+        None
+    };
+    let ide_ctx = agent_access.as_ref().filter(|_| has_ide_source).map(|access| {
+        IdeEnvSourceContext {
+            context,
+            resolved,
+            profile,
+            policy,
+            agent_access: access,
+        }
+    });
+    let external_env = resolve_policy_external_env_with_compose_config_command(
+        policy,
+        &parent_env,
+        &resolved.root,
+        &ComposeConfigCommand::docker(),
+        ide_ctx.as_ref(),
+    )?;
     let missing_required = missing_required_secret_names(&selections, &external_env);
     if !missing_required.is_empty() {
         return Err(invalid_policy_error(format!(
@@ -206,12 +236,6 @@ fn prepare_policy_execution(
         )));
     }
 
-    let agent_required = policy.require_agent || policy_command_has_lk_references(policy);
-    let agent_access = if agent_required {
-        Some(prepare_agent_policy_access(context, resolved, profile, policy, &selections)?)
-    } else {
-        None
-    };
     let locket_env = if let Some(agent_access) = agent_access.as_ref() {
         policy_locket_env_via_agent(context, resolved, profile, policy, &selections, agent_access)?
     } else {
@@ -274,6 +298,7 @@ pub fn resolve_policy_external_env(
         parent_env,
         project_root,
         &ComposeConfigCommand::docker(),
+        None,
     )
 }
 
@@ -295,12 +320,28 @@ impl<'a> ComposeConfigCommand<'a> {
     }
 }
 
+/// Inputs needed to resolve the `ide` external env source against the
+/// running agent. `None` is passed by the `env` and `env inspect`
+/// commands, which intentionally do not bring an agent socket into the
+/// picture; they keep returning the typed `IdeEnvSessionUnavailable`
+/// error so the caller is reminded to run the policy through `locket
+/// run`.
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) struct IdeEnvSourceContext<'a> {
+    context: &'a RuntimeContext,
+    resolved: &'a ResolvedProject,
+    profile: &'a ProfileRecord,
+    policy: &'a CommandPolicy,
+    agent_access: &'a AgentPolicyAccess,
+}
+
 #[allow(clippy::redundant_pub_crate)]
 pub(crate) fn resolve_policy_external_env_with_compose_config_command(
     policy: &CommandPolicy,
     parent_env: &locket_exec::EnvMap,
     project_root: &Path,
     compose_config_command: &ComposeConfigCommand<'_>,
+    ide: Option<&IdeEnvSourceContext<'_>>,
 ) -> Result<locket_exec::EnvMap, CliError> {
     let mut external_env = locket_exec::EnvMap::new();
     for source in &policy.external_env_sources {
@@ -323,13 +364,107 @@ pub(crate) fn resolve_policy_external_env_with_compose_config_command(
                 )?);
             }
             ExternalEnvSource::Ide => {
-                return Err(ide_env_session_unavailable_error(
-                    "agent IDE env-session handler not yet implemented",
-                ));
+                let Some(ide) = ide else {
+                    return Err(ide_env_session_unavailable_error(
+                        "agent IDE env-session resolution requires `locket run`",
+                    ));
+                };
+                external_env.extend(resolve_external_env_ide(ide, parent_env)?);
             }
         }
     }
     Ok(external_env)
+}
+
+fn resolve_external_env_ide(
+    ide: &IdeEnvSourceContext<'_>,
+    parent_env: &locket_exec::EnvMap,
+) -> Result<locket_exec::EnvMap, CliError> {
+    // Prefer the parent_env snapshot the caller already collected so
+    // tests can drive the consumer with a deterministic session id even
+    // when the live process environment is empty.
+    let session_id = parent_env
+        .get("LOCKET_IDE_ENV_SESSION")
+        .map(|value| value.as_str().to_owned())
+        .or_else(|| std::env::var("LOCKET_IDE_ENV_SESSION").ok())
+        .ok_or_else(|| ide_env_session_unavailable_error("LOCKET_IDE_ENV_SESSION not set"))?;
+    resolve_external_env_ide_with_session_id(ide, &session_id)
+}
+
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) fn resolve_external_env_ide_with_session_id(
+    ide: &IdeEnvSourceContext<'_>,
+    session_id: &str,
+) -> Result<locket_exec::EnvMap, CliError> {
+    if session_id.is_empty() {
+        return Err(ide_env_session_unavailable_error("LOCKET_IDE_ENV_SESSION not set"));
+    }
+    let request = locket_agent::IdeEnvSessionRequest {
+        session_id: session_id.to_owned(),
+        project_id: ide.resolved.config.project_id.to_string(),
+    };
+    let response: locket_agent::IdeEnvSessionResponse = agent_invoke(
+        ide.context,
+        locket_agent::AgentMethod::IdeEnvSession,
+        &request,
+        "look up IDE env session",
+    )?;
+    let allowed_names: BTreeSet<&str> =
+        ide.policy.allowed_secrets.iter().map(SecretName::as_str).collect();
+    let mut env = locket_exec::EnvMap::new();
+    for name in response.env_names {
+        if !allowed_names.contains(name.as_str()) {
+            // Names not on the policy allow-list never enter the env
+            // map. The agent's session map carries IDE-side intent, but
+            // the policy is the final authority.
+            continue;
+        }
+        let reference = format!("lk://{}/{}", ide.profile.name, name);
+        let resolved = resolve_reference_via_agent(
+            ide.context,
+            ide.resolved,
+            ide.profile,
+            ide.policy,
+            ide.agent_access,
+            &reference,
+        )?;
+        env.insert(name, locket_exec::env_value(resolved.value));
+    }
+    Ok(env)
+}
+
+/// Test-only constructor for an `IdeEnvSourceContext`. Exposed so unit
+/// tests can drive `resolve_external_env_ide_with_session_id` against a
+/// real in-process agent without going through the full `locket run`
+/// pipeline.
+#[cfg(test)]
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) const fn ide_env_source_context_for_tests<'a>(
+    context: &'a RuntimeContext,
+    resolved: &'a ResolvedProject,
+    profile: &'a ProfileRecord,
+    policy: &'a CommandPolicy,
+    agent_access: &'a AgentPolicyAccess,
+) -> IdeEnvSourceContext<'a> {
+    IdeEnvSourceContext { context, resolved, profile, policy, agent_access }
+}
+
+/// Test-only helper that drives the same agent unlock and grant
+/// sequence the production `prepare_policy_execution` path uses.
+#[cfg(test)]
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) fn prepare_agent_policy_access_for_tests(
+    context: &RuntimeContext,
+    resolved: &ResolvedProject,
+    profile: &ProfileRecord,
+    policy: &CommandPolicy,
+) -> Result<AgentPolicyAccess, CliError> {
+    // Selections drive the "needs reference grant" decision; we always
+    // want a ResolveReference grant for IDE-source tests, so synthesize
+    // a placeholder selection list with one entry. Actual policy
+    // selections are not consulted during the grant request — the
+    // helper only checks `selected.is_some()` to decide.
+    prepare_agent_policy_access(context, resolved, profile, policy, &[])
 }
 
 fn resolve_external_env_compose(
@@ -589,8 +724,9 @@ fn prepare_agent_policy_access(
         locket_agent::GrantAction::RunPolicy,
         &binding,
     )?;
-    let needs_reference_grant =
-        policy_command_has_lk_references(policy) || selections.iter().any(|s| s.selected.is_some());
+    let needs_reference_grant = policy_command_has_lk_references(policy)
+        || selections.iter().any(|s| s.selected.is_some())
+        || policy_has_ide_source(policy);
     let resolve_grant_id = if needs_reference_grant {
         Some(
             request_agent_grant(
@@ -733,6 +869,13 @@ fn resolve_policy_argument_reference(
     let response =
         resolve_reference_via_agent(context, resolved, profile, policy, agent_access, argument)?;
     Ok(response.value)
+}
+
+fn policy_has_ide_source(policy: &CommandPolicy) -> bool {
+    policy
+        .external_env_sources
+        .iter()
+        .any(|source| matches!(source, ExternalEnvSource::Ide))
 }
 
 fn policy_command_has_lk_references(policy: &CommandPolicy) -> bool {

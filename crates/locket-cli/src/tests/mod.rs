@@ -413,6 +413,7 @@ mod e2e_policy_run;
 mod exec;
 mod grants_agent_diag;
 mod history_purge_import;
+mod ide_env_consumer;
 mod init_template_device;
 mod leak_canary;
 mod mutation_expired_versions;
