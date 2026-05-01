@@ -258,6 +258,8 @@ Slices that have merged to `main` and verified. Open work tracked in
   now require fresh local user verification.
 - [x] device-force-rekey-atomic: Forced local device rekey now records the replacement
   lifecycle in one transaction.
+- [x] invite-accept-display: Team invite acceptance now fails closed with a recorded
+  denial when issuer confirmation does not match.
 
 ## Full Spec Coverage TODO — App/UI
 
