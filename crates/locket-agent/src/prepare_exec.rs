@@ -3,26 +3,64 @@
 //! `PrepareExec` resolves a saved command policy into the precise set of
 //! environment variable names the trusted CLI execution path is
 //! authorized to inject, plus a TTL hint for the resulting grant. See
-//! `docs/specs/agent.md` and `docs/specs/runtime.md`.
+//! `docs/specs/agent.md:91-92` and `docs/specs/runtime.md:5-122` for
+//! the contract this handler satisfies.
 //!
-//! The handler here is a stub. The policy registry, command-kind
-//! classifier, and grant issuer are not yet wired through the socket
-//! dispatch path, so every call returns a successful but empty
-//! response: no env vars allowed, `command_kind = "argv"` (the default
-//! shape used by saved policies), and `ttl_seconds = 0`. The desktop
-//! policy editor uses this stub to render a "no env vars yet" preview
-//! without erroring while the rest of the pipeline catches up.
+//! The handler enforces unlock + policy lookup, derives the allowed
+//! env-name set from the policy's normalized `allowed_secrets` union,
+//! picks the `command_kind` from the policy's command spec, and issues
+//! a live [`GrantAction::PrepareExec`] grant in the in-memory grant
+//! table. The grant id is recorded internally only; today's wire shape
+//! does not surface it because the runtime crate has not been wired
+//! through to consume it yet — see the `TODO(prepare-exec-grant-return)`
+//! comment in [`handle_prepare_exec`] for the follow-up.
+//!
+//! No audit row is emitted at the prepare-exec stage. The data-model
+//! spec (`docs/specs/data-model.md:296-300`) classifies `PrepareExec`
+//! as agent-internal, with the externally observable audit row written
+//! at the eventual `RUN`/`EXEC` step. The audit ledger therefore
+//! intentionally remains untouched here.
 
+use std::process;
+
+use locket_core::LocketError;
 use serde::{Deserialize, Serialize};
 
 use crate::envelope::{ErrorEnvelope, RequestEnvelope, ResponseEnvelope, SuccessEnvelope};
+use crate::grant::{GrantAction, GrantBinding, RequestGrantPayload};
+use crate::policies::CommandPolicySnapshot;
 
-/// Default `command_kind` value emitted by the stub handler.
+/// Default `command_kind` value emitted when the looked-up policy is
+/// argv-shaped.
 ///
-/// Saved policies always describe an argv-style invocation today; the
-/// other supported value is `"shell"` and is reserved for future slices
-/// that wrap the command in a shell pipeline.
+/// Saved policies most often describe an argv-style invocation; the
+/// other supported value is `"shell"`, used for explicit shell
+/// pipelines.
 const DEFAULT_COMMAND_KIND: &str = "argv";
+
+/// Wire `error` value used when the vault is locked.
+const ERROR_UNLOCK_REQUIRED: &str = "UnlockRequired";
+/// Wire `error` value used when the named policy cannot be resolved.
+const ERROR_POLICY_NOT_FOUND: &str = "PolicyNotFound";
+/// Wire `error` value used for transient grant id generation failures.
+const ERROR_PROTOCOL: &str = "ProtocolError";
+
+/// Redacted denial message returned to clients when the vault is
+/// locked.
+const UNLOCK_REQUIRED_MESSAGE: &str =
+    "vault is locked; unlock required before preparing a command policy";
+/// Redacted denial message returned to clients when the policy is
+/// missing.
+const POLICY_NOT_FOUND_MESSAGE: &str = "command policy not found";
+
+/// Fallback TTL for prepare-exec grants when the policy itself does
+/// not declare an explicit value. Saved policies always carry a TTL
+/// today, so this constant is only consulted if the in-memory snapshot
+/// reports `0`.
+// TODO(policy-ttls): centralize prepare-exec/run-policy TTL fallbacks
+// in the policy crate so the agent does not have to second-guess
+// snapshots that report `ttl_seconds = 0`.
+const DEFAULT_PREPARE_EXEC_TTL_SECONDS: u64 = 60;
 
 /// Request payload for `PrepareExec`.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -31,6 +69,14 @@ pub struct PrepareExecRequest {
     pub policy_name: String,
     /// Profile id whose secrets the policy should resolve against.
     pub profile_id: String,
+    /// Project id whose policy registry should be consulted. Optional
+    /// for backwards compatibility with stub clients; future callers
+    /// should always supply it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+    /// Caller's process binding for the issued grant.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub binding: Option<GrantBinding>,
 }
 
 /// Response payload for `PrepareExec`.
@@ -45,42 +91,150 @@ pub struct PrepareExecResponse {
     pub ttl_seconds: u32,
 }
 
-/// Stub handler for `PrepareExec`.
+/// Handler for `PrepareExec`.
 ///
-/// Always returns a successful response with an empty allow-list, an
-/// `argv` command kind, and a zero TTL. Future slices will replace the
-/// body with a real policy lookup that emits the actual env names and
-/// a non-zero TTL based on the policy spec.
-pub fn handle_prepare_exec(request: &RequestEnvelope) -> ResponseEnvelope {
+/// Looks up the named policy for the active project, validates that
+/// the agent is unlocked, issues a live grant for
+/// [`GrantAction::PrepareExec`], and returns the policy's allowed env
+/// names plus the grant TTL. The grant id is currently retained
+/// in-memory only; see the TODO below for the planned wire field.
+pub async fn handle_prepare_exec(
+    request: &RequestEnvelope,
+    state: &crate::server::AgentSocketState,
+    now_unix_nanos: i128,
+) -> ResponseEnvelope {
     let Ok(typed) = serde_json::from_value::<PrepareExecRequest>(request.payload.clone()) else {
-        return ResponseEnvelope::Error(ErrorEnvelope::new(
-            request.id.clone(),
-            "ProtocolError",
-            "invalid PrepareExec payload",
-            false,
-        ));
+        return protocol_error(request, "invalid PrepareExec payload");
     };
-    // The typed payload is intentionally not consulted yet; binding it
-    // ensures the wire fields are recognized so the future handler does
-    // not silently break older clients.
-    let _ = typed;
+    let Some(project_id) = typed.project_id.as_deref() else {
+        return protocol_error(request, "PrepareExec requires project_id");
+    };
+
+    // Look up the named policy from the in-memory registry. Cloning
+    // the snapshot lets us drop the lock before we touch the unlock
+    // cache and grant table.
+    let policy = {
+        let policies = state.command_policies.lock().await;
+        find_policy(&policies, project_id, &typed.policy_name).cloned()
+    };
+    let Some(policy) = policy else {
+        return typed_error(
+            request,
+            ERROR_POLICY_NOT_FOUND,
+            POLICY_NOT_FOUND_MESSAGE,
+            LocketError::PolicyNotFound,
+        );
+    };
+
+    // Verify the project is unlocked. The unlock cache lookup is the
+    // same gate the reveal/copy/resolve handlers use, so prepare-exec
+    // shares the same fail-closed semantics.
+    let unlocked = {
+        let cache = state.unlock_cache.lock().await;
+        cache.lookup(project_id, now_unix_nanos).is_some()
+    };
+    if !unlocked {
+        return typed_error(
+            request,
+            ERROR_UNLOCK_REQUIRED,
+            UNLOCK_REQUIRED_MESSAGE,
+            LocketError::UnlockRequired,
+        );
+    }
+
+    let ttl_seconds = ttl_seconds(&policy);
+    let command_kind = command_kind(&policy);
+    let allowed_env_names = policy.allowed_secrets.clone();
+
+    // Issue a live PrepareExec grant. The id is internal-only for now;
+    // when the runtime crate is taught to consume it, surface it via a
+    // new optional response field.
+    // TODO(prepare-exec-grant-return): expose `grant_id` on
+    // PrepareExecResponse once the runtime CLI execution path is wired
+    // to consume it.
+    let binding = typed
+        .binding
+        .clone()
+        .unwrap_or_else(|| GrantBinding::new(process::id(), "0"));
+    let grant_payload = RequestGrantPayload {
+        project_id: project_id.to_owned(),
+        profile_id: typed.profile_id.clone(),
+        policy_name: Some(policy.name.clone()),
+        action: GrantAction::PrepareExec,
+        ttl_seconds,
+        binding,
+    };
+    let ttl_nanos = i128::from(ttl_seconds).saturating_mul(1_000_000_000);
+    let issued = {
+        let mut grants = state.grants.lock().await;
+        grants.issue(
+            grant_payload,
+            now_unix_nanos,
+            now_unix_nanos.saturating_add(ttl_nanos),
+        )
+    };
+    if issued.is_err() {
+        return typed_error(
+            request,
+            ERROR_PROTOCOL,
+            "failed to allocate grant id",
+            LocketError::CorruptDb,
+        );
+    }
 
     let response = PrepareExecResponse {
-        allowed_env_names: Vec::new(),
-        command_kind: DEFAULT_COMMAND_KIND.to_owned(),
-        ttl_seconds: 0,
+        allowed_env_names,
+        command_kind: command_kind.to_owned(),
+        ttl_seconds: u32::try_from(ttl_seconds).unwrap_or(u32::MAX),
     };
     serde_json::to_value(&response).map_or_else(
-        |_| {
-            ResponseEnvelope::Error(ErrorEnvelope::new(
-                request.id.clone(),
-                "ProtocolError",
-                "failed to serialize PrepareExec response",
-                false,
-            ))
-        },
+        |_| protocol_error(request, "failed to serialize PrepareExec response"),
         |payload| ResponseEnvelope::Success(SuccessEnvelope::new(request.id.clone(), payload)),
     )
+}
+
+fn find_policy<'a>(
+    policies: &'a [CommandPolicySnapshot],
+    project_id: &str,
+    policy_name: &str,
+) -> Option<&'a CommandPolicySnapshot> {
+    policies
+        .iter()
+        .find(|policy| policy.project_id == project_id && policy.name == policy_name)
+}
+
+const fn ttl_seconds(policy: &CommandPolicySnapshot) -> u64 {
+    if policy.ttl_seconds == 0 {
+        DEFAULT_PREPARE_EXEC_TTL_SECONDS
+    } else {
+        policy.ttl_seconds
+    }
+}
+
+fn command_kind(policy: &CommandPolicySnapshot) -> &str {
+    if policy.command_kind == "shell" {
+        "shell"
+    } else {
+        DEFAULT_COMMAND_KIND
+    }
+}
+
+fn protocol_error(request: &RequestEnvelope, message: &str) -> ResponseEnvelope {
+    ResponseEnvelope::Error(ErrorEnvelope::new(
+        request.id.clone(),
+        ERROR_PROTOCOL,
+        message,
+        false,
+    ))
+}
+
+fn typed_error(
+    request: &RequestEnvelope,
+    error: &'static str,
+    message: impl Into<String>,
+    _kind: LocketError,
+) -> ResponseEnvelope {
+    ResponseEnvelope::Error(ErrorEnvelope::new(request.id.clone(), error, message, false))
 }
 
 #[cfg(test)]
@@ -89,17 +243,83 @@ mod tests {
     #![allow(clippy::panic)]
 
     use super::{
-        DEFAULT_COMMAND_KIND, PrepareExecRequest, PrepareExecResponse, handle_prepare_exec,
+        DEFAULT_COMMAND_KIND, DEFAULT_PREPARE_EXEC_TTL_SECONDS, PrepareExecRequest,
+        PrepareExecResponse, handle_prepare_exec,
     };
     use crate::envelope::{RequestEnvelope, ResponseEnvelope};
+    use crate::grant::GrantBinding;
     use crate::method::AgentMethod;
+    use crate::policies::CommandPolicySnapshot;
+    use crate::server::AgentSocketState;
+    use crate::unlock_cache::{UnlockEntry, UnlockMethod};
     use serde_json::json;
+    use std::time::Duration;
+
+    const PROJECT_ID: &str = "lk_proj_prepare_exec";
+    const PROFILE_ID: &str = "lk_prof_dev";
+    const POLICY_NAME: &str = "deploy-staging";
+
+    fn snapshot(
+        ttl_seconds: u64,
+        command_kind: &str,
+        allowed: &[&str],
+    ) -> CommandPolicySnapshot {
+        CommandPolicySnapshot {
+            project_id: PROJECT_ID.to_owned(),
+            name: POLICY_NAME.to_owned(),
+            command_kind: command_kind.to_owned(),
+            command_preview: "deploy".to_owned(),
+            required_secrets: allowed.iter().map(|s| (*s).to_owned()).collect(),
+            optional_secrets: Vec::new(),
+            allowed_secrets: allowed.iter().map(|s| (*s).to_owned()).collect(),
+            confirm: false,
+            require_user_verification: false,
+            require_agent: true,
+            allow_remote_docker: false,
+            ttl_seconds,
+            env_mode: "minimal".to_owned(),
+            override_mode: "locket".to_owned(),
+            updated_at_unix_nanos: 1,
+        }
+    }
+
+    async fn unlocked_state(policy: CommandPolicySnapshot) -> AgentSocketState {
+        let state = AgentSocketState::locked("test-version");
+        state.set_command_policies_for_tests(vec![policy]).await;
+        state.unlock_cache.lock().await.insert(
+            PROJECT_ID.to_owned(),
+            UnlockEntry::new(
+                vec![7_u8; 32],
+                0,
+                Duration::from_secs(60),
+                UnlockMethod::Passphrase,
+            ),
+        );
+        state
+    }
+
+    fn request_payload(project_id: Option<&str>) -> serde_json::Value {
+        let mut payload = json!({
+            "policy_name": POLICY_NAME,
+            "profile_id": PROFILE_ID,
+            "binding": GrantBinding::new(std::process::id(), "0"),
+        });
+        if let Some(project_id) = project_id {
+            payload
+                .as_object_mut()
+                .unwrap()
+                .insert("project_id".to_owned(), json!(project_id));
+        }
+        payload
+    }
 
     #[test]
     fn prepare_exec_request_round_trips_through_json() -> Result<(), serde_json::Error> {
         let request = PrepareExecRequest {
             policy_name: "deploy-staging".to_owned(),
             profile_id: "profile-staging".to_owned(),
+            project_id: Some(PROJECT_ID.to_owned()),
+            binding: Some(GrantBinding::new(123, "start")),
         };
 
         let value = serde_json::to_value(&request)?;
@@ -108,6 +328,7 @@ mod tests {
         assert_eq!(decoded, request);
         assert_eq!(value["policy_name"], "deploy-staging");
         assert_eq!(value["profile_id"], "profile-staging");
+        assert_eq!(value["project_id"], PROJECT_ID);
         Ok(())
     }
 
@@ -128,35 +349,138 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn handle_prepare_exec_returns_empty_success_response() -> Result<(), serde_json::Error> {
+    #[tokio::test(flavor = "current_thread")]
+    async fn handle_prepare_exec_returns_policy_env_names_and_ttl()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let policy = snapshot(900, "argv", &["DATABASE_URL", "API_TOKEN"]);
+        let state = unlocked_state(policy).await;
         let envelope = RequestEnvelope::new(
             "req-prepare",
             AgentMethod::PrepareExec,
-            json!({"policy_name": "deploy-staging", "profile_id": "profile-staging"}),
+            request_payload(Some(PROJECT_ID)),
         );
 
-        let response = handle_prepare_exec(&envelope);
+        let response = handle_prepare_exec(&envelope, &state, 1).await;
         let ResponseEnvelope::Success(success) = response else {
-            panic!("expected success envelope");
+            return Err("expected success envelope".into());
         };
         assert_eq!(success.id, "req-prepare");
         let decoded: PrepareExecResponse = serde_json::from_value(success.payload)?;
-        assert!(decoded.allowed_env_names.is_empty());
+        assert_eq!(decoded.allowed_env_names, vec!["DATABASE_URL", "API_TOKEN"]);
         assert_eq!(decoded.command_kind, DEFAULT_COMMAND_KIND);
-        assert_eq!(decoded.ttl_seconds, 0);
+        assert_eq!(decoded.ttl_seconds, 900);
+
+        // Issuing a grant must record exactly one record in the table.
+        let grant_count = state.grants.lock().await.len();
+        assert_eq!(grant_count, 1);
         Ok(())
     }
 
-    #[test]
-    fn handle_prepare_exec_rejects_malformed_payload_with_protocol_error() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn handle_prepare_exec_emits_shell_command_kind()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let policy = snapshot(120, "shell", &["DEPLOY_TOKEN"]);
+        let state = unlocked_state(policy).await;
+        let envelope = RequestEnvelope::new(
+            "req-shell",
+            AgentMethod::PrepareExec,
+            request_payload(Some(PROJECT_ID)),
+        );
+
+        let response = handle_prepare_exec(&envelope, &state, 1).await;
+        let ResponseEnvelope::Success(success) = response else {
+            return Err("expected success envelope".into());
+        };
+        let decoded: PrepareExecResponse = serde_json::from_value(success.payload)?;
+        assert_eq!(decoded.command_kind, "shell");
+        assert_eq!(decoded.ttl_seconds, 120);
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn handle_prepare_exec_falls_back_to_default_ttl_when_policy_ttl_is_zero()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let policy = snapshot(0, "argv", &["DATABASE_URL"]);
+        let state = unlocked_state(policy).await;
+        let envelope = RequestEnvelope::new(
+            "req-default-ttl",
+            AgentMethod::PrepareExec,
+            request_payload(Some(PROJECT_ID)),
+        );
+
+        let response = handle_prepare_exec(&envelope, &state, 1).await;
+        let ResponseEnvelope::Success(success) = response else {
+            return Err("expected success envelope".into());
+        };
+        let decoded: PrepareExecResponse = serde_json::from_value(success.payload)?;
+        assert_eq!(
+            u64::from(decoded.ttl_seconds),
+            DEFAULT_PREPARE_EXEC_TTL_SECONDS
+        );
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn handle_prepare_exec_returns_unlock_required_when_locked() {
+        let policy = snapshot(60, "argv", &["DATABASE_URL"]);
+        let state = AgentSocketState::locked("test-version");
+        state.set_command_policies_for_tests(vec![policy]).await;
+        let envelope = RequestEnvelope::new(
+            "req-locked",
+            AgentMethod::PrepareExec,
+            request_payload(Some(PROJECT_ID)),
+        );
+
+        let response = handle_prepare_exec(&envelope, &state, 1).await;
+        let ResponseEnvelope::Error(error) = response else {
+            panic!("expected error envelope");
+        };
+        assert_eq!(error.error, "UnlockRequired");
+        assert!(state.grants.lock().await.is_empty());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn handle_prepare_exec_returns_policy_not_found_for_missing_policy() {
+        let state = AgentSocketState::locked("test-version");
+        let envelope = RequestEnvelope::new(
+            "req-missing",
+            AgentMethod::PrepareExec,
+            request_payload(Some(PROJECT_ID)),
+        );
+
+        let response = handle_prepare_exec(&envelope, &state, 1).await;
+        let ResponseEnvelope::Error(error) = response else {
+            panic!("expected error envelope");
+        };
+        assert_eq!(error.error, "PolicyNotFound");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn handle_prepare_exec_rejects_malformed_payload_with_protocol_error() {
+        let state = AgentSocketState::locked("test-version");
         let envelope = RequestEnvelope::new(
             "req-bad",
             AgentMethod::PrepareExec,
             json!({"policy_name": 1, "profile_id": null}),
         );
 
-        let response = handle_prepare_exec(&envelope);
+        let response = handle_prepare_exec(&envelope, &state, 1).await;
+        let ResponseEnvelope::Error(error) = response else {
+            panic!("expected error envelope");
+        };
+        assert_eq!(error.error, "ProtocolError");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn handle_prepare_exec_requires_project_id() {
+        let state = AgentSocketState::locked("test-version");
+        let envelope = RequestEnvelope::new(
+            "req-no-project",
+            AgentMethod::PrepareExec,
+            request_payload(None),
+        );
+
+        let response = handle_prepare_exec(&envelope, &state, 1).await;
         let ResponseEnvelope::Error(error) = response else {
             panic!("expected error envelope");
         };

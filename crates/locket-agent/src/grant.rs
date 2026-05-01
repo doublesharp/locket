@@ -29,7 +29,8 @@ impl GrantBinding {
 pub enum GrantAction {
     /// Run a command policy.
     RunPolicy,
-    /// Prepare an exec invocation by resolving a policy into a concrete env plan.
+    /// Prepare a command policy for a trusted CLI execution path.
+    /// See `docs/specs/data-model.md:386-395` and `docs/specs/agent.md:91-92`.
     PrepareExec,
     /// Resolve an `lk://` reference.
     ResolveReference,
