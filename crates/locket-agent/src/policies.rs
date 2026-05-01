@@ -1,7 +1,11 @@
 //! Metadata-only saved command policy listing for desktop policy views.
 
+use std::path::PathBuf;
+
 use locket_core::{CommandPolicy, CommandSpec, privacy_alias};
+use locket_store::{AuditWrite, Store};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 
 use crate::envelope::{ErrorEnvelope, RequestEnvelope, ResponseEnvelope, SuccessEnvelope};
 
@@ -208,4 +212,133 @@ pub fn success_response(
 ) -> ResponseEnvelope {
     let payload = serde_json::to_value(response).unwrap_or(serde_json::Value::Null);
     ResponseEnvelope::Success(SuccessEnvelope::new(envelope.id.clone(), payload))
+}
+
+/// Request payload for `RegisterCommandPolicies`.
+///
+/// The CLI emits this RPC after every `policy add/allow/require/edit/delete`
+/// write to `locket.toml`, so the running agent's in-memory snapshot stays
+/// in sync with the on-disk policy set without requiring a desktop client
+/// to pump the snapshots.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct RegisterCommandPoliciesRequest {
+    /// Active project identifier whose snapshot should be replaced.
+    pub project_id: String,
+    /// Replacement snapshots for `project_id`. The agent retains
+    /// snapshots for other projects unchanged.
+    pub policies: Vec<CommandPolicySnapshot>,
+    /// Path to the user-scoped `store.db` used to append the
+    /// metadata-only `POLICY_UPDATE` audit row.
+    pub store_path: PathBuf,
+    /// Optional active profile id recorded on the audit row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audit_profile_id: Option<String>,
+}
+
+/// Replaces the in-memory snapshots for a single project.
+///
+/// All entries previously stored for `project_id` are removed; entries
+/// for other project ids are preserved. The replacement is in-place to
+/// keep the snapshot vector flat, matching the existing `ListPolicies`
+/// path which filters by `project_id` on read.
+pub fn replace_project_snapshots(
+    snapshots: &mut Vec<CommandPolicySnapshot>,
+    project_id: &str,
+    replacements: Vec<CommandPolicySnapshot>,
+) {
+    snapshots.retain(|snapshot| snapshot.project_id != project_id);
+    for replacement in replacements {
+        if replacement.project_id == project_id {
+            snapshots.push(replacement);
+        }
+    }
+}
+
+/// Handler for `RegisterCommandPolicies`.
+///
+/// The agent must have a live unlock-cache entry for `project_id` so
+/// callers cannot mutate snapshots for projects they have not unlocked.
+/// On success a metadata-only `POLICY_UPDATE` audit row with
+/// `operation: "snapshot"` is appended to the project audit chain.
+#[cfg(unix)]
+pub async fn handle_register_command_policies(
+    request: &RequestEnvelope,
+    state: &crate::server::AgentSocketState,
+    now_unix_nanos: i128,
+) -> ResponseEnvelope {
+    let typed: RegisterCommandPoliciesRequest =
+        match serde_json::from_value(request.payload.clone()) {
+            Ok(value) => value,
+            Err(_) => {
+                return ResponseEnvelope::Error(ErrorEnvelope::new(
+                    request.id.clone(),
+                    "ProtocolError",
+                    "invalid RegisterCommandPolicies payload",
+                    false,
+                ));
+            }
+        };
+
+    let audit_key = {
+        let cache = state.unlock_cache.lock().await;
+        cache.lookup(&typed.project_id, now_unix_nanos).map(|entry| entry.key_bytes().to_vec())
+    };
+    let Some(audit_key) = audit_key else {
+        return ResponseEnvelope::Error(ErrorEnvelope::new(
+            request.id.clone(),
+            "UnlockRequired",
+            "unlock required to register command policies",
+            false,
+        ));
+    };
+
+    let policy_count = typed.policies.len();
+    {
+        let mut snapshots = state.command_policies.lock().await;
+        replace_project_snapshots(&mut snapshots, &typed.project_id, typed.policies);
+    }
+
+    let metadata = json!({
+        "schema_version": 1,
+        "action": "POLICY_UPDATE",
+        "status": "SUCCESS",
+        "command": "policy",
+        "operation": "snapshot",
+        "policy": "*",
+        "policy_name": "*",
+        "command_policy_count": policy_count,
+        "metadata_only": true,
+    });
+    let timestamp = i64::try_from(now_unix_nanos).unwrap_or(i64::MAX);
+    let audit = AuditWrite {
+        project_id: &typed.project_id,
+        profile_id: typed.audit_profile_id.as_deref(),
+        action: "POLICY_UPDATE",
+        status: "SUCCESS",
+        secret_name: None,
+        command: Some("policy"),
+        metadata_json: &metadata,
+        timestamp,
+    };
+    let mut store = match Store::open(&typed.store_path) {
+        Ok(store) => store,
+        Err(error) => {
+            return ResponseEnvelope::Error(ErrorEnvelope::new(
+                request.id.clone(),
+                "CorruptDb",
+                format!("failed to open store: {error}"),
+                false,
+            ));
+        }
+    };
+    if let Err(error) = store.append_audit(&audit_key, &audit) {
+        return ResponseEnvelope::Error(ErrorEnvelope::new(
+            request.id.clone(),
+            "CorruptDb",
+            format!("failed to append POLICY_UPDATE audit row: {error}"),
+            false,
+        ));
+    }
+
+    ResponseEnvelope::Success(SuccessEnvelope::new(request.id.clone(), serde_json::Value::Null))
 }

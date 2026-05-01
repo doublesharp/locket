@@ -13,6 +13,8 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 
+use crate::agent_socket_path;
+
 use crate::commands::config::spec::{
     config_get_value, read_user_config, validate_config_key, validate_stored_config_value,
 };
@@ -117,6 +119,7 @@ fn add(
         &args.name,
         "add",
     )?;
+    pump_policies_to_agent(context, resolved.config.project_id.as_str(), &policy_document);
     write_policy_update(output, &args.name, "add")
 }
 
@@ -140,6 +143,7 @@ fn allow(
         &args.name,
         "allow",
     )?;
+    pump_policies_to_agent(context, resolved.config.project_id.as_str(), &policy_document);
     write_policy_update(output, &args.name, "allow")
 }
 
@@ -164,6 +168,7 @@ fn require(
         &args.name,
         "require",
     )?;
+    pump_policies_to_agent(context, resolved.config.project_id.as_str(), &policy_document);
     write_policy_update(output, &args.name, "require")
 }
 
@@ -186,8 +191,9 @@ fn delete(
         return Err(confirmation_failed_error("confirmation did not match policy name"));
     }
     commands.remove(&name);
-    let _policy_document = write_validated_locket_toml(&path, &document)?;
+    let policy_document = write_validated_locket_toml(&path, &document)?;
     write_policy_index_delete_if_available(context, resolved.config.project_id.as_str(), &name)?;
+    pump_policies_to_agent(context, resolved.config.project_id.as_str(), &policy_document);
     write_policy_update(output, &name, "delete")
 }
 
@@ -224,6 +230,7 @@ fn edit(
         &args.name,
         "edit",
     )?;
+    pump_policies_to_agent(context, resolved.config.project_id.as_str(), &policy_document);
     write_policy_update(output, &args.name, "edit")
 }
 
@@ -1077,4 +1084,108 @@ fn external_env_source_json(source: &ExternalEnvSource) -> serde_json::Value {
         ExternalEnvSource::Compose => json!({ "type": "compose" }),
         ExternalEnvSource::Ide => json!({ "type": "ide" }),
     }
+}
+
+/// Best-effort: pump the post-write policy snapshot to the running agent so
+/// `policy doctor` and `locket run` resolve the new policy set without
+/// requiring a desktop client to push the snapshot. The agent is fire-and-
+/// forget: when it is unreachable, locked, or otherwise rejects the call,
+/// the user-facing CLI command must still succeed. Failures are logged to
+/// stderr at debug level so operators have a breadcrumb without polluting
+/// scripted output.
+pub fn pump_policies_to_agent(
+    context: &RuntimeContext,
+    project_id: &str,
+    policy_document: &PolicyDocument,
+) {
+    #[cfg(unix)]
+    {
+        let snapshots = build_snapshots(project_id, policy_document);
+        let payload = json!({
+            "project_id": project_id,
+            "policies": snapshots,
+            "store_path": context.store_path,
+            "audit_profile_id": serde_json::Value::Null,
+        });
+        if let Err(error) = pump_policies_unix(context, payload) {
+            let mut stderr = io::stderr();
+            let _ignored = writeln!(
+                stderr,
+                "locket: debug: agent RegisterCommandPolicies pump failed: {error}",
+            );
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (context, project_id, policy_document);
+    }
+}
+
+fn build_snapshots(
+    project_id: &str,
+    document: &PolicyDocument,
+) -> Vec<locket_agent::CommandPolicySnapshot> {
+    let updated_at = now_unix_nanos().unwrap_or(0);
+    document
+        .commands
+        .values()
+        .map(|policy| {
+            locket_agent::CommandPolicySnapshot::from_policy(project_id, policy, updated_at)
+        })
+        .collect()
+}
+
+#[cfg(unix)]
+fn pump_policies_unix(
+    context: &RuntimeContext,
+    payload: serde_json::Value,
+) -> Result<(), String> {
+    use locket_agent::{
+        AgentMethod, DEFAULT_MAX_MESSAGE_SIZE, RequestEnvelope, ResponseEnvelope,
+        decode_response_frame, encode_frame,
+    };
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::UnixStream;
+
+    let socket_path = agent_socket_path(context);
+    if !socket_path.exists() {
+        return Err(format!("agent socket missing at {}", socket_path.display()));
+    }
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| error.to_string())?;
+    runtime.block_on(async move {
+        let mut stream = UnixStream::connect(&socket_path)
+            .await
+            .map_err(|error| format!("connect: {error}"))?;
+        let request = RequestEnvelope::new(
+            "cli-pump-policies",
+            AgentMethod::RegisterCommandPolicies,
+            payload,
+        );
+        let frame = encode_frame(&request, DEFAULT_MAX_MESSAGE_SIZE)
+            .map_err(|error| format!("encode: {error}"))?;
+        stream.write_all(&frame).await.map_err(|error| format!("write: {error}"))?;
+        stream.flush().await.map_err(|error| format!("flush: {error}"))?;
+
+        let mut buffer = Vec::with_capacity(1024);
+        loop {
+            if let Ok((response, _)) = decode_response_frame(&buffer, DEFAULT_MAX_MESSAGE_SIZE) {
+                return match response {
+                    ResponseEnvelope::Success(_) => Ok(()),
+                    ResponseEnvelope::Error(error) => {
+                        Err(format!("agent error {}: {}", error.error, error.message))
+                    }
+                };
+            }
+            let mut chunk = [0_u8; 1024];
+            let read = stream.read(&mut chunk).await.map_err(|error| format!("read: {error}"))?;
+            if read == 0 {
+                return Err("agent closed connection without a response".to_owned());
+            }
+            buffer.extend_from_slice(&chunk[..read]);
+        }
+    })
 }

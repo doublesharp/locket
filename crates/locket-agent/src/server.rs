@@ -749,6 +749,7 @@ fn error_response(envelope: &RequestEnvelope, error: &str, message: &str) -> Res
     ResponseEnvelope::Error(ErrorEnvelope::new(envelope.id.clone(), error, message, false))
 }
 
+#[allow(clippy::too_many_lines)]
 pub async fn dispatch(envelope: &RequestEnvelope, state: &AgentSocketState) -> ResponseEnvelope {
     if let Some(response) =
         crate::auth::authenticate_request_if_present(envelope, state, current_unix_nanos()).await
@@ -793,6 +794,7 @@ pub async fn dispatch(envelope: &RequestEnvelope, state: &AgentSocketState) -> R
         }
         Ok(AgentMethod::ListRuntimeSessions) => handle_list_runtime_sessions(envelope, state).await,
         Ok(AgentMethod::ListPolicies) => handle_list_policies(envelope, state).await,
+        Ok(AgentMethod::RegisterCommandPolicies) => handle_register_command_policies(envelope, state).await,
         Ok(AgentMethod::ResolveReference) => {
             crate::resolve::handle_resolve(envelope, state, current_unix_nanos()).await
         }
@@ -1058,6 +1060,13 @@ fn unwrap_project_audit_key(
     ))?;
     let wrapped = WrappedKeyMaterial { ciphertext: record.wrapped_material, nonce: record.nonce };
     unwrap_key_material_v1(&wrapping_key, &wrapped, &aad)
+}
+
+async fn handle_register_command_policies(
+    envelope: &RequestEnvelope,
+    state: &AgentSocketState,
+) -> ResponseEnvelope {
+    crate::policies::handle_register_command_policies(envelope, state, current_unix_nanos()).await
 }
 
 async fn handle_list_policies(
