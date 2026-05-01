@@ -193,6 +193,9 @@ Slices that have merged to `main` and verified. Open work tracked in
   unavailable.
 - [x] perf-agent-idle-memory: Agent idle memory now has a release-profile RSS perf gate.
   The harness isolates HOME, warms status, samples RSS, and fails above budget.
+- [x] proptest-update-manifest: Signed update manifests now have generated coverage for
+  valid payloads and tamper rejection. The property harness checks metadata changes stay
+  bound to the release signature.
 
 ## Full Spec Coverage TODO — Security/Recovery/Team
 
