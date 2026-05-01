@@ -1,3 +1,5 @@
+schema_version = 1
+
 [commands.web]
 argv = ["npm", "run", "dev"]
 required_secrets = ["DATABASE_URL"]

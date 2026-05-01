@@ -10,7 +10,7 @@ use ignore::{WalkBuilder, gitignore::GitignoreBuilder};
 use locket_crypto::KeyPurpose;
 use locket_scan::{
     EntropyRule, FindingKind, ScanFinding, Severity, SuppressedFinding,
-    partition_inline_suppressions, scan_text_with_entropy_rule,
+    partition_inline_suppressions_strict, scan_text_with_entropy_rule,
 };
 use locket_store::AuditWrite;
 use serde_json::{Value, json};
@@ -290,7 +290,8 @@ fn scan_file(
         Ok(text) => {
             let mut file_findings = scan_text_with_entropy_rule(&label, &text, entropy_rule);
             file_findings.extend(scan_known_values(&label, &text, known_values));
-            let result = partition_inline_suppressions(&text, file_findings);
+            let result = partition_inline_suppressions_strict(&text, file_findings)
+                .map_err(|error| metadata_invalid_error(error.to_string()))?;
             findings.extend(result.kept);
             suppressed.extend(result.suppressed);
         }
@@ -337,7 +338,8 @@ fn scan_staged_path(
             Ok(text) => {
                 let mut file_findings = scan_text_with_entropy_rule(&path, &text, entropy_rule);
                 file_findings.extend(scan_known_values(&path, &text, known_values));
-                let result = partition_inline_suppressions(&text, file_findings);
+                let result = partition_inline_suppressions_strict(&text, file_findings)
+                    .map_err(|error| metadata_invalid_error(error.to_string()))?;
                 findings.extend(result.kept);
                 suppressed.extend(result.suppressed);
             }

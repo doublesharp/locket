@@ -146,4 +146,22 @@ pub enum PolicyParseError {
         /// Command policy name.
         command: String,
     },
+    /// The document root did not include `schema_version`.
+    #[error("policy document missing required schema_version at root")]
+    MissingSchemaVersion,
+    /// The document root `schema_version` was not a positive integer.
+    #[error("policy document schema_version must be a positive integer")]
+    InvalidSchemaVersion,
+    /// The document root `schema_version` was not the supported value.
+    #[error("policy document schema_version {version} is not supported (expected 1)")]
+    UnsupportedSchemaVersion {
+        /// Schema version supplied at the root of the document.
+        version: u64,
+    },
+    /// The document root contained a key outside the recognized v1 schema.
+    #[error("policy document contains unknown top-level key {key}")]
+    UnknownTopLevelKey {
+        /// Unknown root-level key name.
+        key: String,
+    },
 }

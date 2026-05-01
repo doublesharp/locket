@@ -480,6 +480,8 @@ fn parent_external_env_source_reinjects_only_allowed_names()
 -> Result<(), Box<dyn std::error::Error>> {
     let document = locket_core::PolicyDocument::from_toml_str(
         r#"
+schema_version = 1
+
 [commands.env_check]
 argv = ["/bin/sh", "-c", "true"]
 required_secrets = ["PARENT_ALLOWED"]
@@ -532,6 +534,8 @@ fn file_external_env_source_loads_only_policy_allowed_names()
 -> Result<(), Box<dyn std::error::Error>> {
     let document = locket_core::PolicyDocument::from_toml_str(
         r#"
+schema_version = 1
+
 [commands.env_check]
 argv = ["/bin/sh", "-c", "true"]
 required_secrets = ["DATABASE_URL"]
@@ -610,6 +614,8 @@ env_mode = "strict"
 fn file_external_env_source_rejects_absolute_path() -> Result<(), Box<dyn std::error::Error>> {
     let document = locket_core::PolicyDocument::from_toml_str(
         r#"
+schema_version = 1
+
 [commands.env_check]
 argv = ["/bin/sh", "-c", "true"]
 required_secrets = ["DATABASE_URL"]
@@ -637,6 +643,8 @@ fn file_external_env_source_rejects_paths_outside_project_root()
 -> Result<(), Box<dyn std::error::Error>> {
     let document = locket_core::PolicyDocument::from_toml_str(
         r#"
+schema_version = 1
+
 [commands.env_check]
 argv = ["/bin/sh", "-c", "true"]
 required_secrets = ["DATABASE_URL"]
@@ -666,6 +674,8 @@ fn compose_external_env_source_uses_process_stub_without_docker()
 -> Result<(), Box<dyn std::error::Error>> {
     let document = locket_core::PolicyDocument::from_toml_str(
         r#"
+schema_version = 1
+
 [commands.env_check]
 argv = ["/bin/sh", "-c", "true"]
 required_secrets = ["DATABASE_URL"]
@@ -705,6 +715,8 @@ fn compose_external_env_source_reports_command_failure_without_values()
 -> Result<(), Box<dyn std::error::Error>> {
     let document = locket_core::PolicyDocument::from_toml_str(
         r#"
+schema_version = 1
+
 [commands.env_check]
 argv = ["/bin/sh", "-c", "true"]
 required_secrets = ["DATABASE_URL"]
@@ -740,6 +752,8 @@ fn compose_external_env_source_reports_missing_command_with_typed_error()
 -> Result<(), Box<dyn std::error::Error>> {
     let document = locket_core::PolicyDocument::from_toml_str(
         r#"
+schema_version = 1
+
 [commands.env_check]
 argv = ["/bin/sh", "-c", "true"]
 required_secrets = ["DATABASE_URL"]
@@ -772,6 +786,8 @@ env_mode = "strict"
 fn compose_external_env_source_rejects_invalid_json() -> Result<(), Box<dyn std::error::Error>> {
     let document = locket_core::PolicyDocument::from_toml_str(
         r#"
+schema_version = 1
+
 [commands.env_check]
 argv = ["/bin/sh", "-c", "true"]
 required_secrets = ["DATABASE_URL"]
