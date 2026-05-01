@@ -189,6 +189,37 @@ export interface ListPoliciesResponse {
   rows: CommandPolicyWireRow[];
 }
 
+/**
+ * Wire shape mirroring `locket_agent::CommandPolicySnapshot`. Used by
+ * the desktop policy editor when calling `agent_register_command_policies`
+ * to replace the agent's in-memory project snapshot. Field set is
+ * metadata-only — never includes a secret value.
+ */
+export interface CommandPolicySnapshotWire {
+  project_id: string;
+  name: string;
+  command_kind: CommandKindWire;
+  command_preview: string;
+  required_secrets: string[];
+  optional_secrets: string[];
+  allowed_secrets: string[];
+  confirm: boolean;
+  require_user_verification: boolean;
+  require_agent: boolean;
+  allow_remote_docker: boolean;
+  ttl_seconds: number;
+  env_mode: CommandEnvModeWire;
+  override_mode: CommandOverrideModeWire;
+  updated_at_unix_nanos: number;
+}
+
+export interface RegisterCommandPoliciesRequest {
+  project_id: string;
+  policies: CommandPolicySnapshotWire[];
+  store_path?: string;
+  audit_profile_id?: string;
+}
+
 export interface ListDeviceMembersRequest {
   store_path?: string;
   project_id: string;

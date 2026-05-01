@@ -15,6 +15,9 @@ interface Props {
 const props = defineProps<Props>();
 const emit = defineEmits<{
   refresh: [];
+  create: [];
+  edit: [row: CommandPolicyRow];
+  delete: [row: CommandPolicyRow];
 }>();
 
 const selectedId = ref<string | null>(null);
@@ -115,6 +118,22 @@ function selectPolicy(row: CommandPolicyRow): void {
 function refreshPolicies(): void {
   emit('refresh');
 }
+
+function startCreate(): void {
+  emit('create');
+}
+
+function startEdit(): void {
+  if (selectedPolicy.value) {
+    emit('edit', selectedPolicy.value);
+  }
+}
+
+function startDelete(): void {
+  if (selectedPolicy.value) {
+    emit('delete', selectedPolicy.value);
+  }
+}
 </script>
 
 <template>
@@ -132,7 +151,23 @@ function refreshPolicies(): void {
             placeholder="Search metadata"
           />
         </label>
-        <span class="badge badge--neutral">read-only</span>
+        <button type="button" class="view__button" @click="startCreate">New policy</button>
+        <button
+          type="button"
+          class="view__button"
+          :disabled="!selectedPolicy"
+          @click="startEdit"
+        >
+          Edit
+        </button>
+        <button
+          type="button"
+          class="view__button view__button--danger"
+          :disabled="!selectedPolicy"
+          @click="startDelete"
+        >
+          Delete
+        </button>
         <button type="button" class="view__button" @click="refreshPolicies">Refresh</button>
       </div>
     </header>
@@ -349,6 +384,16 @@ function refreshPolicies(): void {
   border-color: #f8d77a;
   outline: 2px solid rgba(248, 215, 122, 0.24);
   outline-offset: 1px;
+}
+
+.view__button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.view__button--danger {
+  border-color: rgba(217, 101, 112, 0.4);
+  color: #f08a90;
 }
 
 .view__loading,

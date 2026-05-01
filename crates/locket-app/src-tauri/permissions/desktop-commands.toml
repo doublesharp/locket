@@ -16,6 +16,7 @@ commands.allow = [
   "agent_prepare_exec",
   "agent_list_runtime_sessions",
   "agent_list_policies",
+  "agent_register_command_policies",
   "agent_list_device_members",
   "agent_list_secrets",
   "agent_read_config",

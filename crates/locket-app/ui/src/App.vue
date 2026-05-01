@@ -4,6 +4,7 @@ import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 
 import AgentUnavailableBanner from './components/AgentUnavailableBanner.vue';
+import PolicyEditorForm from './components/PolicyEditorForm.vue';
 import RevealModal from './components/RevealModal.vue';
 import {
   copySecret,
@@ -15,11 +16,17 @@ import {
   listVersions,
   lockVault,
   readConfig,
+  registerCommandPolicies,
   reveal as revealAgent,
   scan as scanKnownValues,
   writeConfig,
   verifyAudit,
 } from './agent/client';
+import {
+  applyPolicyMutation,
+  type PolicyFormMode,
+} from './policy/form';
+import type { CommandPolicySnapshotWire } from './agent/types';
 import { deviceMemberRow } from './agent/deviceMembers';
 import { commandPolicyRow } from './agent/policies';
 import { runtimeSessionRow } from './agent/runtimeSessions';
@@ -787,6 +794,88 @@ watch(policiesRequest, () => {
   void refreshPolicies();
 });
 
+const policyFormMode = ref<PolicyFormMode | null>(null);
+const policyFormRow = ref<CommandPolicyRow | null>(null);
+const policyFormSubmitting = ref<boolean>(false);
+const policyFormError = ref<string | null>(null);
+
+function openPolicyCreate(): void {
+  policyFormMode.value = 'create';
+  policyFormRow.value = null;
+  policyFormError.value = null;
+}
+
+function openPolicyEdit(row: CommandPolicyRow): void {
+  policyFormMode.value = 'edit';
+  policyFormRow.value = row;
+  policyFormError.value = null;
+}
+
+function openPolicyDelete(row: CommandPolicyRow): void {
+  policyFormMode.value = 'delete';
+  policyFormRow.value = row;
+  policyFormError.value = null;
+}
+
+function dismissPolicyForm(): void {
+  policyFormMode.value = null;
+  policyFormRow.value = null;
+  policyFormError.value = null;
+}
+
+function snapshotsFromCurrentRows(): CommandPolicySnapshotWire[] {
+  const projectId = status.value?.project_id ?? '';
+  return policies.value.map<CommandPolicySnapshotWire>((row) => ({
+    project_id: projectId,
+    name: row.name,
+    command_kind: row.commandKind,
+    command_preview: row.commandPreview,
+    required_secrets: row.requiredSecrets,
+    optional_secrets: row.optionalSecrets,
+    allowed_secrets: row.allowedSecrets,
+    confirm: row.confirm,
+    require_user_verification: row.requireUserVerification,
+    require_agent: false,
+    allow_remote_docker: row.allowRemoteDocker,
+    ttl_seconds: row.ttlSeconds,
+    env_mode: row.envMode,
+    override_mode: row.overrideMode,
+    updated_at_unix_nanos: Date.parse(row.updatedAt) * 1_000_000,
+  }));
+}
+
+async function submitPolicyForm(payload: {
+  mode: PolicyFormMode;
+  snapshot: CommandPolicySnapshotWire;
+  originalName: string;
+}): Promise<void> {
+  const projectId = status.value?.project_id;
+  if (projectId === null || projectId === undefined) {
+    policyFormError.value = 'Active project unavailable.';
+    return;
+  }
+  policyFormSubmitting.value = true;
+  policyFormError.value = null;
+  const next = applyPolicyMutation(
+    snapshotsFromCurrentRows(),
+    payload.mode,
+    payload.snapshot,
+    payload.originalName,
+  );
+  const result = await registerCommandPolicies({
+    project_id: projectId,
+    policies: next,
+    audit_profile_id: status.value?.profile_name ?? undefined,
+  });
+  policyFormSubmitting.value = false;
+  if (!result.ok) {
+    policyFormError.value = policyErrorLabel(result.error);
+    return;
+  }
+  dismissPolicyForm();
+  await refreshPolicies();
+}
+
 function deviceMemberErrorLabel(error: AgentClientError): string {
   switch (error.kind) {
     case 'unavailable':
@@ -1192,6 +1281,9 @@ onUnmounted(() => {
         :loading="policiesLoading || loading"
         :error-message="policiesError"
         @refresh="refreshPolicies"
+        @create="openPolicyCreate"
+        @edit="openPolicyEdit"
+        @delete="openPolicyDelete"
       />
 
       <BackupRecovery v-else-if="currentView === 'recovery'" @action="triggerBackupAction" />
@@ -1209,6 +1301,18 @@ onUnmounted(() => {
     </main>
 
     <RevealModal ref="revealModal" />
+    <PolicyEditorForm
+      v-if="policyFormMode !== null && status?.project_id"
+      :mode="policyFormMode"
+      :row="policyFormRow"
+      :project-id="status?.project_id ?? ''"
+      :dangerous-profile="settings.dangerousProfileFlag"
+      :profile-label="status?.profile_name ?? profileLabel"
+      :submitting="policyFormSubmitting"
+      :error-message="policyFormError"
+      @submit="submitPolicyForm"
+      @dismiss="dismissPolicyForm"
+    />
   </div>
 </template>
 

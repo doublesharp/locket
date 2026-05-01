@@ -27,6 +27,7 @@ import type {
   PrepareExecRequest,
   PrepareExecResponse,
   ReadConfigRequest,
+  RegisterCommandPoliciesRequest,
   ResolveRequest,
   ResolveResponse,
   RevealRequest,
@@ -225,6 +226,17 @@ export async function listPolicies(
   request: ListPoliciesRequest,
 ): Promise<AgentResult<ListPoliciesResponse>> {
   return callTyped<ListPoliciesResponse>('agent_list_policies', { request });
+}
+
+/**
+ * Replace the agent's in-memory snapshot for a project. The desktop
+ * policy editor calls this for create / edit / delete operations; the
+ * agent appends the metadata-only `POLICY_UPDATE` audit row server-side.
+ */
+export async function registerCommandPolicies(
+  request: RegisterCommandPoliciesRequest,
+): Promise<AgentResult<void>> {
+  return callTyped<void>('agent_register_command_policies', { request });
 }
 
 export async function listDeviceMembers(

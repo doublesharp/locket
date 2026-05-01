@@ -469,6 +469,52 @@ async fn agent_list_policies(
     agent_client::invoke_method(&path, locket_agent::AgentMethod::ListPolicies, &request).await
 }
 
+/// Desktop wrapper for `agent_register_command_policies`. Lets the
+/// webview replace the in-agent snapshot for the active project after
+/// a create / edit / delete in the UI policy editor.
+///
+/// `store_path` defaults to the user-default `store.db` so the
+/// metadata-only `POLICY_UPDATE` audit row is appended to the same
+/// chain the CLI writes.
+#[derive(Debug, Deserialize)]
+struct DesktopRegisterCommandPoliciesRequest {
+    project_id: String,
+    policies: Vec<locket_agent::CommandPolicySnapshot>,
+    store_path: Option<PathBuf>,
+    #[serde(default)]
+    audit_profile_id: Option<String>,
+}
+
+/// Tauri command bridging the desktop policy editor to the agent's
+/// `RegisterCommandPolicies` RPC.
+///
+/// The desktop never writes audit rows directly: the agent appends the
+/// `POLICY_UPDATE` row server-side. Returning `()` mirrors the CLI
+/// pump path so the UI can refresh the metadata list independently
+/// once the call lands.
+#[tauri::command]
+async fn agent_register_command_policies(
+    request: DesktopRegisterCommandPoliciesRequest,
+) -> Result<(), AgentClientError> {
+    let store_path = match request.store_path {
+        Some(path) => path,
+        None => default_store_path()?,
+    };
+    let agent_request = locket_agent::RegisterCommandPoliciesRequest {
+        project_id: request.project_id,
+        policies: request.policies,
+        store_path,
+        audit_profile_id: request.audit_profile_id,
+    };
+    let path = agent_client::resolve_socket_path();
+    agent_client::invoke_method(
+        &path,
+        locket_agent::AgentMethod::RegisterCommandPolicies,
+        &agent_request,
+    )
+    .await
+}
+
 /// Tauri command exposing the agent's metadata-only device/member directory.
 #[tauri::command]
 async fn agent_list_device_members(
@@ -706,6 +752,7 @@ pub fn run() -> tauri::Result<()> {
             agent_prepare_exec,
             agent_list_runtime_sessions,
             agent_list_policies,
+            agent_register_command_policies,
             agent_list_device_members,
             agent_list_secrets,
             agent_read_config,
