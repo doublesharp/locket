@@ -147,7 +147,9 @@ pub(super) fn test_device() -> DeviceRecord {
     DeviceRecord {
         id: "lk_dev_test".to_owned(),
         project_id: "lk_proj_test".to_owned(),
+        member_id: None,
         name: "work-laptop".to_owned(),
+        label: "Work Laptop".to_owned(),
         signing_public_key: vec![1; 32],
         sealing_public_key: vec![2; 32],
         fingerprint: "ab".repeat(32),

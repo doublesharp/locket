@@ -153,6 +153,15 @@ CREATE TABLE IF NOT EXISTS project_roots (
 CREATE INDEX IF NOT EXISTS project_roots_root_hash_idx
   ON project_roots(root_hash);
 
+-- `directory_grants.granted_by` and `directory_grants.revoked_at`:
+--   `docs/specs/data-model.md` (lines 221-228) declares
+--   `DirectoryGrant.granted_by: Option<MemberId>` and
+--   `DirectoryGrant.revoked_at: Option<Timestamp>`. Deny is a soft-revoke:
+--   the row survives with `revoked_at` set so the audit chain references the
+--   surviving grant id and downstream re-allow can revive it by clearing
+--   `revoked_at` (deny → allow on the same scope reuses the prior row).
+--   `granted_by` is nullable because v1 install paths predate the team
+--   member binding; see `crates/locket-cli/src/commands/shell.rs` allow path.
 CREATE TABLE IF NOT EXISTS directory_grants (
   grant_id TEXT PRIMARY KEY,
   project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -161,13 +170,19 @@ CREATE TABLE IF NOT EXISTS directory_grants (
   directory_hash BLOB NOT NULL CHECK (length(directory_hash) = 32),
   grant_scope TEXT NOT NULL CHECK (grant_scope IN ('project-root')),
   display_path TEXT,
+  granted_by TEXT REFERENCES team_members(id) ON DELETE SET NULL,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
+  revoked_at INTEGER,
   UNIQUE (project_id, profile_id, root_hash, directory_hash, grant_scope)
 );
 
 CREATE INDEX IF NOT EXISTS directory_grants_project_root_idx
   ON directory_grants(project_id, root_hash);
+
+CREATE INDEX IF NOT EXISTS directory_grants_active_idx
+  ON directory_grants(project_id, profile_id, root_hash, directory_hash, grant_scope)
+  WHERE revoked_at IS NULL;
 
 CREATE TABLE IF NOT EXISTS secrets (
   id TEXT PRIMARY KEY,
@@ -191,6 +206,28 @@ CREATE TABLE IF NOT EXISTS secrets (
 
 CREATE INDEX IF NOT EXISTS secrets_project_profile_name_idx
   ON secrets(project_id, profile_id, name);
+
+-- Bundle/import conflict lookup support per docs/specs/storage.md line 149.
+--
+-- `apply_bundle_payload` (crates/locket-cli/src/commands/team/bundle.rs)
+-- detects secret conflicts via `read_local_secret(secret_id)` (covered
+-- by the `secrets` PRIMARY KEY) and, when an incoming row references a
+-- name/profile pair instead of an existing local id, callers fall back
+-- to `get_active_secret(project_id, profile_id, name, source)` and
+-- `get_secret_by_source(project_id, profile_id, name, source)`. This
+-- index covers the (project_id, profile_id, name, source, state)
+-- predicate used by those callers and keeps `current_version` available
+-- as an index column so conflict resolution can compare incoming
+-- bundle-version against the local current_version without an extra
+-- table fetch.
+CREATE INDEX IF NOT EXISTS secrets_bundle_conflict_idx
+  ON secrets(project_id, profile_id, name, source, state, current_version);
+
+-- `secret_versions` already has a `PRIMARY KEY (secret_id, version)` that
+-- supports `read_local_secret_version(secret_id, version)` lookups; no
+-- additional index is required for the version side of bundle conflict
+-- detection. Documented here so future readers don't add a redundant
+-- composite index.
 
 CREATE TABLE IF NOT EXISTS secret_versions (
   secret_id TEXT NOT NULL REFERENCES secrets(id) ON DELETE CASCADE,
@@ -269,10 +306,23 @@ CREATE UNIQUE INDEX IF NOT EXISTS keys_profile_scope_unique
   ON keys(project_id, profile_id, purpose)
   WHERE profile_id IS NOT NULL;
 
+-- `devices.member_id` and `devices.label`:
+--   `docs/specs/data-model.md` (lines 254-265) declares
+--   `Device.member_id: Option<MemberId>` and `Device.label: String`
+--   alongside `Device.name`. v1 stores both: `name` keeps acting as the
+--   stable, unique identifier across active rows (used by the
+--   `devices_active_name_unique_idx` partial index and CLI selectors that
+--   match by id/name/fingerprint), and `label` is a separate display
+--   string. Existing rows migrate cleanly because `label` defaults to ''
+--   and `member_id` defaults to NULL. The forward `devices.member_id ->
+--   team_members(id)` link complements the inverse `team_members.device_id`
+--   so device cards can render the bound member without join gymnastics.
 CREATE TABLE IF NOT EXISTS devices (
   id TEXT PRIMARY KEY,
   project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  member_id TEXT REFERENCES team_members(id) ON DELETE SET NULL,
   name TEXT NOT NULL,
+  label TEXT NOT NULL DEFAULT '',
   signing_public_key BLOB NOT NULL CHECK (length(signing_public_key) = 32),
   sealing_public_key BLOB NOT NULL CHECK (length(sealing_public_key) = 32),
   fingerprint TEXT NOT NULL,
@@ -282,6 +332,10 @@ CREATE TABLE IF NOT EXISTS devices (
   last_seen_at INTEGER,
   revoked_at INTEGER
 );
+
+CREATE INDEX IF NOT EXISTS devices_member_idx
+  ON devices(project_id, member_id)
+  WHERE member_id IS NOT NULL AND revoked_at IS NULL;
 
 CREATE UNIQUE INDEX IF NOT EXISTS devices_active_name_unique_idx
   ON devices(project_id, name)
