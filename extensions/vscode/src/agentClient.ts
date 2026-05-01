@@ -394,7 +394,17 @@ export class AgentClient {
     });
     socket.on('error', (error: Error) => {
       if (!disposed) {
+        disposed = true;
         onError(AgentClientError.unavailable(error.message));
+      }
+    });
+    socket.on('close', () => {
+      // Surface a typed unavailable error when the agent closes the
+      // stream socket without first sending an error envelope so the
+      // status-bar controller can reconnect with backoff.
+      if (!disposed) {
+        disposed = true;
+        onError(AgentClientError.unavailable('agent status stream closed'));
       }
     });
     socket.write(encodeFrame(request, this.maxMessageSize));
