@@ -411,23 +411,14 @@ fn passkey_register_is_unavailable_without_writing_metadata()
 
     let mut register_output = Vec::new();
     let register = run_with_context(
-        Cli::try_parse_from([
-            "locket",
-            "passkey",
-            "register",
-            "--label",
-            "work-laptop",
-        ])?,
+        Cli::try_parse_from(["locket", "passkey", "register", "--label", "work-laptop"])?,
         &context,
         &mut register_output,
     );
     let Err(error) = register else {
         return Err("registration must fail without a platform passkey integration".into());
     };
-    assert_eq!(
-        error.exit_code(),
-        locket_core::LocketError::PolicyValidationIncomplete.exit_code(),
-    );
+    assert_eq!(error.exit_code(), locket_core::LocketError::PolicyValidationIncomplete.exit_code(),);
     assert!(register_output.is_empty());
 
     let store = locket_store::Store::open(directory.path().join("store.db"))?;
@@ -487,13 +478,7 @@ fn passkey_register_via_memory_registrar_writes_credential_and_audit()
 
     let mut register_output = Vec::new();
     run_with_context(
-        Cli::try_parse_from([
-            "locket",
-            "passkey",
-            "register",
-            "--label",
-            "work-laptop",
-        ])?,
+        Cli::try_parse_from(["locket", "passkey", "register", "--label", "work-laptop"])?,
         &registered_context,
         &mut register_output,
     )?;
@@ -537,8 +522,7 @@ fn passkey_register_via_memory_registrar_writes_credential_and_audit()
 }
 
 #[test]
-fn passkey_unlock_round_trips_master_key_through_prf()
--> Result<(), Box<dyn std::error::Error>> {
+fn passkey_unlock_round_trips_master_key_through_prf() -> Result<(), Box<dyn std::error::Error>> {
     use locket_platform::{MemoryPlatformPasskeyRegistrar, PasskeyRegistration};
 
     let directory = tempdir()?;
@@ -562,13 +546,7 @@ fn passkey_unlock_round_trips_master_key_through_prf()
     let registrar = Arc::new(MemoryPlatformPasskeyRegistrar::allowing(registration, [13_u8; 32]));
     let registered_context = super::context_with_passkey_registrar(&context, registrar);
     run_with_context(
-        Cli::try_parse_from([
-            "locket",
-            "passkey",
-            "register",
-            "--label",
-            "work-laptop",
-        ])?,
+        Cli::try_parse_from(["locket", "passkey", "register", "--label", "work-laptop"])?,
         &registered_context,
         &mut Vec::new(),
     )?;
@@ -603,8 +581,8 @@ fn passkey_unlock_round_trips_master_key_through_prf()
 }
 
 #[test]
-fn passkey_unlock_with_wrong_prf_output_fails_integrity()
--> Result<(), Box<dyn std::error::Error>> {
+fn passkey_unlock_with_wrong_prf_output_fails_integrity() -> Result<(), Box<dyn std::error::Error>>
+{
     use locket_platform::{MemoryPlatformPasskeyRegistrar, PasskeyRegistration};
 
     let directory = tempdir()?;
@@ -629,23 +607,14 @@ fn passkey_unlock_with_wrong_prf_output_fails_integrity()
         Arc::new(MemoryPlatformPasskeyRegistrar::allowing(registration, [7_u8; 32])),
     );
     run_with_context(
-        Cli::try_parse_from([
-            "locket",
-            "passkey",
-            "register",
-            "--label",
-            "work-laptop",
-        ])?,
+        Cli::try_parse_from(["locket", "passkey", "register", "--label", "work-laptop"])?,
         &registered_context,
         &mut Vec::new(),
     )?;
 
     let wrong_context = super::context_with_passkey_registrar(
         &registered_context,
-        Arc::new(MemoryPlatformPasskeyRegistrar::with_known_credential(
-            [99_u8; 32],
-            credential_id,
-        )),
+        Arc::new(MemoryPlatformPasskeyRegistrar::with_known_credential([99_u8; 32], credential_id)),
     );
     let mut output = Vec::new();
     let result = run_with_context(
@@ -656,10 +625,7 @@ fn passkey_unlock_with_wrong_prf_output_fails_integrity()
     let Err(error) = result else {
         return Err("wrong PRF output must fail unlock".into());
     };
-    assert!(matches!(
-        error,
-        crate::CliError::Crypto(locket_crypto::CryptoError::DecryptionFailed)
-    ));
+    assert!(matches!(error, crate::CliError::Crypto(locket_crypto::CryptoError::DecryptionFailed)));
 
     let store = locket_store::Store::open(directory.path().join("store.db"))?;
     let denied: i64 = store.connection().query_row(
@@ -689,10 +655,7 @@ fn passkey_unlock_without_registered_passkey_fails() -> Result<(), Box<dyn std::
     let Err(error) = result else {
         return Err("unlock without registered passkeys must fail".into());
     };
-    assert_eq!(
-        error.exit_code(),
-        locket_core::LocketError::InvalidReference.exit_code(),
-    );
+    assert_eq!(error.exit_code(), locket_core::LocketError::InvalidReference.exit_code(),);
     assert!(error.to_string().to_lowercase().contains("passkey"));
     Ok(())
 }

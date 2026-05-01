@@ -464,10 +464,8 @@ pub fn setup_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
 /// every change so reveal/copy items match the matrix in
 /// [`tray_menu_action_enablement`]. The default is "vault locked, no
 /// secret selected" until the webview reports otherwise.
-static CURRENT_SELECTION: Mutex<TraySelectionState> = Mutex::new(TraySelectionState {
-    vault_unlocked: false,
-    secret_selected: false,
-});
+static CURRENT_SELECTION: Mutex<TraySelectionState> =
+    Mutex::new(TraySelectionState { vault_unlocked: false, secret_selected: false });
 
 fn current_selection_state() -> TraySelectionState {
     CURRENT_SELECTION
@@ -511,7 +509,8 @@ pub fn build_tray_menu_with<R: Runtime>(
             Some(reason) => format!("{} - {}", action.label(), reason),
             None => action.label().to_owned(),
         };
-        let item = MenuItemBuilder::with_id(action.id(), label).enabled(enablement.enabled).build(app)?;
+        let item =
+            MenuItemBuilder::with_id(action.id(), label).enabled(enablement.enabled).build(app)?;
         builder = builder.item(&item);
     }
 
@@ -807,18 +806,20 @@ mod tests {
             for action in [TrayMenuAction::RevealSecret, TrayMenuAction::CopySecret] {
                 let result = tray_menu_action_enablement(action, state);
                 assert_eq!(result.enabled, expected_enabled, "{action:?} {state:?}");
-                match (expected_reason, result.disabled_reason) {
-                    (Some(needle), Some(reason)) => {
-                        assert!(
-                            reason.contains(needle),
-                            "{action:?} {state:?}: expected reason to contain {needle:?}, got {reason:?}",
-                        );
-                        // Tooltip is metadata-only — never includes a
-                        // value or a name.
-                        assert!(!reason.to_lowercase().contains("value"));
-                    }
-                    (None, None) => {}
-                    other => panic!("{action:?} {state:?} mismatch: {other:?}"),
+                if let Some(needle) = expected_reason {
+                    let reason = result.disabled_reason.unwrap_or("");
+                    assert!(
+                        reason.contains(needle),
+                        "{action:?} {state:?}: expected reason to contain {needle:?}, got {reason:?}",
+                    );
+                    // Tooltip is metadata-only — never includes a
+                    // value or a name.
+                    assert!(!reason.to_lowercase().contains("value"));
+                } else {
+                    assert_eq!(
+                        result.disabled_reason, None,
+                        "{action:?} {state:?} unexpected disabled reason",
+                    );
                 }
             }
         }

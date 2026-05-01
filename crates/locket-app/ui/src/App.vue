@@ -415,9 +415,11 @@ async function handleTrayMenuAction(action: TrayMenuAction): Promise<void> {
       break;
     case 'switch-profile':
       currentView.value = 'profiles';
+      await refresh();
       break;
     case 'run-policy':
       currentView.value = 'policies';
+      await refreshPolicies();
       break;
     case 'start-scan':
       currentView.value = 'scan';

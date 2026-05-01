@@ -63,6 +63,11 @@
         "command": "locket.openAuditView",
         "title": "Open Audit View",
         "category": "Locket"
+      },
+      {
+        "command": "locket.createTerminal",
+        "title": "Create Terminal",
+        "category": "Locket"
       }
     ],
     "menus": {
@@ -74,7 +79,8 @@
         { "command": "locket.scanWorkspace" },
         { "command": "locket.revealSecret" },
         { "command": "locket.copySecret" },
-        { "command": "locket.openAuditView" }
+        { "command": "locket.openAuditView" },
+        { "command": "locket.createTerminal" }
       ]
     }
   },

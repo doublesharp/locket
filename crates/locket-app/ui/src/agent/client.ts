@@ -24,6 +24,8 @@ import type {
   ListRuntimeSessionsResponse,
   ListSecretsRequest,
   ListSecretsResponse,
+  PolicyDoctorRequest,
+  PolicyDoctorResponse,
   PrepareExecRequest,
   PrepareExecResponse,
   ReadConfigRequest,
@@ -216,6 +218,12 @@ export async function prepareExec(
   request: PrepareExecRequest,
 ): Promise<AgentResult<PrepareExecResponse>> {
   return callTyped<PrepareExecResponse>('agent_prepare_exec', { request });
+}
+
+export async function policyDoctor(
+  request: PolicyDoctorRequest,
+): Promise<AgentResult<PolicyDoctorResponse>> {
+  return callTyped<PolicyDoctorResponse>('agent_policy_doctor', { request });
 }
 
 export async function listRuntimeSessions(

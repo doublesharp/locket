@@ -220,6 +220,25 @@ export interface RegisterCommandPoliciesRequest {
   audit_profile_id?: string;
 }
 
+export interface PolicyDoctorRequest {
+  project_id: string;
+  profile_id: string;
+  policy: CommandPolicySnapshotWire;
+  references?: string[];
+  store_path?: string;
+}
+
+export interface PolicyDoctorResponse {
+  status: 'pass' | 'fail';
+  allowed_env_names: string[];
+  ttl_seconds: number;
+  references_ok: number;
+  references_failed: string[];
+  env_mode_passthrough: string[];
+  env_mode_resolve: string[];
+  env_mode_denied: string[];
+}
+
 /**
  * Wire shape for `agent_set_active_profile`. Mirrors the desktop's
  * `DesktopSetActiveProfileRequest` so the webview only fills the

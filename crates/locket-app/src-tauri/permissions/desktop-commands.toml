@@ -14,6 +14,7 @@ commands.allow = [
   "agent_scan",
   "agent_resolve",
   "agent_prepare_exec",
+  "agent_policy_doctor",
   "agent_list_runtime_sessions",
   "agent_list_policies",
   "agent_register_command_policies",

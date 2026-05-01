@@ -44,6 +44,16 @@ export type TraySideEffect =
   | 'reveal-selected-secret'
   | 'copy-selected-secret';
 
+/** Desktop command each tray action ultimately drives, when applicable. */
+export type TrayAgentCommand =
+  | 'agent_lock'
+  | 'agent_unlock'
+  | 'agent_set_active_profile'
+  | 'agent_list_policies'
+  | 'agent_scan'
+  | 'agent_reveal'
+  | 'agent_copy';
+
 /**
  * Vault + secret-selection state pushed into the Rust tray module via
  * `tray_set_selection`. Carries booleans only — never a secret name,
@@ -142,6 +152,30 @@ export function trayActionSideEffect(action: TrayMenuAction): TraySideEffect {
       return 'copy-selected-secret';
     default:
       return 'none';
+  }
+}
+
+/** Agent-backed command path used by the App-level tray handler. */
+export function trayActionAgentCommand(action: TrayMenuAction): TrayAgentCommand | null {
+  switch (action) {
+    case 'lock-vault':
+      return 'agent_lock';
+    case 'unlock-vault':
+      return 'agent_unlock';
+    case 'switch-profile':
+      return 'agent_set_active_profile';
+    case 'run-policy':
+      return 'agent_list_policies';
+    case 'start-scan':
+      return 'agent_scan';
+    case 'reveal-secret':
+      return 'agent_reveal';
+    case 'copy-secret':
+      return 'agent_copy';
+    case 'open-app':
+      return null;
+    default:
+      return null;
   }
 }
 

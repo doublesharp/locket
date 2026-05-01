@@ -74,8 +74,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn record_locked_refusal_writes_to_store_path_parent()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn record_locked_refusal_writes_to_store_path_parent() -> Result<(), Box<dyn std::error::Error>>
+    {
         let directory = tempdir()?;
         let store_path = directory.path().join("store.db");
         record_locked_refusal(

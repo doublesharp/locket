@@ -67,6 +67,8 @@ pub enum AgentMethod {
     IdeEnvSession,
     /// Replace the agent's in-memory command policy snapshot for a project.
     RegisterCommandPolicies,
+    /// Dry-run validate a command policy through the agent.
+    PolicyDoctor,
 }
 
 impl AgentMethod {
@@ -104,6 +106,7 @@ impl AgentMethod {
             Self::RegisterIdeEnvSession => "RegisterIdeEnvSession",
             Self::IdeEnvSession => "IdeEnvSession",
             Self::RegisterCommandPolicies => "RegisterCommandPolicies",
+            Self::PolicyDoctor => "PolicyDoctor",
         }
     }
 }
@@ -143,6 +146,7 @@ impl FromStr for AgentMethod {
             "RegisterIdeEnvSession" => Ok(Self::RegisterIdeEnvSession),
             "IdeEnvSession" => Ok(Self::IdeEnvSession),
             "RegisterCommandPolicies" => Ok(Self::RegisterCommandPolicies),
+            "PolicyDoctor" => Ok(Self::PolicyDoctor),
             other => Err(UnknownMethod { method: other.to_owned() }),
         }
     }

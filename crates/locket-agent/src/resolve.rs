@@ -1281,9 +1281,7 @@ mod tests {
         // `ResolveReference` call must accept that umbrella grant
         // without a separate `RequestGrant(ResolveReference)`.
         use crate::policies::CommandPolicySnapshot;
-        use crate::prepare_exec::{
-            PrepareExecRequest, PrepareExecResponse, handle_prepare_exec,
-        };
+        use crate::prepare_exec::{PrepareExecRequest, PrepareExecResponse, handle_prepare_exec};
 
         let fixture = build_fixture()?;
         let state = AgentSocketState::locked("test-version");
@@ -1334,8 +1332,7 @@ mod tests {
         let ResponseEnvelope::Success(prepare_success) = prepare_response else {
             return Err("PrepareExec must succeed for the test fixture".into());
         };
-        let prepare_decoded: PrepareExecResponse =
-            serde_json::from_value(prepare_success.payload)?;
+        let prepare_decoded: PrepareExecResponse = serde_json::from_value(prepare_success.payload)?;
         assert!(
             prepare_decoded.grant_id.starts_with("lk_grant_"),
             "expected lk_grant_-prefixed grant_id, got {}",

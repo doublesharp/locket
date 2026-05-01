@@ -32,11 +32,8 @@ fn bench_key_derivation(c: &mut Criterion) {
         });
     });
 
-    let warm_info = HkdfWrapInfo::new(
-        "lk_proj_bench",
-        Some("lk_prof_bench"),
-        KeyPurpose::ProfileSecret,
-    );
+    let warm_info =
+        HkdfWrapInfo::new("lk_proj_bench", Some("lk_prof_bench"), KeyPurpose::ProfileSecret);
     group.bench_function("warm_repeat_call", |b| {
         b.iter(|| {
             let key = derive_wrapping_key_v1(black_box(&MASTER_KEY), black_box(&warm_info))

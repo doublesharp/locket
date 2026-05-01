@@ -250,10 +250,10 @@ pub fn decrypt_bundle_payload_with_x25519_secret(
     encrypted_payload: &[u8],
     secret_key: &[u8; 32],
 ) -> BundleEncryptionResult<Vec<u8>> {
-    let encoded =
-        bech32::encode("AGE-SECRET-KEY-", secret_key.to_base32(), Variant::Bech32).map_err(
-            |error| BundleEncryptionError::Decrypt(format!("invalid x25519 secret: {error}")),
-        )?;
+    let encoded = bech32::encode("AGE-SECRET-KEY-", secret_key.to_base32(), Variant::Bech32)
+        .map_err(|error| {
+            BundleEncryptionError::Decrypt(format!("invalid x25519 secret: {error}"))
+        })?;
     let identity: age::x25519::Identity = encoded
         .parse()
         .map_err(|message: &'static str| BundleEncryptionError::Decrypt(message.to_owned()))?;
@@ -848,10 +848,8 @@ mod tests {
     #[test]
     fn deserialize_rejects_recipient_fingerprints_not_array() {
         let mut object = Map::new();
-        object.insert(
-            "recipient_fingerprints".to_owned(),
-            Value::String("not-an-array".to_owned()),
-        );
+        object
+            .insert("recipient_fingerprints".to_owned(), Value::String("not-an-array".to_owned()));
         object.insert("project_id".to_owned(), Value::String("lk_proj_demo".to_owned()));
         object.insert("schema_version".to_owned(), Value::Number(BUNDLE_SCHEMA_V1.into()));
         object.insert("created_at".to_owned(), Value::Number(1_i64.into()));
@@ -880,10 +878,8 @@ mod tests {
         object.insert("project_id".to_owned(), Value::String("lk_proj_demo".to_owned()));
         object.insert("schema_version".to_owned(), Value::Number(BUNDLE_SCHEMA_V1.into()));
         object.insert("created_at".to_owned(), Value::Number(1_i64.into()));
-        object.insert(
-            "profile_count".to_owned(),
-            Value::Number(serde_json::Number::from(u64::MAX)),
-        );
+        object
+            .insert("profile_count".to_owned(), Value::Number(serde_json::Number::from(u64::MAX)));
         object.insert("payload_digest".to_owned(), Value::String("c".repeat(64)));
         let manifest_bytes = crate::canonical_json(&Value::Object(object)).into_bytes();
 
@@ -943,8 +939,7 @@ mod tests {
     fn encrypt_with_empty_plaintext_round_trips() {
         let id = age::x25519::Identity::generate();
         let recipient_keys = [public_key_bytes(&id.to_public())];
-        let encrypted =
-            encrypt_bundle_payload_for_age_recipients(b"", &recipient_keys).unwrap();
+        let encrypted = encrypt_bundle_payload_for_age_recipients(b"", &recipient_keys).unwrap();
         let decrypted = decrypt_bundle_payload_with_age_identity(&encrypted, &id).unwrap();
         assert!(decrypted.is_empty());
     }

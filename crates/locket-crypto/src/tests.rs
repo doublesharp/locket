@@ -777,8 +777,7 @@ fn passkey_prf_wrap_round_trip_recovers_master_key() -> Result<(), CryptoError> 
     let master_key = [42_u8; KEY_LEN];
     let prf_output = [9_u8; 32];
     let wrapped = wrap_master_key_with_passkey_prf(&master_key, &prf_output, "lk_proj_demo")?;
-    let recovered =
-        unwrap_master_key_with_passkey_prf(&wrapped, &prf_output, "lk_proj_demo")?;
+    let recovered = unwrap_master_key_with_passkey_prf(&wrapped, &prf_output, "lk_proj_demo")?;
     assert_eq!(*recovered, master_key);
     Ok(())
 }
@@ -787,8 +786,7 @@ fn passkey_prf_wrap_round_trip_recovers_master_key() -> Result<(), CryptoError> 
 fn passkey_prf_unwrap_rejects_wrong_prf_output() -> Result<(), CryptoError> {
     let master_key = [42_u8; KEY_LEN];
     let wrapped = wrap_master_key_with_passkey_prf(&master_key, &[9_u8; 32], "lk_proj_demo")?;
-    let result =
-        unwrap_master_key_with_passkey_prf(&wrapped, &[10_u8; 32], "lk_proj_demo");
+    let result = unwrap_master_key_with_passkey_prf(&wrapped, &[10_u8; 32], "lk_proj_demo");
     assert!(matches!(result, Err(CryptoError::DecryptionFailed)));
     Ok(())
 }
@@ -797,8 +795,7 @@ fn passkey_prf_unwrap_rejects_wrong_prf_output() -> Result<(), CryptoError> {
 fn passkey_prf_unwrap_rejects_wrong_project_id() -> Result<(), CryptoError> {
     let master_key = [42_u8; KEY_LEN];
     let wrapped = wrap_master_key_with_passkey_prf(&master_key, &[9_u8; 32], "lk_proj_demo")?;
-    let result =
-        unwrap_master_key_with_passkey_prf(&wrapped, &[9_u8; 32], "lk_proj_other");
+    let result = unwrap_master_key_with_passkey_prf(&wrapped, &[9_u8; 32], "lk_proj_other");
     assert!(matches!(result, Err(CryptoError::DecryptionFailed)));
     Ok(())
 }

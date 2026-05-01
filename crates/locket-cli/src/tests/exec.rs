@@ -825,6 +825,8 @@ fn ide_external_env_source_without_agent_context_returns_typed_error()
     // `locket run`.
     let document = locket_core::PolicyDocument::from_toml_str(
         r#"
+schema_version = 1
+
 [commands.env_check]
 argv = ["/bin/sh", "-c", "true"]
 required_secrets = ["DATABASE_URL"]
@@ -847,10 +849,7 @@ env_mode = "strict"
     assert_eq!(error.exit_code(), locket_core::LocketError::IdeEnvSessionUnavailable.exit_code());
     assert_eq!(error.exit_code(), 80);
     let message = error.to_string();
-    assert!(
-        message.contains("IdeEnvSessionUnavailable"),
-        "error must be typed, got: {message}"
-    );
+    assert!(message.contains("IdeEnvSessionUnavailable"), "error must be typed, got: {message}");
     assert!(
         message.contains("requires `locket run`") || message.contains("LOCKET_IDE_ENV_SESSION"),
         "error must carry an actionable reason, got: {message}"

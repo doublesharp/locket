@@ -795,7 +795,12 @@ pub async fn dispatch(envelope: &RequestEnvelope, state: &AgentSocketState) -> R
         Ok(AgentMethod::ListRuntimeSessions) => handle_list_runtime_sessions(envelope, state).await,
         Ok(AgentMethod::ListPolicies) => handle_list_policies(envelope, state).await,
         Ok(AgentMethod::ListDeviceMembers) => handle_list_device_members(envelope),
-        Ok(AgentMethod::RegisterCommandPolicies) => handle_register_command_policies(envelope, state).await,
+        Ok(AgentMethod::RegisterCommandPolicies) => {
+            handle_register_command_policies(envelope, state).await
+        }
+        Ok(AgentMethod::PolicyDoctor) => {
+            crate::policies::handle_policy_doctor(envelope, state, current_unix_nanos()).await
+        }
         Ok(AgentMethod::ResolveReference) => {
             crate::resolve::handle_resolve(envelope, state, current_unix_nanos()).await
         }

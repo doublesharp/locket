@@ -248,13 +248,12 @@ fn doctor(context: &RuntimeContext, output: &mut impl Write) -> Result<(), CliEr
         validate_policies_via_agent(context, &resolved, &document)
     };
 
-    let header_status = if validation.has_failures()
-        || (validation.fatal_error.is_some() && has_lk_references)
-    {
-        "incomplete"
-    } else {
-        "ok"
-    };
+    let header_status =
+        if validation.has_failures() || (validation.fatal_error.is_some() && has_lk_references) {
+            "incomplete"
+        } else {
+            "ok"
+        };
     writeln!(output, "policy_doctor: {header_status}")?;
     writeln!(output, "policies: {}", document.commands.len())?;
     writeln!(output, "metadata_only: yes")?;
@@ -295,10 +294,7 @@ fn doctor(context: &RuntimeContext, output: &mut impl Write) -> Result<(), CliEr
 
     if matches!(validation.fatal_error.as_ref(), Some(FatalDoctorError::AgentUnavailable)) {
         if has_lk_references {
-            writeln!(
-                output,
-                "warning: lk:// validation skipped because agent is unavailable"
-            )?;
+            writeln!(output, "warning: lk:// validation skipped because agent is unavailable")?;
             writeln!(output, "unvalidated_lk_references: present")?;
             return Err(typed_cli_error(
                 LocketError::AgentUnavailable,
@@ -531,9 +527,7 @@ fn validate_one_policy(
         .iter()
         .chain(policy.optional_secrets.iter())
         .map(|name| name.as_str().to_owned())
-        .filter(|name| {
-            allowed_env_names.contains(name) && !referenced_keys.contains(name)
-        })
+        .filter(|name| allowed_env_names.contains(name) && !referenced_keys.contains(name))
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect();
@@ -692,7 +686,9 @@ fn write_policy_doctor_report(
     report: &PolicyDoctorReport,
 ) -> Result<(), CliError> {
     writeln!(output, "policy: {}", report.name)?;
-    if let (Some(kind), Some(message)) = (report.error_kind.as_deref(), report.error_message.as_deref()) {
+    if let (Some(kind), Some(message)) =
+        (report.error_kind.as_deref(), report.error_message.as_deref())
+    {
         writeln!(output, "  status: skipped ({kind})")?;
         writeln!(output, "  detail: {message}")?;
         return Ok(());
@@ -727,18 +723,11 @@ fn write_doctor_audit_if_available(
     if store.get_project(resolved.config.project_id.as_str())?.is_none() {
         return Ok(());
     }
-    let audit_key = load_project_key(
-        context,
-        &store,
-        resolved.config.project_id.as_str(),
-        KeyPurpose::Audit,
-    )?;
+    let audit_key =
+        load_project_key(context, &store, resolved.config.project_id.as_str(), KeyPurpose::Audit)?;
     let timestamp = now_unix_nanos()?;
-    let check_names: Vec<String> = validation
-        .reports
-        .iter()
-        .map(|report| format!("policy.{}", report.name))
-        .collect();
+    let check_names: Vec<String> =
+        validation.reports.iter().map(|report| format!("policy.{}", report.name)).collect();
     let metadata = json!({
         "schema_version": 1,
         "action": "DOCTOR",
@@ -1162,10 +1151,7 @@ fn build_snapshots(
 }
 
 #[cfg(unix)]
-fn pump_policies_unix(
-    context: &RuntimeContext,
-    payload: serde_json::Value,
-) -> Result<(), String> {
+fn pump_policies_unix(context: &RuntimeContext, payload: serde_json::Value) -> Result<(), String> {
     use locket_agent::{
         AgentMethod, DEFAULT_MAX_MESSAGE_SIZE, RequestEnvelope, ResponseEnvelope,
         decode_response_frame, encode_frame,
@@ -1183,9 +1169,8 @@ fn pump_policies_unix(
         .build()
         .map_err(|error| error.to_string())?;
     runtime.block_on(async move {
-        let mut stream = UnixStream::connect(&socket_path)
-            .await
-            .map_err(|error| format!("connect: {error}"))?;
+        let mut stream =
+            UnixStream::connect(&socket_path).await.map_err(|error| format!("connect: {error}"))?;
         let request = RequestEnvelope::new(
             "cli-pump-policies",
             AgentMethod::RegisterCommandPolicies,
@@ -1227,11 +1212,12 @@ mod tests {
         // must not issue a separate `RequestGrant(ResolveReference)`.
         // The helper returns `Some(...)` so the caller takes the reuse
         // branch, dropping the second RPC entirely.
-        let reused = reuse_prepare_exec_grant_for_resolve(
-            "lk_grant_0123456789abcdef0123456789abcdef",
+        let reused =
+            reuse_prepare_exec_grant_for_resolve("lk_grant_0123456789abcdef0123456789abcdef");
+        assert_eq!(
+            reused.as_ref().map(|payload| payload.grant_id.as_str()),
+            Some("lk_grant_0123456789abcdef0123456789abcdef")
         );
-        let payload = reused.expect("reuse must succeed when grant_id is non-empty");
-        assert_eq!(payload.grant_id, "lk_grant_0123456789abcdef0123456789abcdef");
     }
 
     #[test]

@@ -2514,25 +2514,20 @@ pub(crate) fn write_runtime_policy_denial_audit_if_available(
     let audit_key =
         load_project_key(context, store, resolved.config.project_id.as_str(), KeyPurpose::Audit)?;
     let policy_name = policy.map_or(requested_policy_name, |policy| policy.name.as_str());
-    let env_mode = policy.map_or_else(|| "minimal".to_owned(), |policy| policy.env_mode.to_string());
-    let override_mode = policy
-        .map_or_else(|| "locket".to_owned(), |policy| policy.override_behavior.to_string());
+    let env_mode =
+        policy.map_or_else(|| "minimal".to_owned(), |policy| policy.env_mode.to_string());
+    let override_mode =
+        policy.map_or_else(|| "locket".to_owned(), |policy| policy.override_behavior.to_string());
     let override_explicit = policy.is_some_and(CommandPolicy::override_explicit);
     let command_type_label = policy.map_or("argv", |policy| command_type(&policy.command));
     let allowed_secret_names = policy.map_or_else(Vec::new, |policy| {
-        let raw = policy
-            .allowed_secrets
-            .iter()
-            .map(locket_core::SecretName::as_str)
-            .collect::<Vec<_>>();
+        let raw =
+            policy.allowed_secrets.iter().map(locket_core::SecretName::as_str).collect::<Vec<_>>();
         summarize_names(&raw)
     });
     let required_secret_names = policy.map_or_else(Vec::new, |policy| {
-        let raw = policy
-            .required_secrets
-            .iter()
-            .map(locket_core::SecretName::as_str)
-            .collect::<Vec<_>>();
+        let raw =
+            policy.required_secrets.iter().map(locket_core::SecretName::as_str).collect::<Vec<_>>();
         summarize_names(&raw)
     });
     let external_sources = policy.map_or_else(Vec::new, |policy| {

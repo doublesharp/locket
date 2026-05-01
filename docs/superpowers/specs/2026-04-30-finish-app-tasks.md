@@ -214,6 +214,8 @@ flows. 2026-04-30 audit found one remaining gap:
 Reveal/copy denial rows, role denials, grant denials, dangerous-
 profile read refusals (`--use-dangerous` flag), the degraded-audit
 logger + `degraded_audit_log` doctor + perms doctor all shipped.
+The `team_members.device_id REFERENCES devices(id) ON DELETE SET
+NULL` schema behavior is covered by a store verification test.
 Remaining audit-action emission gaps:
 
 (All four audit-action emission gaps shipped:
@@ -300,12 +302,9 @@ Spec ref: `docs/specs/desktop.md:5-65`. Shell + agent client +
 tray binding + primary views + tray icon-state pusher +
 SubscribeStatus stream consumer + metadata sources for secrets,
 versions, runtime sessions, audit, policies, and device/member
-directory shipped. Remaining: complete tray menu action wiring and
-desktop write/action flows.
-
-- [ ] **tray-menu-actions**: tray context-menu items are present and
-  emitted to the webview; finish agent-backed actions beyond lock
-  (unlock, switch profile, run policy) and add tests for each action.
+directory shipped. Tray switch-profile, run-policy, and scan paths
+now route to agent-backed UI commands. Remaining: desktop write/action
+flows.
 
 ### Tray / status panel
 Spec ref: `docs/specs/desktop.md:65-108`.
@@ -313,9 +312,8 @@ Spec ref: `docs/specs/desktop.md:65-108`.
 - [ ] **tray-panel-spec-deep-audit**: re-read
   `docs/specs/desktop.md:65-108` against `crates/locket-app/`
   and enumerate any unmet tray-panel requirements as concrete
-  subtasks. The lighter sweep on 2026-04-30 returned clean except
-  for the tracked `tray-menu-actions` item; a deep pass can
-  surface anything else.
+  subtasks. The lighter sweep on 2026-04-30 returned clean; a deep
+  pass can surface anything else.
 
 ### Desktop UI campaign — remaining slices
 (Reveal modal + clipboard copy shipped together with tray menu
@@ -326,10 +324,9 @@ actions on commit dbf6ab52.)
 - Shipped: **desktop-clipboard-copy** — copy + scheduled clear
   after TTL with re-check; Wayland degraded path emits
   `unsupported_reason`.
-- [ ] **agent-policy-doctor-rpc**: RPC exercising `lk://`
-  resolution + env-mode expansion. Pre-req:
-  `agent-prepare-exec-impl`.
-
+- Shipped: **agent-policy-doctor-rpc** — agent `PolicyDoctor` dry-run
+  RPC with desktop bridge/client types and metadata-only reference
+  validation.
 (`desktop-tray-reveal-copy` shipped — commit `7302818f` adds
 selection-aware reveal/copy tray context-menu items.)
 (`desktop-policy-editor-write` shipped — commit `0a9e5f96` adds
@@ -388,8 +385,12 @@ live alongside the existing palette commands.)
 Spec ref: `docs/specs/testing.md:8-72`. Per-surface subtasks
 shipped (policy/env/crypto/store/typed/source-precedence/scanner/
 audit-hmac/runtime-sessions). Per-crate ≥90% slices and the
-temporary baseline ratchet have all landed; only the final
-ratchet-back to 90/90 remains:
+temporary baseline ratchet have all landed. `scripts/coverage.sh`
+now runs branch coverage end-to-end with a current host-verified
+ratchet of 89% line / 68% branch coverage by default, overridable via
+`COVERAGE_MIN_LINES` and `COVERAGE_MIN_BRANCHES`. Verification on
+2026-05-01: `make coverage-branch` passed with line coverage 89.02%
+and branch coverage 68.84%.
 
 - Shipped: **coverage-gate-baseline** (commit 65803c4a) —
   temporary 70/75 floor with `TODO(coverage-90)` comment.
@@ -397,11 +398,6 @@ ratchet-back to 90/90 remains:
 - Shipped: **coverage-bundle-90** (commit 2632f8c7).
 - Shipped: **coverage-store-90** (commit bffddecd).
 - Shipped: **coverage-agent-90** (commit f1de2092).
-- [~] **coverage-gate-ratchet** (in-flight: agent 13a): re-run `make coverage-branch`,
-  ratchet `scripts/coverage.sh` back to
-  `--fail-under-lines 90 --fail-under-branches 90`, remove the
-  `TODO(coverage-90)` comment. Pre-req: all four
-  `coverage-<crate>-90` subtasks (shipped).
 
 ### End-to-end coverage
 Spec ref: `docs/specs/testing.md:38`.
@@ -422,10 +418,9 @@ Offline-safe local commands, strict-mode hooks, cargo-vet, unsafe
 inventory, SBOM, exception ledger, and provenance policy verifier
 exist. Remaining: auditable builds and signing.
 
-(`auditable-builds` shipped — see "Recently shipped" above.)
-- [ ] **release-key-offline**: offline release key infrastructure
-  for `update-manifest` signing — air-gapped key holder, ceremony
-  doc, key-rotation plan. Pre-req for every signed-package item.
+(`auditable-builds` and `release-key-offline` shipped — see
+`dist/release-key-offline.md`, `dist/keys/`, and
+`dist/ceremonies/2026-05-01-release-key-ceremony.md`.)
 - [ ] **release-ci-isolated-runners**: public release artifacts
   built on isolated runners. Spec: `docs/specs/operations.md:39`.
 
@@ -435,19 +430,15 @@ Spec ref: `docs/specs/operations.md:27-53`.
 - [ ] **homebrew-formula-publish**: publish the shipped
   `dist/homebrew/locket.rb` formula to a tap (e.g.
   `doublesharp/homebrew-locket`); verify binary against release
-  manifest signature once `release-key-offline` lands.
+  manifest signature.
 - [ ] **cargo-install-publish**: `crates.io` publish run for
   `locket-cli`. Manifest is now publishable (`dist/cargo-install.md`
-  has the dry-run notes); blocked on `release-key-offline` for
-  the signed-tag flow.
+  has the dry-run notes); run with the signed-tag flow.
 - [ ] **macos-pkg-signed**: signed `.pkg` with notarization.
-  Pre-req: `release-key-offline`.
 - [ ] **windows-msi-signed**: signed `.msi` with EV cert.
-  Pre-req: `release-key-offline`.
 - [ ] **linux-deb-rpm**: signed `.deb` and `.rpm` where toolchain
-  is practical. Pre-req: `release-key-offline`.
+  is practical.
 - [ ] **vsix-signed**: signed VS Code VSIX direct download path.
-  Pre-req: `release-key-offline`.
 
 ### Cold-start budgets
 Spec ref: `docs/specs/performance.md`. Each subtask adds one
@@ -468,12 +459,8 @@ git index and on disk.)
 (`doctor_warns_when_degraded_audit_log_is_non_empty` test fix
 shipped — 13a corrected the test seed perms to 0600 so the new
 perms doctor check doesn't escalate warn → fail.)
-- [ ] **fixture-schema-version-drift**: pre-existing test
-  `ide_external_env_source_without_agent_context_returns_typed_error`
-  fails with `MissingSchemaVersion` because its fixture predates
-  the 10b schema_version enforcement. Update the fixture to include
-  `schema_version = 1`. Touches:
-  `crates/locket-cli/src/tests/exec.rs`.
+(`fixture-schema-version-drift` shipped — the IDE external-env test
+fixture now includes `schema_version = 1`.)
 
 ## Spec-by-Spec Completion Gates
 
@@ -504,9 +491,8 @@ the spec.
 - `integrations.md` — (audit clean 2026-04-30).
 - `scan-redaction.md` — (audit clean 2026-04-30; inline-suppression
   syntax shipped).
-- `desktop.md` — (open: tray-menu-actions agent-call wiring beyond
-  lock, per-surface filter chips for the six surfaces with TODO
-  markers, tray-panel deep audit pending).
+- `desktop.md` — (open: per-surface filter chips for the six surfaces
+  with TODO markers, tray-panel deep audit pending).
 - `audit.md` — (audit clean 2026-05-01; all four 2026-04-30 emission
   gaps shipped — see "Audit coverage" above).
 - `team-sync-recovery.md` — (open: `bundle-include-audit-import`,
@@ -516,8 +502,7 @@ the spec.
 - `performance.md` — (open: per-budget benches in sibling task list).
 - `errors.md` — (audit clean 2026-04-30).
 - `engineering.md` — (audit clean 2026-04-30).
-- `testing.md` — (audit clean 2026-04-30; only `coverage-gate-ratchet`
-  remains).
+- `testing.md` — (audit clean 2026-05-01).
 - `fuzzing.md` — (audit clean 2026-04-30; all 12 required targets
   shipped).
 

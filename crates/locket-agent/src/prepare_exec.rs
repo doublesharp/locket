@@ -164,10 +164,7 @@ pub async fn handle_prepare_exec(
     // response so the trusted CLI execution path (and policy doctor)
     // can reuse it for the subsequent `ResolveReference` call without
     // a second `RequestGrant` round-trip.
-    let binding = typed
-        .binding
-        .clone()
-        .unwrap_or_else(|| GrantBinding::new(process::id(), "0"));
+    let binding = typed.binding.clone().unwrap_or_else(|| GrantBinding::new(process::id(), "0"));
     let grant_payload = RequestGrantPayload {
         project_id: project_id.to_owned(),
         profile_id: typed.profile_id.clone(),
@@ -179,11 +176,7 @@ pub async fn handle_prepare_exec(
     let ttl_nanos = i128::from(ttl_seconds).saturating_mul(1_000_000_000);
     let issued = {
         let mut grants = state.grants.lock().await;
-        grants.issue(
-            grant_payload,
-            now_unix_nanos,
-            now_unix_nanos.saturating_add(ttl_nanos),
-        )
+        grants.issue(grant_payload, now_unix_nanos, now_unix_nanos.saturating_add(ttl_nanos))
     };
     let grant_id = match issued {
         Ok(record) => record.grant_id,
@@ -214,34 +207,19 @@ fn find_policy<'a>(
     project_id: &str,
     policy_name: &str,
 ) -> Option<&'a CommandPolicySnapshot> {
-    policies
-        .iter()
-        .find(|policy| policy.project_id == project_id && policy.name == policy_name)
+    policies.iter().find(|policy| policy.project_id == project_id && policy.name == policy_name)
 }
 
 const fn ttl_seconds(policy: &CommandPolicySnapshot) -> u64 {
-    if policy.ttl_seconds == 0 {
-        DEFAULT_PREPARE_EXEC_TTL_SECONDS
-    } else {
-        policy.ttl_seconds
-    }
+    if policy.ttl_seconds == 0 { DEFAULT_PREPARE_EXEC_TTL_SECONDS } else { policy.ttl_seconds }
 }
 
 fn command_kind(policy: &CommandPolicySnapshot) -> &str {
-    if policy.command_kind == "shell" {
-        "shell"
-    } else {
-        DEFAULT_COMMAND_KIND
-    }
+    if policy.command_kind == "shell" { "shell" } else { DEFAULT_COMMAND_KIND }
 }
 
 fn protocol_error(request: &RequestEnvelope, message: &str) -> ResponseEnvelope {
-    ResponseEnvelope::Error(ErrorEnvelope::new(
-        request.id.clone(),
-        ERROR_PROTOCOL,
-        message,
-        false,
-    ))
+    ResponseEnvelope::Error(ErrorEnvelope::new(request.id.clone(), ERROR_PROTOCOL, message, false))
 }
 
 fn typed_error(
@@ -275,11 +253,7 @@ mod tests {
     const PROFILE_ID: &str = "lk_prof_dev";
     const POLICY_NAME: &str = "deploy-staging";
 
-    fn snapshot(
-        ttl_seconds: u64,
-        command_kind: &str,
-        allowed: &[&str],
-    ) -> CommandPolicySnapshot {
+    fn snapshot(ttl_seconds: u64, command_kind: &str, allowed: &[&str]) -> CommandPolicySnapshot {
         CommandPolicySnapshot {
             project_id: PROJECT_ID.to_owned(),
             name: POLICY_NAME.to_owned(),
@@ -304,12 +278,7 @@ mod tests {
         state.set_command_policies_for_tests(vec![policy]).await;
         state.unlock_cache.lock().await.insert(
             PROJECT_ID.to_owned(),
-            UnlockEntry::new(
-                vec![7_u8; 32],
-                0,
-                Duration::from_secs(60),
-                UnlockMethod::Passphrase,
-            ),
+            UnlockEntry::new(vec![7_u8; 32], 0, Duration::from_secs(60), UnlockMethod::Passphrase),
         );
         state
     }
@@ -321,10 +290,7 @@ mod tests {
             "binding": GrantBinding::new(std::process::id(), "0"),
         });
         if let Some(project_id) = project_id {
-            payload
-                .as_object_mut()
-                .unwrap()
-                .insert("project_id".to_owned(), json!(project_id));
+            payload.as_object_mut().unwrap().insert("project_id".to_owned(), json!(project_id));
         }
         payload
     }
@@ -368,8 +334,8 @@ mod tests {
     }
 
     #[test]
-    fn prepare_exec_response_defaults_grant_id_when_field_missing()
-    -> Result<(), serde_json::Error> {
+    fn prepare_exec_response_defaults_grant_id_when_field_missing() -> Result<(), serde_json::Error>
+    {
         // A response from an older agent that does not yet surface the
         // grant id must still decode cleanly. The CLI relies on the
         // empty-string default to fall through to the legacy
@@ -415,22 +381,24 @@ mod tests {
             "grant_id must be lk_grant_ prefixed: {}",
             decoded.grant_id
         );
-        let suffix = decoded.grant_id.strip_prefix("lk_grant_").unwrap();
+        let suffix = decoded.grant_id.strip_prefix("lk_grant_").ok_or("grant_id prefix missing")?;
         assert_eq!(suffix.len(), 32, "lk_grant_ suffix must be 32 hex chars");
         assert!(suffix.chars().all(|c| c.is_ascii_hexdigit()));
 
         // Issuing a grant must record exactly one record in the table,
         // and the live record must have the PrepareExec action.
-        let grants = state.grants.lock().await;
-        assert_eq!(grants.len(), 1);
-        let record = grants.get(&decoded.grant_id).expect("grant record present");
-        assert_eq!(record.action, crate::grant::GrantAction::PrepareExec);
+        let action = {
+            let grants = state.grants.lock().await;
+            assert_eq!(grants.len(), 1);
+            grants.get(&decoded.grant_id).ok_or("grant record missing")?.action
+        };
+        assert_eq!(action, crate::grant::GrantAction::PrepareExec);
         Ok(())
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn handle_prepare_exec_emits_shell_command_kind()
-    -> Result<(), Box<dyn std::error::Error>> {
+    async fn handle_prepare_exec_emits_shell_command_kind() -> Result<(), Box<dyn std::error::Error>>
+    {
         let policy = snapshot(120, "shell", &["DEPLOY_TOKEN"]);
         let state = unlocked_state(policy).await;
         let envelope = RequestEnvelope::new(
@@ -465,10 +433,7 @@ mod tests {
             return Err("expected success envelope".into());
         };
         let decoded: PrepareExecResponse = serde_json::from_value(success.payload)?;
-        assert_eq!(
-            u64::from(decoded.ttl_seconds),
-            DEFAULT_PREPARE_EXEC_TTL_SECONDS
-        );
+        assert_eq!(u64::from(decoded.ttl_seconds), DEFAULT_PREPARE_EXEC_TTL_SECONDS);
         Ok(())
     }
 
@@ -532,11 +497,8 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn handle_prepare_exec_requires_project_id() {
         let state = AgentSocketState::locked("test-version");
-        let envelope = RequestEnvelope::new(
-            "req-no-project",
-            AgentMethod::PrepareExec,
-            request_payload(None),
-        );
+        let envelope =
+            RequestEnvelope::new("req-no-project", AgentMethod::PrepareExec, request_payload(None));
 
         let response = handle_prepare_exec(&envelope, &state, 1).await;
         let ResponseEnvelope::Error(error) = response else {

@@ -1056,8 +1056,7 @@ fn audit_verify_processes_each_row_with_its_own_stored_schema_version() -> Resul
 
 #[test]
 #[allow(clippy::too_many_lines)]
-fn append_audit_enforces_required_fields_for_each_action_family()
--> Result<(), Box<dyn Error>> {
+fn append_audit_enforces_required_fields_for_each_action_family() -> Result<(), Box<dyn Error>> {
     struct Family {
         action: &'static str,
         profile_id: Option<&'static str>,
@@ -1338,17 +1337,13 @@ fn append_audit_enforces_required_fields_for_each_action_family()
             metadata_json: &family.complete,
             timestamp: 100,
         };
-        test_store
-            .store
-            .append_audit(&[42; 32], &audit)
-            .map_err(|error| format!("{}: full metadata must be accepted: {error:?}", family.action))?;
+        test_store.store.append_audit(&[42; 32], &audit).map_err(|error| {
+            format!("{}: full metadata must be accepted: {error:?}", family.action)
+        })?;
 
         // Reject: dropping the chosen required field surfaces a clear reason.
-        let mut without_field = family
-            .complete
-            .as_object()
-            .ok_or("family.complete must be a JSON object")?
-            .clone();
+        let mut without_field =
+            family.complete.as_object().ok_or("family.complete must be a JSON object")?.clone();
         without_field.remove(family.drop_field);
         let metadata_missing = serde_json::Value::Object(without_field);
         let mut reject_store = open_initialized_store()?;
@@ -1374,11 +1369,9 @@ fn append_audit_enforces_required_fields_for_each_action_family()
             Err(error) => error,
         };
         let StoreError::AuditMetadataInvalid { action, reason } = error else {
-            return Err(format!(
-                "{}: expected AuditMetadataInvalid, got {error:?}",
-                family.action
-            )
-            .into());
+            return Err(
+                format!("{}: expected AuditMetadataInvalid, got {error:?}", family.action).into()
+            );
         };
         assert_eq!(action, family.action);
         assert!(

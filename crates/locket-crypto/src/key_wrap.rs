@@ -4,9 +4,7 @@ use hkdf::Hkdf;
 use sha2::Sha256;
 use zeroize::Zeroizing;
 
-use crate::aad::{
-    HkdfWrapInfo, append_canonical_field, append_u16_le, hkdf_wrap_info_v1,
-};
+use crate::aad::{HkdfWrapInfo, append_canonical_field, append_u16_le, hkdf_wrap_info_v1};
 use crate::aead::{aead_decrypt, aead_encrypt};
 use crate::error::{CryptoError, CryptoResult};
 use crate::random::random_bytes;

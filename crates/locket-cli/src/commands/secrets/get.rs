@@ -184,9 +184,7 @@ fn enforce_dangerous_profile_consent_or_audit(
     use_dangerous: bool,
     force: bool,
 ) -> Result<(), CliError> {
-    if let Err(error) =
-        ensure_dangerous_profile_consent(&resolved_secret.profile, use_dangerous)
-    {
+    if let Err(error) = ensure_dangerous_profile_consent(&resolved_secret.profile, use_dangerous) {
         write_value_access_audit_if_available(&ValueAccessAudit {
             context,
             resolved: resolved_secret,
@@ -234,7 +232,13 @@ fn get_copy_command(
         "clipboard",
     )?;
     let value = decrypt_current_secret(context, resolved_secret).inspect_err(|error| {
-        record_locked_vault_refusal_if_applicable(context, error, resolved_secret, "COPY", "get --copy");
+        record_locked_vault_refusal_if_applicable(
+            context,
+            error,
+            resolved_secret,
+            "COPY",
+            "get --copy",
+        );
     })?;
     let result = copy_to_clipboard(value.as_str(), ttl_seconds, limit);
     let status = if result.is_ok() { "SUCCESS" } else { "FAILED" };
@@ -310,7 +314,13 @@ fn get_reveal_command(
         "stdout",
     )?;
     let value = decrypt_current_secret(context, resolved_secret).inspect_err(|error| {
-        record_locked_vault_refusal_if_applicable(context, error, resolved_secret, "REVEAL", "get --reveal");
+        record_locked_vault_refusal_if_applicable(
+            context,
+            error,
+            resolved_secret,
+            "REVEAL",
+            "get --reveal",
+        );
     })?;
     write_value_access_audit_if_available(&ValueAccessAudit {
         context,

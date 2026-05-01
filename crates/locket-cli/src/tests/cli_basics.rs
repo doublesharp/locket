@@ -563,10 +563,7 @@ fn import_bundle_without_device_private_key_fails_verification()
     let Err(error) = result else {
         return Err("expected bundle verification error".into());
     };
-    assert_eq!(
-        error.exit_code(),
-        locket_core::LocketError::BundleVerificationFailed.exit_code(),
-    );
+    assert_eq!(error.exit_code(), locket_core::LocketError::BundleVerificationFailed.exit_code(),);
     assert!(
         error.to_string().contains("device private-key storage not initialized"),
         "unexpected error message: {error}"
@@ -627,10 +624,8 @@ fn import_bundle_with_corrupt_age_payload_fails_verification()
     <sha2::Sha256 as sha2::Digest>::update(&mut hasher, &container.encrypted_payload);
     container.manifest.payload_digest =
         format!("{:x}", <sha2::Sha256 as sha2::Digest>::finalize(hasher));
-    let rebuilt = locket_core::BundleContainer::new(
-        container.manifest,
-        container.encrypted_payload,
-    )?;
+    let rebuilt =
+        locket_core::BundleContainer::new(container.manifest, container.encrypted_payload)?;
     fs::write(&bundle_path, rebuilt.serialize()?)?;
 
     let result = run_with_context(
@@ -646,10 +641,7 @@ fn import_bundle_with_corrupt_age_payload_fails_verification()
     let Err(error) = result else {
         return Err("expected bundle decryption to fail".into());
     };
-    assert_eq!(
-        error.exit_code(),
-        locket_core::LocketError::BundleVerificationFailed.exit_code(),
-    );
+    assert_eq!(error.exit_code(), locket_core::LocketError::BundleVerificationFailed.exit_code(),);
     assert!(
         error.to_string().contains("bundle verification failed"),
         "unexpected error message: {error}"

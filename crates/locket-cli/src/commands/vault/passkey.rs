@@ -101,22 +101,14 @@ fn passkey_register_command(
                 credential_id_prefix(&credential.credential_id)
             )?;
             writeln!(output, "rp_id: {}", credential.webauthn_relying_party_id)?;
-            writeln!(
-                output,
-                "transports: {}",
-                render_passkey_transports(&credential.transports)
-            )?;
+            writeln!(output, "transports: {}", render_passkey_transports(&credential.transports))?;
             writeln!(output, "prf_capable: {}", yes_no(credential.prf_capable))?;
             writeln!(
                 output,
                 "backup_eligible: {}",
                 render_optional_bool(credential.backup_eligible)
             )?;
-            writeln!(
-                output,
-                "backup_state: {}",
-                render_optional_bool(credential.backup_state)
-            )?;
+            writeln!(output, "backup_state: {}", render_optional_bool(credential.backup_state))?;
             writeln!(output, "registered_at: {}", format_unix_nanos(timestamp))?;
             writeln!(output, "prf_wrapped: {}", yes_no(prf_wrapped))?;
             writeln!(output, "private_key_material: never displayed")?;
@@ -182,7 +174,8 @@ fn wrap_master_key_with_prf_if_possible(
         return Ok(false);
     };
     let (master_key, _) = load_master_key(context, &credential.project_id)?;
-    let wrapped = wrap_master_key_with_passkey_prf(&master_key, &prf_output, &credential.project_id)?;
+    let wrapped =
+        wrap_master_key_with_passkey_prf(&master_key, &prf_output, &credential.project_id)?;
     let record = PasskeyPrfWrapRecord {
         passkey_id: credential.id.clone(),
         project_id: credential.project_id.clone(),
@@ -205,34 +198,17 @@ pub fn passkey_unlock_command(
     let project_id = resolved.config.project_id.as_str();
     ensure_project_exists(&store, project_id)?;
     let credential = resolve_unlock_candidate(&store, project_id, selector)?;
-    let wrap = store.get_passkey_prf_wrap(project_id, &credential.id)?.ok_or_else(|| {
-        invalid_reference_error("passkey is not configured for PRF-based unlock")
-    })?;
+    let wrap = store
+        .get_passkey_prf_wrap(project_id, &credential.id)?
+        .ok_or_else(|| invalid_reference_error("passkey is not configured for PRF-based unlock"))?;
     let timestamp = now_unix_nanos()?;
-    let master_key = recover_master_key_via_prf(
-        context,
-        &mut store,
-        &resolved,
-        &credential,
-        &wrap,
-        timestamp,
-    )?;
+    let master_key =
+        recover_master_key_via_prf(context, &mut store, &resolved, &credential, &wrap, timestamp)?;
     let source = store_master_key_with_fallback(context, project_id, &master_key, timestamp)?;
-    write_passkey_auth_audit(
-        context,
-        &mut store,
-        &resolved,
-        &credential,
-        "success",
-        timestamp,
-    )?;
+    write_passkey_auth_audit(context, &mut store, &resolved, &credential, "success", timestamp)?;
     writeln!(output, "passkey: unlocked")?;
     writeln!(output, "passkey_id: {}", credential.id)?;
-    writeln!(
-        output,
-        "credential_id_prefix: {}",
-        credential_id_prefix(&credential.credential_id)
-    )?;
+    writeln!(output, "credential_id_prefix: {}", credential_id_prefix(&credential.credential_id))?;
     writeln!(output, "rp_id: {}", credential.webauthn_relying_party_id)?;
     writeln!(output, "master_key_source: {}", source.as_str())?;
     writeln!(output, "private_key_material: never displayed")?;
@@ -281,24 +257,15 @@ fn recover_master_key_via_prf(
     wrap: &PasskeyPrfWrapRecord,
     timestamp: i64,
 ) -> Result<Zeroizing<locket_crypto::KeyBytes>, CliError> {
-    let prf_output = match context
-        .passkey_registrar
-        .evaluate_prf(&credential.credential_id, &wrap.prf_salt)
-    {
-        Ok(output) => output,
-        Err(error) => {
-            write_passkey_auth_audit(
-                context,
-                store,
-                resolved,
-                credential,
-                "failed",
-                timestamp,
-            )
-            .ok();
-            return Err(map_platform_passkey_error(&error));
-        }
-    };
+    let prf_output =
+        match context.passkey_registrar.evaluate_prf(&credential.credential_id, &wrap.prf_salt) {
+            Ok(output) => output,
+            Err(error) => {
+                write_passkey_auth_audit(context, store, resolved, credential, "failed", timestamp)
+                    .ok();
+                return Err(map_platform_passkey_error(&error));
+            }
+        };
     let wrap_nonce: [u8; locket_crypto::NONCE_LEN] =
         wrap.wrap_nonce.as_slice().try_into().map_err(|_| {
             metadata_invalid_error("stored passkey PRF wrap nonce has invalid length")
@@ -312,15 +279,8 @@ fn recover_master_key_via_prf(
     ) {
         Ok(key) => Ok(key),
         Err(error) => {
-            write_passkey_auth_audit(
-                context,
-                store,
-                resolved,
-                credential,
-                "failed",
-                timestamp,
-            )
-            .ok();
+            write_passkey_auth_audit(context, store, resolved, credential, "failed", timestamp)
+                .ok();
             Err(error.into())
         }
     }

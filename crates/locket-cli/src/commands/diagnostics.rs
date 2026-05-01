@@ -455,10 +455,7 @@ fn collect_diagnostics(
 /// - `fail` when the file exists but cannot be read.
 fn check_degraded_audit_log(context: &RuntimeContext) -> DiagnosticCheck {
     let Some(home) = context.store_path.parent() else {
-        return DiagnosticCheck::pass(
-            "degraded_audit_log",
-            "absent (locket-home unresolved)",
-        );
+        return DiagnosticCheck::pass("degraded_audit_log", "absent (locket-home unresolved)");
     };
     let log_path = home.join(locket_platform::DEGRADED_AUDIT_LOG_FILENAME);
     match fs::metadata(&log_path) {
@@ -479,9 +476,7 @@ fn check_degraded_audit_log(context: &RuntimeContext) -> DiagnosticCheck {
                         format!("bytes={bytes} lines={lines}"),
                     )
                 }
-                Err(error) => {
-                    DiagnosticCheck::fail("degraded_audit_log", false, error.to_string())
-                }
+                Err(error) => DiagnosticCheck::fail("degraded_audit_log", false, error.to_string()),
             }
         }
     }
@@ -858,11 +853,7 @@ fn check_degraded_audit_log_perms(context: &RuntimeContext) -> DiagnosticCheck {
         if mode.trailing_zeros() >= 6 {
             DiagnosticCheck::pass(NAME, format!("mode={mode:#o}"))
         } else {
-            DiagnosticCheck::fail(
-                NAME,
-                false,
-                format!("mode={mode:#o} expected=0o600_or_stricter"),
-            )
+            DiagnosticCheck::fail(NAME, false, format!("mode={mode:#o} expected=0o600_or_stricter"))
         }
     }
     #[cfg(not(unix))]

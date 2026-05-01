@@ -430,8 +430,8 @@ fn strict_partition_block_directive_suppresses_inner_findings()
 }
 
 #[test]
-fn strict_partition_propagates_reason_validation_errors()
--> Result<(), Box<dyn std::error::Error>> {
+fn strict_partition_propagates_reason_validation_errors() -> Result<(), Box<dyn std::error::Error>>
+{
     use super::{SuppressionParseError, partition_inline_suppressions_strict};
     let text = "value # locket-suppress: hi\n";
     let result = partition_inline_suppressions_strict(text, Vec::new());

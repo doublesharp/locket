@@ -153,29 +153,23 @@ pub fn run_command(
     ensure_trusted_project_root(&store, &resolved)?;
     let profile = default_profile(&store, &resolved.config)?;
     ensure_agent_running_for_execution(context)?;
-    let prepared_policy = match prepare_policy_execution(
-        context,
-        output,
-        &store,
-        &resolved,
-        &profile,
-        &policy,
-    ) {
-        Ok(prepared) => prepared,
-        Err(error) => {
-            let failure_reason = denial_failure_reason(&error);
-            let _ignored = write_runtime_policy_denial_audit_if_available(
-                context,
-                &mut store,
-                &resolved,
-                Some(&profile),
-                Some(&policy),
-                &policy.name,
-                failure_reason,
-            );
-            return Err(error);
-        }
-    };
+    let prepared_policy =
+        match prepare_policy_execution(context, output, &store, &resolved, &profile, &policy) {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                let failure_reason = denial_failure_reason(&error);
+                let _ignored = write_runtime_policy_denial_audit_if_available(
+                    context,
+                    &mut store,
+                    &resolved,
+                    Some(&profile),
+                    Some(&policy),
+                    &policy.name,
+                    failure_reason,
+                );
+                return Err(error);
+            }
+        };
     let outcome = execute_prepared_with_runtime_session(
         context,
         &RuntimeExecutionRequest {
@@ -240,13 +234,7 @@ fn prepare_policy_execution(
         None
     };
     let ide_ctx = agent_access.as_ref().filter(|_| has_ide_source).map(|access| {
-        IdeEnvSourceContext {
-            context,
-            resolved,
-            profile,
-            policy,
-            agent_access: access,
-        }
+        IdeEnvSourceContext { context, resolved, profile, policy, agent_access: access }
     });
     let external_env = resolve_policy_external_env_with_compose_config_command(
         policy,
@@ -311,8 +299,7 @@ fn prepare_policy_execution(
             .map(String::as_str)
             .chain(reference_secret_names.iter().map(String::as_str)),
     );
-    let external_env_names =
-        unique_secret_names(external_env_names.iter().map(String::as_str));
+    let external_env_names = unique_secret_names(external_env_names.iter().map(String::as_str));
 
     Ok(PreparedPolicyExecution { selections, secret_names, external_env_names, prepared })
 }
@@ -893,10 +880,7 @@ fn resolve_policy_argument_reference(
 }
 
 fn policy_has_ide_source(policy: &CommandPolicy) -> bool {
-    policy
-        .external_env_sources
-        .iter()
-        .any(|source| matches!(source, ExternalEnvSource::Ide))
+    policy.external_env_sources.iter().any(|source| matches!(source, ExternalEnvSource::Ide))
 }
 
 fn policy_command_has_lk_references(policy: &CommandPolicy) -> bool {

@@ -46,13 +46,8 @@ pub fn record_locked_refusal(
         return;
     };
     let logger = LockedVaultAuditLogger::new(&home);
-    let row = LockedVaultDenialRow::new(
-        action,
-        project_id,
-        now_nanos_or_zero(),
-        "vault_locked",
-        command,
-    );
+    let row =
+        LockedVaultDenialRow::new(action, project_id, now_nanos_or_zero(), "vault_locked", command);
     let _ = logger.append(&row);
 }
 

@@ -56,6 +56,8 @@ fn agent_methods_round_trip_through_wire_names() -> Result<(), UnknownMethod> {
         AgentMethod::SetActiveProfile,
         AgentMethod::RegisterIdeEnvSession,
         AgentMethod::IdeEnvSession,
+        AgentMethod::RegisterCommandPolicies,
+        AgentMethod::PolicyDoctor,
     ];
 
     for method in methods {
@@ -3248,6 +3250,130 @@ async fn register_command_policies_requires_unlock() -> Result<(), Box<dyn std::
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn policy_doctor_validates_candidate_references_without_values()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::server::{AgentSocketState, dispatch};
+
+    let directory = tempfile::tempdir()?;
+    let store_path = directory.path().join("store.db");
+    let mut store = locket_store::Store::open(&store_path)?;
+    store.initialize_schema()?;
+    store.insert_project_if_absent("p-doctor", "doctor project", 1)?;
+    store.insert_profile_if_absent("prof-dev", "p-doctor", "dev", false, 1)?;
+    store.connection().execute(
+        "INSERT INTO secrets(
+           id, project_id, profile_id, name, source, origin, required, current_version,
+           state, created_at, updated_at
+         )
+         VALUES ('sec-db', 'p-doctor', 'prof-dev', 'DATABASE_URL', 'user-local',
+                 'manual', 0, 1, 'active', 1, 1)",
+        [],
+    )?;
+    store.connection().execute(
+        "INSERT INTO secret_versions(secret_id, version, source, origin, state, created_at)
+         VALUES ('sec-db', 1, 'user-local', 'manual', 'current', 1)",
+        [],
+    )?;
+    drop(store);
+
+    let state = AgentSocketState::locked("test-version");
+    unlock_profile_test_state(&state, "p-doctor").await;
+
+    let request = RequestEnvelope::new(
+        "doctor-1",
+        AgentMethod::PolicyDoctor,
+        json!({
+            "project_id": "p-doctor",
+            "profile_id": "prof-dev",
+            "store_path": store_path,
+            "policy": {
+                "project_id": "p-doctor",
+                "name": "deploy",
+                "command_kind": "argv",
+                "command_preview": "echo lk://dev/DATABASE_URL",
+                "required_secrets": ["DATABASE_URL", "API_KEY"],
+                "optional_secrets": [],
+                "allowed_secrets": ["DATABASE_URL", "API_KEY"],
+                "confirm": false,
+                "require_user_verification": false,
+                "require_agent": true,
+                "allow_remote_docker": false,
+                "ttl_seconds": 600,
+                "env_mode": "minimal",
+                "override_mode": "locket",
+                "updated_at_unix_nanos": 10,
+            },
+            "references": ["lk://dev/DATABASE_URL"],
+        }),
+    );
+    let ResponseEnvelope::Success(success) = dispatch(&request, &state).await else {
+        return Err("PolicyDoctor must pass for active authorized reference".into());
+    };
+    assert_eq!(success.payload["status"], "pass");
+    assert_eq!(success.payload["references_ok"], 1);
+    assert_eq!(success.payload["references_failed"].as_array().map(Vec::len), Some(0));
+    assert_eq!(success.payload["env_mode_resolve"], json!(["DATABASE_URL"]));
+    assert_eq!(success.payload["env_mode_passthrough"], json!(["API_KEY"]));
+    assert!(!success.payload.to_string().contains("postgres://"));
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn policy_doctor_reports_denied_and_missing_references()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::server::{AgentSocketState, dispatch};
+
+    let directory = tempfile::tempdir()?;
+    let store_path = directory.path().join("store.db");
+    let mut store = locket_store::Store::open(&store_path)?;
+    store.initialize_schema()?;
+    store.insert_project_if_absent("p-doctor-fail", "doctor project", 1)?;
+    store.insert_profile_if_absent("prof-dev", "p-doctor-fail", "dev", false, 1)?;
+    drop(store);
+
+    let state = AgentSocketState::locked("test-version");
+    unlock_profile_test_state(&state, "p-doctor-fail").await;
+
+    let request = RequestEnvelope::new(
+        "doctor-fail",
+        AgentMethod::PolicyDoctor,
+        json!({
+            "project_id": "p-doctor-fail",
+            "profile_id": "prof-dev",
+            "store_path": store_path,
+            "policy": {
+                "project_id": "p-doctor-fail",
+                "name": "deploy",
+                "command_kind": "argv",
+                "command_preview": "echo lk://dev/DATABASE_URL lk://dev/API_KEY",
+                "required_secrets": ["DATABASE_URL"],
+                "optional_secrets": [],
+                "allowed_secrets": ["DATABASE_URL"],
+                "confirm": false,
+                "require_user_verification": false,
+                "require_agent": true,
+                "allow_remote_docker": false,
+                "ttl_seconds": 600,
+                "env_mode": "minimal",
+                "override_mode": "locket",
+                "updated_at_unix_nanos": 10,
+            },
+            "references": ["lk://dev/DATABASE_URL", "lk://dev/API_KEY"],
+        }),
+    );
+    let ResponseEnvelope::Success(success) = dispatch(&request, &state).await else {
+        return Err("PolicyDoctor must return a report for failed references".into());
+    };
+    assert_eq!(success.payload["status"], "fail");
+    assert_eq!(
+        success.payload["references_failed"],
+        json!(["lk://dev/DATABASE_URL", "lk://dev/API_KEY"])
+    );
+    assert_eq!(success.payload["env_mode_denied"], json!(["API_KEY"]));
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn register_command_policies_does_not_drop_other_projects()
 -> Result<(), Box<dyn std::error::Error>> {
     use crate::CommandPolicySnapshot;
@@ -3324,8 +3450,13 @@ async fn register_command_policies_does_not_drop_other_projects()
     );
     assert!(matches!(dispatch(&request, &state).await, ResponseEnvelope::Success(_)));
 
-    let snapshots = state.command_policies.lock().await;
-    assert_eq!(snapshots.iter().filter(|s| s.project_id == "p-a").count(), 1);
-    assert_eq!(snapshots.iter().filter(|s| s.project_id == "p-b").count(), 1);
+    let snapshot_counts = {
+        let snapshots = state.command_policies.lock().await;
+        [
+            snapshots.iter().filter(|s| s.project_id == "p-a").count(),
+            snapshots.iter().filter(|s| s.project_id == "p-b").count(),
+        ]
+    };
+    assert_eq!(snapshot_counts, [1, 1]);
     Ok(())
 }

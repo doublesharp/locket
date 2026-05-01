@@ -50,11 +50,7 @@ pub trait LocalDevicePrivateKeyStorage {
     ///
     /// Returns [`PlatformError`] if the master key cannot be loaded, the
     /// envelope cannot be sealed, or the filesystem write fails.
-    fn store(
-        &self,
-        device_id: &str,
-        private_key: &PrivateKeyBytes,
-    ) -> Result<(), PlatformError>;
+    fn store(&self, device_id: &str, private_key: &PrivateKeyBytes) -> Result<(), PlatformError>;
 
     /// Loads the device private key for `device_id`.
     ///
@@ -65,10 +61,7 @@ pub trait LocalDevicePrivateKeyStorage {
     /// envelope is corrupt or sealed by a different master key, and
     /// [`PlatformError::DevicePrivateKeyPermissionsTooWide`] when on-disk
     /// permissions are wider than 0600 on Unix.
-    fn load(
-        &self,
-        device_id: &str,
-    ) -> Result<Zeroizing<PrivateKeyBytes>, PlatformError>;
+    fn load(&self, device_id: &str) -> Result<Zeroizing<PrivateKeyBytes>, PlatformError>;
 
     /// Deletes the device private-key envelope for `device_id`.
     ///
@@ -120,11 +113,7 @@ impl WrappedLocalFileDevicePrivateKeyStorage {
         project_id: impl Into<String>,
         master_key_store: Arc<dyn MasterKeyStore + Send + Sync>,
     ) -> Self {
-        Self {
-            directory: directory.into(),
-            project_id: project_id.into(),
-            master_key_store,
-        }
+        Self { directory: directory.into(), project_id: project_id.into(), master_key_store }
     }
 
     /// Returns the on-disk path for `device_id`.
@@ -162,11 +151,7 @@ impl WrappedLocalFileDevicePrivateKeyStorage {
 }
 
 impl LocalDevicePrivateKeyStorage for WrappedLocalFileDevicePrivateKeyStorage {
-    fn store(
-        &self,
-        device_id: &str,
-        private_key: &PrivateKeyBytes,
-    ) -> Result<(), PlatformError> {
+    fn store(&self, device_id: &str, private_key: &PrivateKeyBytes) -> Result<(), PlatformError> {
         let path = self.envelope_path(device_id)?;
         let temp_path = self.temp_envelope_path(device_id)?;
         let wrapping_key = self.master_key()?;
@@ -187,10 +172,7 @@ impl LocalDevicePrivateKeyStorage for WrappedLocalFileDevicePrivateKeyStorage {
         Ok(())
     }
 
-    fn load(
-        &self,
-        device_id: &str,
-    ) -> Result<Zeroizing<PrivateKeyBytes>, PlatformError> {
+    fn load(&self, device_id: &str) -> Result<Zeroizing<PrivateKeyBytes>, PlatformError> {
         let path = self.envelope_path(device_id)?;
         let metadata = match fs::metadata(&path) {
             Ok(metadata) => metadata,
@@ -284,11 +266,7 @@ pub struct MemoryDevicePrivateKeyStorage {
 }
 
 impl LocalDevicePrivateKeyStorage for MemoryDevicePrivateKeyStorage {
-    fn store(
-        &self,
-        device_id: &str,
-        private_key: &PrivateKeyBytes,
-    ) -> Result<(), PlatformError> {
+    fn store(&self, device_id: &str, private_key: &PrivateKeyBytes) -> Result<(), PlatformError> {
         let mut keys = self.keys.lock().map_err(|_| PlatformError::MemoryPoisoned)?;
         if let Some(old_key) = keys.get_mut(device_id) {
             old_key.zeroize();
@@ -298,10 +276,7 @@ impl LocalDevicePrivateKeyStorage for MemoryDevicePrivateKeyStorage {
         Ok(())
     }
 
-    fn load(
-        &self,
-        device_id: &str,
-    ) -> Result<Zeroizing<PrivateKeyBytes>, PlatformError> {
+    fn load(&self, device_id: &str) -> Result<Zeroizing<PrivateKeyBytes>, PlatformError> {
         let keys = self.keys.lock().map_err(|_| PlatformError::MemoryPoisoned)?;
         let Some(key) = keys.get(device_id).copied() else {
             return Err(PlatformError::DevicePrivateKeyNotFound);
@@ -338,7 +313,11 @@ struct DevicePrivateKeyEnvelope {
 }
 
 impl DevicePrivateKeyEnvelope {
-    fn validate(&self, expected_project_id: &str, expected_device_id: &str) -> Result<(), PlatformError> {
+    fn validate(
+        &self,
+        expected_project_id: &str,
+        expected_device_id: &str,
+    ) -> Result<(), PlatformError> {
         if self.version != DEVICE_PRIVATE_KEY_SCHEMA_VERSION {
             return Err(PlatformError::DevicePrivateKeyIntegrityFailure(format!(
                 "unsupported device private-key envelope version {}",

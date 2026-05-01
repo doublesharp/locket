@@ -504,14 +504,8 @@ mod tests {
             GrantValidation::Valid
         );
         assert_eq!(
-            table.validate(
-                "grant-1",
-                "p-1",
-                "prof-1",
-                GrantAction::RunPolicy,
-                100,
-                Some(&binding),
-            ),
+            table
+                .validate("grant-1", "p-1", "prof-1", GrantAction::RunPolicy, 100, Some(&binding),),
             GrantValidation::ProcessMismatch
         );
     }
@@ -579,25 +573,11 @@ mod tests {
         let binding = GrantBinding::new(4242, "start-a");
 
         assert_eq!(
-            table.validate(
-                "grant-1",
-                "p-1",
-                "prof-1",
-                GrantAction::Redact,
-                100,
-                Some(&binding),
-            ),
+            table.validate("grant-1", "p-1", "prof-1", GrantAction::Redact, 100, Some(&binding),),
             GrantValidation::Valid
         );
         assert_eq!(
-            table.validate(
-                "grant-1",
-                "p-1",
-                "prof-1",
-                GrantAction::Reveal,
-                100,
-                Some(&binding),
-            ),
+            table.validate("grant-1", "p-1", "prof-1", GrantAction::Reveal, 100, Some(&binding),),
             GrantValidation::ProcessMismatch
         );
     }
@@ -609,32 +589,17 @@ mod tests {
         let binding = GrantBinding::new(4242, "start-a");
 
         assert_eq!(
-            table.validate(
-                "grant-1",
-                "p-1",
-                "prof-1",
-                GrantAction::Export,
-                100,
-                Some(&binding),
-            ),
+            table.validate("grant-1", "p-1", "prof-1", GrantAction::Export, 100, Some(&binding),),
             GrantValidation::Valid
         );
         assert_eq!(
-            table.validate(
-                "grant-1",
-                "p-1",
-                "prof-1",
-                GrantAction::Copy,
-                100,
-                Some(&binding),
-            ),
+            table.validate("grant-1", "p-1", "prof-1", GrantAction::Copy, 100, Some(&binding),),
             GrantValidation::ProcessMismatch
         );
     }
 
     #[test]
-    fn issued_grants_carry_new_spec_actions()
-    -> Result<(), locket_core::id::IdGenerationError> {
+    fn issued_grants_carry_new_spec_actions() -> Result<(), locket_core::id::IdGenerationError> {
         let mut table = GrantTable::default();
         for action in [GrantAction::PrepareExec, GrantAction::Redact, GrantAction::Export] {
             let record = table.issue(

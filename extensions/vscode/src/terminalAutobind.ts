@@ -30,10 +30,20 @@ export function registerLocketTerminalAutobind(
   const refreshDefaultSession = (): void => {
     void handleOpenTerminal(firstWorkspaceFolderPath(), deps);
   };
+  const createTerminal = async (): Promise<void> => {
+    const cwd = firstWorkspaceFolderPath();
+    await handleOpenTerminal(cwd, deps);
+    const terminal = vscode.window.createTerminal({
+      cwd,
+      name: 'Locket',
+    });
+    terminal.show();
+  };
 
   refreshDefaultSession();
 
   return vscode.Disposable.from(
+    vscode.commands.registerCommand('locket.createTerminal', createTerminal),
     vscode.workspace.onDidChangeWorkspaceFolders(refreshDefaultSession),
     vscode.window.onDidOpenTerminal((terminal) => {
       void handleOpenTerminal(workingDirectoryForTerminal(terminal), deps);

@@ -424,10 +424,7 @@ pub fn device_fingerprint_hex(
 }
 
 pub(super) fn safety_words_from_fingerprint(fingerprint: &str) -> Vec<String> {
-    safety_words_from_fingerprint_hex(fingerprint)
-        .into_iter()
-        .map(str::to_owned)
-        .collect()
+    safety_words_from_fingerprint_hex(fingerprint).into_iter().map(str::to_owned).collect()
 }
 
 fn default_device_name() -> String {
@@ -566,10 +563,7 @@ fn maybe_bootstrap_first_run_on_machine(
             let team_row_present =
                 store.get_project(project_id)?.is_some() && team_row_exists(store, project_id)?;
             if envelope_present || team_row_present {
-                return Err(ambiguous_bootstrap_state_error(
-                    envelope_present,
-                    team_row_present,
-                ));
+                return Err(ambiguous_bootstrap_state_error(envelope_present, team_row_present));
             }
             bootstrap_first_run_on_machine(context, store, resolved, output, timestamp)?;
             Ok(true)

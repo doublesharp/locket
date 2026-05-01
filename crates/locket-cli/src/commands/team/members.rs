@@ -528,9 +528,8 @@ fn accept_invite_with_audit(
     let audit_key = load_project_key(context, store, project_id, KeyPurpose::Audit)?;
     let accepted_at = now_unix_nanos()?;
     let invite_id = invite.payload.invite_id.as_str();
-    let team_id = store
-        .get_team_by_project(project_id)?
-        .map_or_else(|| "unknown".to_owned(), |team| team.id);
+    let team_id =
+        store.get_team_by_project(project_id)?.map_or_else(|| "unknown".to_owned(), |team| team.id);
     let metadata = json!({
         "schema_version": 1,
         "action": "TEAM_ACCEPT",

@@ -4,7 +4,7 @@ use super::{
     LocalDevicePrivateKeyStorage, LocalUserVerificationMethod, LocalUserVerificationRequest,
     LocalUserVerifier, MasterKeyStore, MemoryDevicePrivateKeyStorage, MemoryLocalUserVerifier,
     MemoryMasterKeyStore, MemoryPlatformPasskeyRegistrar, MockMasterKeyStore,
-    MockMasterKeyStoreFailure, PassphraseFallbackMasterKeyStore, PasskeyRegistration,
+    MockMasterKeyStoreFailure, PasskeyRegistration, PassphraseFallbackMasterKeyStore,
     PlatformError, PlatformPasskeyRegistrar, ProcessBinding, RecoveryEnvelope,
     RecoveryEnvelopeEntry, RecoveryKdfToml, UnavailableLocalUserVerifier,
     UnavailablePlatformPasskeyRegistrar, WrappedLocalFileDevicePrivateKeyStorage,
@@ -402,8 +402,8 @@ fn populated_master_key_store(
 }
 
 #[test]
-fn wrapped_device_private_key_round_trips_and_writes_user_only_files()
--> Result<(), PlatformError> {
+fn wrapped_device_private_key_round_trips_and_writes_user_only_files() -> Result<(), PlatformError>
+{
     let directory = tempfile::tempdir()?;
     let store = populated_master_key_store(MASTER_KEY)?;
     let storage = WrappedLocalFileDevicePrivateKeyStorage::new(
@@ -422,9 +422,7 @@ fn wrapped_device_private_key_round_trips_and_writes_user_only_files()
         use std::os::unix::fs::PermissionsExt;
         let mode = std::fs::metadata(&envelope_path)?.permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
-        let parent = envelope_path
-            .parent()
-            .ok_or_else(|| PlatformError::InvalidProjectId)?;
+        let parent = envelope_path.parent().ok_or_else(|| PlatformError::InvalidProjectId)?;
         let dir_mode = std::fs::metadata(parent)?.permissions().mode() & 0o777;
         assert_eq!(dir_mode, 0o700);
     }
@@ -434,8 +432,7 @@ fn wrapped_device_private_key_round_trips_and_writes_user_only_files()
 }
 
 #[test]
-fn wrapped_device_private_key_load_returns_not_found_when_missing()
--> Result<(), PlatformError> {
+fn wrapped_device_private_key_load_returns_not_found_when_missing() -> Result<(), PlatformError> {
     let directory = tempfile::tempdir()?;
     let store = populated_master_key_store(MASTER_KEY)?;
     let storage = WrappedLocalFileDevicePrivateKeyStorage::new(
@@ -443,16 +440,12 @@ fn wrapped_device_private_key_load_returns_not_found_when_missing()
         PROJECT_ID,
         store as std::sync::Arc<dyn MasterKeyStore + Send + Sync>,
     );
-    assert!(matches!(
-        storage.load(DEVICE_ID_A),
-        Err(PlatformError::DevicePrivateKeyNotFound)
-    ));
+    assert!(matches!(storage.load(DEVICE_ID_A), Err(PlatformError::DevicePrivateKeyNotFound)));
     Ok(())
 }
 
 #[test]
-fn wrapped_device_private_key_rejects_load_with_wrong_master_key()
--> Result<(), PlatformError> {
+fn wrapped_device_private_key_rejects_load_with_wrong_master_key() -> Result<(), PlatformError> {
     let directory = tempfile::tempdir()?;
     let store_a = populated_master_key_store(MASTER_KEY)?;
     let storage_a = WrappedLocalFileDevicePrivateKeyStorage::new(
@@ -519,8 +512,7 @@ fn wrapped_device_private_key_list_returns_sorted_device_ids() -> Result<(), Pla
 }
 
 #[test]
-fn wrapped_device_private_key_list_is_empty_when_directory_missing()
--> Result<(), PlatformError> {
+fn wrapped_device_private_key_list_is_empty_when_directory_missing() -> Result<(), PlatformError> {
     let directory = tempfile::tempdir()?;
     let store = populated_master_key_store(MASTER_KEY)?;
     let storage = WrappedLocalFileDevicePrivateKeyStorage::new(
@@ -544,10 +536,7 @@ fn wrapped_device_private_key_delete_is_idempotent() -> Result<(), PlatformError
     );
     storage.store(DEVICE_ID_A, &PRIVATE_KEY_A)?;
     storage.delete(DEVICE_ID_A)?;
-    assert!(matches!(
-        storage.load(DEVICE_ID_A),
-        Err(PlatformError::DevicePrivateKeyNotFound)
-    ));
+    assert!(matches!(storage.load(DEVICE_ID_A), Err(PlatformError::DevicePrivateKeyNotFound)));
     storage.delete(DEVICE_ID_A)?;
     Ok(())
 }
@@ -562,10 +551,7 @@ fn memory_device_private_key_round_trips() -> Result<(), PlatformError> {
     let listed = storage.list()?;
     assert_eq!(listed, vec![DEVICE_ID_A.to_owned(), DEVICE_ID_B.to_owned()]);
     storage.delete(DEVICE_ID_A)?;
-    assert!(matches!(
-        storage.load(DEVICE_ID_A),
-        Err(PlatformError::DevicePrivateKeyNotFound)
-    ));
+    assert!(matches!(storage.load(DEVICE_ID_A), Err(PlatformError::DevicePrivateKeyNotFound)));
     Ok(())
 }
 

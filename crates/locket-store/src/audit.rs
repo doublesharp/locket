@@ -553,33 +553,21 @@ fn required_fields_for_action(action: &str) -> &'static [&'static str] {
         "SET" | "ROTATE" | "PURGE" | "SECRET_META_UPDATE" | "DELETE" | "IMPORT" => {
             &["secret_name", "profile_id", "source"]
         }
-        "REVEAL" | "COPY" | "GET" => {
-            &["secret_name", "profile_id", "source", "access_mode"]
-        }
+        "REVEAL" | "COPY" | "GET" => &["secret_name", "profile_id", "source", "access_mode"],
         "RESOLVE_REFERENCE" => &["secret_name", "profile_id", "source"],
         "SECRET_COPY" => &["secret_name", "from_profile_id", "to_profile_id"],
         "RUN" | "RUN_POLICY" | "EXEC" => &["command"],
-        "SCAN" | "REDACT" => {
-            &["scope", "known_value_coverage", "finding_counts", "pattern_only"]
-        }
+        "SCAN" | "REDACT" => &["scope", "known_value_coverage", "finding_counts", "pattern_only"],
         "TRUST_ROOT" => &["root_hash", "trust_operation"],
         "POLICY_UPDATE" => &["policy_name", "change_kind"],
         "CONFIG_UPDATE" => &["config_path_hash", "config_keys"],
-        "EXAMPLE_EMIT" => {
-            &["example_path_kind", "example_path_hash", "secret_name_count"]
-        }
-        "BOOTSTRAP" => {
-            &["project_id", "default_profile_id", "recovery_code_displayed"]
-        }
+        "EXAMPLE_EMIT" => &["example_path_kind", "example_path_hash", "secret_name_count"],
+        "BOOTSTRAP" => &["project_id", "default_profile_id", "recovery_code_displayed"],
         "PROFILE_CREATE" => &["project_id", "profile_id", "profile_name"],
         "PROFILE_CHANGE" => &["operation"],
-        "ALLOW_DIRECTORY" | "DENY_DIRECTORY" => &[
-            "project_id",
-            "profile_id",
-            "root_hash",
-            "directory_hash",
-            "grant_scope",
-        ],
+        "ALLOW_DIRECTORY" | "DENY_DIRECTORY" => {
+            &["project_id", "profile_id", "root_hash", "directory_hash", "grant_scope"]
+        }
         "UNLOCK" | "LOCK" | "AGENT_GRANT" | "AGENT_REVOKE" | "GRANT_EXPIRED" => {
             &["client_kind", "grant_actions", "ttl_seconds"]
         }

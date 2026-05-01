@@ -92,8 +92,7 @@ fn init_and_seed_secret(
 // ---- get (metadata-only) ----
 
 #[test]
-fn get_metadata_safe_profile_without_flag_succeeds()
--> Result<(), Box<dyn std::error::Error>> {
+fn get_metadata_safe_profile_without_flag_succeeds() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempdir()?;
     let context = init_and_seed_secret(&directory)?;
     let args = build_get_args(false, false, false, false);
@@ -169,8 +168,7 @@ fn get_metadata_dangerous_profile_without_flag_fails_and_audits()
 }
 
 #[test]
-fn get_metadata_dangerous_profile_with_flag_succeeds()
--> Result<(), Box<dyn std::error::Error>> {
+fn get_metadata_dangerous_profile_with_flag_succeeds() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempdir()?;
     let context = init_and_seed_secret(&directory)?;
     mark_default_profile_dangerous(&directory)?;
@@ -240,8 +238,8 @@ fn reveal_safe_profile_with_flag_succeeds() -> Result<(), Box<dyn std::error::Er
 }
 
 #[test]
-fn reveal_dangerous_profile_without_flag_fails_and_audits()
--> Result<(), Box<dyn std::error::Error>> {
+fn reveal_dangerous_profile_without_flag_fails_and_audits() -> Result<(), Box<dyn std::error::Error>>
+{
     let directory = tempdir()?;
     let context = init_and_seed_secret(&directory)?;
     mark_default_profile_dangerous(&directory)?;
@@ -343,8 +341,8 @@ fn copy_safe_profile_with_flag_succeeds() -> Result<(), Box<dyn std::error::Erro
 }
 
 #[test]
-fn copy_dangerous_profile_without_flag_fails_and_audits()
--> Result<(), Box<dyn std::error::Error>> {
+fn copy_dangerous_profile_without_flag_fails_and_audits() -> Result<(), Box<dyn std::error::Error>>
+{
     let directory = tempdir()?;
     let context = init_and_seed_secret(&directory)?;
     mark_default_profile_dangerous(&directory)?;

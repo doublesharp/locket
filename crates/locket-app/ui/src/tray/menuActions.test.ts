@@ -8,6 +8,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   TRAY_MENU_ACTIONS,
+  trayActionAgentCommand,
   trayActionEnablement,
   trayActionRequiresSelection,
   trayActionSideEffect,
@@ -59,6 +60,24 @@ describe('trayActionSideEffect', () => {
     ];
     for (const [action, expected] of cases) {
       expect(trayActionSideEffect(action)).toBe(expected);
+    }
+  });
+});
+
+describe('trayActionAgentCommand', () => {
+  it('pins the agent-backed completion path for each tray action', () => {
+    const cases: Array<[TrayMenuAction, ReturnType<typeof trayActionAgentCommand>]> = [
+      ['open-app', null],
+      ['lock-vault', 'agent_lock'],
+      ['unlock-vault', 'agent_unlock'],
+      ['switch-profile', 'agent_set_active_profile'],
+      ['run-policy', 'agent_list_policies'],
+      ['start-scan', 'agent_scan'],
+      ['reveal-secret', 'agent_reveal'],
+      ['copy-secret', 'agent_copy'],
+    ];
+    for (const [action, expected] of cases) {
+      expect(trayActionAgentCommand(action)).toBe(expected);
     }
   });
 });

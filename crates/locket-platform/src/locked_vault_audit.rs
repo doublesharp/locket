@@ -245,7 +245,8 @@ pub fn permission_mode(path: &Path) -> Result<Option<u32>, PlatformError> {
 }
 
 fn rotated_path(base: &Path, index: u32) -> PathBuf {
-    let mut name = base.file_name().map_or_else(String::new, |name| name.to_string_lossy().into_owned());
+    let mut name =
+        base.file_name().map_or_else(String::new, |name| name.to_string_lossy().into_owned());
     name.push('.');
     name.push_str(&index.to_string());
     base.with_file_name(name)
@@ -275,7 +276,13 @@ mod tests {
     use tempfile::tempdir;
 
     fn sample_row<'a>(action: &'a str, command: &'a str) -> LockedVaultDenialRow<'a> {
-        LockedVaultDenialRow::new(action, Some("lk_proj_x"), 1_700_000_000_000_000_000, "vault_locked", command)
+        LockedVaultDenialRow::new(
+            action,
+            Some("lk_proj_x"),
+            1_700_000_000_000_000_000,
+            "vault_locked",
+            command,
+        )
     }
 
     #[test]
@@ -297,7 +304,10 @@ mod tests {
             assert!(value.get("secret_name").is_none(), "must never include secret_name");
         }
         assert_eq!(serde_json::from_str::<serde_json::Value>(lines[0]).unwrap()["action"], "GET");
-        assert_eq!(serde_json::from_str::<serde_json::Value>(lines[1]).unwrap()["action"], "REVEAL");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(lines[1]).unwrap()["action"],
+            "REVEAL"
+        );
     }
 
     #[cfg(unix)]
@@ -376,17 +386,11 @@ mod tests {
         // Absent file -> None.
         assert_eq!(logger.permission_mode().expect("query mode"), None);
         logger.append(&sample_row("GET", "get")).expect("append");
-        assert_eq!(
-            logger.permission_mode().expect("query mode after append"),
-            Some(0o600)
-        );
+        assert_eq!(logger.permission_mode().expect("query mode after append"), Some(0o600));
         // Drift the perms on disk: the helper must surface the actual mode.
         fs::set_permissions(logger.log_path(), fs::Permissions::from_mode(0o644))
             .expect("widen perms");
-        assert_eq!(
-            logger.permission_mode().expect("query mode after drift"),
-            Some(0o644)
-        );
+        assert_eq!(logger.permission_mode().expect("query mode after drift"), Some(0o644));
     }
 
     #[test]

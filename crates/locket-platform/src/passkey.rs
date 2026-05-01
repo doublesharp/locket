@@ -190,9 +190,7 @@ impl PlatformPasskeyRegistrar for MemoryPlatformPasskeyRegistrar {
             Some(known) if known.as_slice() == credential_id => Ok(Zeroizing::new(self.prf_output)),
             Some(_) => Err(PlatformError::PasskeyNotFound),
             None => match self.outcome {
-                MemoryPlatformPasskeyOutcome::Unsupported => {
-                    Err(PlatformError::PasskeyUnsupported)
-                }
+                MemoryPlatformPasskeyOutcome::Unsupported => Err(PlatformError::PasskeyUnsupported),
                 _ => Err(PlatformError::PasskeyAuthFailed),
             },
         }

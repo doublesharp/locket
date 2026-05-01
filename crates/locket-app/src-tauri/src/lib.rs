@@ -10,9 +10,9 @@ use std::sync::Mutex;
 use directories::ProjectDirs;
 use serde::Deserialize;
 
-use tauri::{Emitter as _, RunEvent};
 #[cfg(debug_assertions)]
 use tauri::Manager as _;
+use tauri::{Emitter as _, RunEvent};
 
 // Test-only dev-deps; suppress `unused_crate_dependencies` for the lib-test target.
 #[cfg(test)]
@@ -450,6 +450,36 @@ async fn agent_prepare_exec(
     agent_client::invoke_method(&path, locket_agent::AgentMethod::PrepareExec, &request).await
 }
 
+#[derive(Debug, Deserialize)]
+struct DesktopPolicyDoctorRequest {
+    project_id: String,
+    profile_id: String,
+    policy: locket_agent::CommandPolicySnapshot,
+    #[serde(default)]
+    references: Vec<String>,
+    store_path: Option<PathBuf>,
+    #[serde(default)]
+    binding: Option<locket_agent::GrantBinding>,
+}
+
+/// Tauri command exposing the agent's command-policy dry-run validator.
+#[tauri::command]
+async fn agent_policy_doctor(
+    request: DesktopPolicyDoctorRequest,
+) -> Result<locket_agent::PolicyDoctorResponse, AgentClientError> {
+    let agent_request = locket_agent::PolicyDoctorRequest {
+        project_id: request.project_id,
+        profile_id: request.profile_id,
+        policy: request.policy,
+        references: request.references,
+        store_path: request.store_path.unwrap_or(default_store_path()?),
+        binding: request.binding,
+    };
+    let path = agent_client::resolve_socket_path();
+    agent_client::invoke_method(&path, locket_agent::AgentMethod::PolicyDoctor, &agent_request)
+        .await
+}
+
 /// Tauri command exposing the agent's metadata-only runtime session list.
 #[tauri::command]
 async fn agent_list_runtime_sessions(
@@ -714,12 +744,8 @@ struct DesktopClipboardCopyRequest {
 #[derive(Debug, serde::Serialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 enum DesktopClipboardCopyResponse {
-    Copied {
-        ttl_seconds: u32,
-    },
-    Unsupported {
-        unsupported_reason: String,
-    },
+    Copied { ttl_seconds: u32 },
+    Unsupported { unsupported_reason: String },
 }
 
 /// Tauri `agent_copy_secret` command. Calls the agent `Copy` RPC,
@@ -745,12 +771,8 @@ async fn agent_copy_secret(
         grant_id: request.grant_id,
         binding: None,
     };
-    let response: locket_agent::CopyResponse = agent_client::invoke_method(
-        &path,
-        locket_agent::AgentMethod::Copy,
-        &agent_request,
-    )
-    .await?;
+    let response: locket_agent::CopyResponse =
+        agent_client::invoke_method(&path, locket_agent::AgentMethod::Copy, &agent_request).await?;
     let ttl_seconds = request.ttl_seconds.unwrap_or(response.ttl_seconds.max(1));
     if let Err(error) = clipboard::write_clipboard(&response.value) {
         return Err(AgentClientError::Protocol {
@@ -828,6 +850,7 @@ pub fn run() -> tauri::Result<()> {
             agent_scan,
             agent_resolve,
             agent_prepare_exec,
+            agent_policy_doctor,
             agent_list_runtime_sessions,
             agent_list_policies,
             agent_register_command_policies,

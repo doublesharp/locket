@@ -69,8 +69,7 @@ fn parse_field<'a>(output: &'a str, key: &str) -> Option<&'a str> {
 }
 
 #[test]
-fn fresh_export_then_decrypt_roundtrips_payload_counts()
--> Result<(), Box<dyn std::error::Error>> {
+fn fresh_export_then_decrypt_roundtrips_payload_counts() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempdir()?;
     let (context, _descriptor, bundle_path, export_output) =
         export_sealed_bundle(&directory, "fresh.locket-bundle")?;
@@ -78,14 +77,14 @@ fn fresh_export_then_decrypt_roundtrips_payload_counts()
     assert!(export_output.contains("bundle: exported"));
     let exported_digest =
         parse_field(&export_output, "digest").ok_or("export missing digest field")?.to_owned();
-    let exported_profiles = parse_field(&export_output, "profiles")
-        .ok_or("export missing profiles field")?
-        .to_owned();
+    let exported_profiles =
+        parse_field(&export_output, "profiles").ok_or("export missing profiles field")?.to_owned();
     let exported_secrets = parse_field(&export_output, "secret_count")
         .ok_or("export missing secret_count field")?
         .to_owned();
-    let exported_blobs =
-        parse_field(&export_output, "blob_count").ok_or("export missing blob_count field")?.to_owned();
+    let exported_blobs = parse_field(&export_output, "blob_count")
+        .ok_or("export missing blob_count field")?
+        .to_owned();
     let exported_command_policies = parse_field(&export_output, "command_policy_count")
         .ok_or("export missing command_policy_count field")?
         .to_owned();
@@ -136,12 +135,10 @@ fn fresh_export_then_decrypt_roundtrips_payload_counts()
     // `command_policy_count`, import uses `blobs` / `command_policies`).
     let import_profiles =
         parse_field(&import_output, "profiles").ok_or("import missing profiles")?;
-    let import_secrets =
-        parse_field(&import_output, "secrets").ok_or("import missing secrets")?;
-    let import_blobs =
-        parse_field(&import_output, "blobs").ok_or("import missing blobs")?;
-    let import_command_policies = parse_field(&import_output, "command_policies")
-        .ok_or("import missing command_policies")?;
+    let import_secrets = parse_field(&import_output, "secrets").ok_or("import missing secrets")?;
+    let import_blobs = parse_field(&import_output, "blobs").ok_or("import missing blobs")?;
+    let import_command_policies =
+        parse_field(&import_output, "command_policies").ok_or("import missing command_policies")?;
 
     assert_eq!(import_profiles, exported_profiles, "profiles count must match");
     assert_eq!(import_secrets, exported_secrets, "secrets count must match");
@@ -161,10 +158,8 @@ fn identical_bundle_decrypt_emits_consistent_counts() -> Result<(), Box<dyn std:
     // the export-side counts and with each other.
     let directory_a = tempdir()?;
     let directory_b = tempdir()?;
-    let (ctx_a, _desc_a, path_a, export_a) =
-        export_sealed_bundle(&directory_a, "a.locket-bundle")?;
-    let (ctx_b, _desc_b, path_b, export_b) =
-        export_sealed_bundle(&directory_b, "b.locket-bundle")?;
+    let (ctx_a, _desc_a, path_a, export_a) = export_sealed_bundle(&directory_a, "a.locket-bundle")?;
+    let (ctx_b, _desc_b, path_b, export_b) = export_sealed_bundle(&directory_b, "b.locket-bundle")?;
 
     for field in [
         "profiles",
@@ -228,8 +223,7 @@ fn identical_bundle_decrypt_emits_consistent_counts() -> Result<(), Box<dyn std:
 }
 
 #[test]
-fn bundle_with_corrupt_age_payload_fails_verification()
--> Result<(), Box<dyn std::error::Error>> {
+fn bundle_with_corrupt_age_payload_fails_verification() -> Result<(), Box<dyn std::error::Error>> {
     // Sibling test `bundle_verify_rejects_tampered_digest` covers
     // tampering the manifest's `payload_digest` field. This test
     // tampers the encrypted payload bytes themselves while leaving
@@ -271,7 +265,9 @@ fn bundle_with_corrupt_age_payload_fails_verification()
         crate::CliError::Typed { kind, .. } => {
             assert_eq!(*kind, locket_core::LocketError::BundleVerificationFailed);
         }
-        other => return Err(format!("expected typed BundleVerificationFailed, got {other:?}").into()),
+        other => {
+            return Err(format!("expected typed BundleVerificationFailed, got {other:?}").into());
+        }
     }
     assert!(
         error.to_string().contains("manifest digest mismatch"),
@@ -281,8 +277,8 @@ fn bundle_with_corrupt_age_payload_fails_verification()
 }
 
 #[test]
-fn bundle_without_device_private_key_fails_verification()
--> Result<(), Box<dyn std::error::Error>> {
+fn bundle_without_device_private_key_fails_verification() -> Result<(), Box<dyn std::error::Error>>
+{
     // After `device-private-key-storage` and `bundle-import-decrypt`
     // shipped, the import command loads the device private-key
     // envelope from `<store_root>/devices/<device_id>.priv`. If that
@@ -323,7 +319,9 @@ fn bundle_without_device_private_key_fails_verification()
         crate::CliError::Typed { kind, .. } => {
             assert_eq!(*kind, locket_core::LocketError::BundleVerificationFailed);
         }
-        other => return Err(format!("expected typed BundleVerificationFailed, got {other:?}").into()),
+        other => {
+            return Err(format!("expected typed BundleVerificationFailed, got {other:?}").into());
+        }
     }
     assert!(
         error.to_string().contains("device private-key storage not initialized"),
@@ -366,10 +364,7 @@ fn bundle_without_device_private_key_fails_verification()
 //    `bundle_include_audit: yes/no` and does not persist rows.
 
 /// Returns the count of rows in a single store table for assertions.
-fn store_row_count(
-    store_path: &Path,
-    sql: &str,
-) -> Result<i64, Box<dyn std::error::Error>> {
+fn store_row_count(store_path: &Path, sql: &str) -> Result<i64, Box<dyn std::error::Error>> {
     let store = locket_store::Store::open(store_path)?;
     let count: i64 = store.connection().query_row(sql, [], |row| row.get(0))?;
     Ok(count)
@@ -466,25 +461,25 @@ fn divergent_arm_rolls_back_without_flag() -> Result<(), Box<dyn std::error::Err
             [],
         )?;
     }
-    let pre_blob_bytes: Vec<u8> = locket_store::Store::open(&store_path)?
-        .connection()
-        .query_row("SELECT ciphertext FROM blobs LIMIT 1", [], |row| row.get(0))?;
+    let pre_blob_bytes: Vec<u8> = locket_store::Store::open(&store_path)?.connection().query_row(
+        "SELECT ciphertext FROM blobs LIMIT 1",
+        [],
+        |row| row.get(0),
+    )?;
 
     let result = run_with_context(
-        Cli::try_parse_from([
-            "locket",
-            "import-bundle",
-            bundle_path.to_str().ok_or("utf8 path")?,
-        ])?,
+        Cli::try_parse_from(["locket", "import-bundle", bundle_path.to_str().ok_or("utf8 path")?])?,
         &context,
         &mut Vec::new(),
     );
     assert!(result.is_err(), "default policy must reject divergent conflicts");
 
     drop(context);
-    let post_blob_bytes: Vec<u8> = locket_store::Store::open(&store_path)?
-        .connection()
-        .query_row("SELECT ciphertext FROM blobs LIMIT 1", [], |row| row.get(0))?;
+    let post_blob_bytes: Vec<u8> = locket_store::Store::open(&store_path)?.connection().query_row(
+        "SELECT ciphertext FROM blobs LIMIT 1",
+        [],
+        |row| row.get(0),
+    )?;
     assert_eq!(pre_blob_bytes, post_blob_bytes, "rolled-back tx must leave blob unchanged");
     Ok(())
 }
@@ -519,9 +514,11 @@ fn divergent_arm_applies_with_accept_incoming() -> Result<(), Box<dyn std::error
     assert!(import_output.contains("import: applied"));
 
     drop(context);
-    let post_blob_bytes: Vec<u8> = locket_store::Store::open(&store_path)?
-        .connection()
-        .query_row("SELECT ciphertext FROM blobs LIMIT 1", [], |row| row.get(0))?;
+    let post_blob_bytes: Vec<u8> = locket_store::Store::open(&store_path)?.connection().query_row(
+        "SELECT ciphertext FROM blobs LIMIT 1",
+        [],
+        |row| row.get(0),
+    )?;
     assert_ne!(
         post_blob_bytes,
         b"\x00\xFF".to_vec(),
@@ -546,11 +543,7 @@ fn deleted_vs_active_arm() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let result = run_with_context(
-        Cli::try_parse_from([
-            "locket",
-            "import-bundle",
-            bundle_path.to_str().ok_or("utf8 path")?,
-        ])?,
+        Cli::try_parse_from(["locket", "import-bundle", bundle_path.to_str().ok_or("utf8 path")?])?,
         &context,
         &mut Vec::new(),
     );

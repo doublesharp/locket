@@ -103,9 +103,8 @@ impl IdeTestAgent {
         let entry = locket_agent::IdeEnvSessionEntry {
             project_id: project_id.to_owned(),
             env_names,
-            expires_at_unix_nanos: now_nanos.saturating_add(
-                i128::from(ttl_seconds).saturating_mul(1_000_000_000),
-            ),
+            expires_at_unix_nanos: now_nanos
+                .saturating_add(i128::from(ttl_seconds).saturating_mul(1_000_000_000)),
         };
         self.insert_entry(session_id, entry)
     }
@@ -149,16 +148,7 @@ fn fixture(directory: &tempfile::TempDir) -> Result<RuntimeContext, Box<dyn std:
     let db_args = test_secret_write_args("DATABASE_URL");
     crate::set_secret_value(&context, &db_args, "postgres://localhost/app", "manual", 1_000)?;
     run_with_context(
-        Cli::try_parse_from([
-            "locket",
-            "policy",
-            "add",
-            "ide_run",
-            "--",
-            "/bin/sh",
-            "-c",
-            "true",
-        ])?,
+        Cli::try_parse_from(["locket", "policy", "add", "ide_run", "--", "/bin/sh", "-c", "true"])?,
         &context,
         &mut Vec::new(),
     )?;
@@ -176,8 +166,8 @@ fn fixture(directory: &tempfile::TempDir) -> Result<RuntimeContext, Box<dyn std:
 }
 
 #[test]
-fn ide_env_source_resolves_names_through_agent_round_trip()
--> Result<(), Box<dyn std::error::Error>> {
+fn ide_env_source_resolves_names_through_agent_round_trip() -> Result<(), Box<dyn std::error::Error>>
+{
     let directory = tempdir()?;
     let context = fixture(&directory)?;
     let agent = IdeTestAgent::start(&context)?;
@@ -193,11 +183,14 @@ fn ide_env_source_resolves_names_through_agent_round_trip()
     let session_id = "lk-ide-session-test-roundtrip";
     agent.seed_ide_session(session_id, &project_id, vec!["DATABASE_URL".to_owned()], 60)?;
 
-    let agent_access = crate::prepare_agent_policy_access_for_tests(
-        &context, &resolved, &profile, &policy,
-    )?;
+    let agent_access =
+        crate::prepare_agent_policy_access_for_tests(&context, &resolved, &profile, &policy)?;
     let ide_ctx = crate::ide_env_source_context_for_tests(
-        &context, &resolved, &profile, &policy, &agent_access,
+        &context,
+        &resolved,
+        &profile,
+        &policy,
+        &agent_access,
     );
     let env = crate::resolve_external_env_ide_with_session_id(&ide_ctx, session_id)?;
 
@@ -209,8 +202,7 @@ fn ide_env_source_resolves_names_through_agent_round_trip()
 }
 
 #[test]
-fn ide_env_source_expired_session_returns_typed_error()
--> Result<(), Box<dyn std::error::Error>> {
+fn ide_env_source_expired_session_returns_typed_error() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempdir()?;
     let context = fixture(&directory)?;
     let agent = IdeTestAgent::start(&context)?;
@@ -225,11 +217,14 @@ fn ide_env_source_expired_session_returns_typed_error()
     let session_id = "lk-ide-session-test-expired";
     agent.seed_expired_ide_session(session_id, &project_id, vec!["DATABASE_URL".to_owned()])?;
 
-    let agent_access = crate::prepare_agent_policy_access_for_tests(
-        &context, &resolved, &profile, &policy,
-    )?;
+    let agent_access =
+        crate::prepare_agent_policy_access_for_tests(&context, &resolved, &profile, &policy)?;
     let ide_ctx = crate::ide_env_source_context_for_tests(
-        &context, &resolved, &profile, &policy, &agent_access,
+        &context,
+        &resolved,
+        &profile,
+        &policy,
+        &agent_access,
     );
     let result = crate::resolve_external_env_ide_with_session_id(&ide_ctx, session_id);
 
@@ -245,8 +240,8 @@ fn ide_env_source_expired_session_returns_typed_error()
 }
 
 #[test]
-fn ide_env_source_missing_session_id_returns_typed_error()
--> Result<(), Box<dyn std::error::Error>> {
+fn ide_env_source_missing_session_id_returns_typed_error() -> Result<(), Box<dyn std::error::Error>>
+{
     let directory = tempdir()?;
     let context = fixture(&directory)?;
     let agent = IdeTestAgent::start(&context)?;
@@ -257,11 +252,14 @@ fn ide_env_source_missing_session_id_returns_typed_error()
     crate::ensure_trusted_project_root(&store, &resolved)?;
     let profile = crate::default_profile(&store, &resolved.config)?;
 
-    let agent_access = crate::prepare_agent_policy_access_for_tests(
-        &context, &resolved, &profile, &policy,
-    )?;
+    let agent_access =
+        crate::prepare_agent_policy_access_for_tests(&context, &resolved, &profile, &policy)?;
     let ide_ctx = crate::ide_env_source_context_for_tests(
-        &context, &resolved, &profile, &policy, &agent_access,
+        &context,
+        &resolved,
+        &profile,
+        &policy,
+        &agent_access,
     );
     let result = crate::resolve_external_env_ide_with_session_id(&ide_ctx, "");
 
@@ -276,8 +274,7 @@ fn ide_env_source_missing_session_id_returns_typed_error()
 }
 
 #[test]
-fn ide_env_source_missing_agent_returns_typed_error()
--> Result<(), Box<dyn std::error::Error>> {
+fn ide_env_source_missing_agent_returns_typed_error() -> Result<(), Box<dyn std::error::Error>> {
     // No IdeTestAgent is started: the consumer cannot connect to the
     // local socket and must fail with a typed AgentUnavailable error.
     let directory = tempdir()?;
@@ -297,9 +294,8 @@ fn ide_env_source_missing_agent_returns_typed_error()
     // prepare_agent_policy_access needs a live agent, so we expect this
     // helper itself to fail with AgentUnavailable when no agent socket
     // is bound.
-    let result = crate::prepare_agent_policy_access_for_tests(
-        &context, &resolved, &profile, &policy,
-    );
+    let result =
+        crate::prepare_agent_policy_access_for_tests(&context, &resolved, &profile, &policy);
     let Err(error) = result else {
         return Err("missing agent must fail before reaching IdeEnvSession".into());
     };

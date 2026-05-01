@@ -252,8 +252,8 @@ env_mode = "strict"
 /// emits a metadata-only DENIED `RUN_POLICY` audit row before any spawn.
 #[cfg(unix)]
 #[test]
-fn e2e_policy_run_invalid_lk_reference_emits_denial_audit()
--> Result<(), Box<dyn std::error::Error>> {
+fn e2e_policy_run_invalid_lk_reference_emits_denial_audit() -> Result<(), Box<dyn std::error::Error>>
+{
     let directory = tempdir()?;
     let context = test_context(&directory);
     run_with_context(
@@ -565,11 +565,7 @@ env_mode = "strict"
 "#,
         )?;
 
-    run_with_context(
-        Cli::try_parse_from(["locket", "run", "deploy"])?,
-        &context,
-        &mut Vec::new(),
-    )?;
+    run_with_context(Cli::try_parse_from(["locket", "run", "deploy"])?, &context, &mut Vec::new())?;
 
     let store = locket_store::Store::open(directory.path().join("store.db"))?;
     let metadata: String = store.connection().query_row(
@@ -626,7 +622,10 @@ env_mode = "merge"
     // Locket secret is overlaid on the merged child env.
     let presence = std::fs::read_to_string(directory.path().join("merge-presence.txt"))?;
     assert_eq!(presence, "PATH=present\nDB=present\n");
-    assert!(!presence.contains("postgres://localhost/app"), "merge run must not leak secret values");
+    assert!(
+        !presence.contains("postgres://localhost/app"),
+        "merge run must not leak secret values"
+    );
 
     let store = locket_store::Store::open(directory.path().join("store.db"))?;
     let metadata: String = store.connection().query_row(
@@ -681,10 +680,7 @@ env_mode = "passthrough"
     // Parent PATH is passed through to the child process under passthrough mode.
     let presence = std::fs::read_to_string(directory.path().join("passthrough-presence.txt"))?;
     assert_eq!(presence, "PATH=present\nAPI=present\n");
-    assert!(
-        !presence.contains("sk-test-value"),
-        "passthrough run must not leak secret values"
-    );
+    assert!(!presence.contains("sk-test-value"), "passthrough run must not leak secret values");
 
     let store = locket_store::Store::open(directory.path().join("store.db"))?;
     let metadata: String = store.connection().query_row(

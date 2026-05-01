@@ -185,10 +185,7 @@ impl Store {
     /// # Errors
     ///
     /// Returns [`StoreError::Sqlite`] when `SQLite` rejects the insert.
-    pub fn upsert_passkey_prf_wrap(
-        &self,
-        wrap: &PasskeyPrfWrapRecord,
-    ) -> Result<(), StoreError> {
+    pub fn upsert_passkey_prf_wrap(&self, wrap: &PasskeyPrfWrapRecord) -> Result<(), StoreError> {
         self.connection.execute(
             "INSERT INTO passkey_prf_wraps(
                passkey_id, project_id, prf_salt, wrapped_master_key, wrap_nonce, created_at

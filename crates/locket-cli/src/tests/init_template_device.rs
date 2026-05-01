@@ -3702,8 +3702,8 @@ fn device_init_bootstraps_when_master_key_and_envelope_are_absent()
 }
 
 #[test]
-fn device_init_skips_bootstrap_when_master_key_is_present()
--> Result<(), Box<dyn std::error::Error>> {
+fn device_init_skips_bootstrap_when_master_key_is_present() -> Result<(), Box<dyn std::error::Error>>
+{
     let directory = tempdir()?;
     let context = test_context(&directory);
     run_with_context(

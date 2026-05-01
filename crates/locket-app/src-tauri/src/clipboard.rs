@@ -116,9 +116,7 @@ impl ClipboardSession {
 /// Returns [`ClipboardError::Backend`] for any platform-level failure.
 pub fn write_clipboard(value: &str) -> Result<(), ClipboardError> {
     let mut clipboard = ClipboardSession::new()?;
-    clipboard
-        .set_text(value.to_owned())
-        .map_err(|error| ClipboardError::Backend(error.to_string()))
+    clipboard.set_text(value.to_owned()).map_err(|error| ClipboardError::Backend(error.to_string()))
 }
 
 /// Read the current OS clipboard value.
@@ -185,14 +183,11 @@ mod tests {
 
     #[test]
     fn unsupported_outcome_surfaces_a_stable_wayland_reason_code() {
-        let outcome = ClipboardCopyOutcome::Unsupported {
-            unsupported_reason: "wayland-session".to_owned(),
-        };
-        match outcome {
-            ClipboardCopyOutcome::Unsupported { unsupported_reason } => {
-                assert_eq!(unsupported_reason, "wayland-session");
-            }
-            ClipboardCopyOutcome::Copied { .. } => panic!("expected unsupported variant"),
+        let outcome =
+            ClipboardCopyOutcome::Unsupported { unsupported_reason: "wayland-session".to_owned() };
+        assert!(matches!(&outcome, ClipboardCopyOutcome::Unsupported { .. }));
+        if let ClipboardCopyOutcome::Unsupported { unsupported_reason } = outcome {
+            assert_eq!(unsupported_reason, "wayland-session");
         }
     }
 }

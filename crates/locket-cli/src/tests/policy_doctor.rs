@@ -137,8 +137,7 @@ fn seed_command_policies(
 }
 
 #[test]
-fn policy_doctor_happy_path_two_policies_pass()
--> Result<(), Box<dyn std::error::Error>> {
+fn policy_doctor_happy_path_two_policies_pass() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempdir()?;
     let context = test_context(&directory);
     run_with_context(
@@ -152,7 +151,13 @@ fn policy_doctor_happy_path_two_policies_pass()
     crate::set_secret_value(&context, &api_args, "sk-test-value", "manual", 2_000)?;
     run_with_context(
         Cli::try_parse_from([
-            "locket", "policy", "add", "deploy", "--", "echo", "lk://dev/DATABASE_URL",
+            "locket",
+            "policy",
+            "add",
+            "deploy",
+            "--",
+            "echo",
+            "lk://dev/DATABASE_URL",
         ])?,
         &context,
         &mut Vec::new(),
@@ -163,9 +168,7 @@ fn policy_doctor_happy_path_two_policies_pass()
         &mut Vec::new(),
     )?;
     run_with_context(
-        Cli::try_parse_from([
-            "locket", "policy", "add", "ship", "--", "echo", "lk://dev/API_KEY",
-        ])?,
+        Cli::try_parse_from(["locket", "policy", "add", "ship", "--", "echo", "lk://dev/API_KEY"])?,
         &context,
         &mut Vec::new(),
     )?;
@@ -189,7 +192,10 @@ fn policy_doctor_happy_path_two_policies_pass()
     agent.stop()?;
     let output_text = String::from_utf8(output)?;
     if let Err(error) = &result {
-        return Err(format!("doctor must pass when policies + secrets are seeded: {error}; output={output_text}").into());
+        return Err(format!(
+            "doctor must pass when policies + secrets are seeded: {error}; output={output_text}"
+        )
+        .into());
     }
     assert!(output_text.contains("policy_doctor: ok"), "{output_text}");
     assert!(output_text.contains("policy: deploy"), "missing per-policy report: {output_text}");
@@ -230,7 +236,13 @@ fn policy_doctor_failed_reference_marks_policy_failed_and_exits_nonzero()
     // `references_failed`.
     run_with_context(
         Cli::try_parse_from([
-            "locket", "policy", "add", "deploy", "--", "echo", "lk://dev/UNSET_SECRET",
+            "locket",
+            "policy",
+            "add",
+            "deploy",
+            "--",
+            "echo",
+            "lk://dev/UNSET_SECRET",
         ])?,
         &context,
         &mut Vec::new(),
@@ -255,10 +267,9 @@ fn policy_doctor_failed_reference_marks_policy_failed_and_exits_nonzero()
     agent.stop()?;
     let output_text = String::from_utf8(output)?;
     let Err(error) = result else {
-        return Err(format!(
-            "doctor with unresolvable reference must fail; output={output_text}"
-        )
-        .into());
+        return Err(
+            format!("doctor with unresolvable reference must fail; output={output_text}").into()
+        );
     };
     assert_eq!(error.exit_code(), locket_core::LocketError::PolicyValidationIncomplete.exit_code());
     assert!(output_text.contains("policy_doctor: incomplete"), "{output_text}");
@@ -270,8 +281,7 @@ fn policy_doctor_failed_reference_marks_policy_failed_and_exits_nonzero()
 }
 
 #[test]
-fn policy_doctor_locked_vault_returns_unlock_required()
--> Result<(), Box<dyn std::error::Error>> {
+fn policy_doctor_locked_vault_returns_unlock_required() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempdir()?;
     let context = test_context(&directory);
     run_with_context(
@@ -281,7 +291,13 @@ fn policy_doctor_locked_vault_returns_unlock_required()
     )?;
     run_with_context(
         Cli::try_parse_from([
-            "locket", "policy", "add", "deploy", "--", "echo", "lk://dev/DATABASE_URL",
+            "locket",
+            "policy",
+            "add",
+            "deploy",
+            "--",
+            "echo",
+            "lk://dev/DATABASE_URL",
         ])?,
         &context,
         &mut Vec::new(),
@@ -334,11 +350,7 @@ fn policy_doctor_no_agent_falls_back_to_legacy_ok_without_lk_references()
     )?;
 
     let mut output = Vec::new();
-    run_with_context(
-        Cli::try_parse_from(["locket", "policy", "doctor"])?,
-        &context,
-        &mut output,
-    )?;
+    run_with_context(Cli::try_parse_from(["locket", "policy", "doctor"])?, &context, &mut output)?;
     let output_text = String::from_utf8(output)?;
     assert!(output_text.contains("policy_doctor: ok"), "{output_text}");
     Ok(())

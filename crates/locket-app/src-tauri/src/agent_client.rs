@@ -51,11 +51,7 @@ pub fn next_reconnect_delay(previous: Option<Duration>) -> Duration {
         return RECONNECT_INITIAL_BACKOFF;
     };
     let doubled = previous.saturating_mul(2);
-    if doubled >= RECONNECT_MAX_BACKOFF {
-        RECONNECT_MAX_BACKOFF
-    } else {
-        doubled
-    }
+    if doubled >= RECONNECT_MAX_BACKOFF { RECONNECT_MAX_BACKOFF } else { doubled }
 }
 
 /// Cancellation token shared between the desktop shell and the

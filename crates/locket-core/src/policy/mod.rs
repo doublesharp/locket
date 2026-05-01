@@ -576,10 +576,7 @@ schema_version = 1
 dev = 42
 "#,
         );
-        assert_eq!(
-            result,
-            Err(PolicyParseError::CommandMustBeTable { command: "dev".to_owned() })
-        );
+        assert_eq!(result, Err(PolicyParseError::CommandMustBeTable { command: "dev".to_owned() }));
     }
 
     #[test]
@@ -796,10 +793,7 @@ ttl = "5y"
         );
         assert_eq!(
             result,
-            Err(PolicyParseError::InvalidTtl {
-                command: "dev".to_owned(),
-                value: "5y".to_owned(),
-            })
+            Err(PolicyParseError::InvalidTtl { command: "dev".to_owned(), value: "5y".to_owned() })
         );
     }
 
@@ -871,10 +865,7 @@ foo = "bar"
 argv = ["pnpm"]
 "#,
         );
-        assert_eq!(
-            result,
-            Err(PolicyParseError::UnknownTopLevelKey { key: "foo".to_owned() })
-        );
+        assert_eq!(result, Err(PolicyParseError::UnknownTopLevelKey { key: "foo".to_owned() }));
     }
 
     #[test]

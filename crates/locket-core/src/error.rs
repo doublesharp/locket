@@ -667,7 +667,10 @@ mod tests {
             LocketError::from_code_name("IdeEnvSessionUnavailable"),
             Some(LocketError::IdeEnvSessionUnavailable),
         );
-        assert_eq!(LocketError::IdeEnvSessionUnavailable.to_string(), "ide env session unavailable");
+        assert_eq!(
+            LocketError::IdeEnvSessionUnavailable.to_string(),
+            "ide env session unavailable"
+        );
     }
 
     #[test]

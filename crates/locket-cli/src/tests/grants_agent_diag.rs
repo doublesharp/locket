@@ -710,8 +710,7 @@ fn doctor_reports_locked_safe_diagnostics_and_exit_codes() -> Result<(), Box<dyn
 }
 
 #[test]
-fn doctor_warns_when_degraded_audit_log_is_non_empty()
--> Result<(), Box<dyn std::error::Error>> {
+fn doctor_warns_when_degraded_audit_log_is_non_empty() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempdir()?;
     let context = test_context(&directory);
     let mut init_output = Vec::new();
@@ -742,11 +741,8 @@ fn doctor_warns_when_degraded_audit_log_is_non_empty()
     let bytes = fs::metadata(&degraded_log)?.len();
 
     let mut doctor_output = Vec::new();
-    let code = run_with_context(
-        Cli::try_parse_from(["locket", "doctor"])?,
-        &context,
-        &mut doctor_output,
-    )?;
+    let code =
+        run_with_context(Cli::try_parse_from(["locket", "doctor"])?, &context, &mut doctor_output)?;
     // `warn` alone does not trip the exit code; without other failures
     // `doctor` exits 0.
     assert_eq!(code, 0);

@@ -116,6 +116,31 @@ fn team_required_tables_enforce_metadata_constraints() -> Result<(), Box<dyn Err
         [],
     )?;
     connection.execute(
+        "INSERT INTO devices(
+           id, project_id, name, signing_public_key, sealing_public_key, fingerprint,
+           safety_words_json, local, created_at
+         )
+         VALUES (
+           'lk_dev_schema', 'lk_proj_schema', 'workstation', zeroblob(32), zeroblob(32),
+           'fp-schema', '[]', 0, 1
+         )",
+        [],
+    )?;
+    connection.execute(
+        "INSERT INTO team_members(id, team_id, device_id, display_name, role, joined_at)
+         VALUES ('lk_member_device_schema', 'lk_team_schema', 'lk_dev_schema', 'Alice laptop',
+                 'developer', 1)",
+        [],
+    )?;
+    connection.execute("DELETE FROM devices WHERE id = 'lk_dev_schema'", [])?;
+    let cleared_device_id: Option<String> = connection.query_row(
+        "SELECT device_id FROM team_members WHERE id = 'lk_member_device_schema'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(cleared_device_id, None, "device retirement must retain member history");
+
+    connection.execute(
         "INSERT INTO team_invites(
            id, team_id, issuer_member_id, recipient_device_fingerprint, role, profiles_json,
            nonce, created_at, expires_at

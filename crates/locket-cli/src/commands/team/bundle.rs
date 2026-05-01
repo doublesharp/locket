@@ -444,8 +444,9 @@ pub fn import_bundle_command(
             .map_err(|error| {
                 bundle_verification_error(format!("bundle verification failed: {error}"))
             })?;
-    let payload: SealedBundlePayloadV1 = serde_json::from_slice(&plaintext)
-        .map_err(|error| bundle_verification_error(format!("bundle verification failed: {error}")))?;
+    let payload: SealedBundlePayloadV1 = serde_json::from_slice(&plaintext).map_err(|error| {
+        bundle_verification_error(format!("bundle verification failed: {error}"))
+    })?;
     let counts = ImportedBundleCounts {
         profile_count: payload.profile_count,
         secret_count: payload.secret_count,
@@ -798,8 +799,7 @@ fn apply_bundle_payload(
                 }
                 let deleted_vs_active = local.state != secret.state;
                 if deleted_vs_active {
-                    conflicts.deleted_vs_active =
-                        conflicts.deleted_vs_active.saturating_add(1);
+                    conflicts.deleted_vs_active = conflicts.deleted_vs_active.saturating_add(1);
                 }
                 let newer_incoming = secret.updated_at > local.updated_at
                     || secret.current_version > local.current_version;
@@ -879,11 +879,9 @@ fn apply_bundle_payload(
                 let incoming_active = version.state == "current";
                 let deleted_vs_active = local_active != incoming_active;
                 if deleted_vs_active {
-                    conflicts.deleted_vs_active =
-                        conflicts.deleted_vs_active.saturating_add(1);
+                    conflicts.deleted_vs_active = conflicts.deleted_vs_active.saturating_add(1);
                 }
-                let newer_incoming =
-                    !deleted_vs_active && version.created_at > local.created_at;
+                let newer_incoming = !deleted_vs_active && version.created_at > local.created_at;
                 if newer_incoming {
                     conflicts.newer_incoming = conflicts.newer_incoming.saturating_add(1);
                 }
@@ -926,8 +924,7 @@ fn apply_bundle_payload(
                             ],
                         )
                         .map_err(map_apply_sqlite_error)?;
-                    applied.secret_version_count =
-                        applied.secret_version_count.saturating_add(1);
+                    applied.secret_version_count = applied.secret_version_count.saturating_add(1);
                 }
             }
         }
@@ -1439,11 +1436,8 @@ fn build_import_device_private_key_storage(
     context: &RuntimeContext,
     project_id: &str,
 ) -> Result<WrappedLocalFileDevicePrivateKeyStorage, CliError> {
-    let directory = context
-        .store_path
-        .parent()
-        .map(std::path::Path::to_path_buf)
-        .ok_or_else(|| {
+    let directory =
+        context.store_path.parent().map(std::path::Path::to_path_buf).ok_or_else(|| {
             crate::runtime::error::corrupt_db_error("could not resolve device private key root")
         })?;
     Ok(WrappedLocalFileDevicePrivateKeyStorage::new(
@@ -1455,9 +1449,9 @@ fn build_import_device_private_key_storage(
 
 fn map_private_key_load_error(error: PlatformError) -> CliError {
     match error {
-        PlatformError::DevicePrivateKeyNotFound => bundle_verification_error(
-            "device private-key storage not initialized",
-        ),
+        PlatformError::DevicePrivateKeyNotFound => {
+            bundle_verification_error("device private-key storage not initialized")
+        }
         other => CliError::Platform(other),
     }
 }
@@ -1841,18 +1835,20 @@ fn decrypt_audit_chain(
     payload: &SealedAuditChainPayloadV1,
     bundle_schema_version: u16,
 ) -> Result<Vec<SealedAuditChainRowV1>, CliError> {
-    let key_bytes = BASE64URL_NOPAD
-        .decode(payload.encryption_key_b64.as_bytes())
-        .map_err(|_| bundle_verification_error("audit chain encryption key is not valid base64url"))?;
+    let key_bytes =
+        BASE64URL_NOPAD.decode(payload.encryption_key_b64.as_bytes()).map_err(|_| {
+            bundle_verification_error("audit chain encryption key is not valid base64url")
+        })?;
     let nonce_bytes = BASE64URL_NOPAD
         .decode(payload.nonce_b64.as_bytes())
         .map_err(|_| bundle_verification_error("audit chain nonce is not valid base64url"))?;
     let ciphertext = BASE64URL_NOPAD
         .decode(payload.encrypted_rows_b64.as_bytes())
         .map_err(|_| bundle_verification_error("audit chain ciphertext is not valid base64url"))?;
-    let checkpoint_hmac_bytes = BASE64URL_NOPAD
-        .decode(payload.checkpoint_hmac_b64.as_bytes())
-        .map_err(|_| bundle_verification_error("audit chain checkpoint hmac is not valid base64url"))?;
+    let checkpoint_hmac_bytes =
+        BASE64URL_NOPAD.decode(payload.checkpoint_hmac_b64.as_bytes()).map_err(|_| {
+            bundle_verification_error("audit chain checkpoint hmac is not valid base64url")
+        })?;
     if key_bytes.len() != 32 {
         return Err(bundle_verification_error("audit chain encryption key must be 32 bytes"));
     }
@@ -1873,10 +1869,14 @@ fn decrypt_audit_chain(
     );
     let cipher = XChaCha20Poly1305::new(Key::from_slice(&key_bytes));
     let plaintext = cipher
-        .decrypt(XNonce::from_slice(&nonce_bytes), Payload { msg: ciphertext.as_slice(), aad: &aad })
+        .decrypt(
+            XNonce::from_slice(&nonce_bytes),
+            Payload { msg: ciphertext.as_slice(), aad: &aad },
+        )
         .map_err(|_| bundle_verification_error("audit chain decryption failed"))?;
-    let rows: Vec<SealedAuditChainRowV1> = serde_json::from_slice(&plaintext)
-        .map_err(|error| bundle_verification_error(format!("audit chain row decode failed: {error}")))?;
+    let rows: Vec<SealedAuditChainRowV1> = serde_json::from_slice(&plaintext).map_err(|error| {
+        bundle_verification_error(format!("audit chain row decode failed: {error}"))
+    })?;
     if rows.len() != payload.row_count {
         return Err(bundle_verification_error("audit chain row count mismatch"));
     }

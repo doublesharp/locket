@@ -155,18 +155,17 @@ pub async fn handle_register_ide_env_session(
     state: &crate::server::AgentSocketState,
     now_unix_nanos: i128,
 ) -> ResponseEnvelope {
-    let payload: RegisterIdeEnvSessionRequest = match serde_json::from_value(
-        request.payload.clone(),
-    ) {
-        Ok(payload) => payload,
-        Err(_) => {
-            return error_response(
-                request,
-                "ProtocolError",
-                "invalid RegisterIdeEnvSession payload",
-            );
-        }
-    };
+    let payload: RegisterIdeEnvSessionRequest =
+        match serde_json::from_value(request.payload.clone()) {
+            Ok(payload) => payload,
+            Err(_) => {
+                return error_response(
+                    request,
+                    "ProtocolError",
+                    "invalid RegisterIdeEnvSession payload",
+                );
+            }
+        };
     if payload.session_id.is_empty() {
         return error_response(request, "ProtocolError", "session_id must not be empty");
     }
@@ -174,11 +173,7 @@ pub async fn handle_register_ide_env_session(
         return error_response(request, "ProtocolError", "project_id must not be empty");
     }
     if payload.env_names.len() > MAX_IDE_ENV_SESSION_NAMES {
-        return error_response(
-            request,
-            "ProtocolError",
-            "env_names exceeds the per-session limit",
-        );
+        return error_response(request, "ProtocolError", "env_names exceeds the per-session limit");
     }
     if payload.env_names.iter().any(String::is_empty) {
         return error_response(request, "ProtocolError", "env_names contains an empty name");
@@ -342,7 +337,6 @@ fn error_response(
     ResponseEnvelope::Error(ErrorEnvelope::new(request.id.clone(), error, message, false))
 }
 
-
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
@@ -369,10 +363,7 @@ mod tests {
         store.initialize_schema().unwrap();
         store
             .connection()
-            .execute(
-                "INSERT INTO projects(id, name, created_at) VALUES ('proj-1', 'p', 1)",
-                [],
-            )
+            .execute("INSERT INTO projects(id, name, created_at) VALUES ('proj-1', 'p', 1)", [])
             .unwrap();
         store
             .connection()
@@ -398,20 +389,12 @@ mod tests {
                 ),
             );
         }
-        AgentSocketState::for_tests(
-            "test-version",
-            crate::peer_cred::current_process_uid(),
-            cache,
-        )
+        AgentSocketState::for_tests("test-version", crate::peer_cred::current_process_uid(), cache)
     }
 
     fn locked_state() -> AgentSocketState {
         let cache = Arc::new(Mutex::new(UnlockCache::default()));
-        AgentSocketState::for_tests(
-            "test-version",
-            crate::peer_cred::current_process_uid(),
-            cache,
-        )
+        AgentSocketState::for_tests("test-version", crate::peer_cred::current_process_uid(), cache)
     }
 
     fn register_envelope(payload: &RegisterIdeEnvSessionRequest) -> RequestEnvelope {
@@ -440,7 +423,9 @@ mod tests {
     fn expect_error(response: ResponseEnvelope) -> (String, String) {
         match response {
             ResponseEnvelope::Error(error) => (error.error, error.message),
-            ResponseEnvelope::Success(success) => panic!("expected error, got success: {success:?}"),
+            ResponseEnvelope::Success(success) => {
+                panic!("expected error, got success: {success:?}")
+            }
         }
     }
 
@@ -471,11 +456,9 @@ mod tests {
         let audit_count: u32 = Store::open(&store_path)
             .unwrap()
             .connection()
-            .query_row(
-                "SELECT COUNT(*) FROM audit_log WHERE action = 'AGENT_GRANT'",
-                [],
-                |row| row.get(0),
-            )
+            .query_row("SELECT COUNT(*) FROM audit_log WHERE action = 'AGENT_GRANT'", [], |row| {
+                row.get(0)
+            })
             .unwrap();
         assert_eq!(audit_count, 1);
 
@@ -655,10 +638,8 @@ mod tests {
 
     #[test]
     fn lookup_response_round_trips_through_json() -> Result<(), serde_json::Error> {
-        let response = IdeEnvSessionResponse {
-            env_names: vec!["X".to_owned()],
-            ttl_seconds_remaining: 42,
-        };
+        let response =
+            IdeEnvSessionResponse { env_names: vec!["X".to_owned()], ttl_seconds_remaining: 42 };
         let value = serde_json::to_value(&response)?;
         let decoded: IdeEnvSessionResponse = serde_json::from_value(value.clone())?;
         assert_eq!(decoded, response);

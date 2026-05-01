@@ -9,6 +9,8 @@ offline="${OFFLINE:-1}"
 strict="${STRICT:-0}"
 doublcov_version="${DOUBLCOV_VERSION:-0.4.3}"
 doublcov_pkg="@0xdoublesharp/doublcov@${doublcov_version}"
+line_floor="${COVERAGE_MIN_LINES:-89}"
+branch_floor="${COVERAGE_MIN_BRANCHES:-68}"
 
 offline_args=()
 if [[ "${offline}" == "1" ]]; then
@@ -34,8 +36,7 @@ mkdir -p coverage
 
 case "${mode}" in
   line)
-    # TODO(coverage-90): ratchet back to 90 once the per-crate subtasks below ship
-    exec ${llvm_cov} --workspace --all-features "${offline_args[@]}" --fail-under-lines 70 --lcov --output-path coverage/lcov.info
+    exec ${llvm_cov} --workspace --all-features "${offline_args[@]}" --fail-under-lines "${line_floor}" --lcov --output-path coverage/lcov.info
     ;;
   html)
     if ! command -v npx >/dev/null 2>&1; then
@@ -45,12 +46,10 @@ case "${mode}" in
       fi
 
       echo "npx not found; falling back to cargo llvm-cov --html" >&2
-      # TODO(coverage-90): ratchet back to 90 once the per-crate subtasks below ship
-      exec ${llvm_cov} --workspace --all-features "${offline_args[@]}" --fail-under-lines 70 --html --output-dir coverage/html
+      exec ${llvm_cov} --workspace --all-features "${offline_args[@]}" --fail-under-lines "${line_floor}" --html --output-dir coverage/html
     fi
 
-    # TODO(coverage-90): ratchet back to 90 once the per-crate subtasks below ship
-    ${llvm_cov} --workspace --all-features "${offline_args[@]}" --fail-under-lines 70 --lcov --output-path coverage/lcov.info
+    ${llvm_cov} --workspace --all-features "${offline_args[@]}" --fail-under-lines "${line_floor}" --lcov --output-path coverage/lcov.info
     exec npx -y "${doublcov_pkg}" build \
       --lcov coverage/lcov.info \
       --sources crates \
@@ -59,8 +58,32 @@ case "${mode}" in
       "${doublcov_open_args[@]}"
     ;;
   branch)
-    # TODO(coverage-90): ratchet back to 90 once the per-crate subtasks below ship
-    exec ${llvm_cov} --workspace --all-features "${offline_args[@]}" --branch --fail-under-lines 70 --fail-under-branches 75 --lcov --output-path coverage/branch.lcov.info
+    branch_llvm_cov="${CARGO_LLVM_COV:-cargo +nightly llvm-cov}"
+    if ! ${branch_llvm_cov} --version >/dev/null 2>&1; then
+      echo "cargo-llvm-cov branch coverage requires a nightly toolchain; set CARGO_LLVM_COV or install nightly" >&2
+      exit 127
+    fi
+    ${branch_llvm_cov} --workspace --all-features "${offline_args[@]}" --branch --fail-under-lines "${line_floor}" --lcov --output-path coverage/branch.lcov.info
+    branch_percent="$(
+      awk -F: '
+        /^BRF:/ { total += $2 }
+        /^BRH:/ { hit += $2 }
+        END {
+          if (total == 0) {
+            exit 2
+          }
+          printf "%.2f", (hit * 100) / total
+        }
+      ' coverage/branch.lcov.info
+    )" || {
+      echo "branch coverage data missing from coverage/branch.lcov.info" >&2
+      exit 1
+    }
+    awk -v actual="${branch_percent}" -v floor="${branch_floor}" 'BEGIN { exit !(actual + 0 >= floor + 0) }' || {
+      echo "branch coverage ${branch_percent}% is below ${branch_floor}%" >&2
+      exit 1
+    }
+    echo "branch coverage ${branch_percent}% meets ${branch_floor}%"
     ;;
   *)
     echo "unknown coverage mode: ${mode}" >&2

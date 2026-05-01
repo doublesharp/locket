@@ -52,9 +52,7 @@ pub enum SuppressionParseError {
         max: usize,
     },
     /// A directive's `<reason>` was shorter than [`MIN_REASON_LENGTH`].
-    #[error(
-        "locket-suppress reason on line {line} is too short ({length} chars; minimum {min})"
-    )]
+    #[error("locket-suppress reason on line {line} is too short ({length} chars; minimum {min})")]
     ReasonTooShort {
         /// One-based line number where the directive appeared.
         line: usize,
@@ -64,9 +62,7 @@ pub enum SuppressionParseError {
         min: usize,
     },
     /// A directive's `<reason>` was longer than [`MAX_REASON_LENGTH`].
-    #[error(
-        "locket-suppress reason on line {line} is too long ({length} chars; maximum {max})"
-    )]
+    #[error("locket-suppress reason on line {line} is too long ({length} chars; maximum {max})")]
     ReasonTooLong {
         /// One-based line number where the directive appeared.
         line: usize,
@@ -88,9 +84,7 @@ pub enum SuppressionParseError {
         line: usize,
     },
     /// A `locket-suppress-file` directive appeared after [`FILE_LEVEL_MAX_LINE`].
-    #[error(
-        "locket-suppress-file directive on line {line} must be in the first {max} lines"
-    )]
+    #[error("locket-suppress-file directive on line {line} must be in the first {max} lines")]
     FileDirectiveTooLate {
         /// One-based line number of the late directive.
         line: usize,
@@ -277,18 +271,10 @@ fn validate_reason(line: usize, reason: &str) -> Result<String, SuppressionParse
     }
     let length = reason.chars().count();
     if length < MIN_REASON_LENGTH {
-        return Err(SuppressionParseError::ReasonTooShort {
-            line,
-            length,
-            min: MIN_REASON_LENGTH,
-        });
+        return Err(SuppressionParseError::ReasonTooShort { line, length, min: MIN_REASON_LENGTH });
     }
     if length > MAX_REASON_LENGTH {
-        return Err(SuppressionParseError::ReasonTooLong {
-            line,
-            length,
-            max: MAX_REASON_LENGTH,
-        });
+        return Err(SuppressionParseError::ReasonTooLong { line, length, max: MAX_REASON_LENGTH });
     }
     Ok(reason.to_owned())
 }
