@@ -11,10 +11,14 @@
 //! On Linux this lowers `RLIMIT_CORE` to zero (so the kernel writes no
 //! core file even if the user's shell raised the limit) and clears
 //! `PR_SET_DUMPABLE` (so `/proc/<pid>/mem` and `ptrace` from same-uid
-//! debuggers don't yield key material). On other Unixes only
-//! `RLIMIT_CORE = 0` is available — `prctl` has no portable equivalent.
-//! Windows support is out of scope for this slice; calling the helper
-//! there returns `Unsupported` so diagnostics can surface the gap.
+//! debuggers don't yield key material). On macOS only `RLIMIT_CORE = 0`
+//! is available — `prctl` has no equivalent for an unprivileged
+//! user-space process; system-wide controls (`sysctl kern.coredump`,
+//! codesigning entitlements) are out of scope. On Windows the
+//! supported mitigation is `SetErrorMode(SEM_NOGPFAULTERRORBOX |
+//! SEM_FAILCRITICALERRORS)`, which suppresses Windows Error Reporting
+//! crash dumps; until the `windows` crate is wired in this build ships
+//! a stub returning `Unsupported` so diagnostics surface the gap.
 
 use std::fmt::{self, Display};
 
@@ -45,18 +49,31 @@ impl Display for CoreDumpHardening {
 
 /// Disables core-dump generation for the current process.
 ///
-/// On Linux this delegates to [`unix::disable_linux_core_dumps`], which
-/// runs `prctl(PR_SET_DUMPABLE, 0)` and `setrlimit(RLIMIT_CORE, 0, 0)`.
-/// On other Unixes only `RLIMIT_CORE = 0` is available. On Windows it
-/// returns `Unsupported`. The call is idempotent and safe to invoke
-/// from any process.
+/// Dispatches to the platform-specific implementation:
+///
+/// - **Linux:** [`unix::disable_linux_core_dumps`] —
+///   `prctl(PR_SET_DUMPABLE, 0)` plus `setrlimit(RLIMIT_CORE, 0, 0)`.
+/// - **macOS / other BSD Unixes:** [`unix::disable_macos_core_dumps`] —
+///   `setrlimit(RLIMIT_CORE, 0, 0)` only (no `prctl` equivalent).
+/// - **Windows:** [`windows_stub::disable_windows_core_dumps`] — stub
+///   returning `Unsupported` until `SetErrorMode` is wired in.
+///
+/// The call is idempotent and safe to invoke from any process.
 #[must_use]
 pub fn disable_core_dumps() -> CoreDumpHardening {
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     {
-        unix::disable_core_dumps()
+        unix::disable_linux_core_dumps()
     }
-    #[cfg(not(unix))]
+    #[cfg(all(unix, not(target_os = "linux")))]
+    {
+        unix::disable_macos_core_dumps()
+    }
+    #[cfg(target_os = "windows")]
+    {
+        windows_stub::disable_windows_core_dumps()
+    }
+    #[cfg(not(any(unix, target_os = "windows")))]
     {
         CoreDumpHardening::Unsupported
     }
@@ -67,14 +84,18 @@ pub fn disable_core_dumps() -> CoreDumpHardening {
 /// This is what `locket doctor` reports — `disable_core_dumps()` is
 /// already called once at process startup, so this just inspects
 /// `RLIMIT_CORE` (and `PR_GET_DUMPABLE` on Linux) and reports whether
-/// the mitigations stuck.
+/// the mitigations stuck. On Windows the stub reports `Unsupported`.
 #[must_use]
 pub fn core_dump_hardening_state() -> CoreDumpHardening {
     #[cfg(unix)]
     {
         unix::core_dump_hardening_state()
     }
-    #[cfg(not(unix))]
+    #[cfg(target_os = "windows")]
+    {
+        windows_stub::core_dump_hardening_state()
+    }
+    #[cfg(not(any(unix, target_os = "windows")))]
     {
         CoreDumpHardening::Unsupported
     }
@@ -85,23 +106,6 @@ mod unix {
     use rustix::process::{Resource, Rlimit, getrlimit, setrlimit};
 
     use super::CoreDumpHardening;
-
-    pub fn disable_core_dumps() -> CoreDumpHardening {
-        #[cfg(target_os = "linux")]
-        {
-            disable_linux_core_dumps()
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            let core_ok = set_core_rlimit_zero();
-            let dumpable_ok = clear_dumpable_flag();
-            if core_ok && dumpable_ok {
-                CoreDumpHardening::Active
-            } else {
-                CoreDumpHardening::Degraded
-            }
-        }
-    }
 
     /// Linux-specific entry point: `prctl(PR_SET_DUMPABLE, 0)` plus
     /// `setrlimit(RLIMIT_CORE, 0, 0)`. Both calls in one place so the
@@ -120,6 +124,20 @@ mod unix {
         let core_ok = set_core_rlimit_zero();
         let dumpable_ok = clear_dumpable_flag();
         if core_ok && dumpable_ok { CoreDumpHardening::Active } else { CoreDumpHardening::Degraded }
+    }
+
+    /// macOS / BSD entry point: `setrlimit(RLIMIT_CORE, 0, 0)` only.
+    ///
+    /// Documented limitation: macOS exposes no `prctl(PR_SET_DUMPABLE)`
+    /// equivalent for an unprivileged user-space process. A same-uid
+    /// debugger (`lldb attach`) can still inspect address space; that is
+    /// mitigated separately by the session-lock and zeroize layers.
+    /// System-wide controls (`sysctl kern.coredump`, codesigning
+    /// entitlements) require privileges this agent does not assume and
+    /// are out of scope for this slice.
+    #[cfg(not(target_os = "linux"))]
+    pub fn disable_macos_core_dumps() -> CoreDumpHardening {
+        if set_core_rlimit_zero() { CoreDumpHardening::Active } else { CoreDumpHardening::Degraded }
     }
 
     pub fn core_dump_hardening_state() -> CoreDumpHardening {
@@ -144,14 +162,6 @@ mod unix {
             .is_ok()
     }
 
-    #[cfg(not(target_os = "linux"))]
-    const fn clear_dumpable_flag() -> bool {
-        // No equivalent on macOS/BSD: `RLIMIT_CORE = 0` is the supported
-        // mitigation. Treat as success so the caller doesn't see a
-        // false `Degraded`.
-        true
-    }
-
     /// `prctl(PR_GET_DUMPABLE)` via rustix's typed wrapper.
     #[cfg(target_os = "linux")]
     fn dumpable_flag_cleared() -> bool {
@@ -163,21 +173,57 @@ mod unix {
 
     #[cfg(not(target_os = "linux"))]
     const fn dumpable_flag_cleared() -> bool {
-        // Mirrors `clear_dumpable_flag`: there's nothing to query off
-        // Linux, so treat as the success state.
+        // Mirrors the macOS/BSD `disable_macos_core_dumps` path: there's
+        // nothing to query off Linux, so treat as the success state.
         true
+    }
+}
+
+#[cfg(target_os = "windows")]
+mod windows_stub {
+    use super::CoreDumpHardening;
+
+    /// Windows entry point.
+    ///
+    /// TODO(harden-windows-core-dump): wire the `windows` crate and call
+    /// `SetErrorMode(SEM_NOGPFAULTERRORBOX | SEM_FAILCRITICALERRORS)` to
+    /// suppress Windows Error Reporting crash dumps. Adding the dep is
+    /// out of scope for this slice; doctor surfaces `Unsupported` so
+    /// operators know the gap.
+    #[must_use]
+    pub fn disable_windows_core_dumps() -> CoreDumpHardening {
+        CoreDumpHardening::Unsupported
+    }
+
+    #[must_use]
+    pub fn core_dump_hardening_state() -> CoreDumpHardening {
+        CoreDumpHardening::Unsupported
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{CoreDumpHardening, disable_core_dumps};
+    use super::{CoreDumpHardening, core_dump_hardening_state, disable_core_dumps};
 
     #[test]
     fn hardening_outcomes_render_as_doctor_labels() {
         assert_eq!(CoreDumpHardening::Active.to_string(), "active");
         assert_eq!(CoreDumpHardening::Unsupported.to_string(), "unsupported");
         assert_eq!(CoreDumpHardening::Degraded.to_string(), "degraded");
+    }
+
+    /// Cross-platform dispatcher smoke check: must not panic and must
+    /// return a value the doctor can render.
+    #[test]
+    fn dispatcher_returns_a_well_formed_outcome() {
+        let outcome = disable_core_dumps();
+        assert!(matches!(
+            outcome,
+            CoreDumpHardening::Active
+                | CoreDumpHardening::Degraded
+                | CoreDumpHardening::Unsupported
+        ));
+        let _ = core_dump_hardening_state().to_string();
     }
 
     #[cfg(unix)]
@@ -222,9 +268,28 @@ mod tests {
         assert!(matches!(dumpable_behavior(), Ok(DumpableBehavior::NotDumpable)));
     }
 
-    #[cfg(not(unix))]
+    /// Subtask 2: macOS / BSD entry-point returns `Active` after
+    /// `RLIMIT_CORE = 0`.
+    #[cfg(all(unix, not(target_os = "linux")))]
     #[test]
-    fn disable_core_dumps_reports_unsupported_on_windows() {
+    fn disable_macos_core_dumps_returns_ok() {
+        assert_eq!(super::unix::disable_macos_core_dumps(), CoreDumpHardening::Active);
+    }
+
+    /// Subtask 2: Windows stub reports `Unsupported` until the real
+    /// `SetErrorMode` wiring lands.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn disable_windows_core_dumps_returns_unsupported() {
+        assert_eq!(
+            super::windows_stub::disable_windows_core_dumps(),
+            CoreDumpHardening::Unsupported
+        );
+    }
+
+    #[cfg(not(any(unix, target_os = "windows")))]
+    #[test]
+    fn disable_core_dumps_reports_unsupported_on_other_targets() {
         assert_eq!(disable_core_dumps(), CoreDumpHardening::Unsupported);
     }
 }
