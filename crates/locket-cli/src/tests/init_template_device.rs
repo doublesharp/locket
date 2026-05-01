@@ -1375,6 +1375,16 @@ fn device_init_force_replaces_active_local_device() -> Result<(), Box<dyn std::e
         |row| row.get(0),
     )?;
     assert_eq!(verified_force_rows, 2);
+    let force_commands: Vec<String> = {
+        let mut statement = store.connection().prepare(
+            "SELECT command FROM audit_log
+             WHERE action IN ('DEVICE_ADD', 'DEVICE_REVOKE')
+               AND metadata_json LIKE '%device init --force%'
+             ORDER BY sequence",
+        )?;
+        statement.query_map([], |row| row.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()?
+    };
+    assert_eq!(force_commands, vec!["device init --force", "device init --force"]);
     Ok(())
 }
 

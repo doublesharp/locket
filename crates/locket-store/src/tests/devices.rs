@@ -1,5 +1,9 @@
 use std::error::Error;
 
+use serde_json::json;
+
+use crate::{AuditContext, AuditWrite, StoreError};
+
 use super::{insert_project_profile, open_initialized_store, test_device};
 
 #[test]
@@ -43,5 +47,79 @@ fn devices_allow_name_and_fingerprint_reuse_after_revocation() -> Result<(), Box
     let active = test_store.store.list_devices("lk_proj_test", false)?;
     assert_eq!(active.len(), 1);
     assert_eq!(active[0].id, "lk_dev_duplicate");
+    Ok(())
+}
+
+#[test]
+fn replace_local_device_rolls_back_when_audit_append_fails() -> Result<(), Box<dyn Error>> {
+    let mut test_store = open_initialized_store()?;
+    insert_project_profile(&test_store.store)?;
+    let device = test_device();
+    test_store.store.insert_device(&device)?;
+
+    let mut replacement = test_device();
+    replacement.id = "lk_dev_replacement".to_owned();
+    replacement.name = "replacement-laptop".to_owned();
+    replacement.fingerprint = "cd".repeat(32);
+    replacement.created_at = 300;
+    replacement.last_seen_at = Some(300);
+
+    let revoke_metadata = json!({
+        "schema_version": 1,
+        "action": "DEVICE_REVOKE",
+        "status": "SUCCESS",
+        "command": "device init --force",
+        "device_id": device.id,
+        "device_name": device.name,
+        "fingerprint": device.fingerprint,
+        "local": device.local,
+    });
+    let invalid_add_metadata = json!({
+        "schema_version": 1,
+        "action": "DEVICE_ADD",
+        "status": "SUCCESS",
+        "command": "device init --force",
+        "device_id": replacement.id,
+        "device_name": replacement.name,
+        "local": replacement.local,
+    });
+    let revoke_audit = AuditWrite {
+        project_id: "lk_proj_test",
+        profile_id: None,
+        action: "DEVICE_REVOKE",
+        status: "SUCCESS",
+        secret_name: None,
+        command: Some("device init --force"),
+        metadata_json: &revoke_metadata,
+        timestamp: 300,
+    };
+    let add_audit = AuditWrite {
+        project_id: "lk_proj_test",
+        profile_id: None,
+        action: "DEVICE_ADD",
+        status: "SUCCESS",
+        secret_name: None,
+        command: Some("device init --force"),
+        metadata_json: &invalid_add_metadata,
+        timestamp: 300,
+    };
+    let result = test_store.store.replace_local_device(
+        "lk_proj_test",
+        "lk_dev_test",
+        300,
+        &replacement,
+        Some(AuditContext { key: &[42; 32], write: &revoke_audit }),
+        Some(AuditContext { key: &[42; 32], write: &add_audit }),
+    );
+
+    assert!(matches!(result, Err(StoreError::AuditMetadataInvalid { .. })));
+    assert_eq!(test_store.store.get_active_local_device("lk_proj_test")?, Some(device));
+    assert!(test_store.store.find_device("lk_proj_test", "lk_dev_replacement")?.is_none());
+    let audit_count: i64 = test_store.store.connection().query_row(
+        "SELECT COUNT(*) FROM audit_log WHERE action IN ('DEVICE_ADD', 'DEVICE_REVOKE')",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(audit_count, 0);
     Ok(())
 }

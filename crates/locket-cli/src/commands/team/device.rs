@@ -1,7 +1,7 @@
 use data_encoding::BASE64URL_NOPAD;
 use locket_core::DeviceId;
 use locket_crypto::{KeyPurpose, generate_key};
-use locket_store::{AuditWrite, DeviceRecord, Store};
+use locket_store::{AuditContext, AuditWrite, DeviceRecord, Store};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -43,7 +43,7 @@ fn device_init_command(
     ensure_project_exists(&store, project_id)?;
     let timestamp = now_unix_nanos()?;
 
-    let user_verification = if let Some(existing) = store.get_active_local_device(project_id)? {
+    let existing_replacement = if let Some(existing) = store.get_active_local_device(project_id)? {
         if !args.force {
             writeln!(output, "device: already initialized")?;
             writeln!(output, "device_id: {}", existing.id)?;
@@ -53,17 +53,12 @@ fn device_init_command(
         }
         let verification =
             require_user_verification(context, "device init --force", "Replace local device key")?;
-        store.revoke_device(project_id, &existing.id, timestamp)?;
-        write_device_audit_if_available(
-            context,
-            &mut store,
-            project_id,
-            "DEVICE_REVOKE",
-            "device init --force",
-            &existing,
-            verification,
-        )?;
-        verification
+        Some((existing, verification))
+    } else {
+        None
+    };
+    let user_verification = if let Some((_, verification)) = existing_replacement.as_ref() {
+        *verification
     } else {
         configured_user_verification(
             context,
@@ -73,16 +68,28 @@ fn device_init_command(
         )?
     };
     let device = generate_local_device_record(project_id, timestamp)?;
-    store.insert_device(&device)?;
-    write_device_audit_if_available(
-        context,
-        &mut store,
-        project_id,
-        "DEVICE_ADD",
-        "device init",
-        &device,
-        user_verification,
-    )?;
+    if let Some((existing, verification)) = existing_replacement {
+        replace_local_device_with_audit(
+            context,
+            &mut store,
+            project_id,
+            &existing,
+            &device,
+            verification,
+            timestamp,
+        )?;
+    } else {
+        store.insert_device(&device)?;
+        write_device_audit_if_available(
+            context,
+            &mut store,
+            project_id,
+            "DEVICE_ADD",
+            "device init",
+            &device,
+            user_verification,
+        )?;
+    }
     let descriptor = encode_device_descriptor(&device)?;
 
     writeln!(output, "device: initialized")?;
@@ -356,7 +363,62 @@ fn write_device_audit_if_available(
     user_verification: UserVerificationAudit,
 ) -> Result<(), CliError> {
     let audit_key = load_project_key(context, store, project_id, KeyPurpose::Audit)?;
-    let metadata = json!({
+    let metadata = device_audit_metadata(action, command, device, user_verification);
+    let timestamp = now_unix_nanos()?;
+    let audit = device_audit_write(project_id, action, command, &metadata, timestamp);
+    store.append_audit(audit_key.as_ref(), &audit)?;
+    Ok(())
+}
+
+fn replace_local_device_with_audit(
+    context: &RuntimeContext,
+    store: &mut Store,
+    project_id: &str,
+    existing: &DeviceRecord,
+    replacement: &DeviceRecord,
+    user_verification: UserVerificationAudit,
+    timestamp: i64,
+) -> Result<(), CliError> {
+    let audit_key = load_project_key(context, store, project_id, KeyPurpose::Audit)?;
+    let revoke_metadata =
+        device_audit_metadata("DEVICE_REVOKE", "device init --force", existing, user_verification);
+    let add_metadata =
+        device_audit_metadata("DEVICE_ADD", "device init --force", replacement, user_verification);
+    let revoke_audit = device_audit_write(
+        project_id,
+        "DEVICE_REVOKE",
+        "device init --force",
+        &revoke_metadata,
+        timestamp,
+    );
+    let add_audit = device_audit_write(
+        project_id,
+        "DEVICE_ADD",
+        "device init --force",
+        &add_metadata,
+        timestamp,
+    );
+    let replaced = store.replace_local_device(
+        project_id,
+        &existing.id,
+        timestamp,
+        replacement,
+        Some(AuditContext { key: audit_key.as_ref(), write: &revoke_audit }),
+        Some(AuditContext { key: audit_key.as_ref(), write: &add_audit }),
+    )?;
+    if !replaced {
+        return Err(invalid_reference_error("local device is not initialized"));
+    }
+    Ok(())
+}
+
+fn device_audit_metadata(
+    action: &'static str,
+    command: &'static str,
+    device: &DeviceRecord,
+    user_verification: UserVerificationAudit,
+) -> serde_json::Value {
+    json!({
         "schema_version": 1,
         "action": action,
         "status": "SUCCESS",
@@ -366,19 +428,26 @@ fn write_device_audit_if_available(
         "fingerprint": device.fingerprint,
         "local": device.local,
         "user_verification": user_verification,
-    });
-    let audit = AuditWrite {
+    })
+}
+
+fn device_audit_write<'a>(
+    project_id: &'a str,
+    action: &'static str,
+    command: &'static str,
+    metadata: &'a serde_json::Value,
+    timestamp: i64,
+) -> AuditWrite<'a> {
+    AuditWrite {
         project_id,
         profile_id: None,
         action,
         status: "SUCCESS",
         secret_name: None,
         command: Some(command),
-        metadata_json: &metadata,
-        timestamp: now_unix_nanos()?,
-    };
-    store.append_audit(audit_key.as_ref(), &audit)?;
-    Ok(())
+        metadata_json: metadata,
+        timestamp,
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize)]

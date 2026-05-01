@@ -4,6 +4,7 @@ use rusqlite::types::Type;
 use rusqlite::{OptionalExtension, params};
 
 use crate::Store;
+use crate::audit::{AuditContext, append_audit};
 use crate::error::StoreError;
 
 /// Trusted device public metadata row.
@@ -188,5 +189,63 @@ impl Store {
         )?;
 
         Ok(self.connection.changes() == 1)
+    }
+
+    /// Replaces the active local device row and appends lifecycle audit rows atomically.
+    ///
+    /// Returns `true` when the existing device was revoked and the replacement inserted.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] when `SQLite` rejects the update/insert or audit append fails.
+    pub fn replace_local_device(
+        &mut self,
+        project_id: &str,
+        existing_device_id: &str,
+        revoked_at: i64,
+        replacement: &DeviceRecord,
+        revoke_audit: Option<AuditContext<'_>>,
+        add_audit: Option<AuditContext<'_>>,
+    ) -> Result<bool, StoreError> {
+        let safety_words_json = serde_json::to_string(&replacement.safety_words)?;
+        let transaction = self.connection.transaction()?;
+        let changed = transaction.execute(
+            "UPDATE devices
+             SET revoked_at = ?3
+             WHERE project_id = ?1 AND id = ?2 AND revoked_at IS NULL",
+            params![project_id, existing_device_id, revoked_at],
+        )?;
+        if changed != 1 {
+            return Ok(false);
+        }
+        transaction.execute(
+            "INSERT INTO devices(
+               id, project_id, name, signing_public_key, sealing_public_key, fingerprint,
+               safety_words_json, local, created_at, last_seen_at, revoked_at
+             )
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            params![
+                replacement.id.as_str(),
+                replacement.project_id.as_str(),
+                replacement.name.as_str(),
+                replacement.signing_public_key.as_slice(),
+                replacement.sealing_public_key.as_slice(),
+                replacement.fingerprint.as_str(),
+                safety_words_json.as_str(),
+                replacement.local,
+                replacement.created_at,
+                replacement.last_seen_at,
+                replacement.revoked_at,
+            ],
+        )?;
+        if let Some(audit) = revoke_audit {
+            append_audit(&transaction, audit.key, audit.write)?;
+        }
+        if let Some(audit) = add_audit {
+            append_audit(&transaction, audit.key, audit.write)?;
+        }
+        transaction.commit()?;
+
+        Ok(true)
     }
 }
