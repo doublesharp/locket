@@ -134,12 +134,7 @@ ship. Each bullet has spec ref + code ref + suggested touches.
 
 ### B. Schema / data-model alignment
 
-- [~] (in-flight: agent 14a) **audit-verify-validator-arm**: `required_fields_for_action`
-  (`audit.rs:551-588`) has no `AUDIT_VERIFY` arm. `audit.md:55`
-  requires `check_names` + pass/warn/fail/skip counts.
-  `audit.rs:1156-1170` already emits these, so just add the
-  validator arm + a unit test that rejects an `AUDIT_VERIFY` write
-  with stripped metadata.
+(`audit-verify-validator-arm` shipped — AUDIT_VERIFY arm added to required_fields_for_action; rejection test covers stripped metadata.)
 - [ ] **passkey-credentials-missing-cols**: `passkey_credentials`
   (`schema.rs:298-313`) lacks `device_id`, `member_id`, `public_key`,
   `user_handle` per `data-model.md:267-285`. WebAuthn assertion
@@ -152,11 +147,7 @@ ship. Each bullet has spec ref + code ref + suggested touches.
   `revoked_at` per `data-model.md:221-228`. `grants.rs:133-156`
   hard-deletes on deny instead of setting `revoked_at`, losing the
   audit-correlation breadcrumb.
-- [~] (in-flight: agent 14a) **imported-audit-chain-optionality**: `data-model.md:421-432`
-  declares `source_device_fingerprint`, `encrypted_rows_nonce`,
-  `encrypted_rows` as Option. `imported_audit_chains` schema makes
-  all three NOT NULL → checkpoint-only imports can't persist.
-  Reconcile spec vs schema (one is wrong).
+(`imported-audit-chain-optionality` shipped — spec was wrong; updated data-model.md:421-432 to drop Option from encrypted-rows fields (schema is canonical).)
 - [~] (in-flight: agent 14b) **bundle-conflict-index-by-profile-name-version**:
   `storage.md:149` requires composite index for bundle-apply
   conflict lookup by profile/name/version. Today `secrets` has
@@ -185,17 +176,8 @@ ship. Each bullet has spec ref + code ref + suggested touches.
   from `context.store_path.parent().join("agent.sock")` — sockets
   land next to the SQLite store. Touches: `agent_socket_path`,
   `agent_pid_path`, `agent_data_dir` + Windows named-pipe branch.
-- [~] (in-flight: agent 14a) **external-env-file-error-band**: `runtime.md:117` requires
-  `ExternalEnvSource::File` path validation failures to produce
-  `InvalidPolicy` (band 65). `exec/run.rs:549-579` returns
-  `metadata_invalid_error(...)` → `MetadataInvalid` → exit 64. Wrong
-  typed error and wrong band. Mirror fix in `agent/prepare_exec.rs`.
-- [~] (in-flight: agent 14a) **external-env-file-symlink-tests**: `runtime.md:117` requires
-  symlinks resolving outside project root be rejected.
-  `canonicalize().starts_with(canonical_root)` covers escape, but no
-  explicit symlink rejection test in `tests/`. Add tests for
-  symlink-pointing-outside and symlink-pointing-inside-but-required
-  scenarios.
+(`external-env-file-error-band` shipped — resolve_external_env_file now surfaces InvalidPolicy (band 65); 3 existing tests updated.)
+(`external-env-file-symlink-tests` shipped — two #[cfg(unix)] tests added for symlink-out (rejected) and symlink-in (accepted).)
 
 ### D. Desktop / integrations / scan
 
