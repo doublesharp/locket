@@ -82,6 +82,9 @@ pub fn lock_audit_metadata(source: SessionLockSource, outcome: SessionLockOutcom
         "cached_keys_cleared": outcome.cached_keys_cleared,
         "live_grants_revoked": outcome.live_grants_revoked,
         "metadata_only": true,
+        "client_kind": "agent",
+        "grant_actions": [],
+        "ttl_seconds": 0,
     })
 }
 

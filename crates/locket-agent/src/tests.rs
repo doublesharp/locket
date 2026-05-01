@@ -263,7 +263,7 @@ async fn list_audit_returns_filtered_metadata_and_chain_status()
     for (timestamp, action, secret_name) in
         [(100, "SET", "DATABASE_URL"), (200, "COPY", "DATABASE_URL"), (300, "ROTATE", "API_TOKEN")]
     {
-        let metadata = json!({
+        let mut metadata = json!({
             "schema_version": 1,
             "action": action,
             "status": "SUCCESS",
@@ -272,6 +272,9 @@ async fn list_audit_returns_filtered_metadata_and_chain_status()
             "source": "user-local",
             "command": "dev",
         });
+        if action == "COPY" {
+            metadata["access_mode"] = json!("clipboard");
+        }
         store.append_audit(
             &[7; 32],
             &AuditWrite {

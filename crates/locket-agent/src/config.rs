@@ -309,6 +309,7 @@ async fn write_settings(
             append_config_update_audit(
                 &mut store,
                 &request.project_id,
+                &request.config_path,
                 key,
                 &audit_key,
                 timestamp,
@@ -377,15 +378,23 @@ fn push_bool_patch(
 fn append_config_update_audit(
     store: &mut Store,
     project_id: &str,
+    config_path: &Path,
     key: &str,
     audit_key: &[u8],
     timestamp: i64,
 ) -> Result<(), ConfigRpcError> {
+    let digest = Sha256::digest(config_path.to_string_lossy().as_bytes());
+    let path_hash: String = digest.iter().fold(String::with_capacity(digest.len() * 2), |mut s, b| {
+        use std::fmt::Write;
+        let _ = write!(s, "{b:02x}");
+        s
+    });
     let metadata = json!({
         "schema_version": 1,
         "action": "CONFIG_UPDATE",
         "status": "SUCCESS",
         "command": "agent config",
+        "config_path_hash": path_hash,
         "config_keys": [key],
         "updated_field_count": 1,
     });
