@@ -214,10 +214,7 @@ Slices 1+2 shipped (agent client, tray binding, 6 view scaffolds,
   - [ ] **subtask** — desktop-secret-editor-view: `SecretEditor.vue`
     set/update with TTL-bound reveal. Pre-req:
     `desktop-reveal-modal`, `agent-set-secret`.
-  - [ ] **subtask** — agent-set-secret: RPC creating or rotating a
-    secret with a value from the webview's secure input. Emits
-    `SET` / `ROTATE`. Pre-req: `agent-unlock-cache`,
-    `agent-grant-table`.
+  - [~] [4ab55ee9] branch agent-4ab55ee9/agent-set-secret, worktree .worktrees/agent-4ab55ee9-agent-set-secret; **subtask** — agent-set-secret: RPC creating or rotating a secret.
 - [ ] Search/filter UI (`docs/specs/desktop.md`). Each subtask
   renders one surface; never exposes values; pre-req is the
   relevant view's data RPC.
