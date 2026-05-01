@@ -227,24 +227,16 @@ profile read refusals (`--use-dangerous` flag), the degraded-audit
 logger + `degraded_audit_log` doctor + perms doctor all shipped.
 Remaining audit-action emission gaps:
 
-- [ ] **resolve-reference-emission-validator**: `RESOLVE_REFERENCE`
-  audit action is emitted by `crates/locket-agent/src/resolve.rs`
-  but has no entry in `required_fields_for_action`. Spec:
-  `docs/specs/data-model.md:485`. Add the family arm to
-  `crates/locket-store/src/audit.rs:550` requiring `secret_name`,
-  `profile_id`, `source` (or whichever spec line dictates).
-- [ ] **schema-team-members-device-fk**: verify the
-  `team_members.device_id` FK on `devices(id)` with
-  `ON DELETE SET NULL` matches spec. Spec:
-  `docs/specs/storage.md:26-51`. Touches:
-  `crates/locket-store/src/schema.rs:280-288`.
-- [ ] **passkey-register-emission**: `PASSKEY_REGISTER` is in the
-  `required_fields_for_action` validator (`audit.rs:572`) but no
-  code site emits it. Spec: `docs/specs/audit.md:53`. Touches:
-  passkey registration flow once `passkey-platform-register` lands.
-- [ ] **schema-migrate-emission**: `SCHEMA_MIGRATE` constant is
-  defined but never appended as an audit row in migration paths.
-  Spec: `docs/specs/audit.md:55`. Touches: store migration code.
+(All four audit-action emission gaps shipped:
+- `resolve-reference-emission-validator` — `audit.rs:596` arm with
+  `secret_name`, `profile_id`, `source`.
+- `schema-team-members-device-fk` — confirmed comment added in
+  `schema.rs` (12a); behavior matches spec.
+- `passkey-register-emission` — emission shipped in
+  `passkey_register_command` (12d / wave commit `2fc738fd`).
+- `schema-migrate-emission` — `Store::record_schema_migrate_audit`
+  helper at `audit.rs:883` + `SchemaMigrationOutcome` returned from
+  `initialize_schema`.)
 
 ### Local user verification gates
 `LocalUserVerifier` + `require_user_verification` shipped.
