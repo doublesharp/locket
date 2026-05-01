@@ -669,6 +669,85 @@ env_mode = "strict"
     Ok(())
 }
 
+/// runtime.md:117 requires that symlinks resolving outside the project root are
+/// rejected. The `canonicalize()` + `starts_with()` check covers this; this
+/// test pins the behaviour explicitly so future refactors can't regress.
+#[cfg(unix)]
+#[test]
+fn file_external_env_source_rejects_symlink_resolving_outside_root()
+-> Result<(), Box<dyn std::error::Error>> {
+    let document = locket_core::PolicyDocument::from_toml_str(
+        r#"
+schema_version = 1
+
+[commands.env_check]
+argv = ["/bin/sh", "-c", "true"]
+required_secrets = ["DATABASE_URL"]
+external_env_sources = [{ file = "linked.env" }]
+env_mode = "strict"
+"#,
+    )?;
+    let policy = document.commands.get("env_check").ok_or("missing policy")?;
+
+    let outside = tempdir()?;
+    let target = outside.path().join("real.env");
+    std::fs::write(&target, "DATABASE_URL=postgres://escape\n")?;
+    let project_root = tempdir_in(outside.path())?;
+    // Create symlink inside the project root that points outside it.
+    if std::os::unix::fs::symlink(&target, project_root.path().join("linked.env")).is_err() {
+        // Skip on platforms/CI where symlink creation is not permitted.
+        return Ok(());
+    }
+
+    let result = crate::resolve_policy_external_env(
+        policy,
+        &locket_exec::EnvMap::new(),
+        project_root.path(),
+    );
+    let Err(error) = result else {
+        return Err("symlink resolving outside the project root must be rejected".into());
+    };
+    assert_eq!(error.exit_code(), locket_core::LocketError::InvalidPolicy.exit_code());
+    Ok(())
+}
+
+/// Companion test to the above: a symlink that lives inside the project root
+/// AND points to another file inside the project root must be accepted.
+#[cfg(unix)]
+#[test]
+fn file_external_env_source_accepts_symlink_resolving_inside_root()
+-> Result<(), Box<dyn std::error::Error>> {
+    let document = locket_core::PolicyDocument::from_toml_str(
+        r#"
+schema_version = 1
+
+[commands.env_check]
+argv = ["/bin/sh", "-c", "true"]
+required_secrets = ["DATABASE_URL"]
+external_env_sources = [{ file = "linked.env" }]
+env_mode = "strict"
+"#,
+    )?;
+    let policy = document.commands.get("env_check").ok_or("missing policy")?;
+
+    let project_root = tempdir()?;
+    let target = project_root.path().join("real.env");
+    std::fs::write(&target, "DATABASE_URL=postgres://inside\n")?;
+    // Create symlink inside project root pointing to a file inside project root.
+    if std::os::unix::fs::symlink(&target, project_root.path().join("linked.env")).is_err() {
+        return Ok(());
+    }
+
+    let env = crate::resolve_policy_external_env(
+        policy,
+        &locket_exec::EnvMap::new(),
+        project_root.path(),
+    )?;
+    // The required secret should be resolved from the symlinked file.
+    assert!(env.contains_key("DATABASE_URL"));
+    Ok(())
+}
+
 #[test]
 fn compose_external_env_source_uses_process_stub_without_docker()
 -> Result<(), Box<dyn std::error::Error>> {
