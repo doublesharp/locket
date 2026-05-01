@@ -362,7 +362,15 @@ fn sealed_bundle_export_verify_and_import_are_metadata_only()
     )?;
     let verify_output = String::from_utf8(verify_output)?;
     assert!(verify_output.contains("bundle: valid"));
-    assert!(verify_output.contains("decryptable_by_this_device: no"));
+    // Per docs/specs/team-sync-recovery.md:213, when the verifying device
+    // is also a recipient (this same context exported the bundle to its
+    // own descriptor), `bundle verify` must attempt decryption and report
+    // the truthful flag plus inner counts. Bundle verify remains
+    // metadata-only — no rows are applied.
+    assert!(verify_output.contains("decryptable_by_this_device: yes"));
+    assert!(verify_output.contains("decrypted_secret_count: 1"));
+    assert!(verify_output.contains("decrypted_blob_count: 1"));
+    assert!(verify_output.contains("metadata_only: yes"));
 
     let mut import_output = Vec::new();
     run_with_context(
@@ -420,7 +428,11 @@ fn sealed_bundle_export_verify_and_import_are_metadata_only()
     assert_eq!(verify_metadata["bundle_schema_version"], serde_json::json!(1));
     assert_eq!(verify_metadata["profile_count"], serde_json::json!(1));
     assert_eq!(verify_metadata["recipient_count"], serde_json::json!(1));
-    assert_eq!(verify_metadata["decryptable_by_this_device"], serde_json::json!(false));
+    assert_eq!(verify_metadata["decryptable_by_this_device"], serde_json::json!(true));
+    assert_eq!(verify_metadata["decrypted_profile_count"], serde_json::json!(1));
+    assert_eq!(verify_metadata["decrypted_secret_count"], serde_json::json!(1));
+    assert_eq!(verify_metadata["decrypted_blob_count"], serde_json::json!(1));
+    assert_eq!(verify_metadata["decrypted_command_policy_count"], serde_json::json!(0));
     assert_eq!(verify_metadata["metadata_only"], serde_json::json!(true));
     assert!(verify_metadata.get("recipient_fingerprints").is_none());
     let import_metadata = rows

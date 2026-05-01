@@ -893,3 +893,166 @@ fn tampered_audit_chain_rejects_with_bundle_verification_failed()
     assert_eq!(stored_chains, 0, "tampered import must leave imported_audit_chains empty");
     Ok(())
 }
+
+/// Regression for `bundle-verify-attempts-decrypt-when-recipient`
+/// (`docs/specs/team-sync-recovery.md:213`). When the same device that
+/// exported the bundle also verifies it, `bundle verify` must:
+///
+/// 1. Attempt decryption of the age payload using the local device's
+///    sealing private key (recipient match).
+/// 2. Emit `decryptable_by_this_device: yes` plus the inner counts
+///    (profiles, secrets, `secret_versions`, blobs, `command_policies`)
+///    on its CLI output.
+/// 3. Never apply rows — `bundle verify` is metadata-only.
+#[test]
+fn bundle_verify_decrypts_when_local_device_is_recipient()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let (context, _descriptor, bundle_path, export_output) =
+        export_sealed_bundle(&directory, "verify-decrypt.locket-bundle")?;
+    let exported_secrets = parse_field(&export_output, "secret_count")
+        .ok_or("export missing secret_count")?
+        .to_owned();
+    let exported_blobs =
+        parse_field(&export_output, "blob_count").ok_or("export missing blob_count")?.to_owned();
+    let exported_command_policies = parse_field(&export_output, "command_policy_count")
+        .ok_or("export missing command_policy_count")?
+        .to_owned();
+    let exported_profiles =
+        parse_field(&export_output, "profiles").ok_or("export missing profiles")?.to_owned();
+
+    let mut verify_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from([
+            "locket",
+            "bundle",
+            "verify",
+            bundle_path.to_str().ok_or("utf8 path")?,
+        ])?,
+        &context,
+        &mut verify_output,
+    )?;
+    let verify_output = String::from_utf8(verify_output)?;
+    assert!(verify_output.contains("bundle: valid"));
+    assert!(
+        verify_output.contains("decryptable_by_this_device: yes"),
+        "verify must report decryptable when device is a recipient: {verify_output}"
+    );
+    assert!(
+        verify_output.contains("metadata_only: yes"),
+        "verify must remain metadata-only even after decryption: {verify_output}"
+    );
+    let decrypted_profiles = parse_field(&verify_output, "decrypted_profile_count")
+        .ok_or("verify missing decrypted_profile_count")?;
+    let decrypted_secrets = parse_field(&verify_output, "decrypted_secret_count")
+        .ok_or("verify missing decrypted_secret_count")?;
+    let decrypted_secret_versions = parse_field(&verify_output, "decrypted_secret_version_count")
+        .ok_or("verify missing decrypted_secret_version_count")?;
+    let decrypted_blobs = parse_field(&verify_output, "decrypted_blob_count")
+        .ok_or("verify missing decrypted_blob_count")?;
+    let decrypted_command_policies = parse_field(&verify_output, "decrypted_command_policy_count")
+        .ok_or("verify missing decrypted_command_policy_count")?;
+    assert_eq!(
+        decrypted_profiles, exported_profiles,
+        "verify decrypted profile count must mirror export"
+    );
+    assert_eq!(
+        decrypted_secrets, exported_secrets,
+        "verify decrypted secret count must mirror export"
+    );
+    assert_eq!(
+        decrypted_blobs, exported_blobs,
+        "verify decrypted blob count must mirror export"
+    );
+    assert_eq!(
+        decrypted_command_policies, exported_command_policies,
+        "verify decrypted command_policy count must mirror export"
+    );
+    let decrypted_secret_versions: u64 = decrypted_secret_versions.parse()?;
+    assert!(
+        decrypted_secret_versions >= 1,
+        "verify must report at least one decrypted secret version"
+    );
+
+    // Sanity: verify must not apply rows. There must be no
+    // BACKUP_IMPORT audit row from this verify call.
+    let store_path = context.store_path.clone();
+    drop(context);
+    let import_audits = store_row_count(
+        &store_path,
+        "SELECT COUNT(*) FROM audit_log WHERE action = 'BACKUP_IMPORT'",
+    )?;
+    assert_eq!(import_audits, 0, "bundle verify must not emit BACKUP_IMPORT audit rows");
+    Ok(())
+}
+
+/// Regression for `bundle-import-rotate-uses-import-timestamp`
+/// (`docs/specs/team-sync-recovery.md:224`). When `import-bundle`
+/// applies a divergent secret with `--accept-incoming`, the resulting
+/// `secrets.last_rotated_at` row must reflect the local import
+/// timestamp, NOT the bundle's `last_rotated_at`. The bundle was
+/// exported with a small/old `last_rotated_at` and is re-imported
+/// against a local row with a deeply different value; the new local
+/// row must be much newer than the bundle's value.
+#[test]
+fn bundle_import_sets_last_rotated_at_to_import_timestamp()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let (context, _descriptor, bundle_path, _export_output) =
+        export_sealed_bundle(&directory, "rotate-ts.locket-bundle")?;
+
+    // Mutate the local row's `last_rotated_at` to a small/old value so
+    // the bundle's stored `last_rotated_at` (also small here) and the
+    // local row both differ from the eventual import timestamp. The
+    // expected post-import value is the local `now` (nanos since the
+    // Unix epoch), which is many orders of magnitude larger than this
+    // sentinel value, so a strictly-greater assertion is unambiguous.
+    let bundle_last_rotated_at: i64 = 1_000;
+    let store_path = context.store_path.clone();
+    {
+        let store = locket_store::Store::open(&store_path)?;
+        store.connection().execute(
+            "UPDATE secrets SET last_rotated_at = ?1, updated_at = ?2",
+            [bundle_last_rotated_at, 2_000_i64],
+        )?;
+        // Also tweak the blob ciphertext so the apply branch picks the
+        // divergent path (deterministic conflict, no version bump
+        // needed). The bundle ships the original ciphertext.
+        store.connection().execute(
+            "UPDATE blobs SET ciphertext = X'00FF' WHERE secret_id IN (SELECT id FROM secrets)",
+            [],
+        )?;
+    }
+
+    let mut import_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from([
+            "locket",
+            "import-bundle",
+            bundle_path.to_str().ok_or("utf8 path")?,
+            "--accept-incoming",
+        ])?,
+        &context,
+        &mut import_output,
+    )?;
+    let import_output = String::from_utf8(import_output)?;
+    assert!(import_output.contains("import: applied"), "import must apply rows: {import_output}");
+
+    drop(context);
+    let store = locket_store::Store::open(&store_path)?;
+    let post_last_rotated_at: i64 = store
+        .connection()
+        .query_row("SELECT last_rotated_at FROM secrets LIMIT 1", [], |row| row.get(0))?;
+    assert!(
+        post_last_rotated_at > bundle_last_rotated_at,
+        "post-import last_rotated_at ({post_last_rotated_at}) must NOT be the bundle's value ({bundle_last_rotated_at}); spec requires the import timestamp"
+    );
+    // Sanity: a real now-since-epoch in nanos is at least ~1e18 in
+    // 2026; assert we cleared the small sentinel band by a wide
+    // margin, ruling out an accidental copy of `updated_at` (2_000).
+    assert!(
+        post_last_rotated_at > 1_000_000_000,
+        "post-import last_rotated_at ({post_last_rotated_at}) must be a real timestamp, not a sentinel"
+    );
+    Ok(())
+}
