@@ -378,7 +378,11 @@ fn sealed_bundle_export_verify_and_import_are_metadata_only()
     )?;
     let import_output = String::from_utf8(import_output)?;
     assert!(import_output.contains("bundle: verified"));
-    assert!(import_output.contains("import: not_applied"));
+    assert!(import_output.contains("import: decrypted"));
+    assert!(import_output.contains("profiles: 1"));
+    assert!(import_output.contains("secrets: 1"));
+    assert!(import_output.contains("blobs: 1"));
+    assert!(import_output.contains("command_policies: 0"));
     assert!(import_output.contains("metadata_only: yes"));
 
     assert_error_contains(
@@ -419,7 +423,15 @@ fn sealed_bundle_export_verify_and_import_are_metadata_only()
     assert_eq!(verify_metadata["decryptable_by_this_device"], serde_json::json!(false));
     assert_eq!(verify_metadata["metadata_only"], serde_json::json!(true));
     assert!(verify_metadata.get("recipient_fingerprints").is_none());
-    assert!(rows.iter().any(|(action, _)| action == "BACKUP_IMPORT"));
+    let import_metadata = rows
+        .iter()
+        .find_map(|(action, metadata)| (action == "BACKUP_IMPORT").then_some(metadata))
+        .ok_or("missing BACKUP_IMPORT audit row")?;
+    let import_metadata: serde_json::Value = serde_json::from_str(import_metadata)?;
+    assert_eq!(import_metadata["profile_count"], serde_json::json!(1));
+    assert_eq!(import_metadata["secret_count"], serde_json::json!(1));
+    assert_eq!(import_metadata["blob_count"], serde_json::json!(1));
+    assert_eq!(import_metadata["command_policy_count"], serde_json::json!(0));
     for (_, metadata) in rows {
         assert!(!metadata.contains("postgres://bundle-secret"));
     }
@@ -487,6 +499,161 @@ fn bundle_verify_rejects_unsupported_schema_as_config_error()
         }
         other => return Err(format!("expected typed MetadataInvalid error, got {other:?}").into()),
     }
+    Ok(())
+}
+
+#[test]
+fn import_bundle_without_device_private_key_fails_verification()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    let args = test_secret_write_args("DATABASE_URL");
+    crate::set_secret_value(&context, &args, "postgres://x", "manual", 1_000)?;
+
+    let mut device_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "device", "init"])?,
+        &context,
+        &mut device_output,
+    )?;
+    let descriptor = String::from_utf8(device_output)?
+        .lines()
+        .find_map(|line| line.strip_prefix("descriptor: "))
+        .ok_or("missing descriptor")?
+        .to_owned();
+    let bundle_path = directory.path().join("dev.locket-bundle");
+    run_with_context(
+        Cli::try_parse_from([
+            "locket",
+            "export",
+            "--sealed",
+            "--recipient",
+            &descriptor,
+            "--profile",
+            "dev",
+            "--output",
+            bundle_path.to_str().ok_or("utf8 path")?,
+        ])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+
+    // Remove the device's wrapped private-key file so the import path
+    // observes DevicePrivateKeyNotFound and returns BundleVerificationFailed.
+    let devices_dir = directory.path().join("devices");
+    if devices_dir.exists() {
+        fs::remove_dir_all(&devices_dir)?;
+    }
+
+    let result = run_with_context(
+        Cli::try_parse_from([
+            "locket",
+            "import-bundle",
+            bundle_path.to_str().ok_or("utf8 path")?,
+            "--accept-local",
+        ])?,
+        &context,
+        &mut Vec::new(),
+    );
+    let Err(error) = result else {
+        return Err("expected bundle verification error".into());
+    };
+    assert_eq!(
+        error.exit_code(),
+        locket_core::LocketError::BundleVerificationFailed.exit_code(),
+    );
+    assert!(
+        error.to_string().contains("device private-key storage not initialized"),
+        "unexpected error message: {error}"
+    );
+    Ok(())
+}
+
+#[test]
+fn import_bundle_with_corrupt_age_payload_fails_verification()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+
+    let mut device_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "device", "init"])?,
+        &context,
+        &mut device_output,
+    )?;
+    let descriptor = String::from_utf8(device_output)?
+        .lines()
+        .find_map(|line| line.strip_prefix("descriptor: "))
+        .ok_or("missing descriptor")?
+        .to_owned();
+    let bundle_path = directory.path().join("dev.locket-bundle");
+    run_with_context(
+        Cli::try_parse_from([
+            "locket",
+            "export",
+            "--sealed",
+            "--recipient",
+            &descriptor,
+            "--profile",
+            "dev",
+            "--output",
+            bundle_path.to_str().ok_or("utf8 path")?,
+        ])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+
+    // Flip a byte inside the encrypted payload (after the manifest header)
+    // so age authenticated decryption fails. The container-level digest is
+    // recomputed to bypass the manifest digest check and exercise the age
+    // decrypt path.
+    let bundle_bytes = fs::read(&bundle_path)?;
+    let mut container = locket_core::BundleContainer::deserialize(&bundle_bytes)?;
+    let payload_len = container.encrypted_payload.len();
+    assert!(payload_len > 32, "encrypted payload unexpectedly short");
+    // Flip a byte well inside the ciphertext to corrupt the auth tag.
+    container.encrypted_payload[payload_len - 8] ^= 0xff;
+    let mut hasher = <sha2::Sha256 as sha2::Digest>::new();
+    <sha2::Sha256 as sha2::Digest>::update(&mut hasher, &container.encrypted_payload);
+    container.manifest.payload_digest =
+        format!("{:x}", <sha2::Sha256 as sha2::Digest>::finalize(hasher));
+    let rebuilt = locket_core::BundleContainer::new(
+        container.manifest,
+        container.encrypted_payload,
+    )?;
+    fs::write(&bundle_path, rebuilt.serialize()?)?;
+
+    let result = run_with_context(
+        Cli::try_parse_from([
+            "locket",
+            "import-bundle",
+            bundle_path.to_str().ok_or("utf8 path")?,
+            "--accept-local",
+        ])?,
+        &context,
+        &mut Vec::new(),
+    );
+    let Err(error) = result else {
+        return Err("expected bundle decryption to fail".into());
+    };
+    assert_eq!(
+        error.exit_code(),
+        locket_core::LocketError::BundleVerificationFailed.exit_code(),
+    );
+    assert!(
+        error.to_string().contains("bundle verification failed"),
+        "unexpected error message: {error}"
+    );
     Ok(())
 }
 
