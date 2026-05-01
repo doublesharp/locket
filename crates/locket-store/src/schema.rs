@@ -7,7 +7,7 @@ use rusqlite::{Connection, OptionalExtension};
 use crate::error::StoreError;
 
 /// Current storage schema version.
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 
 /// Audit action written for each schema migration step when project context is available.
 pub const AUDIT_ACTION_SCHEMA_MIGRATE: &str = "SCHEMA_MIGRATE";
@@ -60,16 +60,30 @@ pub fn initialize_schema(
                 supported: SCHEMA_VERSION,
             })?)
         }
+        None if existing_store_without_migration_ledger(connection)? => Some(1),
         None => None,
     };
 
     let transaction = connection.transaction()?;
-    transaction.execute_batch(SCHEMA_SQL)?;
-    transaction.execute(
-        "INSERT OR IGNORE INTO schema_migrations(version, applied_at)
-         VALUES (?1, CAST(strftime('%s', 'now') AS INTEGER) * 1000000000)",
-        [i64::from(SCHEMA_VERSION)],
-    )?;
+    let mut applied_steps = Vec::new();
+    match before {
+        None => {
+            transaction.execute_batch(SCHEMA_SQL)?;
+            for version in 1..=SCHEMA_VERSION {
+                insert_schema_migration_row(&transaction, version)?;
+            }
+            applied_steps.push("schema.bootstrap_v2");
+        }
+        Some(version) => {
+            transaction.execute_batch(SCHEMA_MIGRATIONS_SQL)?;
+            if version < 2 {
+                migrate_v2_recent_schema_alignment(&transaction)?;
+                insert_schema_migration_row(&transaction, 2)?;
+                applied_steps.push("schema.migrate_v2_recent_schema_alignment");
+            }
+            transaction.execute_batch(SCHEMA_SQL)?;
+        }
+    }
     transaction.commit()?;
 
     let after = match current_schema_version(connection)? {
@@ -83,13 +97,9 @@ pub fn initialize_schema(
         None => SCHEMA_VERSION,
     };
 
-    let applied_steps = if before == Some(after) {
-        Vec::new()
-    } else {
-        // v1 is the only schema family. The single migration step is the
-        // bootstrap that creates the v1 tables and ledgers the version.
-        vec!["schema.bootstrap_v1"]
-    };
+    if before == Some(after) {
+        applied_steps.clear();
+    }
 
     Ok(SchemaMigrationOutcome { before, after, applied_steps })
 }
@@ -121,6 +131,114 @@ const fn fail_on_newer_schema(version: i64) -> Result<(), StoreError> {
         return Err(StoreError::UnsupportedSchema { found: version, supported: SCHEMA_VERSION });
     }
 
+    Ok(())
+}
+
+fn existing_store_without_migration_ledger(connection: &Connection) -> Result<bool, StoreError> {
+    let table_count = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master
+         WHERE type = 'table'
+           AND name NOT LIKE 'sqlite_%'
+           AND name != 'schema_migrations'",
+        [],
+        |row| row.get::<_, i64>(0),
+    )?;
+    Ok(table_count > 0)
+}
+
+fn insert_schema_migration_row(connection: &Connection, version: u32) -> Result<(), StoreError> {
+    connection.execute(
+        "INSERT OR IGNORE INTO schema_migrations(version, applied_at)
+         VALUES (?1, CAST(strftime('%s', 'now') AS INTEGER) * 1000000000)",
+        [i64::from(version)],
+    )?;
+    Ok(())
+}
+
+fn migrate_v2_recent_schema_alignment(connection: &Connection) -> Result<(), StoreError> {
+    add_column_if_missing(
+        connection,
+        "directory_grants",
+        "granted_by",
+        "granted_by TEXT REFERENCES team_members(id) ON DELETE SET NULL",
+    )?;
+    add_column_if_missing(connection, "directory_grants", "revoked_at", "revoked_at INTEGER")?;
+    add_column_if_missing(
+        connection,
+        "devices",
+        "member_id",
+        "member_id TEXT REFERENCES team_members(id) ON DELETE SET NULL",
+    )?;
+    add_column_if_missing(connection, "devices", "label", "label TEXT NOT NULL DEFAULT ''")?;
+
+    migrate_empty_legacy_passkey_credentials(connection)?;
+    Ok(())
+}
+
+fn add_column_if_missing(
+    connection: &Connection,
+    table: &'static str,
+    column: &'static str,
+    definition: &'static str,
+) -> Result<(), StoreError> {
+    if !table_exists(connection, table)? || column_exists(connection, table, column)? {
+        return Ok(());
+    }
+    connection.execute(&format!("ALTER TABLE {table} ADD COLUMN {definition}"), [])?;
+    Ok(())
+}
+
+fn table_exists(connection: &Connection, table: &'static str) -> Result<bool, StoreError> {
+    let exists = connection
+        .query_row(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1",
+            [table],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some();
+    Ok(exists)
+}
+
+fn column_exists(
+    connection: &Connection,
+    table: &'static str,
+    column: &'static str,
+) -> Result<bool, StoreError> {
+    let mut statement = connection.prepare(&format!("PRAGMA table_info({table})"))?;
+    let mut rows = statement.query([])?;
+    while let Some(row) = rows.next()? {
+        let name: String = row.get(1)?;
+        if name == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn migrate_empty_legacy_passkey_credentials(connection: &Connection) -> Result<(), StoreError> {
+    if !table_exists(connection, "passkey_credentials")? {
+        return Ok(());
+    }
+    let required_columns = ["device_id", "member_id", "public_key", "user_handle"];
+    let mut already_current = true;
+    for column in required_columns {
+        already_current =
+            already_current && column_exists(connection, "passkey_credentials", column)?;
+    }
+    if already_current {
+        return Ok(());
+    }
+
+    let row_count =
+        connection.query_row("SELECT COUNT(*) FROM passkey_credentials", [], |row| {
+            row.get::<_, i64>(0)
+        })?;
+    if row_count > 0 {
+        return Err(rusqlite::Error::InvalidQuery.into());
+    }
+
+    connection.execute("DROP TABLE passkey_credentials", [])?;
     Ok(())
 }
 
@@ -589,6 +707,13 @@ CREATE TABLE IF NOT EXISTS automation_client_nonces (
   PRIMARY KEY (client_id, nonce)
 );
 
+CREATE TABLE IF NOT EXISTS schema_migrations (
+  version INTEGER PRIMARY KEY CHECK (version >= 1 AND version <= 4294967295),
+  applied_at INTEGER NOT NULL
+);
+";
+
+const SCHEMA_MIGRATIONS_SQL: &str = r"
 CREATE TABLE IF NOT EXISTS schema_migrations (
   version INTEGER PRIMARY KEY CHECK (version >= 1 AND version <= 4294967295),
   applied_at INTEGER NOT NULL

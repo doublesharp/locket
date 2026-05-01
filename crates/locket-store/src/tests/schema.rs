@@ -44,8 +44,9 @@ fn creates_schema_and_records_migration() -> Result<(), Box<dyn Error>> {
     }
 
     let schema_version =
-        connection
-            .query_row("SELECT version FROM schema_migrations", [], |row| row.get::<_, u32>(0))?;
+        connection.query_row("SELECT MAX(version) FROM schema_migrations", [], |row| {
+            row.get::<_, u32>(0)
+        })?;
     assert_eq!(schema_version, SCHEMA_VERSION);
 
     let rp_id_column = connection.query_row(
@@ -290,7 +291,55 @@ fn fresh_initialize_reports_pending_schema_migration() -> Result<(), Box<dyn Err
     assert!(outcome.advanced(), "fresh store must advance the ledger");
     assert_eq!(outcome.before, None);
     assert_eq!(outcome.after, SCHEMA_VERSION);
-    assert_eq!(outcome.applied_steps.as_slice(), &["schema.bootstrap_v1"]);
+    assert_eq!(outcome.applied_steps.as_slice(), &["schema.bootstrap_v2"]);
+
+    Ok(())
+}
+
+#[test]
+fn v1_store_migrates_recent_schema_alignment_columns_and_indexes() -> Result<(), Box<dyn Error>> {
+    let directory = tempdir()?;
+    let path = directory.path().join("store.db");
+    let mut store = Store::open(path)?;
+    create_legacy_v1_schema(store.connection())?;
+
+    let outcome = store.initialize_schema()?;
+
+    assert!(outcome.advanced(), "v1 store must advance to current schema");
+    assert_eq!(outcome.before, Some(1));
+    assert_eq!(outcome.after, SCHEMA_VERSION);
+    assert_eq!(outcome.applied_steps.as_slice(), &["schema.migrate_v2_recent_schema_alignment"]);
+    assert_eq!(store.current_schema_version()?, Some(i64::from(SCHEMA_VERSION)));
+
+    for (table, column) in [
+        ("directory_grants", "granted_by"),
+        ("directory_grants", "revoked_at"),
+        ("devices", "member_id"),
+        ("devices", "label"),
+        ("passkey_credentials", "device_id"),
+        ("passkey_credentials", "member_id"),
+        ("passkey_credentials", "public_key"),
+        ("passkey_credentials", "user_handle"),
+    ] {
+        assert!(column_exists(store.connection(), table, column)?, "{table}.{column} missing");
+    }
+
+    for index in [
+        "secrets_bundle_conflict_idx",
+        "devices_member_idx",
+        "directory_grants_active_idx",
+        "passkey_credentials_device_idx",
+        "passkey_credentials_member_idx",
+    ] {
+        assert!(index_exists(store.connection(), index)?, "{index} missing");
+    }
+
+    let migrated_label: String = store.connection().query_row(
+        "SELECT label FROM devices WHERE id = 'lk_dev_legacy'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(migrated_label, "", "legacy devices must receive the label default");
 
     Ok(())
 }
@@ -322,7 +371,7 @@ fn record_schema_migrate_audit_writes_row_for_advancement() -> Result<(), Box<dy
     let mut test_store = open_initialized_store()?;
     insert_project_profile(&test_store.store)?;
 
-    // Simulate the fresh-initialize outcome (`before = None`, `after = 1`)
+    // Simulate the fresh-initialize outcome (`before = None`, `after = 2`)
     // produced when the schema bootstrap actually advanced the ledger. The
     // outcome is constructed directly because v1 is the only schema family
     // and the ledger created during fresh initialization has no project
@@ -330,7 +379,7 @@ fn record_schema_migrate_audit_writes_row_for_advancement() -> Result<(), Box<dy
     let outcome = crate::SchemaMigrationOutcome {
         before: None,
         after: SCHEMA_VERSION,
-        applied_steps: vec!["schema.bootstrap_v1"],
+        applied_steps: vec!["schema.bootstrap_v2"],
     };
 
     let wrote = test_store.store.record_schema_migrate_audit(
@@ -354,9 +403,9 @@ fn record_schema_migrate_audit_writes_row_for_advancement() -> Result<(), Box<dy
     )?;
     let metadata: serde_json::Value = serde_json::from_str(&metadata_json)?;
     assert_eq!(metadata["schema_versions"]["before"], serde_json::Value::Null);
-    assert_eq!(metadata["schema_versions"]["after"], 1);
+    assert_eq!(metadata["schema_versions"]["after"], SCHEMA_VERSION);
     assert_eq!(metadata["migration_count"], 1);
-    assert_eq!(metadata["check_names"][0], "schema.bootstrap_v1");
+    assert_eq!(metadata["check_names"][0], "schema.bootstrap_v2");
     assert_eq!(metadata["status"], "SUCCESS");
 
     Ok(())
@@ -370,7 +419,7 @@ fn record_schema_migrate_audit_writes_row_for_stale_schema() -> Result<(), Box<d
     let outcome = crate::SchemaMigrationOutcome {
         before: Some(0),
         after: SCHEMA_VERSION,
-        applied_steps: vec!["schema.bootstrap_v1"],
+        applied_steps: vec!["schema.migrate_v2_recent_schema_alignment"],
     };
 
     let wrote = test_store.store.record_schema_migrate_audit(
@@ -506,8 +555,8 @@ fn schema_migrations_applied_at_is_positive_integer() -> Result<(), Box<dyn Erro
 }
 
 #[test]
-fn schema_version_constant_is_one() {
-    assert_eq!(SCHEMA_VERSION, 1);
+fn schema_version_constant_is_current() {
+    assert_eq!(SCHEMA_VERSION, 2);
 }
 
 #[test]
@@ -537,8 +586,7 @@ fn devices_table_persists_member_id_and_label_columns() -> Result<(), Box<dyn Er
 }
 
 #[test]
-fn secrets_bundle_conflict_index_exists_and_supports_apply_path()
--> Result<(), Box<dyn Error>> {
+fn secrets_bundle_conflict_index_exists_and_supports_apply_path() -> Result<(), Box<dyn Error>> {
     // docs/specs/storage.md line 149 requires "bundle/import conflict
     // lookup by profile/name/version" indexes. The composite index on
     // secrets supports get_active_secret / get_secret_by_source filters
@@ -601,9 +649,149 @@ fn collect_query_plan(
     Ok(rows)
 }
 
+fn create_legacy_v1_schema(connection: &rusqlite::Connection) -> Result<(), Box<dyn Error>> {
+    connection.execute_batch(
+        r"
+        CREATE TABLE schema_migrations (
+          version INTEGER PRIMARY KEY,
+          applied_at INTEGER NOT NULL
+        );
+        INSERT INTO schema_migrations(version, applied_at) VALUES (1, 1);
+
+        CREATE TABLE projects (
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL,
+          user_verification_policy_json TEXT NOT NULL DEFAULT '{}',
+          created_at INTEGER NOT NULL
+        );
+        CREATE TABLE profiles (
+          id TEXT PRIMARY KEY,
+          project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+          name TEXT NOT NULL,
+          dangerous INTEGER NOT NULL CHECK (dangerous IN (0, 1)),
+          created_at INTEGER NOT NULL,
+          UNIQUE (project_id, name)
+        );
+        CREATE TABLE teams (
+          id TEXT PRIMARY KEY,
+          project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+          name TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          UNIQUE (project_id, name)
+        );
+        CREATE TABLE team_members (
+          id TEXT PRIMARY KEY,
+          team_id TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+          device_id TEXT REFERENCES devices(id) ON DELETE SET NULL,
+          display_name TEXT NOT NULL,
+          role TEXT NOT NULL CHECK (role IN ('owner', 'maintainer', 'developer', 'read-only')),
+          joined_at INTEGER NOT NULL,
+          removed_at INTEGER,
+          UNIQUE (team_id, display_name)
+        );
+        CREATE TABLE directory_grants (
+          grant_id TEXT PRIMARY KEY,
+          project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+          profile_id TEXT NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+          root_hash BLOB NOT NULL CHECK (length(root_hash) = 32),
+          directory_hash BLOB NOT NULL CHECK (length(directory_hash) = 32),
+          grant_scope TEXT NOT NULL CHECK (grant_scope IN ('project-root')),
+          display_path TEXT,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          UNIQUE (project_id, profile_id, root_hash, directory_hash, grant_scope)
+        );
+        CREATE TABLE secrets (
+          id TEXT PRIMARY KEY,
+          project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+          profile_id TEXT NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+          name TEXT NOT NULL,
+          description TEXT,
+          owner TEXT,
+          source TEXT NOT NULL CHECK (source IN ('team-managed', 'user-local', 'machine-local')),
+          origin TEXT NOT NULL CHECK (origin IN ('manual', 'imported', 'team-accept', 'profile-copy')),
+          tags_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(tags_json)),
+          required INTEGER NOT NULL CHECK (required IN (0, 1)),
+          current_version INTEGER NOT NULL,
+          state TEXT NOT NULL CHECK (state IN ('active', 'deleted')),
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          last_rotated_at INTEGER,
+          deleted_at INTEGER,
+          UNIQUE (project_id, profile_id, name, source)
+        );
+        CREATE TABLE devices (
+          id TEXT PRIMARY KEY,
+          project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+          name TEXT NOT NULL,
+          signing_public_key BLOB NOT NULL CHECK (length(signing_public_key) = 32),
+          sealing_public_key BLOB NOT NULL CHECK (length(sealing_public_key) = 32),
+          fingerprint TEXT NOT NULL,
+          safety_words_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(safety_words_json)),
+          local INTEGER NOT NULL CHECK (local IN (0, 1)),
+          created_at INTEGER NOT NULL,
+          last_seen_at INTEGER,
+          revoked_at INTEGER
+        );
+        CREATE TABLE passkey_credentials (
+          id TEXT PRIMARY KEY,
+          project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+          label TEXT NOT NULL,
+          credential_id BLOB NOT NULL CHECK (length(credential_id) > 0),
+          transports_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(transports_json)),
+          prf_capable INTEGER NOT NULL CHECK (prf_capable IN (0, 1)),
+          webauthn_relying_party_id TEXT NOT NULL DEFAULT 'locket.localhost',
+          backup_eligible INTEGER CHECK (backup_eligible IN (0, 1)),
+          backup_state INTEGER CHECK (backup_state IN (0, 1)),
+          created_at INTEGER NOT NULL,
+          last_used_at INTEGER,
+          revoked_at INTEGER,
+          UNIQUE (project_id, label),
+          UNIQUE (project_id, credential_id)
+        );
+        INSERT INTO projects(id, name, created_at) VALUES ('lk_proj_legacy', 'legacy', 1);
+        INSERT INTO devices(
+          id, project_id, name, signing_public_key, sealing_public_key, fingerprint,
+          safety_words_json, local, created_at
+        )
+        VALUES (
+          'lk_dev_legacy', 'lk_proj_legacy', 'legacy-device', zeroblob(32), zeroblob(32),
+          'legacy-fp', '[]', 1, 1
+        );
+        ",
+    )?;
+    Ok(())
+}
+
+fn column_exists(
+    connection: &rusqlite::Connection,
+    table: &str,
+    column: &str,
+) -> Result<bool, Box<dyn Error>> {
+    let mut statement = connection.prepare(&format!("PRAGMA table_info({table})"))?;
+    let mut rows = statement.query([])?;
+    while let Some(row) = rows.next()? {
+        let name: String = row.get(1)?;
+        if name == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn index_exists(connection: &rusqlite::Connection, index: &str) -> Result<bool, Box<dyn Error>> {
+    let exists = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = ?1",
+        [index],
+        |row| row.get::<_, i64>(0),
+    )?;
+    Ok(exists == 1)
+}
+
 #[test]
-fn directory_grants_table_persists_granted_by_and_revoked_at_columns()
--> Result<(), Box<dyn Error>> {
+fn directory_grants_table_persists_granted_by_and_revoked_at_columns() -> Result<(), Box<dyn Error>>
+{
     let test_store = open_initialized_store()?;
     let connection = test_store.store.connection();
 
@@ -624,10 +812,7 @@ fn directory_grants_table_persists_granted_by_and_revoked_at_columns()
         [],
         |row| row.get(0),
     )?;
-    assert_eq!(
-        revoked_at_column, 1,
-        "directory_grants.revoked_at must exist as nullable INTEGER"
-    );
+    assert_eq!(revoked_at_column, 1, "directory_grants.revoked_at must exist as nullable INTEGER");
 
     Ok(())
 }

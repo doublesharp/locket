@@ -92,14 +92,6 @@ ship. Each bullet has spec ref + code ref + suggested touches.
   shell snippets requires shell-aware parsing beyond the local argv check.
 ### B. Schema / data-model alignment
 
-- [~] (in-flight: feature/store-schema-migrations) **store-schema-migration-framework**: 14b's three column
-  additions land via `CREATE TABLE IF NOT EXISTS`, which only
-  applies to brand-new stores. Pre-v1 ship is fine, but before
-  shipping publicly we need an ALTER-based migration framework
-  keyed on `SCHEMA_VERSION` so existing stores get the new columns
-  + indexes. Touches: `crates/locket-store/src/schema.rs` and the
-  `SchemaMigrationOutcome` machinery.
-
 ### C. CLI / runtime / agent
 
 - [~] (in-flight: feature/agent-windows-pipe) **agent-windows-named-pipe-sid-path**: follow-up from shipped
