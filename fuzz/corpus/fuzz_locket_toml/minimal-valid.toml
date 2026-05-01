@@ -1,0 +1,4 @@
+schema_version = 1
+project_id = "lk_proj_seed"
+name = "Seed Project"
+default_profile = "dev"

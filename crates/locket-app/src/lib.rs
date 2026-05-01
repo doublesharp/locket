@@ -1012,6 +1012,28 @@ mod tests {
     }
 
     #[test]
+    fn tray_canary_context_values_do_not_render_in_notifications() {
+        let canary = "lk-canary-tray-value-1234567890abcdef";
+        let context = TrayNotificationContext {
+            secret_name: Some("DATABASE_URL"),
+            policy_name: Some("deploy-prod"),
+            project_name: Some("payments-api"),
+            secret_value: Some(canary),
+            finding_count: Some(9),
+        };
+        let preferences = TrayNotificationPreferences { do_not_disturb: false };
+
+        for kind in tray_notification_kinds() {
+            let notification =
+                route_tray_notification(*kind, &context, preferences).expect("notification");
+            let rendered = format!("{} {}", notification.title, notification.body);
+            for forbidden in ["DATABASE_URL", "deploy-prod", "payments-api", canary] {
+                assert!(!rendered.contains(forbidden), "{kind:?} leaked {forbidden}");
+            }
+        }
+    }
+
+    #[test]
     fn denial_reasons_match_desktop_error_view_inventory() {
         assert_eq!(
             denial_reasons(),

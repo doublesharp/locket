@@ -1,0 +1,3 @@
+prefix      sk_test_seedCanary1234567890 suffix
+emoji jalapeno cafe token abcdef0123456789abcdef0123456789
+tabs	API_TOKEN=ghp_abcdefghijklmnopqrstuvwxyz123456

@@ -1,0 +1,1 @@
+{"schema_version":1,"action":"EXEC","status":"DENIED","profile_id":"lk_prof_seed","secret_name":"DATABASE_URL","command":"deploy","nested":{"array":[1,true,null,{"k":"v"}]}}

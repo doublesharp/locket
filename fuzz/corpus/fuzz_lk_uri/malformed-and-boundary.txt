@@ -1,0 +1,6 @@
+lk://dev/
+lk:///DATABASE_URL
+lk://dev/DATABASE_URL@v0
+lk://dev/DATABASE_URL@v4294967296
+lk://dev/DATABASE_URL?source=team-managed&source=user-local
+lk://Dev/DATABASE_URL

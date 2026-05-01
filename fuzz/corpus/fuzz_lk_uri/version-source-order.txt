@@ -1,0 +1,3 @@
+prefix lk://prod/API_TOKEN@v12?source=machine-local suffix
+lk://profile-with-dash/KEY_WITH_123?source=user-local
+lk://dev/DATABASE_URL@v1?source=deleted

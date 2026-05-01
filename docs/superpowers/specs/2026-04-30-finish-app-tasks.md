@@ -138,24 +138,13 @@ ship. Each bullet has spec ref + code ref + suggested touches.
 
 ### E. Quality / ops / build
 
-- [~] (in-flight: feature/reference-runner-fuzz-quality) **reference-runner-setup-scripts**:
-  `performance-reference-runner.md:87,99` mandates
-  `scripts/reference-runners/` per-class setup scripts that record
-  applied state into `target/quality/reference-runner-setup.json`
-  and are invoked before sample collection. Directory missing
-  entirely. Add `arm64-mac.sh` / `x86-linux.sh` + a fingerprint JSON
-  writer; wire `bench-smoke.sh` to read the fingerprint.
-- [~] (in-flight: feature/reference-runner-fuzz-quality) **fuzz-corpus-seed-thinness**: `fuzzing.md:41` requires
-  diverse versioned corpora; most directories under `fuzz/corpus/`
-  carry one trivial seed (e.g. `fuzz_lk_uri/basic.txt`). Seed each
-  with edge-case / malformed / boundary inputs.
-- [~] (in-flight: feature/reference-runner-fuzz-quality) **canary-harness-surface-coverage**: `testing.md:84-89`
-  requires the canary helper to cover CLI, agent, scan, redaction,
-  audit, debug bundle, UI, tray, VS Code, Docker, and recovery
-  flows. Today only `locket-cli/src/tests/leak_canary.rs` and
-  `locket-scan/tests/leak_canary.rs`. Extend into agent reveal/copy,
-  Docker compose helper, audit row writer, desktop UI smoke, VSIX
-  integration.
+- [ ] **canary-harness-os-e2e-residual**: lightweight canary coverage
+  now includes CLI, scan/redaction, agent reveal/copy audit surfaces,
+  Docker/Compose argv metadata, tray notifications, and VS Code audit
+  webview rendering. Remaining heavier surfaces need OS/e2e jobs:
+  real desktop webview/browser smoke, OS clipboard/tray integration,
+  packaged VSIX execution, and full recovery restore e2e with artifact
+  scanning.
 ## P0 — Correctness / Security Drift (audit findings)
 
 These are spec contracts the code currently violates or silently

@@ -739,6 +739,10 @@ mod tests {
     }
 
     fn build_fixture() -> Result<RevealFixture, Box<dyn std::error::Error>> {
+        build_fixture_with_value("resolved test value")
+    }
+
+    fn build_fixture_with_value(value: &str) -> Result<RevealFixture, Box<dyn std::error::Error>> {
         let directory = tempdir()?;
         let store_path = directory.path().join("store.db");
         let mut store = Store::open(&store_path)?;
@@ -772,15 +776,15 @@ mod tests {
             &profile_fingerprint_key,
         )?;
 
-        let expected_value = "resolved test value".to_owned();
         insert_encrypted_secret(
             &mut store,
             SECRET_ID,
             "user-local",
             &profile_secret_key,
             &profile_fingerprint_key,
-            &expected_value,
+            value,
         )?;
+        let expected_value = value.to_owned();
         Ok(RevealFixture { _directory: directory, store_path, master_key, expected_value })
     }
 
@@ -1132,6 +1136,47 @@ mod tests {
         assert_eq!(audits[0]["access_mode"], "clipboard");
         assert_eq!(audits[0]["ttl_seconds"], 45);
         assert!(audits[0].get("value").is_none());
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn agent_reveal_copy_canary_values_stay_out_of_audit_surfaces()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let canary = "lk-canary-agent-reveal-copy-1234567890abcdef";
+
+        let reveal_fixture = build_fixture_with_value(canary)?;
+        let reveal_state = state_with_grant(&reveal_fixture, GrantAction::Reveal).await;
+        let reveal_envelope = RequestEnvelope::new(
+            "req-canary-reveal",
+            AgentMethod::Reveal,
+            serde_json::to_value(reveal_request(&reveal_fixture, GrantAction::Reveal))?,
+        );
+        let ResponseEnvelope::Success(reveal_success) =
+            super::handle_reveal(&reveal_envelope, &reveal_state, 1).await
+        else {
+            return Err("expected reveal success envelope".into());
+        };
+        let reveal_payload: RevealResponse = serde_json::from_value(reveal_success.payload)?;
+        assert_eq!(reveal_payload.value, canary);
+        let reveal_audits = serde_json::to_string(&audit_metadata(&reveal_fixture)?)?;
+        assert!(!reveal_audits.contains(canary));
+
+        let copy_fixture = build_fixture_with_value(canary)?;
+        let copy_state = state_with_grant(&copy_fixture, GrantAction::Copy).await;
+        let copy_envelope = RequestEnvelope::new(
+            "req-canary-copy",
+            AgentMethod::Copy,
+            serde_json::to_value(copy_request(&copy_fixture))?,
+        );
+        let ResponseEnvelope::Success(copy_success) =
+            super::handle_copy(&copy_envelope, &copy_state, 1).await
+        else {
+            return Err("expected copy success envelope".into());
+        };
+        let copy_payload: CopyResponse = serde_json::from_value(copy_success.payload)?;
+        assert_eq!(copy_payload.value, canary);
+        let copy_audits = serde_json::to_string(&audit_metadata(&copy_fixture)?)?;
+        assert!(!copy_audits.contains(canary));
         Ok(())
     }
 

@@ -1,0 +1,4 @@
+.env
+DATABASE_URL=postgres://localhost/app
+OPENAI_API_KEY=sk_test_seedCanary1234567890
+AWS_SECRET_ACCESS_KEY=abcdefghijklmnopqrstuvwxyz1234567890

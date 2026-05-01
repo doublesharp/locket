@@ -1,0 +1,7 @@
+schema_version = "1"
+project_id = "proj_without_prefix"
+name = ["not", "a", "string"]
+default_profile = ""
+
+[privacy]
+redact_names = "true"

@@ -10,6 +10,7 @@ quality_dir="${repo_root}/target/quality"
 jsonl="${quality_dir}/bench-smoke.jsonl"
 summary="${quality_dir}/bench-summary.json"
 report="${quality_dir}/bench-report.md"
+reference_setup="${REFERENCE_RUNNER_SETUP_FINGERPRINT:-${quality_dir}/reference-runner-setup.json}"
 bench_fixture_out="${BENCH_FIXTURE_OUT:-${repo_root}/target/bench-fixtures}"
 staged_scan_repo="${bench_fixture_out}/staged-scan/repo"
 min_warmups="${BENCH_WARMUPS:-5}"
@@ -104,6 +105,34 @@ power_mode() {
   printf 'unknown\n'
 }
 
+reference_setup_field() {
+  local field="$1"
+  local default_value="${2:-unknown}"
+  if [[ ! -f "${reference_setup}" ]]; then
+    printf '%s\n' "${default_value}"
+    return
+  fi
+  perl -MJSON::PP -e '
+    my ($path, $field) = @ARGV;
+    open my $fh, "<", $path or die "open $path: $!";
+    local $/;
+    my $doc = decode_json(<$fh>);
+    print $doc->{$field} // "unknown";
+  ' "${reference_setup}" "${field}"
+}
+
+reference_setup_sha256() {
+  if [[ ! -f "${reference_setup}" ]]; then
+    printf 'none\n'
+    return
+  fi
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "${reference_setup}" | awk '{ print $1 }'
+  else
+    shasum -a 256 "${reference_setup}" | awk '{ print $1 }'
+  fi
+}
+
 now_seconds() {
   perl -MTime::HiRes=time -e 'printf "%.6f\n", time'
 }
@@ -182,6 +211,7 @@ prepare_staged_scan_fixture() {
 write_report() {
   local cli_p95 agent_p95 scan_p95 cli_samples agent_samples scan_samples p95_index
   local processed_bytes elapsed_seconds throughput
+  local reference_runner reference_setup_hash reference_setup_mode
   cli_p95="$(percentile_95 < "${quality_dir}/cli_help.samples")"
   agent_p95="$(percentile_95 < "${quality_dir}/agent_status.samples")"
   scan_p95="$(percentile_95 < "${quality_dir}/scan_staged.samples")"
@@ -192,12 +222,18 @@ write_report() {
   processed_bytes="0"
   elapsed_seconds="0"
   throughput="not-measured"
+  reference_runner="$(reference_setup_field setup_class local-smoke)"
+  reference_setup_hash="$(reference_setup_sha256)"
+  reference_setup_mode="$(reference_setup_field apply_mode none)"
   {
     echo "# Locket Benchmark Smoke Report"
     echo
     echo "- mode: ${mode}"
     echo "- policy_mode: ${policy_mode}"
-    echo "- reference_runner: local-smoke"
+    echo "- reference_runner: ${reference_runner}"
+    echo "- reference_runner_setup_path: ${reference_setup}"
+    echo "- reference_runner_setup_sha256: ${reference_setup_hash}"
+    echo "- reference_runner_setup_mode: ${reference_setup_mode}"
     echo "- cpu_model: $(cpu_model)"
     echo "- core_count: $(metadata_value getconf _NPROCESSORS_ONLN)"
     echo "- memory_bytes: $(memory_bytes)"
@@ -231,12 +267,19 @@ write_report() {
   } > "${report}"
   perl -MJSON::PP -e '
     my ($path, $mode, $policy_mode, $profile, $cli_samples, $cli_p95,
-        $agent_samples, $agent_p95, $scan_samples, $scan_p95) = @ARGV;
+        $agent_samples, $agent_p95, $scan_samples, $scan_p95,
+        $setup_path, $setup_sha, $setup_class, $setup_mode) = @ARGV;
     open my $fh, ">", $path or die "open $path: $!";
     print {$fh} JSON::PP->new->canonical->pretty->encode({
       mode => $mode,
       policy_mode => $policy_mode,
       build_profile => $profile,
+      reference_runner_setup => {
+        path => $setup_path,
+        sha256 => $setup_sha,
+        setup_class => $setup_class,
+        apply_mode => $setup_mode,
+      },
       benchmarks => [
         {
           name => "cli_help",
@@ -264,7 +307,8 @@ write_report() {
   ' "${summary}" "${mode}" "${policy_mode}" "${build_profile}" \
     "${cli_samples}" "${cli_p95}" \
     "${agent_samples}" "${agent_p95}" \
-    "${scan_samples}" "${scan_p95}"
+    "${scan_samples}" "${scan_p95}" \
+    "${reference_setup}" "${reference_setup_hash}" "${reference_runner}" "${reference_setup_mode}"
 }
 
 if [[ "${mode}" == "report" ]]; then

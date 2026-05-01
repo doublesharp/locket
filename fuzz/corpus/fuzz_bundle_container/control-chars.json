@@ -1,0 +1,1 @@
+{"magic":"LOCKET-BUNDLE-V1","schema_version":1,"kind":"sealed-bundle","created_at":-1,"project_id":"lk_proj_seed\u0000x","include_audit":false,"recipient_fingerprints":["abc\u0000"],"payload_status":"metadata-only-placeholder","manifest_digest_sha256":"sha\u0000","payload":{"profiles":[],"profile_count":0,"active_secret_count":0,"audit_rows_included":false}}

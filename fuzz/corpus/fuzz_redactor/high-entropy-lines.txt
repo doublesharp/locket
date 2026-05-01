@@ -1,0 +1,4 @@
+short=abc
+hex=0123456789abcdef0123456789abcdef01234567
+base64=VGhpcy1sb29rcy1saWtlLWEtc2VjcmV0LXNlZWQtdmFsdWU=
+mixed punctuation sk-live-notquitebutclose

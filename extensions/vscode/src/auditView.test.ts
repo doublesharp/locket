@@ -39,6 +39,28 @@ test('audit view renders metadata-only columns and escapes html', () => {
   assert.doesNotMatch(html, /<DATABASE_URL>/u);
 });
 
+test('audit view canary value is absent from rendered metadata surfaces', () => {
+  const canary = 'lk-canary-vscode-audit-value-1234567890abcdef';
+  const html = buildAuditWebviewHtml({
+    nonce: 'nonce-test',
+    rows: [
+      {
+        sequence: 9,
+        timestamp: 1_700_000_000_000_000_000,
+        profile_id: 'profile-1',
+        action: 'COPY',
+        status: 'SUCCESS',
+        secret_name: 'DATABASE_URL',
+        command: 'deploy',
+      },
+    ],
+    chainStatus: { hmac_ok: true, first_break_sequence: null, rows_verified: 1, locked: false },
+  });
+
+  assert.match(html, /DATABASE_URL|deploy/u);
+  assert.doesNotMatch(html, new RegExp(canary, 'u'));
+});
+
 test('audit view surfaces locked chain status', () => {
   const html = buildAuditWebviewHtml({
     nonce: 'nonce-test',

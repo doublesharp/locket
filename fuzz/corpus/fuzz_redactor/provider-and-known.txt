@@ -1,0 +1,3 @@
+token=sk_test_seedCanary1234567890
+database_url=postgres://user:pass@example.invalid/app
+authorization: Bearer ghp_abcdefghijklmnopqrstuvwxyz123456

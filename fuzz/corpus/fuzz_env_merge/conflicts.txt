@@ -1,0 +1,4 @@
+parent0 ext0 lock0 parent1 ext1 lock1 parent2 ext2 lock2
+DATABASE_URL=parent
+DATABASE_URL=external
+DATABASE_URL=locket

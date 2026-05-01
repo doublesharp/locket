@@ -317,6 +317,35 @@ mod tests {
     }
 
     #[test]
+    fn docker_canary_values_stay_out_of_argv_and_metadata() -> Result<(), DockerError> {
+        let canary = "lk-canary-docker-value-1234567890abcdef";
+        let argv = vec!["docker".to_owned(), "run".to_owned(), "--rm".to_owned(), "app".to_owned()];
+        let locket_env = env(&[("DATABASE_URL", canary), ("API_TOKEN", "safe-value")]);
+
+        let run_plan = prepare_docker_run(&argv, &EnvMap::new(), &locket_env, None, false)?;
+        let compose_plan = prepare_compose(
+            &["docker".to_owned(), "compose".to_owned(), "up".to_owned()],
+            &EnvMap::new(),
+            &locket_env,
+            None,
+            false,
+        )?;
+
+        let safe_surfaces = [
+            run_plan.argv.join(" "),
+            run_plan.injected_names.join(","),
+            compose_plan.argv.join(" "),
+            compose_plan.injected_names.join(","),
+        ];
+        for surface in safe_surfaces {
+            assert!(!surface.contains(canary));
+        }
+        assert_eq!(run_plan.env.get("DATABASE_URL").map(|value| value.as_str()), Some(canary));
+        assert_eq!(compose_plan.env.get("DATABASE_URL").map(|value| value.as_str()), Some(canary));
+        Ok(())
+    }
+
+    #[test]
     fn validates_docker_program() {
         let argv = vec!["podman".to_owned(), "run".to_owned(), "app".to_owned()];
         let result = prepare_docker_run(&argv, &EnvMap::new(), &EnvMap::new(), None, false);
