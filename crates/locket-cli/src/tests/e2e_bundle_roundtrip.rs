@@ -579,3 +579,189 @@ fn deleted_vs_active_arm() -> Result<(), Box<dyn std::error::Error>> {
     assert!(active_count >= 1, "accept-incoming must rejoin active secret");
     Ok(())
 }
+
+/// Parity contract for the `team accept` -> `import-bundle` flow per the
+/// SPEC-CLARIFICATION block in `crates/locket-cli/src/commands/team/members.rs`:
+/// `team accept` is metadata-only today and the substantive rows
+/// (profiles, secrets, secret_versions, blobs, command_policies) only
+/// arrive at the receiver through a follow-up `import-bundle`.
+///
+/// This test pins that contract by comparing two arms over the same
+/// initial state:
+/// - Arm A imports a sealed bundle with `--accept-incoming` directly.
+/// - Arm B accepts a signed invite for the same project first, then
+///   imports the same bundle with `--accept-incoming`.
+///
+/// Both arms must converge to the same substantive row counts. Arm B's
+/// only delta is the accepted-invite row + `TEAM_ACCEPT` audit metadata,
+/// which are explicitly out-of-scope for the parity invariant.
+#[test]
+fn team_accept_then_import_bundle_matches_import_only_state()
+-> Result<(), Box<dyn std::error::Error>> {
+    use ed25519_dalek::SigningKey;
+    use locket_core::{
+        InviteId, InvitePayload, MemberId, ProjectId, SignedInvite, TeamRole,
+        device_fingerprint_v1, fingerprint_hex,
+    };
+    use rusqlite::params;
+
+    fn substantive_counts(
+        store_path: &Path,
+    ) -> Result<[i64; 5], Box<dyn std::error::Error>> {
+        Ok([
+            store_row_count(store_path, "SELECT COUNT(*) FROM profiles")?,
+            store_row_count(store_path, "SELECT COUNT(*) FROM secrets")?,
+            store_row_count(store_path, "SELECT COUNT(*) FROM secret_versions")?,
+            store_row_count(store_path, "SELECT COUNT(*) FROM blobs")?,
+            store_row_count(store_path, "SELECT COUNT(*) FROM command_policies")?,
+        ])
+    }
+
+    fn import_bundle_apply(
+        context: &RuntimeContext,
+        bundle_path: &Path,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from([
+                "locket",
+                "import-bundle",
+                bundle_path.to_str().ok_or("utf8 path")?,
+                "--accept-incoming",
+            ])?,
+            context,
+            &mut output,
+        )?;
+        let output = String::from_utf8(output)?;
+        assert!(output.contains("import: applied"), "import must apply rows: {output}");
+        Ok(())
+    }
+
+    fn build_self_invite(
+        context: &RuntimeContext,
+        invite_id: &str,
+    ) -> Result<(PathBuf, String), Box<dyn std::error::Error>> {
+        run_with_context(
+            Cli::try_parse_from(["locket", "team", "init", "platform-team"])?,
+            context,
+            &mut Vec::new(),
+        )?;
+        let directory_root = context.cwd.clone();
+        let config = crate::read_project_config(&directory_root.join("locket.toml"))?;
+        let store = locket_store::Store::open(directory_root.join("store.db"))?;
+        let local_device = store
+            .get_active_local_device(config.project_id.as_str())?
+            .ok_or("local device must exist")?;
+        let (team_id, issuer_member_id): (String, String) = store.connection().query_row(
+            "SELECT t.id, m.id FROM teams t JOIN team_members m ON m.team_id = t.id
+             WHERE t.project_id = ?1 LIMIT 1",
+            [config.project_id.as_str()],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+
+        let issuer_signing = SigningKey::from_bytes(&[51_u8; 32]);
+        let issuer_signing_public_key: [u8; 32] = issuer_signing.verifying_key().to_bytes();
+        let issuer_sealing_public_key = [52_u8; 32];
+        let issuer_fingerprint = fingerprint_hex(&device_fingerprint_v1(
+            &issuer_signing_public_key,
+            &issuer_sealing_public_key,
+        ));
+        let payload = InvitePayload {
+            v: 1,
+            invite_id: InviteId::new(invite_id.to_owned())?,
+            project_id: ProjectId::new(config.project_id.to_string())?,
+            issuer_member_id: MemberId::new(issuer_member_id.clone())?,
+            issuer_signing_public_key: data_encoding::BASE64URL_NOPAD
+                .encode(&issuer_signing_public_key),
+            issuer_sealing_public_key: data_encoding::BASE64URL_NOPAD
+                .encode(&issuer_sealing_public_key),
+            issuer_device_fingerprint: issuer_fingerprint.clone(),
+            recipient_device_fingerprint: local_device.fingerprint.clone(),
+            recipient_sealing_public_key: data_encoding::BASE64URL_NOPAD
+                .encode(&local_device.sealing_public_key),
+            role: TeamRole::Developer,
+            profiles: vec!["dev".to_owned()],
+            expires_at: 4_102_444_800_i64,
+            nonce: data_encoding::BASE64URL_NOPAD.encode(&[7_u8; 24]),
+        };
+        let signed = SignedInvite::sign(&issuer_signing, payload)?;
+        let invite_path = directory_root.join(format!("{invite_id}.locket-invite"));
+        std::fs::write(&invite_path, signed.encode()?)?;
+        store.connection().execute(
+            "INSERT INTO team_invites(
+               id, team_id, issuer_member_id, recipient_device_fingerprint, role, profiles_json,
+               nonce, created_at, expires_at
+             )
+             VALUES (?1, ?2, ?3, ?4, 'developer', '[\"dev\"]', zeroblob(24), 1, ?5)",
+            params![
+                invite_id,
+                team_id.as_str(),
+                issuer_member_id.as_str(),
+                local_device.fingerprint.as_str(),
+                4_102_444_800_i64 * 1_000_000_000_i64,
+            ],
+        )?;
+        Ok((invite_path, issuer_fingerprint))
+    }
+
+    // Arm A: import-bundle only.
+    let directory_a = tempdir()?;
+    let (context_a, _descriptor_a, bundle_path_a, _export_a) =
+        export_sealed_bundle(&directory_a, "parity-arm-a.locket-bundle")?;
+    import_bundle_apply(&context_a, &bundle_path_a)?;
+    let store_path_a = context_a.store_path.clone();
+    drop(context_a);
+    let counts_a = substantive_counts(&store_path_a)?;
+
+    // Arm B: team accept (metadata-only) + import-bundle.
+    let directory_b = tempdir()?;
+    let (context_b, _descriptor_b, bundle_path_b, _export_b) =
+        export_sealed_bundle(&directory_b, "parity-arm-b.locket-bundle")?;
+    let (invite_path, issuer_fingerprint) =
+        build_self_invite(&context_b, "lk_invite_parity_team_accept")?;
+    let counts_b_before_accept = substantive_counts(&context_b.store_path)?;
+    let confirming_context = context_with_confirmation(
+        &context_b,
+        &format!("{issuer_fingerprint}\n"),
+    );
+    run_with_context(
+        Cli::try_parse_from([
+            "locket",
+            "team",
+            "accept",
+            invite_path.to_str().ok_or("utf8 invite path")?,
+        ])?,
+        &confirming_context,
+        &mut Vec::new(),
+    )?;
+    let counts_b_after_accept = substantive_counts(&context_b.store_path)?;
+    assert_eq!(
+        counts_b_before_accept, counts_b_after_accept,
+        "team accept must be metadata-only: substantive row counts must not change",
+    );
+    import_bundle_apply(&context_b, &bundle_path_b)?;
+    let store_path_b = context_b.store_path.clone();
+    drop(context_b);
+    let counts_b = substantive_counts(&store_path_b)?;
+
+    assert_eq!(
+        counts_a, counts_b,
+        "team accept + import-bundle must converge to import-only state (a={counts_a:?}, b={counts_b:?})",
+    );
+
+    // Arm B's only documented delta is the accepted-invite row + the
+    // TEAM_ACCEPT audit metadata. Pin that delta so a regression that
+    // accidentally lands rows during accept trips this assertion via
+    // counts_a/counts_b above instead of leaking through here.
+    let accepted_count = store_row_count(
+        &store_path_b,
+        "SELECT COUNT(*) FROM team_invites WHERE accepted_at IS NOT NULL",
+    )?;
+    assert_eq!(accepted_count, 1, "team accept must mark exactly one invite accepted");
+    let team_accept_rows = store_row_count(
+        &store_path_b,
+        "SELECT COUNT(*) FROM audit_log WHERE action = 'TEAM_ACCEPT' AND status = 'SUCCESS'",
+    )?;
+    assert_eq!(team_accept_rows, 1, "team accept must emit exactly one SUCCESS audit row");
+    Ok(())
+}
