@@ -1,0 +1,1 @@
+{"schema_version":1,"sequence":7,"action":"SCAN","status":"SUPPRESSED","metadata":{"rule_id":"entropy.b64","reason":"vendored fixtures only","path_label":"vendor/fixtures.go","line":120,"column":18,"scope":"staged"}}

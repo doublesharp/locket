@@ -1,0 +1,1 @@
+{"null":null,"bool_true":true,"bool_false":false,"zero":0,"neg_int":-42,"max_safe_int":9007199254740991,"float":3.141592653589793,"neg_float":-2.5e-10,"empty_str":"","unicode":"日本語 escapes \\n\\t\\u0000","empty_arr":[],"empty_obj":{}}

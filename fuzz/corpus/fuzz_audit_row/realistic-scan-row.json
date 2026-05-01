@@ -1,0 +1,1 @@
+{"schema_version":1,"sequence":42,"timestamp_unix_nanos":1700000000000000000,"project_id":"lk_proj_demo","profile_id":"lk_prof_dev","action":"SCAN","status":"SUCCESS","metadata":{"path_count":17,"counts_by_rule":{"token":2,"entropy":1},"scope":"tree","skipped":false}}

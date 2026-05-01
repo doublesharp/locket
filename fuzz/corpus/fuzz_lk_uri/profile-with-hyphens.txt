@@ -1,0 +1,1 @@
+lk://my-team-prod/AWS_SECRET_ACCESS_KEY@v1

@@ -9,23 +9,15 @@
 !/fuzz/corpus/fuzz_agent_protocol/request.json
 !/fuzz/corpus/fuzz_agent_protocol/oversized-length-prefix.bin
 !/fuzz/corpus/fuzz_agent_protocol/response-error.json
-!/fuzz/corpus/fuzz_audit_row/metadata.json
 !/fuzz/corpus/fuzz_audit_row/field-lines.txt
-!/fuzz/corpus/fuzz_audit_row/nested-metadata.json
 !/fuzz/corpus/fuzz_bundle_container/metadata.json
 !/fuzz/corpus/fuzz_bundle_container/control-chars.json
 !/fuzz/corpus/fuzz_bundle_container/count-mismatch.json
 !/fuzz/corpus/fuzz_device_descriptor/descriptor.json
 !/fuzz/corpus/fuzz_device_descriptor/base64-wrapper.txt
 !/fuzz/corpus/fuzz_device_descriptor/control-label.json
-!/fuzz/corpus/fuzz_dotenv_import/basic.env
-!/fuzz/corpus/fuzz_dotenv_import/names-and-nulls.env
-!/fuzz/corpus/fuzz_dotenv_import/quotes-and-export.env
 !/fuzz/corpus/fuzz_env_merge/binary-ish.txt
 !/fuzz/corpus/fuzz_env_merge/conflicts.txt
-!/fuzz/corpus/fuzz_lk_uri/basic.txt
-!/fuzz/corpus/fuzz_lk_uri/malformed-and-boundary.txt
-!/fuzz/corpus/fuzz_lk_uri/version-source-order.txt
 !/fuzz/corpus/fuzz_locket_toml/malformed-types.toml
 !/fuzz/corpus/fuzz_locket_toml/minimal-valid.toml
 !/fuzz/corpus/fuzz_policy_toml/basic.toml
@@ -38,7 +30,13 @@
 !/fuzz/corpus/fuzz_redactor/provider-and-known.txt
 !/fuzz/corpus/fuzz_scanner_tokenization/columns-and-unicode.txt
 !/fuzz/corpus/fuzz_scanner_tokenization/env-and-provider.txt
-!/fuzz/corpus/fuzz_secret_name/boundary.txt
+# Versioned, hand-curated seed corpora for the thin-corpus targets
+# (`fuzz/corpus/<target>/`). Generated/minimised inputs from CI continue to
+# be tracked as artefacts — only files committed by hand land here.
+!/fuzz/corpus/fuzz_audit_row/*.json
+!/fuzz/corpus/fuzz_dotenv_import/*.env
+!/fuzz/corpus/fuzz_lk_uri/*.txt
+!/fuzz/corpus/fuzz_secret_name/*.txt
 /.DS_Store
 /.idea/
 /.vscode/*
