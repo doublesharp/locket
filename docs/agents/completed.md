@@ -178,6 +178,7 @@ Slices that have merged to `main` and verified. Open work tracked in
   for selection and no-fallback behavior.
 - [x] e2e-agent-rpc: Agent RPC coverage now drives the socket through the core
   lifecycle. The test keeps the flow metadata-only and closes the subscription cleanly.
+- [x] automation-client-auth: Automation clients can authenticate signed agent requests.
 
 ## Full Spec Coverage TODO — Security/Recovery/Team
 

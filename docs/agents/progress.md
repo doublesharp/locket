@@ -109,7 +109,6 @@ skill set fits a leaf better.
   - [ ] **subtask** — vscode-ide-env-session: terminal injection of
     `LOCKET_IDE_ENV_SESSION` and the agent-socket consumer side.
     Pre-req: `vscode-agent-client`, `env-source-ide`.
-- [~] [52c592db] branch agent-52c592db/automation-client-auth, worktree .worktrees/agent-52c592db-automation-client-auth; Automation-client challenge-response auth (`docs/specs/agent.md:62-79`). Pre-req: `automation-private-key-storage`.
 - [ ] Policy TOML — remaining (`docs/specs/policy.md`):
 
 ### Security/Recovery/Team
