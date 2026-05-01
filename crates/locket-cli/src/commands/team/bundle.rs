@@ -246,6 +246,21 @@ struct ImportedBundleCounts {
     command_policy_count: usize,
 }
 
+/// Inner-payload counts surfaced by `bundle verify` after a successful
+/// trial decryption against the local device's sealing private key. This
+/// is the metadata-only counterpart to [`ImportedBundleCounts`] and adds
+/// `secret_version_count`, which the verify surface reports per
+/// `docs/specs/team-sync-recovery.md:213` ("reports counts only").
+#[derive(Debug, Default)]
+#[allow(clippy::struct_field_names)]
+struct VerifiedBundleDecryption {
+    profile_count: usize,
+    secret_count: usize,
+    secret_version_count: usize,
+    blob_count: usize,
+    command_policy_count: usize,
+}
+
 /// Per-row-family count of rows newly written by the apply phase.
 #[derive(Debug, Default, Clone, Copy)]
 #[allow(clippy::struct_field_names)]
@@ -823,6 +838,13 @@ fn apply_bundle_payload(
                     DivergentDecision::Defer
                 };
                 if matches!(decision, DivergentDecision::Apply) {
+                    // docs/specs/team-sync-recovery.md:224 — "applies the
+                    // same target lifecycle as `locket rotate` with no
+                    // grace window... and `SecretMeta.last_rotated_at` is
+                    // set to the import timestamp." Substitute the local
+                    // `now` for the bundle's `last_rotated_at` so the
+                    // local row reflects when this device rotated, not
+                    // when the exporter did.
                     transaction
                         .execute(
                             "UPDATE secrets
@@ -839,7 +861,7 @@ fn apply_bundle_payload(
                                 secret.state,
                                 secret.created_at,
                                 secret.updated_at,
-                                secret.last_rotated_at,
+                                now,
                                 secret.deleted_at,
                             ],
                         )
@@ -1458,7 +1480,13 @@ fn bundle_verify_command(
     args: &BundleVerifyArgs,
 ) -> Result<(), CliError> {
     let bundle = verify_bundle_file(&args.bundle)?;
-    write_bundle_verify_audit_if_available(context, &bundle)?;
+    // Cryptographic check per docs/specs/team-sync-recovery.md:213: when the
+    // current device has a matching recipient key, attempt decryption of
+    // the age payload, parse the inner manifest, and report counts only —
+    // never apply rows. A fingerprint match with a decryption failure is
+    // surfaced as BundleVerificationFailed (exit 110).
+    let decrypted = try_decrypt_bundle_for_local_device(context, &bundle)?;
+    write_bundle_verify_audit_if_available(context, &bundle, decrypted.as_ref())?;
     writeln!(output, "bundle: valid")?;
     writeln!(output, "schema_version: {}", bundle.manifest.schema_version)?;
     writeln!(output, "project_id: {}", bundle.manifest.project_id)?;
@@ -1466,9 +1494,79 @@ fn bundle_verify_command(
     writeln!(output, "active_secret_count: encrypted")?;
     writeln!(output, "recipients: {}", bundle.manifest.recipient_fingerprints.len())?;
     writeln!(output, "digest: {}", bundle.manifest.payload_digest)?;
-    writeln!(output, "decryptable_by_this_device: no")?;
+    if let Some(counts) = &decrypted {
+        writeln!(output, "decryptable_by_this_device: yes")?;
+        writeln!(output, "decrypted_profile_count: {}", counts.profile_count)?;
+        writeln!(output, "decrypted_secret_count: {}", counts.secret_count)?;
+        writeln!(output, "decrypted_secret_version_count: {}", counts.secret_version_count)?;
+        writeln!(output, "decrypted_blob_count: {}", counts.blob_count)?;
+        writeln!(output, "decrypted_command_policy_count: {}", counts.command_policy_count)?;
+    } else {
+        writeln!(output, "decryptable_by_this_device: no")?;
+    }
     writeln!(output, "metadata_only: yes")?;
     Ok(())
+}
+
+/// Attempts to decrypt the verified bundle's age payload using the local
+/// device's sealing private key and returns metadata-only counts.
+///
+/// Returns `Ok(None)` when no project is resolvable, no active local
+/// device exists, the device's fingerprint is not a recipient of the
+/// bundle, or the device private-key envelope is missing — i.e. the
+/// device cannot decrypt the bundle. Returns
+/// `Err(BundleVerificationFailed)` only when the local device IS a
+/// recipient but decryption or payload parsing fails (tag-failure or
+/// malformed inner JSON), per `docs/specs/team-sync-recovery.md:213`.
+/// No rows are applied; only inner counts are surfaced.
+fn try_decrypt_bundle_for_local_device(
+    context: &RuntimeContext,
+    bundle: &VerifiedBundleV1,
+) -> Result<Option<VerifiedBundleDecryption>, CliError> {
+    let Some(resolved) = resolve_project(&context.cwd)? else {
+        return Ok(None);
+    };
+    let project_id = resolved.config.project_id.as_str();
+    if project_id != bundle.manifest.project_id {
+        // Bundle is for a different project than the one in this directory;
+        // a recipient key from this project would not match anyway.
+        return Ok(None);
+    }
+    let store = open_store(context)?;
+    if store.get_project(project_id)?.is_none() {
+        return Ok(None);
+    }
+    let Some(device) = store.get_active_local_device(project_id)? else {
+        return Ok(None);
+    };
+    if !bundle.manifest.recipient_fingerprints.iter().any(|fp| fp == &device.fingerprint) {
+        return Ok(None);
+    }
+    // Fingerprint match: from here on a failure must surface as
+    // BundleVerificationFailed (exit 110). A missing private-key envelope
+    // is the one exception — it means the recipient slot exists but this
+    // installation cannot exercise it, so we report not-decryptable
+    // rather than a hard verification error.
+    let storage = build_import_device_private_key_storage(context, project_id)?;
+    let private_key = match storage.load(&device.id) {
+        Ok(key) => key,
+        Err(PlatformError::DevicePrivateKeyNotFound) => return Ok(None),
+        Err(other) => return Err(CliError::Platform(other)),
+    };
+    let plaintext = decrypt_bundle_payload_with_x25519_secret(&bundle.encrypted_payload, &private_key)
+        .map_err(|error| {
+            bundle_verification_error(format!("bundle verification failed: {error}"))
+        })?;
+    let payload: SealedBundlePayloadV1 = serde_json::from_slice(&plaintext).map_err(|error| {
+        bundle_verification_error(format!("bundle verification failed: {error}"))
+    })?;
+    Ok(Some(VerifiedBundleDecryption {
+        profile_count: payload.profile_count,
+        secret_count: payload.secret_count,
+        secret_version_count: payload.secret_version_count,
+        blob_count: payload.blob_count,
+        command_policy_count: payload.command_policy_count,
+    }))
 }
 
 fn bundle_recipients(recipients: &[String]) -> Result<Vec<BundleRecipientV1>, CliError> {
@@ -2033,6 +2131,7 @@ impl BundleAuditSubject for VerifiedBundleV1 {
 fn write_bundle_verify_audit_if_available(
     context: &RuntimeContext,
     bundle: &VerifiedBundleV1,
+    decrypted: Option<&VerifiedBundleDecryption>,
 ) -> Result<(), CliError> {
     let Some(resolved) = resolve_project(&context.cwd)? else {
         return Ok(());
@@ -2046,7 +2145,7 @@ fn write_bundle_verify_audit_if_available(
         return Ok(());
     };
     let timestamp = now_unix_nanos()?;
-    let metadata = serde_json::json!({
+    let mut metadata = serde_json::json!({
         "schema_version": 1,
         "action": "BUNDLE_VERIFY",
         "status": "SUCCESS",
@@ -2056,9 +2155,22 @@ fn write_bundle_verify_audit_if_available(
         "bundle_digest": bundle.manifest.payload_digest,
         "profile_count": bundle.manifest.profile_count,
         "recipient_count": bundle.manifest.recipient_fingerprints.len(),
-        "decryptable_by_this_device": false,
+        "decryptable_by_this_device": decrypted.is_some(),
         "metadata_only": true,
     });
+    if let (Some(counts), Value::Object(map)) = (decrypted, &mut metadata) {
+        map.insert("decrypted_profile_count".to_owned(), Value::from(counts.profile_count));
+        map.insert("decrypted_secret_count".to_owned(), Value::from(counts.secret_count));
+        map.insert(
+            "decrypted_secret_version_count".to_owned(),
+            Value::from(counts.secret_version_count),
+        );
+        map.insert("decrypted_blob_count".to_owned(), Value::from(counts.blob_count));
+        map.insert(
+            "decrypted_command_policy_count".to_owned(),
+            Value::from(counts.command_policy_count),
+        );
+    }
     let audit = AuditWrite {
         project_id,
         profile_id: None,
