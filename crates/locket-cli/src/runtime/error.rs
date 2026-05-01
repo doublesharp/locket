@@ -70,7 +70,8 @@ const fn platform_error_exit_code(error: &locket_platform::PlatformError) -> u8 
         | locket_platform::PlatformError::Crypto(_)
         | locket_platform::PlatformError::MemoryPoisoned
         | locket_platform::PlatformError::DevicePrivateKeyIntegrityFailure(_)
-        | locket_platform::PlatformError::DevicePrivateKeyPermissionsTooWide(_) => {
+        | locket_platform::PlatformError::DevicePrivateKeyPermissionsTooWide(_)
+        | locket_platform::PlatformError::DegradedAuditEncoding(_) => {
             LocketError::KeychainUnavailable.exit_code()
         }
     }

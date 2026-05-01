@@ -127,6 +127,17 @@ fn team_invite_command(
     let invite_role = role_from_arg(args.role);
     let role_label = role_label(args.role);
     if !can_issue_role(&issuer.member.role, args.role) {
+        let InviteIssuer { team, member, .. } = issuer;
+        append_team_role_denial(
+            context,
+            &mut store,
+            project_id,
+            "TEAM_INVITE",
+            "team invite",
+            &team.id,
+            &member.id,
+            "role_insufficient",
+        )?;
         return Err(team_role_denied_error("team role cannot issue this invite"));
     }
 
@@ -197,6 +208,17 @@ fn team_revoke_invite_command(
         .into());
     }
     if !can_revoke_invite(&issuer.member.role, &issuer.member.id, &invite) {
+        let InviteIssuer { team, member, .. } = issuer;
+        append_team_role_denial(
+            context,
+            &mut store,
+            project_id,
+            "TEAM_INVITE",
+            "team revoke-invite",
+            &team.id,
+            &member.id,
+            "role_insufficient",
+        )?;
         return Err(team_role_denied_error("team role cannot revoke this invite"));
     }
 
@@ -513,6 +535,46 @@ fn ensure_invite_pending(
     Ok(())
 }
 
+/// Append a metadata-only `DENIED` audit row for a role-insufficient team
+/// operation. Used by `TEAM_INVITE`, `TEAM_ACCEPT`, and `TEAM_REMOVE` refusals.
+#[allow(clippy::too_many_arguments)]
+fn append_team_role_denial(
+    context: &RuntimeContext,
+    store: &mut locket_store::Store,
+    project_id: &str,
+    action: &'static str,
+    command: &'static str,
+    team_id: &str,
+    member_id: &str,
+    failure_reason: &'static str,
+) -> Result<(), CliError> {
+    let timestamp = now_unix_nanos()?;
+    let audit_key = load_project_key(context, store, project_id, KeyPurpose::Audit)?;
+    let metadata = json!({
+        "schema_version": 1,
+        "action": action,
+        "status": "DENIED",
+        "command": command,
+        "project_id": project_id,
+        "team_id": team_id,
+        "member_id": member_id,
+        "failure_reason": failure_reason,
+        "exit_code": LocketError::TeamRoleDenied.exit_code(),
+    });
+    let audit = AuditWrite {
+        project_id,
+        profile_id: None,
+        action,
+        status: "DENIED",
+        secret_name: None,
+        command: Some(command),
+        metadata_json: &metadata,
+        timestamp,
+    };
+    store.append_audit(audit_key.as_ref(), &audit)?;
+    Ok(())
+}
+
 fn append_team_accept_denial(
     context: &RuntimeContext,
     store: &mut locket_store::Store,
@@ -584,12 +646,34 @@ fn team_remove_command(
         )));
     }
 
-    authorize_team_remove(caller, &member)?;
+    if let Err(error) = authorize_team_remove(caller, &member) {
+        append_team_role_denial(
+            context,
+            &mut store,
+            project_id,
+            "TEAM_REMOVE",
+            "team remove",
+            &team.id,
+            &member.id,
+            "role_insufficient",
+        )?;
+        return Err(error);
+    }
 
     // Last-owner guard: cannot remove the last remaining owner.
     if member.role == "owner" {
         let owner_count = store.count_active_owners(&team.id)?;
         if owner_count <= 1 {
+            append_team_role_denial(
+                context,
+                &mut store,
+                project_id,
+                "TEAM_REMOVE",
+                "team remove",
+                &team.id,
+                &member.id,
+                "last_owner_protected",
+            )?;
             return Err(team_role_denied_error("cannot remove the last remaining owner"));
         }
     }

@@ -1081,6 +1081,67 @@ fn team_remove_last_owner_is_rejected_with_team_role_denied()
     };
     assert_eq!(error.exit_code(), 70, "TeamRoleDenied is in the authorization band");
     assert!(error.to_string().contains("last remaining owner"));
+    assert_team_role_denial_audit(
+        &directory,
+        "TEAM_REMOVE",
+        "team remove",
+        "last_owner_protected",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn developer_team_remove_emits_role_insufficient_denial()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    seed_team_role_authorization_fixture(&directory, "developer")?;
+
+    let result = run_with_context(
+        Cli::try_parse_from(["locket", "team", "remove", "Dev User"])?,
+        &context,
+        &mut Vec::new(),
+    );
+
+    let Err(error) = result else {
+        return Err("developer removing member must fail".into());
+    };
+    assert_eq!(error.exit_code(), 70);
+    assert_team_role_denial_audit(
+        &directory,
+        "TEAM_REMOVE",
+        "team remove",
+        "role_insufficient",
+    )?;
+    Ok(())
+}
+
+fn assert_team_role_denial_audit(
+    directory: &tempfile::TempDir,
+    action: &str,
+    command: &str,
+    failure_reason: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let metadata: String = store.connection().query_row(
+        "SELECT metadata_json FROM audit_log
+         WHERE action = ?1 AND status = 'DENIED'
+         ORDER BY sequence DESC LIMIT 1",
+        [action],
+        |row| row.get(0),
+    )?;
+    let metadata: serde_json::Value = serde_json::from_str(&metadata)?;
+    assert_eq!(metadata["action"], action);
+    assert_eq!(metadata["status"], "DENIED");
+    assert_eq!(metadata["command"], command);
+    assert_eq!(metadata["failure_reason"], failure_reason);
+    assert!(metadata.get("team_id").and_then(|v| v.as_str()).is_some());
+    assert!(metadata.get("member_id").and_then(|v| v.as_str()).is_some());
     Ok(())
 }
 

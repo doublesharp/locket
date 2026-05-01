@@ -63,4 +63,7 @@ pub enum PlatformError {
     /// Device private-key envelope on-disk permissions are wider than 0600.
     #[error("device private key envelope permissions are too wide: {0:#o} (must be 0600)")]
     DevicePrivateKeyPermissionsTooWide(u32),
+    /// Degraded-audit log JSON serialization failed.
+    #[error("degraded audit log encoding failed: {0}")]
+    DegradedAuditEncoding(serde_json::Error),
 }

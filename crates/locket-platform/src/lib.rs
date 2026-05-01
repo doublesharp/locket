@@ -9,6 +9,7 @@ mod core_dumps;
 mod device_private_key;
 mod error;
 mod fs_helpers;
+mod locked_vault_audit;
 mod master_key;
 mod memory_lock;
 mod passphrase;
@@ -27,6 +28,10 @@ pub use device_private_key::{
 };
 pub use error::PlatformError;
 pub use fs_helpers::{secure_directory, write_user_only_file};
+pub use locked_vault_audit::{
+    DEGRADED_AUDIT_LOG_FILENAME, DEGRADED_AUDIT_LOG_MAX_ROTATIONS, DEGRADED_AUDIT_LOG_ROTATE_BYTES,
+    DEGRADED_AUDIT_LOG_SCHEMA_VERSION, LockedVaultAuditLogger, LockedVaultDenialRow,
+};
 pub use master_key::{
     KeyringMasterKeyStore, MasterKeyStore, MemoryMasterKeyStore, MockMasterKeyStore,
     MockMasterKeyStoreFailure,

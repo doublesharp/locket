@@ -163,7 +163,7 @@ pub async fn handle_copy(
 }
 
 #[cfg(unix)]
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 async fn handle_value_access(
     request: &RequestEnvelope,
     access: AccessKind,
@@ -185,6 +185,24 @@ async fn handle_value_access(
         );
     }
     let Some(grant_id) = grant_id.as_deref() else {
+        if let (Some(project_id), Some(store_path)) =
+            (project_id.as_deref(), store_path.as_deref())
+        {
+            let key = {
+                let cache = state.unlock_cache.lock().await;
+                cache.lookup(project_id, now_unix_nanos).map(|entry| entry.key_bytes().to_vec())
+            };
+            crate::audit_deny::try_append_grant_denial(
+                project_id,
+                &profile_id,
+                Some(store_path),
+                key.as_deref(),
+                access.grant_action(),
+                0,
+                now_unix_nanos,
+                "agent",
+            );
+        }
         return grant_required(request);
     };
     let Some(project_id) = project_id.as_deref() else {
@@ -213,6 +231,20 @@ async fn handle_value_access(
         )
     };
     if !matches!(grant_validation, GrantValidation::Valid) {
+        let key = {
+            let cache = state.unlock_cache.lock().await;
+            cache.lookup(project_id, now_unix_nanos).map(|entry| entry.key_bytes().to_vec())
+        };
+        crate::audit_deny::try_append_grant_denial(
+            project_id,
+            &profile_id,
+            Some(store_path),
+            key.as_deref(),
+            access.grant_action(),
+            ttl_seconds,
+            now_unix_nanos,
+            "agent",
+        );
         return grant_required(request);
     }
 

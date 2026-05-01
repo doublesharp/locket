@@ -113,8 +113,23 @@ pub async fn handle_resolve(
         return protocol_error(request, "ResolveReference requires store_path");
     };
 
+    let cached_master_key_for_denial = || async {
+        let cache = state.unlock_cache.lock().await;
+        cache.lookup(project_id, now_unix_nanos).map(|entry| entry.key_bytes().to_vec())
+    };
     let grant_validation = {
         let Some(grant_id) = typed.grant_id.as_deref() else {
+            let key = cached_master_key_for_denial().await;
+            crate::audit_deny::try_append_grant_denial(
+                project_id,
+                profile_id,
+                Some(Path::new(store_path)),
+                key.as_deref(),
+                GrantAction::ResolveReference,
+                0,
+                now_unix_nanos,
+                "agent",
+            );
             return grant_required(request);
         };
         let grants = state.grants.lock().await;
@@ -128,6 +143,17 @@ pub async fn handle_resolve(
         )
     };
     if !matches!(grant_validation, GrantValidation::Valid) {
+        let key = cached_master_key_for_denial().await;
+        crate::audit_deny::try_append_grant_denial(
+            project_id,
+            profile_id,
+            Some(Path::new(store_path)),
+            key.as_deref(),
+            GrantAction::ResolveReference,
+            0,
+            now_unix_nanos,
+            "agent",
+        );
         return grant_required(request);
     }
 

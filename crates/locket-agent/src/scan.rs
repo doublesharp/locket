@@ -159,7 +159,22 @@ pub async fn handle_scan(
         return protocol_error(request, "ScanKnownValues requires store_path");
     };
 
+    let cached_master_key_for_denial = || async {
+        let cache = state.unlock_cache.lock().await;
+        cache.lookup(project_id, now_unix_nanos).map(|entry| entry.key_bytes().to_vec())
+    };
     let Some(grant_id) = typed.grant_id.as_deref() else {
+        let key = cached_master_key_for_denial().await;
+        crate::audit_deny::try_append_grant_denial(
+            project_id,
+            profile_id,
+            Some(store_path),
+            key.as_deref(),
+            GrantAction::ScanKnownValues,
+            0,
+            now_unix_nanos,
+            "agent",
+        );
         return grant_required(request);
     };
     let grant_validation = {
@@ -174,6 +189,17 @@ pub async fn handle_scan(
         )
     };
     if !matches!(grant_validation, GrantValidation::Valid) {
+        let key = cached_master_key_for_denial().await;
+        crate::audit_deny::try_append_grant_denial(
+            project_id,
+            profile_id,
+            Some(store_path),
+            key.as_deref(),
+            GrantAction::ScanKnownValues,
+            0,
+            now_unix_nanos,
+            "agent",
+        );
         return grant_required(request);
     }
 
