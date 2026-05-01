@@ -7,11 +7,16 @@ import { AgentClientError } from './agentClient';
 import {
   LOCKET_COMMAND_ROUTES,
   agentErrorMessage,
+  buildDirectoryGrantPayload,
   buildListAuditRequest,
   buildListPoliciesRequest,
   buildLockRequest,
+  buildRegisterIdeEnvSessionPayload,
   buildScanKnownValuesRequest,
   buildSetActiveProfileRequest,
+  buildUnlockRequest,
+  policyAllowList,
+  uuidV4FromBytes,
 } from './commandsModel';
 
 test('lock request always reports the desktop session-lock source', () => {
@@ -125,6 +130,70 @@ test('package.json declares every routed command id and lists them in the palett
       `package.json missing commandPalette entry for ${route.commandId}`,
     );
   }
+});
+
+test('unlock request defaults to passphrase: null with audit metadata', () => {
+  const request = buildUnlockRequest('lk_proj_demo', '/tmp/store.db', 'prof-dev', null);
+  assert.equal(request.project_id, 'lk_proj_demo');
+  assert.equal(request.passphrase, null);
+  assert.equal(request.ttl_seconds, 1800);
+  assert.deepEqual(request.audit, { store_path: '/tmp/store.db', profile_id: 'prof-dev' });
+});
+
+test('unlock request retries with the supplied passphrase', () => {
+  const request = buildUnlockRequest('lk_proj_demo', '/tmp/store.db', null, 'open-sesame');
+  assert.equal(request.passphrase, 'open-sesame');
+  assert.equal(request.audit.profile_id, null);
+});
+
+test('unlock request rejects blank required fields', () => {
+  assert.throws(() => buildUnlockRequest('', '/tmp/store.db', null, null), /project id is required/u);
+  assert.throws(() => buildUnlockRequest('lk_proj_demo', '', null, null), /store path is required/u);
+});
+
+test('directory grant payload binds to the host process and defaults TTL', () => {
+  const payload = buildDirectoryGrantPayload({
+    projectId: 'lk_proj_demo',
+    profileId: 'prof-dev',
+    pid: 4242,
+    processStartTime: 'token',
+  });
+  assert.equal(payload.action, 'ResolveReference');
+  assert.equal(payload.ttl_seconds, 1800);
+  assert.deepEqual(payload.binding, { pid: 4242, process_start_time: 'token' });
+});
+
+test('register ide env-session payload preserves env-name order', () => {
+  const payload = buildRegisterIdeEnvSessionPayload({
+    sessionId: 'session-uuid',
+    projectId: 'lk_proj_demo',
+    storePath: '/tmp/store.db',
+    profileId: 'prof-dev',
+    envNames: ['DATABASE_URL', 'REDIS_URL'],
+  });
+  assert.equal(payload.session_id, 'session-uuid');
+  assert.deepEqual(payload.env_names, ['DATABASE_URL', 'REDIS_URL']);
+  assert.equal(payload.ttl_seconds, 1800);
+});
+
+test('policy allow-list dedupes order-preserved across rows', () => {
+  const names = policyAllowList({
+    rows: [
+      { allowed_secrets: ['DATABASE_URL', 'REDIS_URL'] },
+      { allowed_secrets: ['REDIS_URL', 'API_KEY'] },
+      { required_secrets: ['API_KEY'], optional_secrets: ['EXTRA'] },
+    ],
+  });
+  assert.deepEqual([...names], ['DATABASE_URL', 'REDIS_URL', 'API_KEY', 'EXTRA']);
+});
+
+test('uuidV4FromBytes formats version and variant bits', () => {
+  const bytes = new Uint8Array(16);
+  for (let i = 0; i < 16; i += 1) {
+    bytes[i] = i;
+  }
+  const id = uuidV4FromBytes(bytes);
+  assert.match(id, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u);
 });
 
 test('agent error message uses typed display copy when available', () => {
