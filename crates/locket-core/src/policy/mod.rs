@@ -760,6 +760,27 @@ external_env_sources = [{ file = "x", extra = "y" }]
     }
 
     #[test]
+    fn rejects_duplicate_command_table_at_toml_layer() {
+        // The TOML parser rejects duplicate `[commands.<name>]` headers
+        // before our `BTreeMap` insert can silently overwrite a prior
+        // entry. This pins that contract: if a future toml-crate upgrade
+        // ever relaxes it, this test fails and we'd add an explicit
+        // pre-parse key-count check in `from_toml_str`.
+        let result = PolicyDocument::from_toml_str(
+            r#"[commands.dev]
+argv = ["pnpm", "dev"]
+
+[commands.dev]
+argv = ["pnpm", "alt"]
+"#,
+        );
+        assert!(
+            matches!(result, Err(PolicyParseError::Toml { .. })),
+            "duplicate command table must be rejected by the TOML layer, got {result:?}"
+        );
+    }
+
+    #[test]
     fn empty_inherit_env_is_kept() -> Result<(), Box<dyn Error>> {
         let document = PolicyDocument::from_toml_str(
             r#"[commands.dev]

@@ -1301,6 +1301,27 @@ fn append_audit_enforces_required_fields_for_each_action_family()
             }),
             drop_field: "hook_path_kind",
         },
+        // Reference resolution by the agent: RESOLVE_REFERENCE requires
+        // secret_name, profile_id, and source so audit chains carry the
+        // resolved-source provenance for every `lk://` lookup.
+        Family {
+            action: "RESOLVE_REFERENCE",
+            profile_id: Some("lk_prof_test"),
+            secret_name: Some("DATABASE_URL"),
+            command: None,
+            complete: json!({
+                "schema_version": 1,
+                "action": "RESOLVE_REFERENCE",
+                "status": "SUCCESS",
+                "secret_name": "DATABASE_URL",
+                "profile_id": "lk_prof_test",
+                "source": "user-local",
+                "policy": "deploy",
+                "profile_name": "dev",
+                "selected_version": 1,
+            }),
+            drop_field: "source",
+        },
     ];
 
     for family in &families {

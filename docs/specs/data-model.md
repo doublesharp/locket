@@ -149,6 +149,7 @@ struct CommandPolicy {
     allow_remote_docker: bool,
     confirm: bool,
     require_user_verification: bool,
+    require_agent: bool,
     ttl: Option<Duration>,
 }
 

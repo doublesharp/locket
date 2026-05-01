@@ -340,6 +340,18 @@ CREATE TABLE IF NOT EXISTS teams (
 CREATE UNIQUE INDEX IF NOT EXISTS teams_one_per_project_idx
   ON teams(project_id);
 
+-- `team_members.device_id`:
+--   `docs/specs/storage.md` (lines 26-51) lists `team_members` as a
+--   required table without dictating an FK rule. The `TeamMember` model
+--   in `docs/specs/data-model.md` describes a member with
+--   `trusted_devices: Vec<DeviceId>`; v1 SQLite stores the active
+--   trusted device per row and uses the partial unique index
+--   `team_members_active_device_idx` plus extra rows to express the
+--   1-to-many relationship without a join table. Deleting a `device`
+--   row clears `device_id` to NULL (`ON DELETE SET NULL`) so the
+--   audit-relevant member row survives device retirement and the unique
+--   active-device index does not block re-binding the member to a new
+--   device. This matches the spec intent.
 CREATE TABLE IF NOT EXISTS team_members (
   id TEXT PRIMARY KEY,
   team_id TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,

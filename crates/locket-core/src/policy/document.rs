@@ -21,6 +21,13 @@ impl PolicyDocument {
     /// Top-level keys outside `[commands]` are ignored so this can parse a full
     /// project `locket.toml`. Each command body is validated strictly.
     ///
+    /// Duplicate `[commands.<name>]` headers are rejected by the underlying
+    /// TOML parser before this function ever sees the parsed value, so the
+    /// `BTreeMap::insert` below cannot silently overwrite a prior entry.
+    /// `rejects_duplicate_command_table_at_toml_layer` in `policy::tests`
+    /// pins this behavior so future TOML-crate upgrades cannot quietly relax
+    /// it without surfacing a test failure.
+    ///
     /// # Errors
     ///
     /// Returns [`PolicyParseError`] for invalid TOML, malformed command tables,
