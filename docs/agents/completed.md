@@ -185,6 +185,9 @@ Slices that have merged to `main` and verified. Open work tracked in
   reference resolution.
 - [x] bench-smoke-coverage: Benchmark smoke coverage now measures metadata status and
   staged scan paths. The policy summary gates all three sampled PR smoke surfaces.
+- [x] e2e-team-invite-accept: Team invite e2e now covers invite creation, acceptance,
+  and revoked-invite denial. The regression keeps command output and audit metadata
+  value-free.
 
 ## Full Spec Coverage TODO — Security/Recovery/Team
 
