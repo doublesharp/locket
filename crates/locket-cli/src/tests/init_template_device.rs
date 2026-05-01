@@ -2139,6 +2139,17 @@ fn team_invite_creates_signed_file_pending_row_and_audit() -> Result<(), Box<dyn
     assert_eq!(invite.payload.role, locket_core::TeamRole::Developer);
     assert_eq!(invite.payload.profiles, vec!["dev".to_owned()]);
     assert!(!invite.signature.is_empty());
+    let sealed_payload = invite.payload.sealed_payload.as_ref().ok_or("sealed payload")?;
+    assert_eq!(sealed_payload.v, 1);
+    assert_eq!(sealed_payload.plaintext_counts.profile_key_count, 2);
+    assert_eq!(
+        sealed_payload.recipient_sealing_public_key_b64,
+        invite.payload.recipient_sealing_public_key
+    );
+    let sealed_ciphertext = data_encoding::BASE64URL_NOPAD
+        .decode(sealed_payload.ciphertext_b64.as_bytes())
+        .map_err(|_| "sealed payload base64")?;
+    locket_core::verify_age_payload_structure(&sealed_ciphertext)?;
 
     assert!(
         output
@@ -2399,7 +2410,69 @@ fn team_accept_verifies_invite_displays_trust_summary_and_records_audit()
         profiles: vec!["dev".to_owned()],
         expires_at,
         nonce: data_encoding::BASE64URL_NOPAD.encode(&[7; 24]),
-        sealed_payload: None,
+        sealed_payload: Some({
+            let recipient_key: [u8; 32] = local_device
+                .sealing_public_key
+                .as_slice()
+                .try_into()
+                .map_err(|_| "recipient key length")?;
+            let plaintext = json!({
+                "v": 1,
+                "profiles": [{
+                    "profile_id": "lk_prof_invite_dev",
+                    "name": "dev",
+                    "dangerous": false,
+                    "created_at": 42,
+                }],
+                "profile_keys": [
+                    {
+                        "profile_name": "dev",
+                        "purpose": "profile-secret",
+                        "key_material_b64": data_encoding::BASE64URL_NOPAD.encode(&[0xA5; 32]),
+                    },
+                    {
+                        "profile_name": "dev",
+                        "purpose": "profile-fingerprint",
+                        "key_material_b64": data_encoding::BASE64URL_NOPAD.encode(&[0x5A; 32]),
+                    },
+                ],
+                "command_policies": [{
+                    "name": "invite-dev",
+                    "command_kind": "argv",
+                    "argv": ["echo", "ok"],
+                    "shell": null,
+                    "allowed_secrets": [],
+                    "required_secrets": [],
+                    "optional_secrets": [],
+                    "inherit_env": [],
+                    "env_mode": "strict",
+                    "override_mode": "locket",
+                    "override_explicit": false,
+                    "external_env_sources": [],
+                    "allow_remote_docker": false,
+                    "confirm": false,
+                    "require_user_verification": false,
+                    "ttl_seconds": 300,
+                }],
+            });
+            let plaintext = serde_json::to_vec(&plaintext)?;
+            let ciphertext = locket_core::encrypt_bundle_payload_for_age_recipients(
+                &plaintext,
+                &[recipient_key],
+            )?;
+            locket_core::SealedInvitePayloadV1 {
+                v: 1,
+                ciphertext_b64: data_encoding::BASE64URL_NOPAD.encode(&ciphertext),
+                recipient_sealing_public_key_b64: data_encoding::BASE64URL_NOPAD
+                    .encode(&recipient_key),
+                aad_schema_version: locket_crypto::AAD_SCHEMA_V1,
+                plaintext_counts: locket_core::SealedInvitePlaintextCounts {
+                    profile_key_count: 2,
+                    command_policy_count: 1,
+                    secret_metadata_count: 0,
+                },
+            }
+        }),
     };
     let signed = locket_core::SignedInvite::sign(&issuer_signing, payload)?;
     let invite_path = directory.path().join("accept.locket-invite");
@@ -2429,6 +2502,9 @@ fn team_accept_verifies_invite_displays_trust_summary_and_records_audit()
     let output = String::from_utf8(output)?;
     assert!(output.contains("team_accept: pending"), "{output}");
     assert!(output.contains("team_accept: accepted"), "{output}");
+    assert!(output.contains("sealed_payload: applied"), "{output}");
+    assert!(output.contains("applied_profile_keys: 2"), "{output}");
+    assert!(output.contains("applied_command_policies: 1"), "{output}");
     assert!(output.contains("issuer_fingerprint:"), "{output}");
     assert!(output.contains("issuer_safety_words:"), "{output}");
     assert!(output.contains("role: developer"), "{output}");
@@ -2456,6 +2532,9 @@ fn team_accept_verifies_invite_displays_trust_summary_and_records_audit()
     assert_eq!(metadata["recipient_device_fingerprint"], local_device.fingerprint);
     assert_eq!(metadata["role"], "developer");
     assert_eq!(metadata["profiles"], json!(["dev"]));
+    assert_eq!(metadata["sealed_payload_applied"], true);
+    assert_eq!(metadata["applied_profile_key_count"], 2);
+    assert_eq!(metadata["applied_command_policy_count"], 1);
     // The configured-user-verification gate runs after the fingerprint
     // confirmation. With the default test runtime context (no
     // `user_verification_required_for.team_accept` config) the gate is a
@@ -2464,18 +2543,8 @@ fn team_accept_verifies_invite_displays_trust_summary_and_records_audit()
     assert_eq!(metadata["user_verification"]["required"], false);
     assert_eq!(metadata["user_verification"]["satisfied"], false);
 
-    // SPEC-CLARIFICATION lock-in (see crates/locket-cli/src/commands/team/members.rs
-    // above team_accept_command): the spec describes `team accept` as
-    // the path that imports profile keys and rows, but the current
-    // SignedInvite envelope is a signed-but-unencrypted JSON object
-    // with no age recipient stanza or payload section. Until invites
-    // grow an age-encrypted payload, accept stays metadata-only and
-    // rows flow into the receiver via a follow-up `import-bundle`. The
-    // counts below pin that contract: a successful `team accept` does
-    // not touch keys, secrets, secret_versions, secret_blobs, or
-    // command_policies. The only project-row changes belong to the
-    // local team-membership/audit surface (`team_invites.accepted_at`
-    // and the `audit_log` row asserted above).
+    // The sealed invite imports profile keys and command policies, but
+    // never imports secret values.
     let row_count = |table: &str| -> Result<i64, Box<dyn std::error::Error>> {
         let count: i64 =
             store
@@ -2483,24 +2552,10 @@ fn team_accept_verifies_invite_displays_trust_summary_and_records_audit()
                 .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| row.get(0))?;
         Ok(count)
     };
-    // Profile key material rows: only the project audit + project-scoped
-    // keys created by `locket init` exist; no profile keys are imported
-    // by `team accept`. The fixture creates one project (`init`) with
-    // project audit and project-scoped DEK keys plus the `dev` profile's
-    // own profile-secret/fingerprint keys (created locally by init, not
-    // imported by accept), so we lock in the count baseline by
-    // re-counting before/after below.
-    //
-    // Specifically: re-run a parallel test path that does NOT call
-    // accept and compare counts. To keep this test self-contained we
-    // assert that accept added zero rows of a kind that would only
-    // exist after row import. `secrets`, `secret_versions`, and
-    // `secret_blobs` are zero because no secrets were defined locally
-    // and accept does not import any.
     assert_eq!(row_count("secrets")?, 0, "team accept must not import secrets");
     assert_eq!(row_count("secret_versions")?, 0, "team accept must not import secret_versions");
     assert_eq!(row_count("blobs")?, 0, "team accept must not import secret blobs");
-    assert_eq!(row_count("command_policies")?, 0, "team accept must not import command_policies",);
+    assert_eq!(row_count("command_policies")?, 1, "team accept must import command_policies",);
     Ok(())
 }
 
@@ -3091,7 +3146,7 @@ fn e2e_team_invite_accept_happy_path_and_revoked_invite_failure()
         &mut Vec::new(),
     )?;
 
-    let recipient = e2e_recipient_device(&directory)?;
+    let (recipient, recipient_private_key) = e2e_recipient_device(&directory)?;
     let descriptor = crate::encode_device_descriptor(&recipient)?;
     let accepted_invite = issue_invite(&context, &directory, &descriptor, "accept")?;
     let revoked_invite = issue_invite(&context, &directory, &descriptor, "revoked")?;
@@ -3105,7 +3160,7 @@ fn e2e_team_invite_accept_happy_path_and_revoked_invite_failure()
     let revoke_output = String::from_utf8(revoke_output)?;
     assert!(revoke_output.contains("team_invite: revoked"), "{revoke_output}");
 
-    insert_e2e_local_recipient_device(&directory, &recipient)?;
+    insert_e2e_local_recipient_device(&context, &directory, &recipient, &recipient_private_key)?;
 
     let accept_context =
         context_with_confirmation(&context, &format!("{}\n", accepted_invite.issuer_fingerprint));
@@ -3155,28 +3210,36 @@ struct E2eInvite {
 
 fn e2e_recipient_device(
     directory: &tempfile::TempDir,
-) -> Result<crate::DeviceRecord, Box<dyn std::error::Error>> {
+) -> Result<(crate::DeviceRecord, [u8; 32]), Box<dyn std::error::Error>> {
     let config = crate::read_project_config(&directory.path().join("locket.toml"))?;
-    Ok(crate::DeviceRecord {
-        id: "lk_dev_e2e_recipient".to_owned(),
-        project_id: config.project_id.to_string(),
-        member_id: None,
-        name: "recipient laptop".to_owned(),
-        label: "recipient laptop".to_owned(),
-        signing_public_key: vec![41; 32],
-        sealing_public_key: vec![42; 32],
-        fingerprint: crate::device_fingerprint_hex(&[41; 32], &[42; 32]),
-        safety_words: vec!["ember".to_owned(), "fable".to_owned()],
-        local: true,
-        created_at: 9_000_000_000_000_000_000,
-        last_seen_at: None,
-        revoked_at: None,
-    })
+    let private_key = [42; 32];
+    let sealing_public_key =
+        x25519_dalek::PublicKey::from(&x25519_dalek::StaticSecret::from(private_key)).to_bytes();
+    Ok((
+        crate::DeviceRecord {
+            id: "lk_dev_e2e_recipient".to_owned(),
+            project_id: config.project_id.to_string(),
+            member_id: None,
+            name: "recipient laptop".to_owned(),
+            label: "recipient laptop".to_owned(),
+            signing_public_key: vec![41; 32],
+            sealing_public_key: sealing_public_key.to_vec(),
+            fingerprint: crate::device_fingerprint_hex(&[41; 32], &sealing_public_key),
+            safety_words: vec!["ember".to_owned(), "fable".to_owned()],
+            local: true,
+            created_at: 9_000_000_000_000_000_000,
+            last_seen_at: None,
+            revoked_at: None,
+        },
+        private_key,
+    ))
 }
 
 fn insert_e2e_local_recipient_device(
+    context: &RuntimeContext,
     directory: &tempfile::TempDir,
     recipient: &crate::DeviceRecord,
+    private_key: &[u8; 32],
 ) -> Result<(), Box<dyn std::error::Error>> {
     let store = locket_store::Store::open(directory.path().join("store.db"))?;
     store.connection().execute(
@@ -3186,6 +3249,12 @@ fn insert_e2e_local_recipient_device(
         [recipient.project_id.as_str()],
     )?;
     store.insert_device(recipient)?;
+    let storage = locket_platform::WrappedLocalFileDevicePrivateKeyStorage::new(
+        directory.path().to_path_buf(),
+        recipient.project_id.clone(),
+        Arc::clone(&context.key_store),
+    );
+    locket_platform::LocalDevicePrivateKeyStorage::store(&storage, &recipient.id, private_key)?;
     Ok(())
 }
 

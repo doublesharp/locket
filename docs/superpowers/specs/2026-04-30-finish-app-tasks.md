@@ -380,10 +380,9 @@ tests cover the golden round-trip and byte-flipped tamper path
 (commit `62f63881`).)
 (`bundle-team-accept-parity-test` shipped — new test
 `team_accept_then_import_bundle_matches_import_only_state` in
-`crates/locket-cli/src/tests/e2e_bundle_roundtrip.rs` proves the
-two flows converge on the same substantive 5-tuple
-(profiles/secrets/secret_versions/blobs/command_policies) plus
-pins that `team accept` is metadata-only (commit `5cfc8ba3`).)
+`crates/locket-cli/src/tests/e2e_bundle_roundtrip.rs` proved the
+legacy metadata-only accept flow converged with bundle import before
+sealed invite payloads shipped (commit `5cfc8ba3`).)
 
 ### Team command surfaces
 Spec ref: `docs/specs/team-sync-recovery.md:5-110`.
@@ -415,28 +414,19 @@ doctor check) all shipped. (No remaining device-descriptor work.)
 Spec ref: `docs/specs/team-sync-recovery.md:56-69`.
 Shipped: `invite-codec`, `invite-replay-protect`,
 `invite-clock-skew`, signed invite creation, trust-summary display,
-issuer fingerprint confirmation, accept denial rows, and revoke
-flows. 2026-04-30 audit found one remaining gap:
+issuer fingerprint confirmation, accept denial rows, revoke flows,
+and `invite-sealed-payload-import`.
 
-- [~] **invite-sealed-payload-import** (in-flight: Codex, partial — type lands; encrypt+apply deferred): spec lines 7, 28, and 67
-  require invites to carry plaintext profile secret/fingerprint
-  keys and command policies inside an age-sealed payload addressed
-  to the recipient device sealing key, with `team accept` rewrapping
-  those keys into the receiver's local `keys` table on import. The
-  current `SignedInvite` envelope is signed but not encrypted and
-  carries no payload section; `team accept` is metadata-only and
-  defers row application to a follow-up `import-bundle`. See the
-  SPEC-CLARIFICATION block in
-  `crates/locket-cli/src/commands/team/members.rs` for the agreed
-  scope. Touches: `crates/locket-core/src/invite.rs` (envelope
-  format), `team invite` issuer side (encrypt-to-recipient), and
-  `team accept` apply path (rewrap + insert profile/key/policy
-  rows). Pre-req: `bundle-profile-key-rewrap-helper` (shipped).
-  Status: type definition shipped (`SealedInvitePayloadV1` +
-  optional `InvitePayload.sealed_payload`, signature-covered,
-  legacy-byte-stable, commit `21064bfa`); the encrypt-on-issue
-  and decrypt+apply-on-accept slices are deferred behind
-  `TODO(invite-sealed-payload-apply)` breadcrumbs and remain open.
+(`invite-sealed-payload-import` shipped — `team invite` now
+populates signature-covered `InvitePayload.sealed_payload` with an
+age-encrypted inner payload addressed to the recipient sealing key.
+The payload carries selected profiles, plaintext profile
+secret/fingerprint keys, and command policies. `team accept`
+validates recipient binding, decrypts with the local device private
+key, rewraps profile keys into the receiver's `keys` table, upserts
+command policies, and records applied counts in the `TEAM_ACCEPT`
+audit row. Legacy invites with no sealed payload remain accepted as
+metadata-only.)
 
 ### Audit coverage
 Reveal/copy denial rows, role denials, grant denials, dangerous-
@@ -734,9 +724,8 @@ the spec.
   with TODO markers, tray-panel deep audit pending).
 - `audit.md` — (audit clean 2026-05-01; all four 2026-04-30 emission
   gaps shipped — see "Audit coverage" above).
-- `team-sync-recovery.md` — (open: `invite-sealed-payload-import`
-  apply path; `bundle-include-audit-import` and
-  `bundle-team-accept-parity-test` shipped).
+- `team-sync-recovery.md` — (audit clean 2026-05-01 for tracked
+  invite and bundle apply gaps).
 - `operations.md` — (open: signing items pre-req on
   `release-key-offline`).
 - `performance.md` — (open: per-budget benches in sibling task list).

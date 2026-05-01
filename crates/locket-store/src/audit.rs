@@ -801,6 +801,7 @@ const KNOWN_AUDIT_METADATA_FIELDS: &[&str] = &[
     "secret_sources",
     "secret_version_count",
     "secrets",
+    "sealed_payload_applied",
     "selected_source",
     "selected_version",
     "severity",

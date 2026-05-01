@@ -6,10 +6,13 @@ use std::path::{Path, PathBuf};
 use data_encoding::BASE64URL_NOPAD;
 use ed25519_dalek::SigningKey;
 use locket_core::{
-    InviteId, InvitePayload, LocketError, MemberId, ProjectId, SignedInvite, TeamId, TeamRole,
-    device_fingerprint_v1, fingerprint_hex,
+    CommandPolicy, CommandSpec, InviteId, InvitePayload, KeyId, LocketError, MemberId, ProjectId,
+    SealedInvitePayloadV1, SealedInvitePlaintextCounts, SignedInvite, TeamId, TeamRole,
+    decrypt_bundle_payload_with_x25519_secret, device_fingerprint_v1,
+    encrypt_bundle_payload_for_age_recipients, fingerprint_hex,
 };
-use locket_crypto::{KeyPurpose, generate_key};
+use locket_crypto::{AAD_SCHEMA_V1, KeyPurpose, generate_key};
+use locket_platform::LocalDevicePrivateKeyStorage;
 use locket_store::{
     AuditContext, AuditWrite, DeviceRecord, PendingTeamInviteRecord, StoredTeamInviteRecord,
     TeamInviteRecord, TeamMemberListRecord, TeamRecord,
@@ -17,19 +20,72 @@ use locket_store::{
 use serde_json::json;
 
 use super::device;
+use crate::runtime::key_access::{load_master_key, load_profile_key, rewrap_imported_profile_key};
 use crate::runtime::user_verification::{UserVerificationAudit, configured_user_verification};
 use crate::support::time::NANOS_PER_SECOND;
 use crate::{
-    CliError, RuntimeContext, TeamAcceptArgs, TeamCommand, TeamInitArgs, TeamInviteArgs,
-    TeamRemoveArgs, TeamRevokeDeviceArgs, TeamRevokeInviteArgs, TeamRoleArg,
-    confirmation_failed_error, ensure_project_exists, invalid_reference_error, load_project_key,
-    metadata_invalid_error, now_unix_nanos, open_store, privacy_alias,
-    privacy_redact_names_enabled, profile_not_found_error, require_project,
-    secret_already_exists_error, secret_not_found_error, set_user_only_file_options,
-    set_user_only_file_permissions, team_role_denied_error, unix_nanos_to_rfc3339,
+    CliError, LOCKET_TOML, ResolvedProject, RuntimeContext, TeamAcceptArgs, TeamCommand,
+    TeamInitArgs, TeamInviteArgs, TeamRemoveArgs, TeamRevokeDeviceArgs, TeamRevokeInviteArgs,
+    TeamRoleArg, command_type, confirmation_failed_error, ensure_project_exists,
+    external_env_source_label, invalid_reference_error, load_project_key, metadata_invalid_error,
+    now_unix_nanos, open_store, privacy_alias, privacy_redact_names_enabled,
+    profile_not_found_error, read_policy_document, require_project, secret_already_exists_error,
+    secret_not_found_error, set_user_only_file_options, set_user_only_file_permissions,
+    team_role_denied_error, unix_nanos_to_rfc3339,
 };
 
 const DEFAULT_INVITE_TTL_SECONDS: i64 = 7 * 24 * 60 * 60;
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+struct InviteSealedPlaintextV1 {
+    v: u8,
+    profiles: Vec<InviteSealedProfileV1>,
+    profile_keys: Vec<InviteSealedProfileKeyV1>,
+    command_policies: Vec<InviteSealedCommandPolicyV1>,
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+struct InviteSealedProfileV1 {
+    profile_id: String,
+    name: String,
+    dangerous: bool,
+    created_at: i64,
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+struct InviteSealedProfileKeyV1 {
+    profile_name: String,
+    purpose: String,
+    key_material_b64: String,
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+#[allow(clippy::struct_excessive_bools)]
+struct InviteSealedCommandPolicyV1 {
+    name: String,
+    command_kind: String,
+    argv: Vec<String>,
+    shell: Option<String>,
+    allowed_secrets: Vec<String>,
+    required_secrets: Vec<String>,
+    optional_secrets: Vec<String>,
+    inherit_env: Vec<String>,
+    env_mode: String,
+    override_mode: String,
+    override_explicit: bool,
+    external_env_sources: Vec<String>,
+    allow_remote_docker: bool,
+    confirm: bool,
+    require_user_verification: bool,
+    ttl_seconds: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct InviteApplyCounts {
+    profile_count: usize,
+    profile_key_count: usize,
+    command_policy_count: usize,
+}
 
 pub fn team_command(
     context: &RuntimeContext,
@@ -155,6 +211,13 @@ fn team_invite_command(
             DEFAULT_INVITE_TTL_SECONDS.checked_mul(NANOS_PER_SECOND).ok_or(CliError::Time)?,
         )
         .ok_or(CliError::Time)?;
+    let sealed_payload = build_invite_sealed_payload(
+        context,
+        &store,
+        &resolved,
+        &profiles,
+        &recipient.sealing_public_key,
+    )?;
     let built_invite = build_signed_invite(
         project_id,
         &issuer,
@@ -163,6 +226,7 @@ fn team_invite_command(
         invite_role,
         role_label,
         expires_at,
+        sealed_payload,
     )?;
     let output_path =
         args.output.clone().unwrap_or_else(|| default_invite_output_path(context, created_at));
@@ -274,29 +338,6 @@ fn team_revoke_invite_command(
     Ok(())
 }
 
-// SPEC-CLARIFICATION: docs/specs/team-sync-recovery.md:27-28 and :67-68
-// describe `team accept` as the path that imports profiles, profile
-// secret/fingerprint keys, and command policies from an invite "sealed
-// to recipient device sealing public keys" with key material delivered
-// "as plaintext key material inside the age-sealed payload". The
-// current `SignedInvite` envelope (crates/locket-core/src/invite.rs) is
-// a signed but unencrypted base64url JSON object: it carries no age
-// recipient stanzas and no payload section that could hold profile
-// keys, command policies, or secret rows. Growing the invite format to
-// add an age-encrypted inner payload is a separate slice from the
-// bundle-import-apply chain (it touches invite encode/decode/sign,
-// recipient validation, and the issue/accept CLI surfaces) and is
-// tracked as a follow-up.
-//
-// For this slice `team accept` therefore stays metadata-only: it
-// records `TEAM_ACCEPT` and creates the local team membership/device
-// trust records, but does NOT insert profile, key, secret, or policy
-// rows. Until the invite format grows an age-encrypted payload, rows
-// flow into the receiver through a follow-up `locket import-bundle`
-// using the same apply path that bundle-import-apply-rows lands. The
-// parity test in the apply-chain ticket will verify that the
-// invite-then-import sequence and a future inline-invite apply
-// produce identical receiver state once both paths are wired.
 fn team_accept_command(
     context: &RuntimeContext,
     output: &mut impl Write,
@@ -328,6 +369,8 @@ fn team_accept_command(
             return Err(error);
         }
     };
+    let applied =
+        apply_invite_sealed_payload(context, &mut store, &project_id, &local_device, &invite)?;
     accept_invite_with_audit(
         context,
         &mut store,
@@ -335,9 +378,16 @@ fn team_accept_command(
         &local_device,
         &invite,
         user_verification,
+        applied,
     )?;
 
     writeln!(output, "team_accept: accepted")?;
+    if invite.payload.sealed_payload.is_some() {
+        writeln!(output, "sealed_payload: applied")?;
+        writeln!(output, "applied_profiles: {}", applied.profile_count)?;
+        writeln!(output, "applied_profile_keys: {}", applied.profile_key_count)?;
+        writeln!(output, "applied_command_policies: {}", applied.command_policy_count)?;
+    }
     writeln!(output, "metadata_only: yes")?;
     Ok(())
 }
@@ -517,6 +567,173 @@ fn confirm_team_accept(
     Ok(())
 }
 
+fn apply_invite_sealed_payload(
+    context: &RuntimeContext,
+    store: &mut locket_store::Store,
+    project_id: &str,
+    local_device: &DeviceRecord,
+    invite: &SignedInvite,
+) -> Result<InviteApplyCounts, CliError> {
+    let Some(sealed) = &invite.payload.sealed_payload else {
+        return Ok(InviteApplyCounts::default());
+    };
+    validate_invite_sealed_payload(sealed, invite)?;
+    let storage = device::build_device_private_key_storage(context, project_id)?;
+    let private_key = storage.load(&local_device.id)?;
+    let ciphertext = BASE64URL_NOPAD
+        .decode(sealed.ciphertext_b64.as_bytes())
+        .map_err(|_| metadata_invalid_error("invite sealed payload is not valid base64url"))?;
+    let plaintext =
+        decrypt_bundle_payload_with_x25519_secret(&ciphertext, &private_key).map_err(|error| {
+            metadata_invalid_error(format!("invite sealed payload decrypt failed: {error}"))
+        })?;
+    let payload: InviteSealedPlaintextV1 = serde_json::from_slice(&plaintext).map_err(|error| {
+        metadata_invalid_error(format!("invite sealed payload parse failed: {error}"))
+    })?;
+    apply_invite_plaintext_payload(context, store, project_id, &payload)
+}
+
+fn validate_invite_sealed_payload(
+    sealed: &SealedInvitePayloadV1,
+    invite: &SignedInvite,
+) -> Result<(), CliError> {
+    if sealed.v != 1 {
+        return Err(metadata_invalid_error("invite sealed payload schema is unsupported"));
+    }
+    if sealed.aad_schema_version != AAD_SCHEMA_V1 {
+        return Err(metadata_invalid_error("invite sealed payload AAD schema is unsupported"));
+    }
+    if sealed.recipient_sealing_public_key_b64 != invite.payload.recipient_sealing_public_key {
+        return Err(metadata_invalid_error(
+            "invite sealed payload recipient key does not match invite recipient",
+        ));
+    }
+    Ok(())
+}
+
+fn apply_invite_plaintext_payload(
+    context: &RuntimeContext,
+    store: &mut locket_store::Store,
+    project_id: &str,
+    payload: &InviteSealedPlaintextV1,
+) -> Result<InviteApplyCounts, CliError> {
+    if payload.v != 1 {
+        return Err(metadata_invalid_error("invite sealed plaintext schema is unsupported"));
+    }
+    let (master_key, _source) = load_master_key(context, project_id)?;
+    let now = now_unix_nanos()?;
+    let mut counts = InviteApplyCounts::default();
+
+    for profile in &payload.profiles {
+        if store.get_profile_by_name(project_id, &profile.name)?.is_none() {
+            store
+                .connection()
+                .execute(
+                    "INSERT INTO profiles(id, project_id, name, dangerous, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                    rusqlite::params![
+                        profile.profile_id,
+                        project_id,
+                        profile.name,
+                        profile.dangerous,
+                        profile.created_at,
+                    ],
+                )
+                .map_err(locket_store::StoreError::from)?;
+            counts.profile_count = counts.profile_count.saturating_add(1);
+        }
+    }
+
+    for profile_key in &payload.profile_keys {
+        let Some(profile) = store.get_profile_by_name(project_id, &profile_key.profile_name)?
+        else {
+            return Err(metadata_invalid_error(format!(
+                "invite sealed payload profile missing: {}",
+                profile_key.profile_name
+            )));
+        };
+        let purpose = parse_invite_key_purpose(&profile_key.purpose)?;
+        let plaintext_bytes =
+            BASE64URL_NOPAD.decode(profile_key.key_material_b64.as_bytes()).map_err(|_| {
+                metadata_invalid_error("invite profile key material is not valid base64url")
+            })?;
+        if plaintext_bytes.len() != locket_crypto::KEY_LEN {
+            return Err(metadata_invalid_error("invite profile key material has wrong length"));
+        }
+        let mut plaintext_array = [0_u8; locket_crypto::KEY_LEN];
+        plaintext_array.copy_from_slice(&plaintext_bytes);
+        let existing_key =
+            store.get_key_by_scope(project_id, Some(&profile.id), purpose.as_str())?;
+        let receiver_key_id = existing_key.as_ref().map_or_else(
+            || KeyId::generate().map(|id| id.into_string()).map_err(|_| CliError::Time),
+            |record| Ok(record.id.clone()),
+        )?;
+        let wrapped = rewrap_imported_profile_key(
+            &master_key,
+            project_id,
+            &profile.id,
+            &receiver_key_id,
+            purpose,
+            &plaintext_array,
+        )?;
+        if existing_key.is_some() {
+            store.connection().execute(
+                "UPDATE keys
+                 SET wrapped_material = ?2, nonce = ?3, created_at = ?4
+                 WHERE id = ?1",
+                rusqlite::params![receiver_key_id, wrapped.ciphertext, wrapped.nonce, now],
+            )
+        } else {
+            store.connection().execute(
+                "INSERT INTO keys(id, project_id, profile_id, purpose, wrapped_material, nonce, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                rusqlite::params![
+                    receiver_key_id,
+                    project_id,
+                    profile.id,
+                    purpose.as_str(),
+                    wrapped.ciphertext,
+                    wrapped.nonce,
+                    now,
+                ],
+            )
+        }
+        .map_err(locket_store::StoreError::from)?;
+        counts.profile_key_count = counts.profile_key_count.saturating_add(1);
+    }
+
+    for policy in &payload.command_policies {
+        let policy_json = serde_json::to_string(policy)?;
+        store
+            .connection()
+            .execute(
+                "INSERT INTO command_policies(
+               project_id, name, policy_json, normalized_json, created_at, updated_at
+             )
+             VALUES (?1, ?2, ?3, ?4, ?5, ?5)
+            ON CONFLICT(project_id, name) DO UPDATE SET
+               policy_json = excluded.policy_json,
+               normalized_json = excluded.normalized_json,
+               updated_at = excluded.updated_at",
+                rusqlite::params![project_id, policy.name, policy_json, policy_json, now],
+            )
+            .map_err(locket_store::StoreError::from)?;
+        counts.command_policy_count = counts.command_policy_count.saturating_add(1);
+    }
+
+    Ok(counts)
+}
+
+fn parse_invite_key_purpose(value: &str) -> Result<KeyPurpose, CliError> {
+    match value {
+        v if v == KeyPurpose::ProfileSecret.as_str() => Ok(KeyPurpose::ProfileSecret),
+        v if v == KeyPurpose::ProfileFingerprint.as_str() => Ok(KeyPurpose::ProfileFingerprint),
+        other => {
+            Err(metadata_invalid_error(format!("unknown invite profile key purpose: {other}")))
+        }
+    }
+}
+
 fn accept_invite_with_audit(
     context: &RuntimeContext,
     store: &mut locket_store::Store,
@@ -524,13 +741,14 @@ fn accept_invite_with_audit(
     local_device: &DeviceRecord,
     invite: &SignedInvite,
     user_verification: UserVerificationAudit,
+    applied: InviteApplyCounts,
 ) -> Result<(), CliError> {
     let audit_key = load_project_key(context, store, project_id, KeyPurpose::Audit)?;
     let accepted_at = now_unix_nanos()?;
     let invite_id = invite.payload.invite_id.as_str();
     let team_id =
         store.get_team_by_project(project_id)?.map_or_else(|| "unknown".to_owned(), |team| team.id);
-    let metadata = json!({
+    let mut metadata = json!({
         "schema_version": 1,
         "action": "TEAM_ACCEPT",
         "status": "SUCCESS",
@@ -549,6 +767,12 @@ fn accept_invite_with_audit(
         "accepted_at": accepted_at,
         "user_verification": user_verification,
     });
+    if invite.payload.sealed_payload.is_some() {
+        metadata["sealed_payload_applied"] = json!(true);
+        metadata["applied_profile_count"] = json!(applied.profile_count);
+        metadata["applied_profile_key_count"] = json!(applied.profile_key_count);
+        metadata["applied_command_policy_count"] = json!(applied.command_policy_count);
+    }
     let audit = AuditWrite {
         project_id,
         profile_id: None,
@@ -974,6 +1198,111 @@ fn load_invite_issuer(
     Ok(InviteIssuer { team, local_device, member })
 }
 
+fn build_invite_sealed_payload(
+    context: &RuntimeContext,
+    store: &locket_store::Store,
+    resolved: &ResolvedProject,
+    profile_names: &[String],
+    recipient_sealing_public_key: &[u8; 32],
+) -> Result<SealedInvitePayloadV1, CliError> {
+    let project_id = resolved.config.project_id.as_str();
+    let mut profiles = Vec::with_capacity(profile_names.len());
+    let mut profile_keys = Vec::with_capacity(profile_names.len().saturating_mul(2));
+    for profile_name in profile_names {
+        let profile = store
+            .get_profile_by_name(project_id, profile_name)?
+            .ok_or_else(|| profile_not_found_error(format!("profile not found: {profile_name}")))?;
+        profiles.push(InviteSealedProfileV1 {
+            profile_id: profile.id.clone(),
+            name: profile.name.clone(),
+            dangerous: profile.dangerous,
+            created_at: profile.created_at,
+        });
+        for purpose in [KeyPurpose::ProfileSecret, KeyPurpose::ProfileFingerprint] {
+            let key = load_profile_key(context, store, project_id, &profile.id, purpose)?;
+            profile_keys.push(InviteSealedProfileKeyV1 {
+                profile_name: profile.name.clone(),
+                purpose: purpose.as_str().to_owned(),
+                key_material_b64: BASE64URL_NOPAD.encode(key.as_ref()),
+            });
+        }
+    }
+
+    let command_policies = invite_command_policies(resolved)?;
+    let plaintext = InviteSealedPlaintextV1 { v: 1, profiles, profile_keys, command_policies };
+    let plaintext_bytes = zeroize::Zeroizing::new(serde_json::to_vec(&plaintext)?);
+    let encrypted_payload = encrypt_bundle_payload_for_age_recipients(
+        &plaintext_bytes,
+        &[*recipient_sealing_public_key],
+    )
+    .map_err(|error| {
+        metadata_invalid_error(format!("invite sealed payload encrypt failed: {error}"))
+    })?;
+    Ok(SealedInvitePayloadV1 {
+        v: 1,
+        ciphertext_b64: BASE64URL_NOPAD.encode(&encrypted_payload),
+        recipient_sealing_public_key_b64: BASE64URL_NOPAD.encode(recipient_sealing_public_key),
+        aad_schema_version: AAD_SCHEMA_V1,
+        plaintext_counts: SealedInvitePlaintextCounts {
+            profile_key_count: u32::try_from(plaintext.profile_keys.len()).map_err(|_| {
+                metadata_invalid_error("invite profile key count exceeds schema limit")
+            })?,
+            command_policy_count: u32::try_from(plaintext.command_policies.len()).map_err(
+                |_| metadata_invalid_error("invite command policy count exceeds schema limit"),
+            )?,
+            secret_metadata_count: 0,
+        },
+    })
+}
+
+fn invite_command_policies(
+    resolved: &ResolvedProject,
+) -> Result<Vec<InviteSealedCommandPolicyV1>, CliError> {
+    let policy_document = read_policy_document(&resolved.root.join(LOCKET_TOML))?;
+    Ok(policy_document.commands.values().map(invite_command_policy).collect())
+}
+
+fn invite_command_policy(policy: &CommandPolicy) -> InviteSealedCommandPolicyV1 {
+    let (argv, shell) = match &policy.command {
+        CommandSpec::Argv(arguments) => (arguments.clone(), None),
+        CommandSpec::Shell(script) => (Vec::new(), Some(script.clone())),
+    };
+    InviteSealedCommandPolicyV1 {
+        name: policy.name.clone(),
+        command_kind: command_type(&policy.command).to_owned(),
+        argv,
+        shell,
+        allowed_secrets: policy
+            .allowed_secrets
+            .iter()
+            .map(|name| name.as_str().to_owned())
+            .collect(),
+        required_secrets: policy
+            .required_secrets
+            .iter()
+            .map(|name| name.as_str().to_owned())
+            .collect(),
+        optional_secrets: policy
+            .optional_secrets
+            .iter()
+            .map(|name| name.as_str().to_owned())
+            .collect(),
+        inherit_env: policy.inherit_env.clone(),
+        env_mode: policy.env_mode.as_str().to_owned(),
+        override_mode: policy.override_behavior.as_str().to_owned(),
+        override_explicit: policy.override_explicit(),
+        external_env_sources: policy
+            .external_env_sources
+            .iter()
+            .map(external_env_source_label)
+            .collect(),
+        allow_remote_docker: policy.allow_remote_docker,
+        confirm: policy.confirm,
+        require_user_verification: policy.require_user_verification,
+        ttl_seconds: policy.ttl.as_secs(),
+    }
+}
+
 fn build_signed_invite(
     project_id: &str,
     issuer: &InviteIssuer,
@@ -982,6 +1311,7 @@ fn build_signed_invite(
     invite_role: TeamRole,
     role_label: &'static str,
     expires_at: i64,
+    sealed_payload: SealedInvitePayloadV1,
 ) -> Result<BuiltInvite, CliError> {
     let invite_id = InviteId::generate().map_err(|_| CliError::Time)?;
     let nonce = invite_nonce()?;
@@ -1011,12 +1341,7 @@ fn build_signed_invite(
         profiles: profiles.to_vec(),
         expires_at: expires_at / NANOS_PER_SECOND,
         nonce: BASE64URL_NOPAD.encode(&nonce),
-        // TODO(invite-sealed-payload-apply): populate when the issuer
-        // CLI grows a `--seal-payload` flag and an age-encrypted inner
-        // payload helper. Until then every invite goes out as
-        // metadata-only, matching the current `team accept` SPEC
-        // contract.
-        sealed_payload: None,
+        sealed_payload: Some(sealed_payload),
     };
     let signed_invite = SignedInvite::sign(&signing_key, payload)
         .map_err(|error| metadata_invalid_error(format!("invite signing failed: {error}")))?;

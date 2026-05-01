@@ -573,11 +573,9 @@ fn deleted_vs_active_arm() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Parity contract for the `team accept` -> `import-bundle` flow per the
-/// SPEC-CLARIFICATION block in `crates/locket-cli/src/commands/team/members.rs`:
-/// `team accept` is metadata-only today and the substantive rows
-/// (profiles, secrets, `secret_versions`, blobs, `command_policies`) only
-/// arrive at the receiver through a follow-up `import-bundle`.
+/// Legacy parity contract for an invite without a sealed payload:
+/// metadata-only `team accept` followed by `import-bundle` must converge
+/// with direct `import-bundle`.
 ///
 /// This test pins that contract by comparing two arms over the same
 /// initial state:

@@ -70,41 +70,30 @@ pub struct InvitePayload {
     ///
     /// Spec: `docs/specs/team-sync-recovery.md:7,28,67` calls for an
     /// age-encrypted inner section that imports profile keys and
-    /// command policies into the recipient's store. Today
-    /// `team_accept_command` is metadata-only (per the
-    /// `SPEC-CLARIFICATION` block in
-    /// `crates/locket-cli/src/commands/team/members.rs:276-298`); the
-    /// type lands here so issuers and recipients can begin populating
-    /// and round-tripping the field while the apply path is wired up.
+    /// command policies into the recipient's store. Current issuers
+    /// populate this field and current recipients decrypt/apply it
+    /// during `team accept`. `None` is retained for legacy invite
+    /// compatibility.
     ///
     /// `Option<_>` with `#[serde(default, skip_serializing_if =
     /// "Option::is_none")]` keeps existing legacy invites byte-stable:
-    /// when the issuer omits `--seal-payload` the encoded invite is
-    /// indistinguishable on the wire from a v1 invite that pre-dated
-    /// this field.
+    /// when a legacy or test issuer omits the field, the encoded
+    /// invite is indistinguishable on the wire from a v1 invite that
+    /// pre-dated sealed payloads.
     ///
     /// The whole field is signature-covered (Ed25519 over canonical
     /// JSON of `InvitePayload`), so a man-in-the-middle cannot strip
     /// or substitute the sealed section without invalidating
     /// [`SignedInvite::verify`].
-    //
-    // TODO(invite-sealed-payload-apply): wire the apply step end to
-    // end. Required follow-ups are tracked at the
-    // `SealedInvitePayloadV1` doc and live behind a future
-    // `--seal-payload` issuer flag plus a recipient-side decrypt path
-    // in `team_accept_command`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sealed_payload: Option<SealedInvitePayloadV1>,
 }
 
 /// Age-encrypted inner section of an [`InvitePayload`].
 ///
-/// Mirrors the layout of `SealedBundlePayloadV1` in
-/// `crates/locket-cli/src/commands/team/bundle.rs` but at a smaller
-/// surface: profile keys + command policies + an optional list of
-/// canonicalized secret metadata (no values). Carrying the same shape
-/// lets the recipient's `team accept` reuse the bundle import row
-/// applier (`apply_bundle_payload`) when the apply step lands.
+/// Carries the recipient-keyed age ciphertext for the smaller invite
+/// import surface: profile keys + command policies + an optional list
+/// of canonicalized secret metadata (no values).
 ///
 /// Encryption envelope is age, recipient-keyed by the invite's
 /// `recipient_sealing_public_key` so only the intended device can
