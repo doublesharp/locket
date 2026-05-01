@@ -23,12 +23,14 @@ impl GrantBinding {
 
 /// Action set authorized by a live grant.
 ///
-/// Spec: `docs/specs/agent.md:36-37`.
+/// Spec: `docs/specs/agent.md:36-37`, `docs/specs/data-model.md:386-395`.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "PascalCase")]
 pub enum GrantAction {
     /// Run a command policy.
     RunPolicy,
+    /// Prepare an exec invocation by resolving a policy into a concrete env plan.
+    PrepareExec,
     /// Resolve an `lk://` reference.
     ResolveReference,
     /// Scan known secret values without persisting them.
@@ -37,6 +39,18 @@ pub enum GrantAction {
     Reveal,
     /// Copy one secret value through a gated path.
     Copy,
+    /// Redact one secret value from a gated rendering path.
+    Redact,
+    /// Export secret values through a gated bulk path.
+    Export,
+    // SPEC-DEVIATION: `SetSecret` is not in the canonical `GrantAction` enum at
+    // `docs/specs/data-model.md:386-395`. It is currently relied on by the
+    // `agent-set-secret` RPC flow (see `crates/locket-agent/src/set_secret.rs`)
+    // to gate creation/rotation of one secret value through a process-bound
+    // grant. A spec amendment to add `SetSecret` (or a refactor to fold the
+    // `agent-set-secret` flow under another action) is pending; until that
+    // lands the variant is retained here so the existing RPC continues to
+    // function. Do not extend `SetSecret` to new call sites.
     /// Create or rotate one secret value through a gated path.
     SetSecret,
 }
@@ -404,6 +418,134 @@ mod tests {
         assert_eq!(record.issued_at_unix_nanos, 100);
         assert_eq!(record.ttl_seconds, 45);
         assert_eq!(record.expires_at_unix_nanos, 45_000_000_100);
+        Ok(())
+    }
+
+    #[test]
+    fn prepare_exec_grants_validate_against_their_action() {
+        let mut table = GrantTable::default();
+        table.insert(grant_record(GrantAction::PrepareExec));
+        let binding = GrantBinding::new(4242, "start-a");
+
+        assert_eq!(
+            table.validate(
+                "grant-1",
+                "p-1",
+                "prof-1",
+                GrantAction::PrepareExec,
+                100,
+                Some(&binding),
+            ),
+            GrantValidation::Valid
+        );
+        assert_eq!(
+            table.validate(
+                "grant-1",
+                "p-1",
+                "prof-1",
+                GrantAction::RunPolicy,
+                100,
+                Some(&binding),
+            ),
+            GrantValidation::ProcessMismatch
+        );
+    }
+
+    #[test]
+    fn redact_grants_validate_against_their_action() {
+        let mut table = GrantTable::default();
+        table.insert(grant_record(GrantAction::Redact));
+        let binding = GrantBinding::new(4242, "start-a");
+
+        assert_eq!(
+            table.validate(
+                "grant-1",
+                "p-1",
+                "prof-1",
+                GrantAction::Redact,
+                100,
+                Some(&binding),
+            ),
+            GrantValidation::Valid
+        );
+        assert_eq!(
+            table.validate(
+                "grant-1",
+                "p-1",
+                "prof-1",
+                GrantAction::Reveal,
+                100,
+                Some(&binding),
+            ),
+            GrantValidation::ProcessMismatch
+        );
+    }
+
+    #[test]
+    fn export_grants_validate_against_their_action() {
+        let mut table = GrantTable::default();
+        table.insert(grant_record(GrantAction::Export));
+        let binding = GrantBinding::new(4242, "start-a");
+
+        assert_eq!(
+            table.validate(
+                "grant-1",
+                "p-1",
+                "prof-1",
+                GrantAction::Export,
+                100,
+                Some(&binding),
+            ),
+            GrantValidation::Valid
+        );
+        assert_eq!(
+            table.validate(
+                "grant-1",
+                "p-1",
+                "prof-1",
+                GrantAction::Copy,
+                100,
+                Some(&binding),
+            ),
+            GrantValidation::ProcessMismatch
+        );
+    }
+
+    #[test]
+    fn issued_grants_carry_new_spec_actions()
+    -> Result<(), locket_core::id::IdGenerationError> {
+        let mut table = GrantTable::default();
+        for action in [GrantAction::PrepareExec, GrantAction::Redact, GrantAction::Export] {
+            let record = table.issue(
+                RequestGrantPayload {
+                    project_id: "p-1".to_owned(),
+                    profile_id: "prof-1".to_owned(),
+                    policy_name: None,
+                    action,
+                    ttl_seconds: 30,
+                    binding: GrantBinding::new(4242, "start-a"),
+                },
+                100,
+                30_000_000_100,
+            )?;
+            assert_eq!(record.action, action);
+            assert_eq!(record.ttl_seconds, 30);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn grant_action_serde_round_trips_for_new_variants() -> Result<(), serde_json::Error> {
+        for (action, expected) in [
+            (GrantAction::PrepareExec, "\"PrepareExec\""),
+            (GrantAction::Redact, "\"Redact\""),
+            (GrantAction::Export, "\"Export\""),
+        ] {
+            let encoded = serde_json::to_string(&action)?;
+            assert_eq!(encoded, expected);
+            let decoded: GrantAction = serde_json::from_str(&encoded)?;
+            assert_eq!(decoded, action);
+        }
         Ok(())
     }
 }
