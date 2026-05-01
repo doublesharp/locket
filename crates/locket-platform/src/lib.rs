@@ -31,6 +31,7 @@ pub use fs_helpers::{secure_directory, write_user_only_file};
 pub use locked_vault_audit::{
     DEGRADED_AUDIT_LOG_FILENAME, DEGRADED_AUDIT_LOG_MAX_ROTATIONS, DEGRADED_AUDIT_LOG_ROTATE_BYTES,
     DEGRADED_AUDIT_LOG_SCHEMA_VERSION, LockedVaultAuditLogger, LockedVaultDenialRow,
+    permission_mode as locked_vault_audit_permission_mode,
 };
 pub use master_key::{
     KeyringMasterKeyStore, MasterKeyStore, MemoryMasterKeyStore, MockMasterKeyStore,

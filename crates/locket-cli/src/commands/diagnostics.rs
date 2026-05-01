@@ -393,6 +393,11 @@ fn collect_diagnostics(
                             }
                         },
                     );
+                    checks.push(check_device_private_key_storage(
+                        context,
+                        &store,
+                        project.config.project_id.as_str(),
+                    ));
                 }
                 Err(error) => checks.push(DiagnosticCheck::fail(
                     "store_open_schema_bootstrap",
@@ -430,6 +435,7 @@ fn collect_diagnostics(
     }
 
     checks.push(check_agent_placeholder(context));
+    checks.push(check_degraded_audit_log_perms(context));
     checks.push(check_hardening());
     checks.push(check_degraded_audit_log(context));
     for check in SKIPPED_LOCKED_CHECKS {
@@ -746,6 +752,127 @@ fn check_agent_placeholder(context: &RuntimeContext) -> DiagnosticCheck {
         "unavailable last_known_pid=no"
     };
     DiagnosticCheck::pass("agent_placeholder", status)
+}
+
+fn check_device_private_key_storage(
+    context: &RuntimeContext,
+    store: &locket_store::Store,
+    project_id: &str,
+) -> DiagnosticCheck {
+    use crate::commands::team::device::build_device_private_key_storage;
+    use locket_platform::LocalDevicePrivateKeyStorage;
+
+    const NAME: &str = "device_private_key_storage";
+
+    let device = match store.get_active_local_device(project_id) {
+        Ok(Some(device)) => device,
+        Ok(None) => {
+            return DiagnosticCheck::pass(NAME, "no active local device");
+        }
+        Err(error) => {
+            return DiagnosticCheck::fail(NAME, false, error.to_string());
+        }
+    };
+
+    let storage = match build_device_private_key_storage(context, project_id) {
+        Ok(storage) => storage,
+        Err(error) => {
+            return DiagnosticCheck::fail(NAME, false, error.to_string());
+        }
+    };
+    let envelope_path = match storage.envelope_path(&device.id) {
+        Ok(path) => path,
+        Err(error) => {
+            return DiagnosticCheck::fail(NAME, false, error.to_string());
+        }
+    };
+
+    let metadata = match fs::metadata(&envelope_path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return DiagnosticCheck::warn(
+                NAME,
+                format!("envelope_missing device_id={}", device.id),
+            );
+        }
+        Err(error) => {
+            return DiagnosticCheck::fail(NAME, false, error.to_string());
+        }
+    };
+
+    #[cfg(unix)]
+    {
+        let mode = metadata.permissions().mode() & 0o777;
+        if mode & 0o077 != 0 {
+            return DiagnosticCheck::fail(
+                NAME,
+                false,
+                format!("envelope_permissions_too_wide mode={mode:#o} device_id={}", device.id),
+            );
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = &metadata;
+    }
+
+    // Integrity probe: load+unwrap. Surfaces master-key mismatch and corrupt
+    // envelopes as fail without leaking key material (the unwrapped key is
+    // dropped immediately).
+    match storage.load(&device.id) {
+        Ok(_key) => DiagnosticCheck::pass(
+            NAME,
+            format!("storage=wrapped-local-file device_id={}", device.id),
+        ),
+        Err(error) => DiagnosticCheck::fail(
+            NAME,
+            false,
+            format!("envelope_integrity_failure device_id={} error={error}", device.id),
+        ),
+    }
+}
+
+fn check_degraded_audit_log_perms(context: &RuntimeContext) -> DiagnosticCheck {
+    const NAME: &str = "degraded_audit_log_perms";
+
+    let Some(locket_home) = context.store_path.parent() else {
+        return DiagnosticCheck::fail(
+            NAME,
+            false,
+            "could not resolve locket home for degraded-audit log",
+        );
+    };
+    let logger = locket_platform::LockedVaultAuditLogger::new(locket_home);
+
+    let mode = match logger.permission_mode() {
+        Ok(Some(mode)) => mode,
+        Ok(None) => return DiagnosticCheck::pass(NAME, "log_absent=yes"),
+        Err(error) => return DiagnosticCheck::fail(NAME, false, error.to_string()),
+    };
+
+    // Pass: only owner has any access (no group/other bits set).
+    // Fail: anything looser than 0600 surfaces the actual octal mode so
+    // operators can see exactly what drifted.
+    #[cfg(unix)]
+    {
+        if mode.trailing_zeros() >= 6 {
+            DiagnosticCheck::pass(NAME, format!("mode={mode:#o}"))
+        } else {
+            DiagnosticCheck::fail(
+                NAME,
+                false,
+                format!("mode={mode:#o} expected=0o600_or_stricter"),
+            )
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        // On Windows we rely on ACLs that limit access to the current user;
+        // the helper synthesizes mode 0o600 in that case. Pass when we have
+        // no signal that the file is more permissive.
+        let _ = mode;
+        DiagnosticCheck::pass(NAME, "platform=non-unix acl_restricted_to_current_user=assumed")
+    }
 }
 
 fn check_hardening() -> DiagnosticCheck {

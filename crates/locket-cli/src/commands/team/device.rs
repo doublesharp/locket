@@ -72,6 +72,7 @@ fn device_init_command(
     };
     let GeneratedLocalDevice { record: device, sealing_private_key } =
         generate_local_device_record(project_id, timestamp)?;
+    let storage = build_device_private_key_storage(context, project_id)?;
     if let Some((existing, verification)) = existing_replacement {
         replace_local_device_with_audit(
             context,
@@ -82,7 +83,14 @@ fn device_init_command(
             verification,
             timestamp,
         )?;
-        let storage = build_device_private_key_storage(context, project_id)?;
+        // Force-rekey envelope swap: store the replacement envelope BEFORE
+        // deleting the prior device's envelope so a failure mid-rotation
+        // never leaves the active device row pointing at a missing envelope.
+        // If the new store succeeds, drop the prior envelope on a best-effort
+        // basis: the active row already points at the replacement, so a
+        // stranded old envelope is a soft cleanup issue rather than a
+        // correctness failure.
+        storage.store(&device.id, &sealing_private_key)?;
         let _ = storage.delete(&existing.id);
     } else {
         store.insert_device(&device)?;
@@ -95,9 +103,8 @@ fn device_init_command(
             &device,
             user_verification,
         )?;
+        storage.store(&device.id, &sealing_private_key)?;
     }
-    let storage = build_device_private_key_storage(context, project_id)?;
-    storage.store(&device.id, &sealing_private_key)?;
     let descriptor = encode_device_descriptor(&device)?;
 
     writeln!(output, "device: initialized")?;
@@ -261,10 +268,39 @@ fn device_remove_command(
         &device,
         UserVerificationAudit::not_required(),
     )?;
+    // Local-device revocation also drops the wrapped private-key envelope.
+    // We only ever held a private key for the local device; remote teammate
+    // device records never have an envelope to clean up.
+    if device.local {
+        let storage = build_device_private_key_storage(context, project_id)?;
+        let _ = storage.delete(&device.id);
+    }
     writeln!(output, "device: revoked")?;
     writeln!(output, "device_id: {}", device.id)?;
     writeln!(output, "fingerprint: {}", device.fingerprint)?;
     writeln!(output, "metadata_only: yes")?;
+    Ok(())
+}
+
+/// Best-effort delete of a wrapped-local-file device private-key envelope when
+/// the revoked device row was the active local device.
+///
+/// Sibling commands (e.g. `team revoke-device`) use this to keep the local
+/// envelope store consistent with the `team_devices` table. Remote teammate
+/// device records never have an envelope on this host, so callers should pass
+/// `device.local` as the gate.
+pub(super) fn cleanup_local_device_envelope_if_local(
+    context: &RuntimeContext,
+    project_id: &str,
+    device: &DeviceRecord,
+) -> Result<(), CliError> {
+    if !device.local {
+        // Remote teammate device record: we never had its private key on this
+        // host; nothing to delete.
+        return Ok(());
+    }
+    let storage = build_device_private_key_storage(context, project_id)?;
+    let _ = storage.delete(&device.id);
     Ok(())
 }
 
@@ -304,7 +340,7 @@ fn generate_local_device_record(
     Ok(GeneratedLocalDevice { record, sealing_private_key })
 }
 
-fn device_private_key_root(context: &RuntimeContext) -> Result<PathBuf, CliError> {
+pub fn device_private_key_root(context: &RuntimeContext) -> Result<PathBuf, CliError> {
     context
         .store_path
         .parent()
@@ -312,7 +348,7 @@ fn device_private_key_root(context: &RuntimeContext) -> Result<PathBuf, CliError
         .ok_or_else(|| corrupt_db_error("could not resolve device private key root"))
 }
 
-fn build_device_private_key_storage(
+pub fn build_device_private_key_storage(
     context: &RuntimeContext,
     project_id: &str,
 ) -> Result<WrappedLocalFileDevicePrivateKeyStorage, CliError> {
