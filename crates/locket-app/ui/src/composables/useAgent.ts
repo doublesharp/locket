@@ -1,10 +1,11 @@
-// Reactive agent state for Vue views. Polls `agent_status` on a fixed
-// interval and exposes the latest typed result. Slice 3 will replace
-// the polling fallback with a `SubscribeStatus` stream.
+// Reactive agent state for Vue views. Subscribes to the agent's
+// metadata-only `SubscribeStatus` stream and exposes the latest typed
+// result. `refresh()` remains a one-shot fallback for explicit user
+// actions.
 
 import { onScopeDispose, ref, type Ref } from 'vue';
 
-import { fetchStatus } from '../agent/client';
+import { fetchStatus, subscribeStatus } from '../agent/client';
 import type { AgentClientError, AgentStatus } from '../agent/types';
 
 export interface AgentState {
@@ -14,14 +15,12 @@ export interface AgentState {
   refresh: () => Promise<void>;
 }
 
-const POLL_INTERVAL_MS = 5_000;
-
 export function useAgent(): AgentState {
   const status = ref<AgentStatus | null>(null);
   const error = ref<AgentClientError | null>(null);
   const loading = ref<boolean>(true);
 
-  let timer: ReturnType<typeof setInterval> | null = null;
+  let unlisten: (() => void) | null = null;
 
   async function refresh(): Promise<void> {
     loading.value = true;
@@ -36,16 +35,41 @@ export function useAgent(): AgentState {
     loading.value = false;
   }
 
-  void refresh();
-  timer = setInterval(() => {
-    void refresh();
-  }, POLL_INTERVAL_MS);
+  async function startSubscription(): Promise<void> {
+    loading.value = true;
+    const result = await subscribeStatus(
+      (event) => {
+        status.value = {
+          lock_state: event.lock_state,
+          project_id: event.project_id,
+          profile_name: event.profile_name,
+          live_grant_count: event.live_grant_count,
+          agent_version: event.agent_version,
+          unlock_ttl_seconds: event.unlock_ttl_seconds,
+        };
+        error.value = null;
+        loading.value = false;
+      },
+      (streamError) => {
+        status.value = null;
+        error.value = streamError;
+        loading.value = false;
+      },
+    );
+    if (result.ok) {
+      unlisten = result.value;
+    } else {
+      status.value = null;
+      error.value = result.error;
+      loading.value = false;
+    }
+  }
+
+  void startSubscription();
 
   onScopeDispose(() => {
-    if (timer !== null) {
-      clearInterval(timer);
-      timer = null;
-    }
+    unlisten?.();
+    unlisten = null;
   });
 
   return { status, error, loading, refresh };

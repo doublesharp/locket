@@ -3,11 +3,13 @@
 // without juggling Tauri's invoke() exceptions.
 
 import { invoke, isTauri } from '@tauri-apps/api/core';
+import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 
 import type {
   AgentClientError,
   AgentConfigSettings,
   AgentStatus,
+  AgentStatusEvent,
   CopyRequest,
   CopyResponse,
   ListAuditRequest,
@@ -41,6 +43,9 @@ export type AgentStatusResult =
 
 export type AgentResult<T> = { ok: true; value: T } | { ok: false; error: AgentClientError };
 
+const AGENT_STATUS_EVENT = 'agent-status';
+const AGENT_STATUS_ERROR_EVENT = 'agent-status-error';
+
 function tauriUnavailableError(): AgentClientError {
   return {
     kind: 'unavailable',
@@ -72,6 +77,41 @@ export async function fetchStatus(): Promise<AgentStatusResult> {
   } catch (raw) {
     return { ok: false, error: normalizeError(raw) };
   }
+}
+
+export async function subscribeStatus(
+  onStatus: (event: AgentStatusEvent) => void,
+  onError: (error: AgentClientError) => void,
+): Promise<AgentResult<UnlistenFn>> {
+  if (!isTauri()) {
+    return {
+      ok: false,
+      error: tauriUnavailableError(),
+    };
+  }
+
+  const unlistenStatus = await listen<AgentStatusEvent>(AGENT_STATUS_EVENT, (event) => {
+    onStatus(event.payload);
+  });
+  const unlistenError = await listen<AgentClientError>(AGENT_STATUS_ERROR_EVENT, (event) => {
+    onError(event.payload);
+  });
+
+  try {
+    await invoke<void>('agent_subscribe_status');
+  } catch (raw) {
+    unlistenStatus();
+    unlistenError();
+    return { ok: false, error: normalizeError(raw) };
+  }
+
+  return {
+    ok: true,
+    value: () => {
+      unlistenStatus();
+      unlistenError();
+    },
+  };
 }
 
 function normalizeError(raw: unknown): AgentClientError {

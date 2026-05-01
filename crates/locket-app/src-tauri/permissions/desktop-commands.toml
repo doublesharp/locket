@@ -5,6 +5,7 @@ identifier = "desktop-commands"
 description = "Allows the Locket webview to invoke the metadata-scoped desktop commands registered by this crate."
 commands.allow = [
   "agent_status",
+  "agent_subscribe_status",
   "agent_lock",
   "agent_reveal",
   "agent_copy",

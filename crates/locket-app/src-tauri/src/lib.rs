@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use directories::ProjectDirs;
 use serde::Deserialize;
 
+use tauri::Emitter as _;
 #[cfg(debug_assertions)]
 use tauri::Manager as _;
 
@@ -155,6 +156,8 @@ fn default_config_path() -> Result<PathBuf, AgentClientError> {
 fn default_store_path() -> Result<PathBuf, AgentClientError> {
     Ok(project_dirs()?.data_dir().join("store.db"))
 }
+const AGENT_STATUS_EVENT: &str = "agent-status";
+const AGENT_STATUS_ERROR_EVENT: &str = "agent-status-error";
 
 /// Tauri command exposing the agent client to the webview.
 ///
@@ -165,6 +168,25 @@ fn default_store_path() -> Result<PathBuf, AgentClientError> {
 async fn agent_status() -> Result<locket_agent::StatusPayload, AgentClientError> {
     let path = agent_client::resolve_socket_path();
     agent_client::fetch_status(&path).await
+}
+
+/// Tauri command bridging `SubscribeStatus` stream frames to webview events.
+#[tauri::command]
+async fn agent_subscribe_status(app: tauri::AppHandle) -> Result<(), AgentClientError> {
+    let path = agent_client::resolve_socket_path();
+    let (sender, mut receiver) = tokio::sync::mpsc::channel::<locket_agent::StatusEvent>(16);
+    let event_app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        while let Some(event) = receiver.recv().await {
+            let _emit_result = event_app.emit(AGENT_STATUS_EVENT, &event);
+        }
+    });
+    tauri::async_runtime::spawn(async move {
+        if let Err(error) = agent_client::stream_status_events(&path, sender).await {
+            let _emit_result = app.emit(AGENT_STATUS_ERROR_EVENT, &error);
+        }
+    });
+    Ok(())
 }
 
 /// Tauri command exposing the agent's `Lock` RPC to the webview and tray.
@@ -351,6 +373,7 @@ pub fn run() -> tauri::Result<()> {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             agent_status,
+            agent_subscribe_status,
             agent_lock,
             agent_reveal,
             agent_copy,

@@ -200,6 +200,8 @@ Slices that have merged to `main` and verified. Open work tracked in
   process. Run audit metadata records the grant TTL and process binding without values.
 - [x] agent-reveal-copy-impl: Implemented gated agent reveal and copy value handlers
   with metadata-only audit rows.
+- [x] desktop-subscribe-status: Bridged the agent status stream into desktop UI events
+  and replaced polling in useAgent.
 
 ## Full Spec Coverage TODO — Security/Recovery/Team
 

@@ -168,7 +168,6 @@ Slices 1+2 shipped (agent client, tray binding, 6 view scaffolds,
   SubscribeStatus stream consumer.
 - [ ] Tray/status panel (`docs/specs/desktop.md:65-108`):
 - [ ] Desktop UI campaign — remaining slices:
-  - [~] [90b9f58a] branch agent-90b9f58a/desktop-subscribe-status, worktree .worktrees/agent-90b9f58a-desktop-subscribe-status; **subtask** — desktop-subscribe-status: replace `useAgent` poll with a Tauri event channel bridging `SubscribeStatus`. Slice 3.
   - [ ] **subtask** — desktop-reveal-modal: short-lived modal with
     TTL countdown, accessibility scrub on expiry, dismiss-on-blur.
     Pre-req: `agent-reveal-copy-impl`. Slice 7.

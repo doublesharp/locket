@@ -13,6 +13,13 @@ export interface AgentStatus {
   unlock_ttl_seconds: number | null;
 }
 
+export type AgentStatusEventKind = 'status' | 'heartbeat';
+
+export interface AgentStatusEvent extends AgentStatus {
+  kind: AgentStatusEventKind;
+  sequence: number;
+}
+
 export type AgentClientError =
   | {
       kind: 'unavailable';
