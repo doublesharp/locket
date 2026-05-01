@@ -6,7 +6,7 @@ cargo_mutants="${CARGO_MUTANTS:-cargo mutants}"
 jobs="${CARGO_JOBS:-12}"
 offline="${OFFLINE:-1}"
 strict="${STRICT:-0}"
-mutation_packages="${MUTATION_PACKAGES:-locket-core locket-store locket-agent locket-exec}"
+mutation_packages="${MUTATION_PACKAGES:-locket-core locket-store locket-agent locket-exec locket-platform}"
 fallback_packages="${MUTATION_FALLBACK_PACKAGES:-${mutation_packages}}"
 mutation_timeout="${MUTATION_TIMEOUT:-60}"
 
