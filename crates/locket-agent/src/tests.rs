@@ -41,6 +41,7 @@ fn agent_methods_round_trip_through_wire_names() -> Result<(), UnknownMethod> {
         AgentMethod::ScanKnownValues,
         AgentMethod::ListRuntimeSessions,
         AgentMethod::ListPolicies,
+        AgentMethod::ListDeviceMembers,
         AgentMethod::ListAudit,
         AgentMethod::Reveal,
         AgentMethod::Copy,
@@ -1081,8 +1082,8 @@ async fn unlock_writes_unlock_audit_row_with_agent_metadata()
     use crate::method::AgentMethod;
     use crate::server::{AgentSocketState, dispatch};
     use locket_crypto::{
-        HkdfWrapInfo, KeyPurpose, KeyWrapAad, KeyWrapPurpose, derive_wrapping_key_v1,
-        generate_key, key_wrap_aad_v1, wrap_key_material_v1,
+        HkdfWrapInfo, KeyPurpose, KeyWrapAad, KeyWrapPurpose, derive_wrapping_key_v1, generate_key,
+        key_wrap_aad_v1, wrap_key_material_v1,
     };
     use locket_store::KeyRecord;
     use serde_json::{Value, json};
@@ -1147,7 +1148,10 @@ async fn unlock_writes_unlock_audit_row_with_agent_metadata()
         }),
     );
     let response = dispatch(&unlock, &state).await;
-    assert!(matches!(response, ResponseEnvelope::Success(_)), "unlock should succeed: {response:?}");
+    assert!(
+        matches!(response, ResponseEnvelope::Success(_)),
+        "unlock should succeed: {response:?}"
+    );
 
     let store = locket_store::Store::open(&store_path)?;
     let (action, profile_id, command, metadata): (String, String, Option<String>, String) =
@@ -1213,7 +1217,10 @@ async fn unlock_falls_back_to_passphrase_when_keychain_is_empty()
         }),
     );
     let response = crate::server::dispatch(&unlock, &state).await;
-    assert!(matches!(response, ResponseEnvelope::Success(_)), "passphrase unlock should succeed: {response:?}");
+    assert!(
+        matches!(response, ResponseEnvelope::Success(_)),
+        "passphrase unlock should succeed: {response:?}"
+    );
     let method = state
         .unlock_cache
         .lock()
@@ -1513,6 +1520,98 @@ async fn malformed_list_policies_payload_returns_protocol_error() {
     };
     assert_eq!(error.error, "ProtocolError");
     assert!(state.command_policies.lock().await.is_empty());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn list_device_members_returns_metadata_only_directory_rows()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::envelope::{RequestEnvelope, ResponseEnvelope};
+    use crate::method::AgentMethod;
+    use crate::server::{AgentSocketState, dispatch};
+    use locket_store::{DeviceRecord, Store, TeamRecord};
+    use serde_json::json;
+
+    let directory = tempfile::tempdir()?;
+    let store_path = directory.path().join("store.db");
+    let mut store = Store::open(&store_path)?;
+    store.initialize_schema()?;
+    store.insert_project_if_absent("project-main", "main", 100)?;
+    store.insert_device(&DeviceRecord {
+        id: "device-local".to_owned(),
+        project_id: "project-main".to_owned(),
+        name: "Justin Laptop".to_owned(),
+        signing_public_key: vec![1; 32],
+        sealing_public_key: vec![2; 32],
+        fingerprint: "abcdef123456".to_owned(),
+        safety_words: vec!["alpha".to_owned(), "bravo".to_owned()],
+        local: true,
+        created_at: 110,
+        last_seen_at: Some(120),
+        revoked_at: None,
+    })?;
+    store.insert_device(&DeviceRecord {
+        id: "device-revoked".to_owned(),
+        project_id: "project-main".to_owned(),
+        name: "Old Laptop".to_owned(),
+        signing_public_key: vec![3; 32],
+        sealing_public_key: vec![4; 32],
+        fingerprint: "deadbeef".to_owned(),
+        safety_words: vec!["charlie".to_owned(), "delta".to_owned()],
+        local: false,
+        created_at: 130,
+        last_seen_at: None,
+        revoked_at: Some(140),
+    })?;
+    store.insert_team(&TeamRecord {
+        id: "team-main".to_owned(),
+        project_id: "project-main".to_owned(),
+        name: "Main Team".to_owned(),
+        created_at: 150,
+        updated_at: 150,
+    })?;
+    store.insert_team_member(
+        "member-owner",
+        "team-main",
+        Some("device-local"),
+        "Justin",
+        "owner",
+        160,
+    )?;
+    store.remove_team_member("member-owner", 170)?;
+
+    let state = AgentSocketState::locked("test-version");
+    let request = RequestEnvelope::new(
+        "req-device-members",
+        AgentMethod::ListDeviceMembers,
+        json!({
+            "store_path": store_path,
+            "project_id": "project-main",
+            "redact_names": true,
+        }),
+    );
+    let ResponseEnvelope::Success(success) = dispatch(&request, &state).await else {
+        unreachable!("valid ListDeviceMembers payload must succeed");
+    };
+
+    let rendered = success.payload().to_string();
+    assert!(!rendered.contains("Justin Laptop"));
+    assert!(!rendered.contains("Old Laptop"));
+    assert!(!rendered.contains("abcdef123456"));
+    assert!(!rendered.contains("Justin"));
+
+    let rows = success.payload().get("rows").and_then(serde_json::Value::as_array).unwrap();
+    assert_eq!(rows.len(), 3);
+    assert_eq!(rows[0]["kind"], "device");
+    assert_eq!(rows[0]["status"], "active");
+    assert_eq!(rows[0]["local_device"], true);
+    assert!(rows[0]["name"].as_str().unwrap().starts_with("device-"));
+    assert!(rows[0]["fingerprint"].as_str().unwrap().starts_with("fingerprint-"));
+    assert_eq!(rows[1]["status"], "revoked");
+    assert_eq!(rows[2]["kind"], "member");
+    assert_eq!(rows[2]["role"], "owner");
+    assert_eq!(rows[2]["status"], "removed");
+    assert_eq!(rows[2]["trusted_device_count"], 1);
+    Ok(())
 }
 
 #[tokio::test(flavor = "current_thread")]

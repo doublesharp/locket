@@ -794,6 +794,7 @@ pub async fn dispatch(envelope: &RequestEnvelope, state: &AgentSocketState) -> R
         }
         Ok(AgentMethod::ListRuntimeSessions) => handle_list_runtime_sessions(envelope, state).await,
         Ok(AgentMethod::ListPolicies) => handle_list_policies(envelope, state).await,
+        Ok(AgentMethod::ListDeviceMembers) => handle_list_device_members(envelope),
         Ok(AgentMethod::RegisterCommandPolicies) => handle_register_command_policies(envelope, state).await,
         Ok(AgentMethod::ResolveReference) => {
             crate::resolve::handle_resolve(envelope, state, current_unix_nanos()).await
@@ -1099,6 +1100,35 @@ async fn handle_list_runtime_sessions(
         crate::runtime_sessions::list_runtime_sessions_response(&request, &sessions)
     };
     crate::runtime_sessions::success_response(envelope, response)
+}
+
+fn handle_list_device_members(envelope: &RequestEnvelope) -> ResponseEnvelope {
+    let payload: crate::device_members::ListDeviceMembersRequest =
+        match serde_json::from_value(envelope.payload.clone()) {
+            Ok(payload) => payload,
+            Err(_) => {
+                return error_response(
+                    envelope,
+                    "ProtocolError",
+                    "invalid ListDeviceMembers payload",
+                );
+            }
+        };
+    match crate::device_members::list_device_members(&payload) {
+        Ok(response) => {
+            let payload = serde_json::to_value(response).unwrap_or(serde_json::Value::Null);
+            ResponseEnvelope::Success(SuccessEnvelope::new(envelope.id.clone(), payload))
+        }
+        Err(error) => {
+            let locket_error = error.locket_error();
+            ResponseEnvelope::Error(ErrorEnvelope::new(
+                envelope.id.clone(),
+                format!("{locket_error:?}"),
+                error.to_string(),
+                false,
+            ))
+        }
+    }
 }
 
 fn handle_list_secrets(envelope: &RequestEnvelope) -> ResponseEnvelope {

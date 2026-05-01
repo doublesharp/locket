@@ -10,6 +10,7 @@ mod audit_verify;
 mod auth;
 mod config;
 mod degraded_audit;
+mod device_members;
 mod envelope;
 mod error;
 mod framing;
@@ -42,6 +43,9 @@ pub use config::{
     AgentConfigSettings, DangerousProfileSetting, EffectiveUserVerificationSettings,
     ReadConfigRequest, UserVerificationSettings, WriteConfigChanges, WriteConfigRequest,
     WriteConfigResponse,
+};
+pub use device_members::{
+    DeviceMemberKind, DeviceMemberRow, ListDeviceMembersRequest, ListDeviceMembersResponse,
 };
 pub use envelope::{ErrorEnvelope, RequestEnvelope, ResponseEnvelope, SuccessEnvelope};
 pub use error::ProtocolError;

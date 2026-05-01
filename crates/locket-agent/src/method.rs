@@ -33,6 +33,8 @@ pub enum AgentMethod {
     ListRuntimeSessions,
     /// List metadata-only saved command policy rows.
     ListPolicies,
+    /// List metadata-only device and team-member rows.
+    ListDeviceMembers,
     /// Reveal one secret value through a gated path.
     Reveal,
     /// Copy one secret value through a gated path.
@@ -85,6 +87,7 @@ impl AgentMethod {
             Self::ScanKnownValues => "ScanKnownValues",
             Self::ListRuntimeSessions => "ListRuntimeSessions",
             Self::ListPolicies => "ListPolicies",
+            Self::ListDeviceMembers => "ListDeviceMembers",
             Self::Reveal => "Reveal",
             Self::Copy => "Copy",
             Self::VerifyAudit => "VerifyAudit",
@@ -123,6 +126,7 @@ impl FromStr for AgentMethod {
             "ScanKnownValues" => Ok(Self::ScanKnownValues),
             "ListRuntimeSessions" => Ok(Self::ListRuntimeSessions),
             "ListPolicies" => Ok(Self::ListPolicies),
+            "ListDeviceMembers" => Ok(Self::ListDeviceMembers),
             "Reveal" => Ok(Self::Reveal),
             "Copy" => Ok(Self::Copy),
             "VerifyAudit" => Ok(Self::VerifyAudit),
