@@ -26,8 +26,8 @@ mod team;
 
 pub use audit::{
     AUDIT_METADATA_JSON_LIMIT, AuditChainVerification, AuditContext, AuditListFilter,
-    AuditLogRecord, AuditWrite, ImportedAuditChainRow, ImportedAuditChainVerification,
-    verify_imported_audit_chain_structure,
+    AuditLogRecord, AuditWrite, ExportableAuditRow, ImportedAuditChainRow,
+    ImportedAuditChainVerification, verify_imported_audit_chain_structure,
 };
 pub use command_policy::CommandPolicyIndexRecord;
 pub use device::DeviceRecord;

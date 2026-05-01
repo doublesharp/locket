@@ -2487,6 +2487,7 @@ version = "0.1.0"
 name = "locket-cli"
 version = "0.1.0"
 dependencies = [
+ "chacha20poly1305",
  "clap",
  "clap_complete",
  "data-encoding",

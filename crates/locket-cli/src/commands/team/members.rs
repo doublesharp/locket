@@ -273,6 +273,29 @@ fn team_revoke_invite_command(
     Ok(())
 }
 
+// SPEC-CLARIFICATION: docs/specs/team-sync-recovery.md:27-28 and :67-68
+// describe `team accept` as the path that imports profiles, profile
+// secret/fingerprint keys, and command policies from an invite "sealed
+// to recipient device sealing public keys" with key material delivered
+// "as plaintext key material inside the age-sealed payload". The
+// current `SignedInvite` envelope (crates/locket-core/src/invite.rs) is
+// a signed but unencrypted base64url JSON object: it carries no age
+// recipient stanzas and no payload section that could hold profile
+// keys, command policies, or secret rows. Growing the invite format to
+// add an age-encrypted inner payload is a separate slice from the
+// bundle-import-apply chain (it touches invite encode/decode/sign,
+// recipient validation, and the issue/accept CLI surfaces) and is
+// tracked as a follow-up.
+//
+// For this slice `team accept` therefore stays metadata-only: it
+// records `TEAM_ACCEPT` and creates the local team membership/device
+// trust records, but does NOT insert profile, key, secret, or policy
+// rows. Until the invite format grows an age-encrypted payload, rows
+// flow into the receiver through a follow-up `locket import-bundle`
+// using the same apply path that bundle-import-apply-rows lands. The
+// parity test in the apply-chain ticket will verify that the
+// invite-then-import sequence and a future inline-invite apply
+// produce identical receiver state once both paths are wired.
 fn team_accept_command(
     context: &RuntimeContext,
     output: &mut impl Write,

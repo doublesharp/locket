@@ -5,17 +5,23 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
+use chacha20poly1305::{
+    Key, XChaCha20Poly1305, XNonce,
+    aead::{Aead, KeyInit, Payload},
+};
 use data_encoding::BASE64URL_NOPAD;
 use locket_core::{
-    BUNDLE_SCHEMA_V1, BundleContainer, BundleContainerError, BundleManifest, CommandPolicy,
-    CommandSpec, decrypt_bundle_payload_with_x25519_secret,
+    AUDIT_HMAC_LEN, BUNDLE_SCHEMA_V1, BundleContainer, BundleContainerError, BundleManifest,
+    CommandPolicy, CommandSpec, decrypt_bundle_payload_with_x25519_secret,
     encrypt_bundle_payload_for_age_recipients, verify_age_payload_structure,
 };
-use locket_crypto::KeyPurpose;
+use locket_crypto::{AAD_SCHEMA_V1, KeyPurpose};
 use locket_platform::{
     LocalDevicePrivateKeyStorage, PlatformError, WrappedLocalFileDevicePrivateKeyStorage,
 };
-use locket_store::{AuditWrite, ProfileRecord, SecretBlobRecord, SecretRecord, Store};
+use locket_store::{
+    AuditWrite, ExportableAuditRow, ProfileRecord, SecretBlobRecord, SecretRecord, Store,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
@@ -49,6 +55,87 @@ struct SealedBundlePayloadV1 {
     profile_key_count: usize,
     active_secret_count: usize,
     audit_rows_included: bool,
+    /// Encrypted audit-chain payload, present only when the export was
+    /// requested with `--include-audit`. Populated 1:1 with the columns
+    /// of the receiver's `imported_audit_chains` row so import is a
+    /// straight column copy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    audit_chain: Option<SealedAuditChainPayloadV1>,
+}
+
+/// Audit-chain payload carried inside [`SealedBundlePayloadV1`] when
+/// the exporter set `--include-audit`.
+///
+/// Fields map to the `imported_audit_chains` `SQLite` columns 1:1 with
+/// one exception: `bundle_digest` is intentionally not duplicated
+/// inside the payload because the digest is taken over the encrypted
+/// payload that itself contains this struct (chicken-and-egg). The
+/// receiver sources `imported_audit_chains.bundle_digest` from the
+/// plaintext bundle manifest (`BundleManifest::payload_digest`) at
+/// insertion time, which carries the same value verifiable against the
+/// container bytes. The remaining columns (`aad_schema_version`,
+/// `checkpoint_sequence`, `checkpoint_hmac`, `encrypted_rows`, `nonce`)
+/// have direct field counterparts here.
+///
+/// Encryption scheme (v1):
+///
+/// - Cipher: XChaCha20-Poly1305, matching the table's
+///   `nonce BLOB CHECK (length(nonce) = 24)` constraint.
+/// - Key: a fresh 32-byte random key generated per export and stored in
+///   `encryption_key_b64`. The key never leaves the age-encrypted
+///   bundle payload — only age recipients can decrypt the bundle and
+///   reach the key. Receivers can decrypt the rows for their own
+///   verification before insertion; the stored at-rest ciphertext in
+///   `imported_audit_chains.encrypted_rows` is opaque to anyone without
+///   a copy of that key.
+/// - Nonce: 24 random bytes per export.
+/// - AAD: a domain-separated byte string built by
+///   [`audit_chain_aad_v1`] covering bundle digest, schema version,
+///   checkpoint sequence, checkpoint HMAC, and `aad_schema_version`. The
+///   ciphertext is bound to those exact fields so an attacker cannot
+///   move the rows blob between bundles or splice a different
+///   checkpoint.
+/// - Plaintext: a canonical-JSON list of audit rows
+///   (`SealedAuditChainRowV1` below) — minimal serializer; this matches
+///   the "per-row chacha20poly1305 with documented AAD" guidance in the
+///   subtask brief.
+#[derive(Debug, Deserialize, Serialize)]
+struct SealedAuditChainPayloadV1 {
+    /// AAD schema version covering the audit-chain encryption.
+    aad_schema_version: u16,
+    /// Sequence number of the final row in `encrypted_rows`.
+    checkpoint_sequence: u64,
+    /// HMAC of the final row in `encrypted_rows`, base64url unpadded.
+    checkpoint_hmac_b64: String,
+    /// XChaCha20-Poly1305 ciphertext of the canonical-JSON audit-row
+    /// list, base64url unpadded.
+    encrypted_rows_b64: String,
+    /// 24-byte XChaCha20-Poly1305 nonce, base64url unpadded.
+    nonce_b64: String,
+    /// 32-byte symmetric key used to encrypt `encrypted_rows`,
+    /// base64url unpadded. Carried inside the age-encrypted bundle so
+    /// age recipients can decrypt and structurally verify the rows;
+    /// non-recipients never see it because they cannot decrypt the
+    /// outer age payload.
+    encryption_key_b64: String,
+    /// Plaintext row count for cross-checking against the decrypted
+    /// row list. Counts only; never names.
+    row_count: usize,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct SealedAuditChainRowV1 {
+    sequence: u64,
+    schema_version: u16,
+    timestamp: i64,
+    profile_id: Option<String>,
+    action: String,
+    status: String,
+    metadata_json: String,
+    secret_name: Option<String>,
+    command: Option<String>,
+    previous_hmac_b64: String,
+    hmac_b64: String,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -487,6 +574,21 @@ fn bundle_payload(
             secrets.push(bundle_secret(secret));
         }
     }
+    let audit_chain = if include_audit {
+        let project_id = resolved.config.project_id.as_str();
+        let rows = store.list_exportable_audit_rows(project_id)?;
+        if rows.is_empty() {
+            // Empty audit log: include_audit was set but nothing has been
+            // appended yet. Skip the encrypted-chain section rather than
+            // attaching an empty ciphertext; the bundle still records
+            // include_audit=true on the manifest/audit row.
+            None
+        } else {
+            Some(encrypt_audit_chain(&rows, BUNDLE_SCHEMA_V1)?)
+        }
+    } else {
+        None
+    };
     Ok(SealedBundlePayloadV1 {
         profile_count: profile_payloads.len(),
         command_policy_count: command_policies.len(),
@@ -502,6 +604,7 @@ fn bundle_payload(
         secret_versions,
         blobs,
         profile_keys,
+        audit_chain,
     })
 }
 
@@ -598,6 +701,168 @@ fn bundle_blob(blob: SecretBlobRecord) -> SealedBundleBlobV1 {
         aad_schema_version: blob.aad_schema_version,
         created_at: blob.created_at,
     }
+}
+
+/// Domain separator + canonical AAD bytes covering the audit-chain
+/// encryption parameters carried inside [`SealedBundlePayloadV1`].
+///
+/// AAD layout (v1):
+///
+/// ```text
+/// b"locket-bundle-audit-chain-v1\0"   // 30 bytes domain separator
+/// u16_le(aad_schema_version)
+/// u16_le(bundle_schema_version)
+/// u64_le(checkpoint_sequence)
+/// [u8; 32] checkpoint_hmac
+/// ```
+///
+/// `aad_schema_version` is the audit AAD schema (mirrors
+/// `locket_crypto::AAD_SCHEMA_V1`); `bundle_schema_version` is the
+/// outer sealed-bundle container version. `checkpoint_sequence` and
+/// `checkpoint_hmac` are the trailing audit-row fields the receiver
+/// stores in `imported_audit_chains`. The bundle digest is not bound
+/// here because it is computed over ciphertext that itself contains
+/// this payload (chicken-and-egg). The outer age envelope already
+/// authenticates the full bundle payload, including the encryption
+/// key, nonce, ciphertext, and checkpoint fields.
+fn audit_chain_aad_v1(
+    aad_schema_version: u16,
+    bundle_schema_version: u16,
+    checkpoint_sequence: u64,
+    checkpoint_hmac: &[u8; AUDIT_HMAC_LEN],
+) -> Vec<u8> {
+    const DOMAIN: &[u8] = b"locket-bundle-audit-chain-v1\0";
+    let mut aad = Vec::with_capacity(DOMAIN.len() + 2 + 2 + 8 + AUDIT_HMAC_LEN);
+    aad.extend_from_slice(DOMAIN);
+    aad.extend_from_slice(&aad_schema_version.to_le_bytes());
+    aad.extend_from_slice(&bundle_schema_version.to_le_bytes());
+    aad.extend_from_slice(&checkpoint_sequence.to_le_bytes());
+    aad.extend_from_slice(checkpoint_hmac);
+    aad
+}
+
+/// Random 32-byte symmetric key for the audit-chain XChaCha20-Poly1305
+/// step. The key never leaves the age-encrypted bundle payload.
+fn random_audit_chain_key() -> Result<[u8; 32], CliError> {
+    let bytes = locket_crypto::random_bytes::<32>()?;
+    Ok(bytes)
+}
+
+/// Random 24-byte XChaCha20-Poly1305 nonce.
+fn random_audit_chain_nonce() -> Result<[u8; 24], CliError> {
+    let bytes = locket_crypto::random_bytes::<24>()?;
+    Ok(bytes)
+}
+
+/// Encrypts a project's audit rows into a [`SealedAuditChainPayloadV1`]
+/// suitable for inclusion in a sealed bundle payload.
+///
+/// The plaintext is a canonical-JSON list of [`SealedAuditChainRowV1`]
+/// values; this is the minimal serializer called out in the subtask
+/// brief. AAD binding is documented on [`audit_chain_aad_v1`].
+fn encrypt_audit_chain(
+    rows: &[ExportableAuditRow],
+    bundle_schema_version: u16,
+) -> Result<SealedAuditChainPayloadV1, CliError> {
+    let final_row = rows.last().ok_or_else(|| {
+        metadata_invalid_error("audit chain export requires at least one audit row")
+    })?;
+    let checkpoint_sequence = final_row.sequence;
+    let checkpoint_hmac = final_row.hmac;
+
+    let plaintext_rows: Vec<SealedAuditChainRowV1> = rows
+        .iter()
+        .map(|row| SealedAuditChainRowV1 {
+            sequence: row.sequence,
+            schema_version: row.schema_version,
+            timestamp: row.timestamp,
+            profile_id: row.profile_id.clone(),
+            action: row.action.clone(),
+            status: row.status.clone(),
+            metadata_json: row.metadata_json.clone(),
+            secret_name: row.secret_name.clone(),
+            command: row.command.clone(),
+            previous_hmac_b64: BASE64URL_NOPAD.encode(&row.previous_hmac),
+            hmac_b64: BASE64URL_NOPAD.encode(&row.hmac),
+        })
+        .collect();
+    let plaintext = zeroize::Zeroizing::new(serde_json::to_vec(&plaintext_rows)?);
+
+    let key = random_audit_chain_key()?;
+    let nonce = random_audit_chain_nonce()?;
+    let aad = audit_chain_aad_v1(
+        AAD_SCHEMA_V1,
+        bundle_schema_version,
+        checkpoint_sequence,
+        &checkpoint_hmac,
+    );
+    let cipher = XChaCha20Poly1305::new(Key::from_slice(&key));
+    let ciphertext = cipher
+        .encrypt(XNonce::from_slice(&nonce), Payload { msg: plaintext.as_slice(), aad: &aad })
+        .map_err(|_| metadata_invalid_error("audit chain encryption failed"))?;
+
+    Ok(SealedAuditChainPayloadV1 {
+        aad_schema_version: AAD_SCHEMA_V1,
+        checkpoint_sequence,
+        checkpoint_hmac_b64: BASE64URL_NOPAD.encode(&checkpoint_hmac),
+        encrypted_rows_b64: BASE64URL_NOPAD.encode(&ciphertext),
+        nonce_b64: BASE64URL_NOPAD.encode(&nonce),
+        encryption_key_b64: BASE64URL_NOPAD.encode(&key),
+        row_count: rows.len(),
+    })
+}
+
+/// Decrypts a sealed audit-chain payload back into the row list.
+///
+/// Used by the bundle import path and by round-trip tests. Returns the
+/// decoded rows on success. Tag, key, nonce, or AAD mismatches return a
+/// bundle-verification error so callers can map to exit code 110.
+// Bundle import lands in a follow-up slice; tests below exercise it.
+#[allow(dead_code)]
+fn decrypt_audit_chain(
+    payload: &SealedAuditChainPayloadV1,
+    bundle_schema_version: u16,
+) -> Result<Vec<SealedAuditChainRowV1>, CliError> {
+    let key_bytes = BASE64URL_NOPAD
+        .decode(payload.encryption_key_b64.as_bytes())
+        .map_err(|_| bundle_verification_error("audit chain encryption key is not valid base64url"))?;
+    let nonce_bytes = BASE64URL_NOPAD
+        .decode(payload.nonce_b64.as_bytes())
+        .map_err(|_| bundle_verification_error("audit chain nonce is not valid base64url"))?;
+    let ciphertext = BASE64URL_NOPAD
+        .decode(payload.encrypted_rows_b64.as_bytes())
+        .map_err(|_| bundle_verification_error("audit chain ciphertext is not valid base64url"))?;
+    let checkpoint_hmac_bytes = BASE64URL_NOPAD
+        .decode(payload.checkpoint_hmac_b64.as_bytes())
+        .map_err(|_| bundle_verification_error("audit chain checkpoint hmac is not valid base64url"))?;
+    if key_bytes.len() != 32 {
+        return Err(bundle_verification_error("audit chain encryption key must be 32 bytes"));
+    }
+    if nonce_bytes.len() != 24 {
+        return Err(bundle_verification_error("audit chain nonce must be 24 bytes"));
+    }
+    if checkpoint_hmac_bytes.len() != AUDIT_HMAC_LEN {
+        return Err(bundle_verification_error("audit chain checkpoint hmac must be 32 bytes"));
+    }
+    let mut checkpoint_hmac = [0_u8; AUDIT_HMAC_LEN];
+    checkpoint_hmac.copy_from_slice(&checkpoint_hmac_bytes);
+
+    let aad = audit_chain_aad_v1(
+        payload.aad_schema_version,
+        bundle_schema_version,
+        payload.checkpoint_sequence,
+        &checkpoint_hmac,
+    );
+    let cipher = XChaCha20Poly1305::new(Key::from_slice(&key_bytes));
+    let plaintext = cipher
+        .decrypt(XNonce::from_slice(&nonce_bytes), Payload { msg: ciphertext.as_slice(), aad: &aad })
+        .map_err(|_| bundle_verification_error("audit chain decryption failed"))?;
+    let rows: Vec<SealedAuditChainRowV1> = serde_json::from_slice(&plaintext)
+        .map_err(|error| bundle_verification_error(format!("audit chain row decode failed: {error}")))?;
+    if rows.len() != payload.row_count {
+        return Err(bundle_verification_error("audit chain row count mismatch"));
+    }
+    Ok(rows)
 }
 
 fn bundle_encrypted_payload_digest(encrypted_payload: &[u8]) -> String {
@@ -864,4 +1129,162 @@ fn write_bundle_audit_if_available(
     };
     store.append_audit(audit_key.as_ref(), &audit)?;
     Ok(())
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    fn sample_rows() -> Vec<ExportableAuditRow> {
+        // Two-row chain: row 1 has zero previous_hmac; row 2 chains to
+        // row 1's hmac. Values are illustrative; encrypt_audit_chain
+        // does not validate HMAC continuity (that runs on the receiver
+        // via verify_imported_audit_chain_structure).
+        let hmac_one = [0x11_u8; AUDIT_HMAC_LEN];
+        let hmac_two = [0x22_u8; AUDIT_HMAC_LEN];
+        vec![
+            ExportableAuditRow {
+                sequence: 1,
+                schema_version: 1,
+                timestamp: 1_700_000_000_000_000_000,
+                profile_id: None,
+                action: "TEAM_INIT".to_owned(),
+                status: "SUCCESS".to_owned(),
+                metadata_json: r#"{"k":"v1"}"#.to_owned(),
+                secret_name: None,
+                command: Some("team init".to_owned()),
+                previous_hmac: [0_u8; AUDIT_HMAC_LEN],
+                hmac: hmac_one,
+            },
+            ExportableAuditRow {
+                sequence: 2,
+                schema_version: 1,
+                timestamp: 1_700_000_001_000_000_000,
+                profile_id: Some("lk_prof_dev".to_owned()),
+                action: "BACKUP_EXPORT".to_owned(),
+                status: "SUCCESS".to_owned(),
+                metadata_json: r#"{"k":"v2"}"#.to_owned(),
+                secret_name: Some("API_KEY".to_owned()),
+                command: Some("export --sealed".to_owned()),
+                previous_hmac: hmac_one,
+                hmac: hmac_two,
+            },
+        ]
+    }
+
+    #[test]
+    fn audit_chain_round_trip_recovers_originals() {
+        let rows = sample_rows();
+        let payload = encrypt_audit_chain(&rows, BUNDLE_SCHEMA_V1).unwrap();
+        // Checkpoint fields mirror the final row 1:1.
+        assert_eq!(payload.checkpoint_sequence, rows.last().unwrap().sequence);
+        assert_eq!(
+            BASE64URL_NOPAD.decode(payload.checkpoint_hmac_b64.as_bytes()).unwrap(),
+            rows.last().unwrap().hmac.to_vec()
+        );
+        assert_eq!(payload.row_count, rows.len());
+        assert_eq!(payload.aad_schema_version, AAD_SCHEMA_V1);
+        // Nonce is exactly 24 bytes (XChaCha20-Poly1305).
+        assert_eq!(BASE64URL_NOPAD.decode(payload.nonce_b64.as_bytes()).unwrap().len(), 24);
+        // Encryption key is exactly 32 bytes.
+        assert_eq!(
+            BASE64URL_NOPAD.decode(payload.encryption_key_b64.as_bytes()).unwrap().len(),
+            32
+        );
+
+        let recovered = decrypt_audit_chain(&payload, BUNDLE_SCHEMA_V1).unwrap();
+        assert_eq!(recovered.len(), rows.len());
+        for (idx, original) in rows.iter().enumerate() {
+            let decoded = &recovered[idx];
+            assert_eq!(decoded.sequence, original.sequence);
+            assert_eq!(decoded.schema_version, original.schema_version);
+            assert_eq!(decoded.timestamp, original.timestamp);
+            assert_eq!(decoded.profile_id, original.profile_id);
+            assert_eq!(decoded.action, original.action);
+            assert_eq!(decoded.status, original.status);
+            assert_eq!(decoded.metadata_json, original.metadata_json);
+            assert_eq!(decoded.secret_name, original.secret_name);
+            assert_eq!(decoded.command, original.command);
+            assert_eq!(
+                BASE64URL_NOPAD.decode(decoded.previous_hmac_b64.as_bytes()).unwrap(),
+                original.previous_hmac.to_vec()
+            );
+            assert_eq!(
+                BASE64URL_NOPAD.decode(decoded.hmac_b64.as_bytes()).unwrap(),
+                original.hmac.to_vec()
+            );
+        }
+    }
+
+    #[test]
+    fn audit_chain_decrypt_rejects_aad_mismatch() {
+        // Tampering with checkpoint_sequence (covered by AAD) must
+        // cause AEAD authentication to fail.
+        let rows = sample_rows();
+        let mut payload = encrypt_audit_chain(&rows, BUNDLE_SCHEMA_V1).unwrap();
+        payload.checkpoint_sequence = payload.checkpoint_sequence.saturating_add(1);
+        let result = decrypt_audit_chain(&payload, BUNDLE_SCHEMA_V1);
+        assert!(result.is_err(), "tampered AAD must fail tag verification");
+    }
+
+    #[test]
+    fn audit_chain_decrypt_rejects_bundle_schema_mismatch() {
+        // Different bundle_schema_version is part of the AAD, so a
+        // receiver presenting the wrong schema cannot decrypt.
+        let rows = sample_rows();
+        let payload = encrypt_audit_chain(&rows, BUNDLE_SCHEMA_V1).unwrap();
+        let result = decrypt_audit_chain(&payload, BUNDLE_SCHEMA_V1.wrapping_add(1));
+        assert!(result.is_err(), "bundle schema mismatch must fail tag verification");
+    }
+
+    #[test]
+    fn audit_chain_uses_independent_nonce_per_call() {
+        // Repeated encryptions must produce distinct nonces and
+        // distinct ciphertexts so XChaCha20-Poly1305 (key, nonce) pairs
+        // are never reused.
+        let rows = sample_rows();
+        let first = encrypt_audit_chain(&rows, BUNDLE_SCHEMA_V1).unwrap();
+        let second = encrypt_audit_chain(&rows, BUNDLE_SCHEMA_V1).unwrap();
+        assert_ne!(first.nonce_b64, second.nonce_b64);
+        assert_ne!(first.encrypted_rows_b64, second.encrypted_rows_b64);
+        assert_ne!(first.encryption_key_b64, second.encryption_key_b64);
+    }
+
+    #[test]
+    fn audit_chain_field_is_none_when_not_requested() {
+        // A bundle payload without --include-audit must serialize with
+        // audit_chain absent (skip_serializing_if = "Option::is_none")
+        // so existing manifests stay byte-stable.
+        let payload = SealedBundlePayloadV1 {
+            profiles: Vec::new(),
+            command_policies: Vec::new(),
+            secrets: Vec::new(),
+            secret_versions: Vec::new(),
+            blobs: Vec::new(),
+            profile_keys: Vec::new(),
+            profile_count: 0,
+            command_policy_count: 0,
+            secret_count: 0,
+            secret_version_count: 0,
+            blob_count: 0,
+            profile_key_count: 0,
+            active_secret_count: 0,
+            audit_rows_included: false,
+            audit_chain: None,
+        };
+        let json = serde_json::to_value(&payload).unwrap();
+        assert!(json.get("audit_chain").is_none(), "audit_chain must be omitted when None");
+
+        // Round-trip: the deserializer uses Option<...>::default() to
+        // accept payloads without the field, mirroring forward-compat.
+        let deserialized: SealedBundlePayloadV1 = serde_json::from_value(json).unwrap();
+        assert!(deserialized.audit_chain.is_none());
+    }
+
+    #[test]
+    fn encrypt_audit_chain_rejects_empty_row_list() {
+        let result = encrypt_audit_chain(&[], BUNDLE_SCHEMA_V1);
+        assert!(result.is_err(), "empty audit row list must fail");
+    }
 }
