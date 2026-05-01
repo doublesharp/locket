@@ -2724,6 +2724,200 @@ fn e2e_greenfield_init_set_get_with_audit_chain_and_file_modes()
 }
 
 #[test]
+fn e2e_team_invite_accept_happy_path_and_revoked_invite_failure()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    run_with_context(
+        Cli::try_parse_from(["locket", "device", "init"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    run_with_context(
+        Cli::try_parse_from(["locket", "team", "init", "platform-team"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+
+    let recipient = e2e_recipient_device(&directory)?;
+    let descriptor = crate::encode_device_descriptor(&recipient)?;
+    let accepted_invite = issue_invite(&context, &directory, &descriptor, "accept")?;
+    let revoked_invite = issue_invite(&context, &directory, &descriptor, "revoked")?;
+
+    let mut revoke_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "team", "revoke-invite", revoked_invite.id.as_str()])?,
+        &context,
+        &mut revoke_output,
+    )?;
+    let revoke_output = String::from_utf8(revoke_output)?;
+    assert!(revoke_output.contains("team_invite: revoked"), "{revoke_output}");
+
+    insert_e2e_local_recipient_device(&directory, &recipient)?;
+
+    let accept_context =
+        context_with_confirmation(&context, &format!("{}\n", accepted_invite.issuer_fingerprint));
+    let mut accept_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from([
+            "locket",
+            "team",
+            "accept",
+            accepted_invite.path.to_str().ok_or("non-utf8 invite path")?,
+        ])?,
+        &accept_context,
+        &mut accept_output,
+    )?;
+    let accept_output = String::from_utf8(accept_output)?;
+    assert!(accept_output.contains("team_accept: pending"), "{accept_output}");
+    assert!(accept_output.contains("team_accept: accepted"), "{accept_output}");
+    assert!(accept_output.contains("issuer_safety_words:"), "{accept_output}");
+    assert!(accept_output.contains("metadata_only: yes"), "{accept_output}");
+
+    let revoked_accept_context =
+        context_with_confirmation(&context, &format!("{}\n", revoked_invite.issuer_fingerprint));
+    let result = run_with_context(
+        Cli::try_parse_from([
+            "locket",
+            "team",
+            "accept",
+            revoked_invite.path.to_str().ok_or("non-utf8 revoked invite path")?,
+        ])?,
+        &revoked_accept_context,
+        &mut Vec::new(),
+    );
+    let Err(error) = result else {
+        return Err("revoked invite accept must fail closed".into());
+    };
+    assert_eq!(error.exit_code(), locket_core::LocketError::ReplayDetected.exit_code());
+
+    assert_invite_e2e_audit_shape(&directory, &accepted_invite.id, &revoked_invite.id)?;
+    Ok(())
+}
+
+struct E2eInvite {
+    id: String,
+    issuer_fingerprint: String,
+    path: std::path::PathBuf,
+}
+
+fn e2e_recipient_device(
+    directory: &tempfile::TempDir,
+) -> Result<crate::DeviceRecord, Box<dyn std::error::Error>> {
+    let config = crate::read_project_config(&directory.path().join("locket.toml"))?;
+    Ok(crate::DeviceRecord {
+        id: "lk_dev_e2e_recipient".to_owned(),
+        project_id: config.project_id.to_string(),
+        name: "recipient laptop".to_owned(),
+        signing_public_key: vec![41; 32],
+        sealing_public_key: vec![42; 32],
+        fingerprint: crate::device_fingerprint_hex(&[41; 32], &[42; 32]),
+        safety_words: vec!["ember".to_owned(), "fable".to_owned()],
+        local: true,
+        created_at: 9_000_000_000_000_000_000,
+        last_seen_at: None,
+        revoked_at: None,
+    })
+}
+
+fn insert_e2e_local_recipient_device(
+    directory: &tempfile::TempDir,
+    recipient: &crate::DeviceRecord,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    store.connection().execute(
+        "UPDATE devices
+         SET local = 0
+         WHERE project_id = ?1 AND local = 1 AND revoked_at IS NULL",
+        [recipient.project_id.as_str()],
+    )?;
+    store.insert_device(recipient)?;
+    Ok(())
+}
+
+fn issue_invite(
+    context: &RuntimeContext,
+    directory: &tempfile::TempDir,
+    descriptor: &str,
+    label: &str,
+) -> Result<E2eInvite, Box<dyn std::error::Error>> {
+    let path = directory.path().join(format!("{label}.locket-invite"));
+    let mut output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from([
+            "locket",
+            "team",
+            "invite",
+            "Teammate",
+            "--device",
+            descriptor,
+            "--profile",
+            "dev",
+            "--role",
+            "developer",
+            "--output",
+            path.to_str().ok_or("non-utf8 invite output path")?,
+        ])?,
+        context,
+        &mut output,
+    )?;
+    let output = String::from_utf8(output)?;
+    assert!(output.contains("team_invite: created"), "{output}");
+    assert!(output.contains("metadata_only: yes"), "{output}");
+
+    let invite_text = std::fs::read_to_string(&path)?;
+    let invite = locket_core::SignedInvite::decode(invite_text.trim())?;
+    invite.verify()?;
+    Ok(E2eInvite {
+        id: invite.payload.invite_id.as_str().to_owned(),
+        issuer_fingerprint: invite.payload.issuer_device_fingerprint,
+        path,
+    })
+}
+
+fn assert_invite_e2e_audit_shape(
+    directory: &tempfile::TempDir,
+    accepted_invite_id: &str,
+    revoked_invite_id: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let team_accept_rows: i64 = store.connection().query_row(
+        "SELECT COUNT(*) FROM audit_log
+         WHERE action = 'TEAM_ACCEPT'
+           AND status = 'SUCCESS'
+           AND metadata_json LIKE ?1",
+        [format!("%\"invite_id\":\"{accepted_invite_id}\"%")],
+        |row| row.get(0),
+    )?;
+    assert_eq!(team_accept_rows, 1);
+    let revoke_rows: i64 = store.connection().query_row(
+        "SELECT COUNT(*) FROM audit_log
+         WHERE action = 'TEAM_INVITE'
+           AND command = 'team revoke-invite'
+           AND metadata_json LIKE ?1",
+        [format!("%\"invite_id\":\"{revoked_invite_id}\"%")],
+        |row| row.get(0),
+    )?;
+    assert_eq!(revoke_rows, 1);
+    let denied_rows: i64 = store.connection().query_row(
+        "SELECT COUNT(*) FROM audit_log
+         WHERE action = 'TEAM_ACCEPT'
+           AND status = 'DENIED'
+           AND metadata_json LIKE ?1",
+        [format!("%\"invite_id\":\"{revoked_invite_id}\"%")],
+        |row| row.get(0),
+    )?;
+    assert_eq!(denied_rows, 1);
+    Ok(())
+}
+
+#[test]
 fn solo_project_without_team_allows_all_owner_operations() -> Result<(), Box<dyn std::error::Error>>
 {
     let directory = tempdir()?;
