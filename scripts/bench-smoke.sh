@@ -268,9 +268,26 @@ write_report() {
 }
 
 if [[ "${mode}" == "report" ]]; then
+  # docs/specs/performance.md:31 lists `make bench-report` alongside
+  # `make bench` and `make bench-ci`. If a producer has not yet been run,
+  # auto-produce the smoke report so the command is self-sufficient. Set
+  # BENCH_REPORT_AUTORUN=0 to disable the fallback and require a prior
+  # `make bench-ci` run.
   if [[ ! -f "${report}" ]]; then
-    echo "no benchmark report found; run make bench-ci first" >&2
-    exit 2
+    if [[ "${BENCH_REPORT_AUTORUN:-1}" == "1" ]]; then
+      echo "no benchmark report at ${report}; running bench-smoke.sh ci to produce one" >&2
+      if ! "${BASH:-bash}" "${BASH_SOURCE[0]}" ci; then
+        echo "auto bench-ci run failed; run 'make bench-ci' manually then re-run 'make bench-report'" >&2
+        exit 2
+      fi
+      if [[ ! -f "${report}" ]]; then
+        echo "bench-ci finished but ${report} is still missing; run 'make bench-ci' manually" >&2
+        exit 2
+      fi
+    else
+      echo "no benchmark report at ${report}; run 'make bench-ci' first (or unset BENCH_REPORT_AUTORUN)" >&2
+      exit 2
+    fi
   fi
   cat "${report}"
   if [[ -f "${quality_dir}/bench-policy.md" ]]; then

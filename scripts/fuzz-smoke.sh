@@ -34,10 +34,33 @@ case "${mode}" in
     ;;
 esac
 
+# docs/specs/fuzzing.md:43 - sanitizer-supported jobs should use
+# AddressSanitizer/UBSan where available. Default the smoke job to
+# `address` on Linux and macOS (libFuzzer + ASan are well supported),
+# while keeping the nightly default unchanged. Set FUZZ_SANITIZER=none
+# to opt out (useful when sanitizer-instrumented builds break a target).
+host_os="$(uname -s 2>/dev/null || echo unknown)"
+case "${mode}" in
+  smoke | run)
+    if [[ -z "${sanitizer}" ]]; then
+      case "${host_os}" in
+        Linux | Darwin)
+          sanitizer="address"
+          ;;
+      esac
+    fi
+    ;;
+esac
+
 if [[ "${mode}" == "nightly" ]]; then
   strict=1
   seconds="${FUZZ_TIME:-900}"
   sanitizer="${sanitizer:-address}"
+fi
+
+# Allow callers to disable the sanitizer with FUZZ_SANITIZER=none.
+if [[ "${sanitizer}" == "none" ]]; then
+  sanitizer=""
 fi
 
 if [[ "${strict}" == "1" && "${seconds}" -lt 60 ]]; then

@@ -212,7 +212,7 @@ make fmt-check
 make clippy
 make test
 make coverage
-make coverage-html
+make coverage-html  # cargo llvm-cov --html (canonical); set COVERAGE_HTML_TOOL=doublcov for the legacy renderer
 make dependency-hygiene
 make vet
 make bench-fixtures

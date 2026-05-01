@@ -267,13 +267,12 @@ ship. Each bullet has spec ref + code ref + suggested touches.
   diverse versioned corpora; most directories under `fuzz/corpus/`
   carry one trivial seed (e.g. `fuzz_lk_uri/basic.txt`). Seed each
   with edge-case / malformed / boundary inputs.
-- [~] (in-flight: agent 14g) **mutation-scope-mismatch**: `testing.md:43` and
+- [x] **mutation-scope-mismatch**: `testing.md:43` and
   `engineering.md:34` require mutation testing on policy / env-merge
-  / typed-error / authz **areas**. `scripts/mutation-smoke.sh`
-  runs whole packages with no `--file` filter, so env-merge code in
-  `locket-cli` is not mutated and per-package runs dilute density on
-  spec-named hot zones. Add `--file` glob filters and pull in
-  `locket-cli`.
+  / typed-error / authz **areas**. `scripts/mutation-smoke.sh` now
+  drives `cargo mutants --file <glob>` per area (policy_evaluation,
+  env_merge, typed_error_map, authz_boundaries) instead of whole
+  packages, and the fallback package set includes `locket-cli`.
 - [ ] **canary-harness-surface-coverage**: `testing.md:84-89`
   requires the canary helper to cover CLI, agent, scan, redaction,
   audit, debug bundle, UI, tray, VS Code, Docker, and recovery
@@ -281,23 +280,22 @@ ship. Each bullet has spec ref + code ref + suggested touches.
   `locket-scan/tests/leak_canary.rs`. Extend into agent reveal/copy,
   Docker compose helper, audit row writer, desktop UI smoke, VSIX
   integration.
-- [~] (in-flight: agent 14g) **doublcov-html-not-canonical**: `testing.md:48` names
-  `cargo llvm-cov` as canonical. `scripts/coverage.sh` mode `html`
-  shells out to `npx -y @0xdoublesharp/doublcov@0.4.3` — adds a
-  Node/network dependency to a security-sensitive coverage path
-  that isn't documented in the spec. Default to native
-  `cargo llvm-cov --html`; gate doublcov behind opt-in.
-- [~] (in-flight: agent 14g) **bench-report-spec-claim**: `performance.md:31` lists
-  `make bench-report` as required. `bench-smoke.sh` mode `report`
-  only reprints a previously recorded `target/quality/bench-report.md`
-  and errors out if `make bench-ci` was never run. Either auto-run
-  a smoke pass first or document the bench-ci pre-req on the
-  Makefile target.
-- [~] (in-flight: agent 14g) **sanitizer-not-required-in-smoke**: `fuzzing.md:43` says
+- [x] **doublcov-html-not-canonical**: `testing.md:48` names
+  `cargo llvm-cov` as canonical. `scripts/coverage.sh html` now
+  defaults to `cargo llvm-cov --html` (output under `coverage/html/`).
+  Set `COVERAGE_HTML_TOOL=doublcov` or pass `--use-doublcov` to opt
+  into the legacy renderer. Makefile + README updated.
+- [x] **bench-report-spec-claim**: `performance.md:31` lists
+  `make bench-report` as required. `bench-smoke.sh report` now
+  auto-invokes `bench-smoke.sh ci` to produce
+  `target/quality/bench-report.md` if it is missing. Set
+  `BENCH_REPORT_AUTORUN=0` to require a prior `make bench-ci` run.
+  Makefile target documents the relationship.
+- [x] **sanitizer-not-required-in-smoke**: `fuzzing.md:43` says
   smoke jobs should use ASan/UBSan where available.
-  `scripts/fuzz-smoke.sh` only sets `sanitizer=address` in nightly
-  mode; PR `make fuzz-smoke` runs without sanitizers. Enable
-  `FUZZ_SANITIZER=address` by default in smoke on supported hosts.
+  `scripts/fuzz-smoke.sh` now defaults `FUZZ_SANITIZER=address` for
+  smoke and run modes on Linux + macOS hosts; nightly default is
+  unchanged. `FUZZ_SANITIZER=none` opts out.
 - [ ] **fuzz-nightly-ci-job**: subtask of
   `github-actions-workflows-missing`. Schedule `make fuzz-nightly`
   with artifact upload of `fuzz/artifacts/` and `fuzz/corpus/` per

@@ -64,8 +64,11 @@ nextest:
 coverage:
 	scripts/coverage.sh line
 
+# coverage-html renders cargo-llvm-cov's HTML report (canonical, no Node/npx).
+# Set COVERAGE_HTML_TOOL=doublcov to opt into the legacy doublcov renderer
+# (requires npx); see docs/specs/testing.md:48.
 coverage-html:
-	scripts/coverage.sh html
+	COVERAGE_HTML_TOOL="$(COVERAGE_HTML_TOOL)" scripts/coverage.sh html
 
 coverage-branch:
 	scripts/coverage.sh branch
@@ -116,8 +119,12 @@ bench-ci: BENCH_FIXTURE_PROFILE = smoke
 bench-ci: bench-fixtures
 	scripts/bench-smoke.sh ci
 
+# bench-report prints target/quality/bench-report.md. If no report exists,
+# the script auto-runs `bench-smoke.sh ci` to produce one (set
+# BENCH_REPORT_AUTORUN=0 to require `make bench-ci` instead). See
+# docs/specs/performance.md:31.
 bench-report:
-	scripts/bench-smoke.sh report
+	BENCH_REPORT_AUTORUN="$(BENCH_REPORT_AUTORUN)" scripts/bench-smoke.sh report
 
 bench-regression:
 	bash scripts/bench-regression.sh
