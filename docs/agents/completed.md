@@ -596,6 +596,17 @@ Slices that have merged to `main` and verified. Open work tracked in
   `scripts/editor-smoke.sh`, desktop editor pure-model smoke, and VS
   Code editor command smoke run without Tauri packaging or a live VS
   Code window.
+- [x] **subtask** — agent-export-bundle-command-policies: agent
+  sealed-bundle export now reads project `locket.toml` command
+  policies into the encrypted bundle payload and records
+  `command_policy_count` in export audit metadata.
+- [x] **subtask** — agent-import-bundle-core: agent `ImportBundle`
+  now requires unlock context, verifies/decrypts bundles addressed to
+  the local device, applies profiles/profile keys/command
+  policies/secrets/versions/blobs under one SQLite transaction, honors
+  review/accept-incoming/accept-local conflict modes, and writes
+  metadata-only `BACKUP_IMPORT` audit rows. Audit-chain import remains
+  an exact follow-up.
 
 ## Spec-by-Spec Completion Gates
 

@@ -2944,6 +2944,7 @@ dependencies = [
  "locket-platform",
  "locket-store",
  "rand 0.9.4",
+ "rusqlite",
  "rustix",
  "serde",
  "serde_json",

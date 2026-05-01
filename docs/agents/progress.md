@@ -83,6 +83,18 @@ skill set fits a leaf better.
   - [~] **subtask** — agent-prepare-exec: dispatch arm wired with
     empty allow-list. Remaining: real policy resolution + scoped
     allowed-env-name set + policy-declared `ttl_seconds`.
+  - [ ] **subtask** — agent-export-bundle-audit-chain: agent
+    `ExportBundle` should embed encrypted audit-chain rows when
+    `include_audit = true`, matching the CLI sealed-bundle payload
+    shape and metadata-only export audit counts.
+  - [ ] **subtask** — agent-import-bundle-audit-chain: agent
+    `ImportBundle` should append `audit_chain` payloads into
+    `imported_audit_chains` with the same structural verification and
+    rollback behavior as the CLI path.
+  - [ ] **subtask** — agent-recovery-rotate-core: replace the typed
+    placeholder with recovery envelope rewrite, current-code/platform
+    verification, one-time code return/display semantics, and
+    `RECOVERY_ROTATE` audit metadata.
 - [~] `locket run` spec coverage. Argv policy execution exists.
   Remaining (`docs/specs/runtime.md:5-122`, `docs/specs/policy.md`):
 - [~] External env source resolution
