@@ -265,7 +265,7 @@ Re-verify file:line references before editing — they drift. Severity:
   All current `proptest-*` subtasks shipped.
   Add new harnesses as uncovered invariants surface
   (`docs/specs/testing.md:14`).
-- [ ] Cross-platform test mocks and mutation tests
+- [~] [90b9f58a] branch agent-90b9f58a/mutation-platform-mocks, worktree .worktrees/agent-90b9f58a-mutation-platform-mocks; Cross-platform test mocks and mutation tests
   (`docs/specs/testing.md`):
 
 ## Spec-by-spec completion gates
