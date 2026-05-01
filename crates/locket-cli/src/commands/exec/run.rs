@@ -29,7 +29,7 @@ use crate::runtime::error::{
     external_source_unavailable_error, invalid_policy_error, metadata_invalid_error,
     typed_cli_error, unimplemented_in_build_error, user_verification_failed_error,
 };
-use crate::runtime::key_access::{MasterKeySource, default_profile, load_master_key};
+use crate::runtime::key_access::default_profile;
 use crate::support::secret_helpers::{
     PolicySecretSelection, decrypt_secret_version, policy_secret_selections,
 };
@@ -614,16 +614,17 @@ fn unlock_agent_for_policy(
     resolved: &ResolvedProject,
     policy: &CommandPolicy,
 ) -> Result<(), CliError> {
-    let (master_key, source) = load_master_key(context, resolved.config.project_id.as_str())?;
-    let method = match source {
-        MasterKeySource::OsKeyStore => locket_agent::UnlockMethod::OsKeychain,
-        MasterKeySource::PassphraseFallback => locket_agent::UnlockMethod::Passphrase,
-    };
+    // The agent owns the unwrap path. The CLI no longer hands raw key
+    // bytes across the socket; it asks the agent to try the OS keychain
+    // and (if the keychain is empty) the passphrase fallback. The
+    // `method` field below is a hint for the cached entry — the agent
+    // overrides it on the audit row when it actually uses the
+    // passphrase path.
     let payload = serde_json::json!({
         "project_id": resolved.config.project_id.as_str(),
-        "key": master_key.as_ref(),
+        "passphrase": serde_json::Value::Null,
         "ttl_seconds": policy.ttl.as_secs(),
-        "method": method,
+        "method": locket_agent::UnlockMethod::OsKeychain,
     });
     let _: serde_json::Value = agent_invoke(
         context,

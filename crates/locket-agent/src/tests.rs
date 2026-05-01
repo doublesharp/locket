@@ -99,14 +99,14 @@ async fn verify_audit_returns_hmac_status_when_unlocked() -> Result<(), Box<dyn 
     )?;
 
     let state = AgentSocketState::locked("test-version");
+    state.seed_master_key("lk_proj_agent_verify", &[42; 32])?;
     let unlock = RequestEnvelope::new(
         "unlock",
         AgentMethod::Unlock,
         json!({
             "project_id": "lk_proj_agent_verify",
-            "key": vec![42_u8; 32],
             "ttl_seconds": 30,
-            "method": "Passphrase"
+            "method": "OsKeychain"
         }),
     );
     assert!(matches!(dispatch(&unlock, &state).await, ResponseEnvelope::Success(_)));
@@ -196,14 +196,14 @@ async fn verify_audit_reports_first_hmac_break() -> Result<(), Box<dyn std::erro
     )?;
 
     let state = AgentSocketState::locked("test-version");
+    state.seed_master_key("lk_proj_agent_verify", &[42; 32])?;
     let unlock = RequestEnvelope::new(
         "unlock",
         AgentMethod::Unlock,
         json!({
             "project_id": "lk_proj_agent_verify",
-            "key": vec![42_u8; 32],
             "ttl_seconds": 30,
-            "method": "Passphrase"
+            "method": "OsKeychain"
         }),
     );
     assert!(matches!(dispatch(&unlock, &state).await, ResponseEnvelope::Success(_)));
@@ -288,15 +288,14 @@ async fn list_audit_returns_filtered_metadata_and_chain_status()
     }
 
     let state = AgentSocketState::locked("test-version");
+    state.seed_master_key("lk_proj_test", &[7; 32])?;
     let unlock = RequestEnvelope::new(
         "unlock",
         AgentMethod::Unlock,
         json!({
             "project_id": "lk_proj_test",
-            "key": [7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
-                    7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7],
             "ttl_seconds": 30,
-            "method": "Passphrase"
+            "method": "OsKeychain"
         }),
     );
     assert!(matches!(dispatch(&unlock, &state).await, ResponseEnvelope::Success(_)));
@@ -753,6 +752,7 @@ async fn unlock_then_lock_round_trip() {
     use serde_json::json;
 
     let state = AgentSocketState::locked("test-version");
+    state.seed_master_key("p-1", &[9; 32]).expect("seed master key");
     state.grants.lock().await.insert(test_grant_record("g-live", i128::MAX));
 
     let unlock = RequestEnvelope::new(
@@ -760,9 +760,8 @@ async fn unlock_then_lock_round_trip() {
         AgentMethod::Unlock,
         json!({
             "project_id": "p-1",
-            "key": [9, 9, 9, 9],
             "ttl_seconds": 30,
-            "method": "Passphrase"
+            "method": "OsKeychain"
         }),
     );
     let response = dispatch(&unlock, &state).await;
@@ -786,6 +785,7 @@ async fn unlock_and_lock_publish_status_changes() {
     use serde_json::json;
 
     let state = AgentSocketState::locked("test-version");
+    state.seed_master_key("p-1", &[1; 32]).expect("seed master key");
     let mut subscriber = state.status_hub.subscribe().await;
     let initial = subscriber.next_event().await.expect("initial status event");
     assert_eq!(initial.status.lock_state, LockState::Locked);
@@ -795,9 +795,8 @@ async fn unlock_and_lock_publish_status_changes() {
         AgentMethod::Unlock,
         json!({
             "project_id": "p-1",
-            "key": [1, 2, 3, 4],
             "ttl_seconds": 30,
-            "method": "Passphrase"
+            "method": "OsKeychain"
         }),
     );
     assert!(matches!(dispatch(&unlock, &state).await, ResponseEnvelope::Success(_)));
@@ -825,6 +824,7 @@ async fn session_lock_event_clears_cache_grants_and_publishes_status() {
     use serde_json::json;
 
     let state = AgentSocketState::locked("test-version");
+    state.seed_master_key("p-1", &[1; 32]).expect("seed master key");
     state.grants.lock().await.insert(test_grant_record("g-live", i128::MAX));
     let mut subscriber = state.status_hub.subscribe().await;
     let initial = subscriber.next_event().await.expect("initial status event");
@@ -835,9 +835,8 @@ async fn session_lock_event_clears_cache_grants_and_publishes_status() {
         AgentMethod::Unlock,
         json!({
             "project_id": "p-1",
-            "key": [1, 2, 3, 4],
             "ttl_seconds": 30,
-            "method": "Passphrase"
+            "method": "OsKeychain"
         }),
     );
     assert!(matches!(dispatch(&unlock, &state).await, ResponseEnvelope::Success(_)));
@@ -883,15 +882,14 @@ async fn lock_with_audit_context_appends_metadata_only_lock_row()
     drop(store);
 
     let state = AgentSocketState::locked("test-version");
+    state.seed_master_key("lk_proj_test", &[7; 32])?;
     let unlock = RequestEnvelope::new(
         "req-1",
         AgentMethod::Unlock,
         json!({
             "project_id": "lk_proj_test",
-            "key": [7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
-                    7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7],
             "ttl_seconds": 30,
-            "method": "Passphrase",
+            "method": "OsKeychain",
             "audit": {
                 "store_path": store_path,
                 "profile_id": "lk_prof_test"
@@ -939,14 +937,14 @@ async fn lock_audit_failure_returns_corrupt_db_after_clearing_state() {
     let tempdir = tempfile::tempdir().expect("tempdir");
     let missing_store = tempdir.path().join("missing").join("locket.sqlite3");
     let state = AgentSocketState::locked("test-version");
+    state.seed_master_key("lk_proj_test", &[7; 32]).expect("seed master key");
     let unlock = RequestEnvelope::new(
         "req-1",
         AgentMethod::Unlock,
         json!({
             "project_id": "lk_proj_test",
-            "key": [7, 7, 7, 7],
             "ttl_seconds": 30,
-            "method": "Passphrase",
+            "method": "OsKeychain",
             "audit": {
                 "store_path": missing_store,
                 "profile_id": "lk_prof_test"
@@ -996,10 +994,9 @@ async fn malformed_unlock_payload_returns_protocol_error() {
     let unlock = RequestEnvelope::new(
         "req-1",
         AgentMethod::Unlock,
+        // Missing required `ttl_seconds` field.
         json!({
-            "project_id": "p-1",
-            "ttl_seconds": 30,
-            "method": "Passphrase"
+            "project_id": "p-1"
         }),
     );
 
@@ -1032,6 +1029,258 @@ async fn malformed_lock_payload_returns_protocol_error() {
     assert_eq!(error.error, "ProtocolError");
     assert!(state.unlock_cache.lock().await.is_empty());
     assert!(state.grants.lock().await.is_empty());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn unlock_pulls_master_key_from_keychain_and_caches_it_for_status()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::envelope::{RequestEnvelope, ResponseEnvelope};
+    use crate::method::AgentMethod;
+    use crate::server::{AgentSocketState, dispatch};
+    use crate::status::LockState;
+    use serde_json::json;
+
+    let state = AgentSocketState::locked("test-version");
+    state.seed_master_key("p-keychain", &[11; 32])?;
+
+    let unlock = RequestEnvelope::new(
+        "req-keychain",
+        AgentMethod::Unlock,
+        json!({
+            "project_id": "p-keychain",
+            "ttl_seconds": 30,
+            "method": "OsKeychain"
+        }),
+    );
+    assert!(matches!(dispatch(&unlock, &state).await, ResponseEnvelope::Success(_)));
+
+    // The cache holds the unwrapped master key; the cached method is
+    // `OsKeychain` regardless of what the client hinted.
+    {
+        let cache = state.unlock_cache.lock().await;
+        let entry = cache.lookup("p-keychain", crate::server::current_unix_nanos()).expect("entry");
+        assert_eq!(entry.method(), crate::unlock_cache::UnlockMethod::OsKeychain);
+    }
+
+    let snapshot = state.status_snapshot(crate::server::current_unix_nanos()).await;
+    assert_eq!(snapshot.lock_state, LockState::Unlocked);
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn unlock_writes_unlock_audit_row_with_agent_metadata()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::envelope::{RequestEnvelope, ResponseEnvelope};
+    use crate::method::AgentMethod;
+    use crate::server::{AgentSocketState, dispatch};
+    use locket_crypto::{
+        HkdfWrapInfo, KeyPurpose, KeyWrapAad, KeyWrapPurpose, derive_wrapping_key_v1,
+        generate_key, key_wrap_aad_v1, wrap_key_material_v1,
+    };
+    use locket_store::KeyRecord;
+    use serde_json::{Value, json};
+
+    let tempdir = tempfile::tempdir()?;
+    let store_path = tempdir.path().join("store.sqlite3");
+    let mut store = locket_store::Store::open(&store_path)?;
+    store.initialize_schema()?;
+    store.connection().execute(
+        "INSERT INTO projects(id, name, created_at) VALUES ('lk_proj_unlock_audit', 'test', 100)",
+        [],
+    )?;
+    store.connection().execute(
+        "INSERT INTO profiles(id, project_id, name, dangerous, created_at)
+         VALUES ('lk_prof_unlock', 'lk_proj_unlock_audit', 'default', 0, 100)",
+        [],
+    )?;
+
+    // Generate a real master key and wrap a real audit key under it so
+    // the agent's UNLOCK row can derive a chained HMAC key.
+    let master_key = *generate_key()?;
+    let purpose = KeyPurpose::Audit;
+    let audit_key = *generate_key()?;
+    let key_record_id = "lk_key_audit_unlock_audit";
+    let wrapping_key = derive_wrapping_key_v1(
+        &master_key,
+        &HkdfWrapInfo::new("lk_proj_unlock_audit", None, purpose),
+    )?;
+    let aad = key_wrap_aad_v1(&KeyWrapAad::new(
+        "lk_proj_unlock_audit",
+        key_record_id,
+        None,
+        0,
+        KeyWrapPurpose::from(purpose),
+    ))?;
+    let wrapped = wrap_key_material_v1(&wrapping_key, &audit_key, &aad)?;
+    store.insert_key(&KeyRecord {
+        id: key_record_id.to_owned(),
+        project_id: "lk_proj_unlock_audit".to_owned(),
+        profile_id: None,
+        purpose: purpose.as_str().to_owned(),
+        wrapped_material: wrapped.ciphertext.clone(),
+        nonce: wrapped.nonce,
+        created_at: 100,
+    })?;
+    drop(store);
+
+    let state = AgentSocketState::locked("test-version");
+    state.seed_master_key("lk_proj_unlock_audit", &master_key)?;
+
+    let unlock = RequestEnvelope::new(
+        "req-audit",
+        AgentMethod::Unlock,
+        json!({
+            "project_id": "lk_proj_unlock_audit",
+            "ttl_seconds": 45,
+            "method": "OsKeychain",
+            "audit": {
+                "store_path": store_path,
+                "profile_id": "lk_prof_unlock"
+            }
+        }),
+    );
+    let response = dispatch(&unlock, &state).await;
+    assert!(matches!(response, ResponseEnvelope::Success(_)), "unlock should succeed: {response:?}");
+
+    let store = locket_store::Store::open(&store_path)?;
+    let (action, profile_id, command, metadata): (String, String, Option<String>, String) =
+        store.connection().query_row(
+            "SELECT action, profile_id, command, metadata_json
+             FROM audit_log
+             WHERE project_id = 'lk_proj_unlock_audit'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )?;
+    let metadata: Value = serde_json::from_str(&metadata)?;
+    assert_eq!(action, "UNLOCK");
+    assert_eq!(profile_id, "lk_prof_unlock");
+    assert_eq!(command.as_deref(), Some("unlock"));
+    assert_eq!(metadata["client_kind"], "agent");
+    assert_eq!(metadata["method"], "OsKeychain");
+    assert_eq!(metadata["ttl_seconds"], 45);
+    assert_eq!(metadata["agent_available"], true);
+    assert!(metadata.get("secret_name").is_none());
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn unlock_falls_back_to_passphrase_when_keychain_is_empty()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::envelope::{RequestEnvelope, ResponseEnvelope};
+    use crate::method::AgentMethod;
+    use crate::server::AgentSocketState;
+    use locket_crypto::generate_key;
+    use locket_platform::{MemoryMasterKeyStore, PassphraseFallbackMasterKeyStore};
+    use serde_json::json;
+    use std::sync::Arc;
+
+    let tempdir = tempfile::tempdir()?;
+    let passphrase_dir = tempdir.path().join("passphrase-fallback");
+    let passphrase_store = Arc::new(PassphraseFallbackMasterKeyStore::new(&passphrase_dir));
+    let master_key = *generate_key()?;
+    passphrase_store.store_master_key(
+        "p-passphrase",
+        &master_key,
+        b"correct horse battery staple",
+        100,
+    )?;
+
+    // Memory keychain is empty; passphrase store has the entry.
+    let key_store: Arc<dyn locket_platform::MasterKeyStore + Send + Sync> =
+        Arc::new(MemoryMasterKeyStore::default());
+    let state = AgentSocketState::with_stores(
+        "test-version",
+        crate::peer_cred::current_process_uid(),
+        key_store,
+        passphrase_store,
+    );
+
+    let unlock = RequestEnvelope::new(
+        "req-passphrase",
+        AgentMethod::Unlock,
+        json!({
+            "project_id": "p-passphrase",
+            "passphrase": "correct horse battery staple",
+            "ttl_seconds": 30,
+            "method": "Passphrase"
+        }),
+    );
+    let response = crate::server::dispatch(&unlock, &state).await;
+    assert!(matches!(response, ResponseEnvelope::Success(_)), "passphrase unlock should succeed: {response:?}");
+    {
+        let cache = state.unlock_cache.lock().await;
+        let entry = cache.lookup("p-passphrase", crate::server::current_unix_nanos()).expect("cache entry");
+        assert_eq!(entry.method(), crate::unlock_cache::UnlockMethod::Passphrase);
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn unlock_returns_unlock_required_when_passphrase_is_wrong()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::envelope::{RequestEnvelope, ResponseEnvelope};
+    use crate::method::AgentMethod;
+    use crate::server::AgentSocketState;
+    use locket_crypto::generate_key;
+    use locket_platform::{MemoryMasterKeyStore, PassphraseFallbackMasterKeyStore};
+    use serde_json::json;
+    use std::sync::Arc;
+
+    let tempdir = tempfile::tempdir()?;
+    let passphrase_store =
+        Arc::new(PassphraseFallbackMasterKeyStore::new(tempdir.path().join("passphrase-fallback")));
+    let master_key = *generate_key()?;
+    passphrase_store.store_master_key("p-bad-pass", &master_key, b"the right one", 100)?;
+
+    let state = AgentSocketState::with_stores(
+        "test-version",
+        crate::peer_cred::current_process_uid(),
+        Arc::new(MemoryMasterKeyStore::default()),
+        passphrase_store,
+    );
+
+    let unlock = RequestEnvelope::new(
+        "req-bad-pass",
+        AgentMethod::Unlock,
+        json!({
+            "project_id": "p-bad-pass",
+            "passphrase": "the wrong one",
+            "ttl_seconds": 30,
+            "method": "Passphrase"
+        }),
+    );
+    let response = crate::server::dispatch(&unlock, &state).await;
+    let ResponseEnvelope::Error(error) = response else {
+        panic!("wrong passphrase must return UnlockRequired, got success");
+    };
+    assert_eq!(error.error, "UnlockRequired");
+    assert!(state.unlock_cache.lock().await.is_empty());
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn unlock_with_no_passphrase_and_empty_keychain_returns_unlock_required() {
+    use crate::envelope::{RequestEnvelope, ResponseEnvelope};
+    use crate::method::AgentMethod;
+    use crate::server::{AgentSocketState, dispatch};
+    use serde_json::json;
+
+    let state = AgentSocketState::locked("test-version");
+    let unlock = RequestEnvelope::new(
+        "req-empty",
+        AgentMethod::Unlock,
+        json!({
+            "project_id": "p-empty",
+            "ttl_seconds": 30,
+            "method": "OsKeychain"
+        }),
+    );
+    let response = dispatch(&unlock, &state).await;
+    let ResponseEnvelope::Error(error) = response else {
+        panic!("empty keychain + no passphrase must return UnlockRequired");
+    };
+    assert_eq!(error.error, "UnlockRequired");
+    assert!(state.unlock_cache.lock().await.is_empty());
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -2501,12 +2750,8 @@ mod server_tests {
                 AgentMethod::Unlock,
                 serde_json::json!({
                     "project_id": "project-main",
-                    "key": [3, 3, 3, 3, 3, 3, 3, 3,
-                            3, 3, 3, 3, 3, 3, 3, 3,
-                            3, 3, 3, 3, 3, 3, 3, 3,
-                            3, 3, 3, 3, 3, 3, 3, 3],
                     "ttl_seconds": 60,
-                    "method": "Passphrase"
+                    "method": "OsKeychain"
                 }),
             ),
             "Unlock",
@@ -2624,6 +2869,7 @@ mod server_tests {
         let config = AgentSocketConfig::new(socket_path.clone(), "e2e-agent-rpc-test");
         let listener = bind_socket_listener(&config)?;
         let state = AgentSocketState::locked(config.agent_version.clone());
+        state.seed_master_key("project-main", &[3; 32]).expect("seed master key");
         state.set_test_heartbeat_interval(Duration::from_secs(60)).await;
 
         let server_state = state.clone();

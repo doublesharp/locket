@@ -16,6 +16,9 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+#[cfg(not(test))]
+use locket_platform::KeyringMasterKeyStore;
+use locket_platform::{MasterKeyStore, PassphraseFallbackMasterKeyStore, PlatformError};
 use locket_store::{Store, StoreError};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
@@ -34,6 +37,31 @@ use crate::status_stream::StatusHub;
 #[cfg(test)]
 type PeerCredentialValidator =
     dyn Fn(&UnixStream, u32) -> Result<(), SocketServerError> + Send + Sync;
+
+/// Resolves the default on-disk directory the passphrase-fallback
+/// envelope store should use when callers don't supply one explicitly.
+/// Falls back to a temp-directory subpath when `directories` cannot
+/// resolve a project data dir; tests that don't perform passphrase
+/// unlocks never touch the filesystem regardless.
+fn default_passphrase_fallback_dir() -> PathBuf {
+    directories::ProjectDirs::from("dev", "0xdoublesharp", "Locket").map_or_else(
+        || std::env::temp_dir().join("locket-agent-passphrase-fallback"),
+        |dirs| dirs.data_dir().join("passphrase-fallback"),
+    )
+}
+
+/// Resolves the default master-key store. Production agents use the OS
+/// keychain; unit tests use a process-local `MemoryMasterKeyStore` so
+/// `seed_master_key` writes never touch the host keychain.
+#[cfg(not(test))]
+fn default_master_key_store() -> Arc<dyn MasterKeyStore + Send + Sync> {
+    Arc::new(KeyringMasterKeyStore)
+}
+
+#[cfg(test)]
+fn default_master_key_store() -> Arc<dyn MasterKeyStore + Send + Sync> {
+    Arc::new(locket_platform::MemoryMasterKeyStore::default())
+}
 
 /// Permissions for a freshly bound agent socket — owner-only.
 const SOCKET_PERMISSIONS_MODE: u32 = 0o600;
@@ -230,6 +258,13 @@ pub struct AgentSocketState {
     pub command_policies: Arc<Mutex<Vec<crate::policies::CommandPolicySnapshot>>>,
     /// In-memory automation-client challenges issued by `ClientHello`.
     pub automation_challenges: Arc<Mutex<BTreeMap<String, crate::auth::IssuedChallenge>>>,
+    /// OS keychain (or test-injected) master-key store. The agent
+    /// unwraps client-less unlocks against this store; the unwrapped
+    /// key is then cached via `unlock_cache`.
+    pub master_key_store: Arc<dyn MasterKeyStore + Send + Sync>,
+    /// Passphrase-fallback envelope store consulted when the keychain
+    /// returns `MasterKeyNotFound` and the client supplied a passphrase.
+    pub passphrase_store: Arc<PassphraseFallbackMasterKeyStore>,
     /// Server-side fan-out hub for `SubscribeStatus` streams.
     pub status_hub: StatusHub,
     /// Test hook overriding the heartbeat cadence so unit tests can run
@@ -258,6 +293,25 @@ impl AgentSocketState {
     /// running as a different user.
     #[must_use]
     pub fn with_daemon_uid(agent_version: impl Into<String>, daemon_uid: u32) -> Self {
+        Self::with_stores(
+            agent_version,
+            daemon_uid,
+            default_master_key_store(),
+            Arc::new(PassphraseFallbackMasterKeyStore::new(default_passphrase_fallback_dir())),
+        )
+    }
+
+    /// Builds an initial state with explicit master-key and passphrase
+    /// fallback stores. Production callers (`locket agent start`)
+    /// inject the OS keychain and the user-data passphrase fallback
+    /// store; tests inject in-memory stores.
+    #[must_use]
+    pub fn with_stores(
+        agent_version: impl Into<String>,
+        daemon_uid: u32,
+        master_key_store: Arc<dyn MasterKeyStore + Send + Sync>,
+        passphrase_store: Arc<PassphraseFallbackMasterKeyStore>,
+    ) -> Self {
         let agent_version = agent_version.into();
         let status_hub = StatusHub::new(StatusPayload::locked(agent_version.clone()));
         Self {
@@ -268,6 +322,8 @@ impl AgentSocketState {
             runtime_sessions: Arc::new(Mutex::new(Vec::new())),
             command_policies: Arc::new(Mutex::new(Vec::new())),
             automation_challenges: Arc::new(Mutex::new(BTreeMap::new())),
+            master_key_store,
+            passphrase_store,
             status_hub,
             #[cfg(test)]
             test_heartbeat_interval: Arc::new(Mutex::new(None)),
@@ -295,10 +351,26 @@ impl AgentSocketState {
             runtime_sessions: Arc::new(Mutex::new(Vec::new())),
             command_policies: Arc::new(Mutex::new(Vec::new())),
             automation_challenges: Arc::new(Mutex::new(BTreeMap::new())),
+            master_key_store: Arc::new(locket_platform::MemoryMasterKeyStore::default()),
+            passphrase_store: Arc::new(PassphraseFallbackMasterKeyStore::new(
+                default_passphrase_fallback_dir(),
+            )),
             status_hub,
             test_heartbeat_interval: Arc::new(Mutex::new(None)),
             peer_credential_validator: Arc::new(crate::peer_cred::validate_peer_stream),
         }
+    }
+
+    /// Test-only helper that writes `master_key` into the agent's
+    /// master-key store under `project_id`. Lets tests drive the
+    /// `Unlock` RPC without ever touching the real OS keychain.
+    #[cfg(test)]
+    pub fn seed_master_key(
+        &self,
+        project_id: &str,
+        master_key: &locket_crypto::KeyBytes,
+    ) -> Result<(), PlatformError> {
+        self.master_key_store.store_master_key(project_id, master_key)
     }
 
     /// Test-only override for peer credential validation. The live
@@ -613,19 +685,23 @@ async fn read_one_frame(
     }
 }
 
-/// Wire payload for the `Unlock` RPC. The `key` field is bytes-as-array
-/// per the v1 spec; `serde_bytes` lets serde accept JSON byte arrays
-/// without forcing the client to base64-encode the unwrapped key.
-// TODO(task-agent-real-unlock): Replace the client-supplied `key` field
-// with an OS-keychain / passphrase / recovery-envelope unwrap performed
-// inside the agent. See docs/specs/agent.md:84.
+/// Wire payload for the `Unlock` RPC. The agent owns the unwrap path:
+/// it pulls the master key from the OS keychain when `passphrase` is
+/// `None`, and from the passphrase-fallback envelope when one is
+/// supplied. Clients never send raw key bytes; the cached entry's
+/// `UnlockMethod` is determined server-side by which path succeeded.
 #[derive(serde::Deserialize)]
 struct UnlockPayload {
     project_id: String,
-    #[serde(with = "serde_bytes")]
-    key: Vec<u8>,
+    #[serde(default)]
+    passphrase: Option<String>,
     ttl_seconds: u64,
-    method: crate::unlock_cache::UnlockMethod,
+    /// Hint from the client for forward-compatibility. The agent
+    /// derives the actual cached method from the path it took during
+    /// unwrap; this field is currently ignored.
+    #[serde(default)]
+    #[allow(dead_code)]
+    method: Option<crate::unlock_cache::UnlockMethod>,
     #[serde(default)]
     audit: Option<UnlockAuditPayload>,
 }
@@ -673,37 +749,7 @@ pub async fn dispatch(envelope: &RequestEnvelope, state: &AgentSocketState) -> R
             let payload = serde_json::to_value(snapshot).unwrap_or(serde_json::Value::Null);
             ResponseEnvelope::Success(SuccessEnvelope::new(envelope.id.clone(), payload))
         }
-        // TODO(task-agent-real-unlock): see UnlockPayload above — this arm
-        // trusts the client's key bytes; once the agent owns the unwrap path,
-        // the wire payload changes from `key` to e.g. `passphrase` /
-        // `keychain_token` and this arm performs the unwrap.
-        Ok(AgentMethod::Unlock) => {
-            let now = current_unix_nanos();
-            let payload: UnlockPayload = match serde_json::from_value(envelope.payload.clone()) {
-                Ok(payload) => payload,
-                Err(_) => {
-                    return error_response(envelope, "ProtocolError", "invalid Unlock payload");
-                }
-            };
-            let mut entry = crate::unlock_cache::UnlockEntry::new(
-                payload.key,
-                now,
-                std::time::Duration::from_secs(payload.ttl_seconds),
-                payload.method,
-            );
-            if let Some(audit) = payload.audit {
-                entry = entry.with_audit_context(crate::unlock_cache::UnlockAuditContext {
-                    store_path: audit.store_path,
-                    profile_id: audit.profile_id,
-                });
-            }
-            state.unlock_cache.lock().await.insert(payload.project_id, entry);
-            state.publish_status_snapshot(now).await;
-            ResponseEnvelope::Success(SuccessEnvelope::new(
-                envelope.id.clone(),
-                serde_json::Value::Null,
-            ))
-        }
+        Ok(AgentMethod::Unlock) => handle_unlock(envelope, state).await,
         Ok(AgentMethod::Lock) => {
             let payload: LockPayload = match serde_json::from_value(envelope.payload.clone()) {
                 Ok(payload) => payload,
@@ -764,6 +810,219 @@ pub async fn dispatch(envelope: &RequestEnvelope, state: &AgentSocketState) -> R
             false,
         )),
     }
+}
+
+const AGENT_UNLOCK_CLIENT_KIND: &str = "agent";
+const AGENT_UNLOCK_COMMAND: &str = "unlock";
+
+/// Server-side `Unlock` handler. The agent never trusts the client to
+/// supply key bytes; it pulls the master key from the OS keychain or
+/// the passphrase-fallback envelope itself, then derives the per-project
+/// audit key, writes the `UNLOCK` audit row, and finally caches the
+/// unwrapped master key so subsequent RPCs can reuse it.
+async fn handle_unlock(envelope: &RequestEnvelope, state: &AgentSocketState) -> ResponseEnvelope {
+    let now = current_unix_nanos();
+    let payload: UnlockPayload = match serde_json::from_value(envelope.payload.clone()) {
+        Ok(payload) => payload,
+        Err(_) => return error_response(envelope, "ProtocolError", "invalid Unlock payload"),
+    };
+
+    let (master_key_bytes, resolved_method) = match resolve_master_key(
+        envelope,
+        state,
+        payload.passphrase.as_deref(),
+        &payload.project_id,
+    ) {
+        Ok(resolved) => resolved,
+        Err(error) => return error,
+    };
+
+    if let Some(audit) = payload.audit.as_ref()
+        && let Err(response) = append_unlock_audit_row(
+            envelope,
+            &audit.store_path,
+            &payload.project_id,
+            audit.profile_id.as_deref(),
+            &master_key_bytes,
+            resolved_method,
+            payload.ttl_seconds,
+            now,
+        )
+    {
+        return response;
+    }
+
+    let mut entry = crate::unlock_cache::UnlockEntry::new(
+        master_key_bytes,
+        now,
+        std::time::Duration::from_secs(payload.ttl_seconds),
+        resolved_method,
+    );
+    if let Some(audit) = payload.audit {
+        entry = entry.with_audit_context(crate::unlock_cache::UnlockAuditContext {
+            store_path: audit.store_path,
+            profile_id: audit.profile_id,
+        });
+    }
+    state.unlock_cache.lock().await.insert(payload.project_id, entry);
+    state.publish_status_snapshot(now).await;
+    ResponseEnvelope::Success(SuccessEnvelope::new(envelope.id.clone(), serde_json::Value::Null))
+}
+
+/// Loads the master key for `project_id` from the OS keychain, falling
+/// back to the passphrase envelope when a passphrase is supplied and
+/// the keychain has no entry. Returns the unwrapped key bytes plus the
+/// `UnlockMethod` that should be recorded on the cached entry.
+fn resolve_master_key(
+    envelope: &RequestEnvelope,
+    state: &AgentSocketState,
+    passphrase: Option<&str>,
+    project_id: &str,
+) -> Result<(Vec<u8>, crate::unlock_cache::UnlockMethod), ResponseEnvelope> {
+    use crate::unlock_cache::UnlockMethod;
+
+    match state.master_key_store.load_master_key(project_id) {
+        Ok(key) => Ok((key.to_vec(), UnlockMethod::OsKeychain)),
+        Err(PlatformError::MasterKeyNotFound) => {
+            let Some(passphrase) = passphrase else {
+                return Err(error_response(
+                    envelope,
+                    "UnlockRequired",
+                    "no master key in OS keychain; supply a passphrase to unlock from the fallback envelope",
+                ));
+            };
+            match state.passphrase_store.load_master_key(project_id, passphrase.as_bytes()) {
+                Ok(key) => Ok((key.to_vec(), UnlockMethod::Passphrase)),
+                Err(PlatformError::MasterKeyNotFound) => Err(error_response(
+                    envelope,
+                    "UnlockRequired",
+                    "no passphrase fallback envelope is registered for this project",
+                )),
+                Err(PlatformError::InvalidPassphrase) => Err(error_response(
+                    envelope,
+                    "UnlockRequired",
+                    "passphrase did not authenticate the fallback envelope",
+                )),
+                Err(error) => Err(error_response(
+                    envelope,
+                    classify_platform_error(&error),
+                    "passphrase fallback unwrap failed",
+                )),
+            }
+        }
+        Err(error) => Err(error_response(
+            envelope,
+            classify_platform_error(&error),
+            "master key store unavailable",
+        )),
+    }
+}
+
+const fn classify_platform_error(error: &PlatformError) -> &'static str {
+    match error {
+        PlatformError::InvalidMasterKey
+        | PlatformError::InvalidPassphraseFallback
+        | PlatformError::InvalidRecoveryEnvelope(_)
+        | PlatformError::RecoveryEnvelopeSchemaUnsupported(_) => "IntegrityFailure",
+        _ => "KeychainUnavailable",
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_unlock_audit_row(
+    envelope: &RequestEnvelope,
+    store_path: &Path,
+    project_id: &str,
+    profile_id: Option<&str>,
+    master_key_bytes: &[u8],
+    method: crate::unlock_cache::UnlockMethod,
+    ttl_seconds: u64,
+    now_unix_nanos: i128,
+) -> Result<(), ResponseEnvelope> {
+    // The agent's UNLOCK row mirrors the CLI's metadata-only behavior:
+    // if the project store cannot be opened or the audit key cannot be
+    // unwrapped, the unlock itself still succeeds — the row is skipped
+    // rather than poisoning the unlock path. The cached master key
+    // remains correct so subsequent RPCs can still authenticate.
+    let Some(master_key_array) = master_key_bytes_to_array(master_key_bytes) else {
+        return Ok(());
+    };
+    let Ok(mut store) = Store::open(store_path) else {
+        return Ok(());
+    };
+    let Ok(audit_key) = unwrap_project_audit_key(&store, project_id, &master_key_array) else {
+        return Ok(());
+    };
+
+    let timestamp = i64::try_from(now_unix_nanos).unwrap_or(i64::MAX);
+    let unlock_method_str = match method {
+        crate::unlock_cache::UnlockMethod::OsKeychain => "OsKeychain",
+        crate::unlock_cache::UnlockMethod::Passphrase => "Passphrase",
+        crate::unlock_cache::UnlockMethod::RecoveryEnvelope => "RecoveryEnvelope",
+    };
+    let metadata = serde_json::json!({
+        "schema_version": 1,
+        "action": "UNLOCK",
+        "status": "SUCCESS",
+        "command": AGENT_UNLOCK_COMMAND,
+        "client_kind": AGENT_UNLOCK_CLIENT_KIND,
+        "method": unlock_method_str,
+        "agent_available": true,
+        "cached_keys": true,
+        "user_verification": {
+            "required": false,
+            "satisfied": false,
+            "method": null,
+        },
+        "grant_actions": [],
+        "ttl_seconds": ttl_seconds,
+    });
+    let audit = locket_store::AuditWrite {
+        project_id,
+        profile_id,
+        action: "UNLOCK",
+        status: "SUCCESS",
+        secret_name: None,
+        command: Some(AGENT_UNLOCK_COMMAND),
+        metadata_json: &metadata,
+        timestamp,
+    };
+    if store.append_audit(audit_key.as_ref(), &audit).is_err() {
+        return Err(error_response(envelope, "CorruptDb", "failed to append UNLOCK audit row"));
+    }
+    Ok(())
+}
+
+fn master_key_bytes_to_array(bytes: &[u8]) -> Option<locket_crypto::KeyBytes> {
+    bytes.try_into().ok()
+}
+
+fn unwrap_project_audit_key(
+    store: &Store,
+    project_id: &str,
+    master_key: &locket_crypto::KeyBytes,
+) -> Result<zeroize::Zeroizing<locket_crypto::KeyBytes>, locket_crypto::CryptoError> {
+    use locket_crypto::{
+        HkdfWrapInfo, KeyPurpose, KeyWrapAad, KeyWrapPurpose, WrappedKeyMaterial,
+        derive_wrapping_key_v1, key_wrap_aad_v1, unwrap_key_material_v1,
+    };
+
+    let purpose = KeyPurpose::Audit;
+    let record = store
+        .get_key_by_scope(project_id, None, purpose.as_str())
+        .map_err(|_| locket_crypto::CryptoError::DecryptionFailed)?
+        .ok_or(locket_crypto::CryptoError::DecryptionFailed)?;
+    let wrapping_key =
+        derive_wrapping_key_v1(master_key, &HkdfWrapInfo::new(project_id, None, purpose))?;
+    let aad = key_wrap_aad_v1(&KeyWrapAad::new(
+        project_id,
+        &record.id,
+        None,
+        0,
+        KeyWrapPurpose::from(purpose),
+    ))?;
+    let wrapped = WrappedKeyMaterial { ciphertext: record.wrapped_material, nonce: record.nonce };
+    unwrap_key_material_v1(&wrapping_key, &wrapped, &aad)
 }
 
 async fn handle_list_policies(

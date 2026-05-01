@@ -394,7 +394,15 @@ impl TestAgent {
     fn start(context: &RuntimeContext) -> Result<Self, Box<dyn std::error::Error>> {
         let socket_path = crate::agent_socket_path(context);
         let config = locket_agent::AgentSocketConfig::new(socket_path, "test-agent".to_owned());
-        let state = locket_agent::AgentSocketState::locked("test-agent");
+        // Share the CLI runtime's master-key store with the agent so
+        // the agent can find the master key that `locket init` wrote.
+        let passphrase_store = Arc::new(context.passphrase_store.clone());
+        let state = locket_agent::AgentSocketState::with_stores(
+            "test-agent",
+            locket_agent::current_process_uid(),
+            context.key_store.clone(),
+            passphrase_store,
+        );
         let shutdown = Arc::new(tokio::sync::Notify::new());
         let shutdown_signal = shutdown.clone();
         let (ready_sender, ready_receiver) =
