@@ -189,7 +189,6 @@ Slices 1+2 shipped (agent client, tray binding, 6 view scaffolds,
     actions for the selected secret. Pre-req: `tray-menu-actions`,
     `desktop-reveal-modal`, `desktop-clipboard-copy`. Slice 8.
   - [~] [52c592db] branch agent-52c592db/desktop-audit-data, worktree .worktrees/agent-52c592db-desktop-audit-data; **subtask** — desktop-audit-data: wire `agent-list-audit` + `agent-verify-audit` into `AuditLog.vue`.
-  - [~] [4ab55ee9] branch agent-4ab55ee9/agent-scan-known-values-impl, worktree .worktrees/agent-4ab55ee9-agent-scan-known-values-impl; **subtask** — agent-scan-known-values-impl: real handler.
   - [~] [4ab55ee9] branch agent-4ab55ee9/desktop-settings-data, worktree .worktrees/agent-4ab55ee9-desktop-settings-data; settings view reads and writes desktop config data.
   - [ ] **subtask** — agent-policy-doctor-rpc: RPC exercising
     `lk://` resolution + env-mode expansion. Pre-req:

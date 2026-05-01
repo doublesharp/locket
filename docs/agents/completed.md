@@ -358,6 +358,9 @@ Slices that have merged to `main` and verified. Open work tracked in
   webview for allowed references.
 - [x] tray-template-policy: Added tray icon asset policy coverage for macOS template masks and full-color desktop variants.
 - [x] desktop-secrets-data: The desktop secrets view now refreshes from the agent-backed metadata list.
+- [x] agent-scan-known-values-impl: Agent known-value scans now run through the live
+  cache and grant path. Responses stay redacted while covered scans record safe
+  activity.
 
 ## Full Spec Coverage TODO — Code Health and Bug Fixes
 
