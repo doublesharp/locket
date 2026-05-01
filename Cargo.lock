@@ -2461,14 +2461,15 @@ name = "locket-agent"
 version = "0.1.0"
 dependencies = [
  "data-encoding",
+ "directories",
  "ed25519-dalek",
  "locket-core",
  "locket-crypto",
+ "locket-platform",
  "locket-store",
  "rand 0.9.4",
  "rustix",
  "serde",
- "serde_bytes",
  "serde_json",
  "sha2",
  "tempfile",
@@ -4068,16 +4069,6 @@ dependencies = [
  "serde",
  "serde_core",
  "typeid",
-]
-
-[[package]]
-name = "serde_bytes"
-version = "0.11.19"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a5d440709e79d88e51ac01c4b72fc6cb7314017bb7da9eeff678aa94c10e3ea8"
-dependencies = [
- "serde",
- "serde_core",
 ]
 
 [[package]]

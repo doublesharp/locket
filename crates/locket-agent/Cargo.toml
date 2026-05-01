@@ -16,12 +16,13 @@ workspace = true
 [dependencies]
 locket-crypto = { path = "../locket-crypto" }
 locket-core = { path = "../locket-core" }
+locket-platform = { path = "../locket-platform" }
 locket-store = { path = "../locket-store" }
 data-encoding = { workspace = true }
+directories = { workspace = true }
 ed25519-dalek = { workspace = true }
 rand = { workspace = true }
 serde = { workspace = true }
-serde_bytes = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 thiserror = { workspace = true }
