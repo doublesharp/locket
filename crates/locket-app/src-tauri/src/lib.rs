@@ -5,11 +5,12 @@
 //! agent-backed actions.
 
 use std::path::PathBuf;
+use std::sync::Mutex;
 
 use directories::ProjectDirs;
 use serde::Deserialize;
 
-use tauri::Emitter as _;
+use tauri::{Emitter as _, RunEvent};
 #[cfg(debug_assertions)]
 use tauri::Manager as _;
 
@@ -24,7 +25,9 @@ mod clipboard;
 mod tray;
 
 pub use agent_client::{
-    AgentClientError, fetch_status, invoke_method, resolve_socket_path, stream_status_events,
+    AgentClientError, CancelToken, RECONNECT_INITIAL_BACKOFF, RECONNECT_MAX_BACKOFF, fetch_status,
+    invoke_method, next_reconnect_delay, resolve_socket_path, stream_status_events,
+    stream_status_events_with_cancel,
 };
 pub use clipboard::{
     ClipboardCopyDecision, ClipboardCopyOutcome, ClipboardError, ClipboardPlatform,
@@ -179,6 +182,48 @@ const fn default_true() -> bool {
 
 const AGENT_STATUS_EVENT: &str = "agent-status";
 const AGENT_STATUS_ERROR_EVENT: &str = "agent-status-error";
+const AGENT_STATUS_DISCONNECTED_EVENT: &str = "agent-status-disconnected";
+
+/// Process-wide cancel token shared by every long-lived
+/// `SubscribeStatus` task. The Tauri shell flips it on exit so the
+/// reconnect loop and the tray subscription join cleanly without
+/// leaving the agent's subscriber slot open.
+struct StatusSubscription {
+    cancel: agent_client::CancelToken,
+    started: bool,
+}
+
+static STATUS_SUBSCRIPTION: Mutex<Option<StatusSubscription>> = Mutex::new(None);
+
+fn status_subscription_cancel_token() -> agent_client::CancelToken {
+    let mut guard = STATUS_SUBSCRIPTION.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(state) = guard.as_ref() {
+        return state.cancel.clone();
+    }
+    let cancel = agent_client::CancelToken::new();
+    *guard = Some(StatusSubscription { cancel: cancel.clone(), started: false });
+    cancel
+}
+
+fn mark_status_subscription_started() -> bool {
+    let mut guard = STATUS_SUBSCRIPTION.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let state = guard.get_or_insert_with(|| StatusSubscription {
+        cancel: agent_client::CancelToken::new(),
+        started: false,
+    });
+    if state.started {
+        return false;
+    }
+    state.started = true;
+    true
+}
+
+fn cancel_status_subscription() {
+    let guard = STATUS_SUBSCRIPTION.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(state) = guard.as_ref() {
+        state.cancel.cancel();
+    }
+}
 
 /// Tauri command exposing the agent client to the webview.
 ///
@@ -192,22 +237,55 @@ async fn agent_status() -> Result<locket_agent::StatusPayload, AgentClientError>
 }
 
 /// Tauri command bridging `SubscribeStatus` stream frames to webview events.
+///
+/// Idempotent: the first call wires up the long-lived reconnect loop,
+/// subsequent calls are no-ops so the webview can call this on every
+/// mount without spawning multiple sockets.
 #[tauri::command]
 async fn agent_subscribe_status(app: tauri::AppHandle) -> Result<(), AgentClientError> {
-    let path = agent_client::resolve_socket_path();
-    let (sender, mut receiver) = tokio::sync::mpsc::channel::<locket_agent::StatusEvent>(16);
-    let event_app = app.clone();
+    if !mark_status_subscription_started() {
+        return Ok(());
+    }
+    let cancel = status_subscription_cancel_token();
+    spawn_status_subscription(app, cancel);
+    Ok(())
+}
+
+fn spawn_status_subscription(app: tauri::AppHandle, cancel: agent_client::CancelToken) {
     tauri::async_runtime::spawn(async move {
-        while let Some(event) = receiver.recv().await {
-            let _emit_result = event_app.emit(AGENT_STATUS_EVENT, &event);
-        }
+        run_status_subscription_loop(app, cancel).await;
     });
-    tauri::async_runtime::spawn(async move {
-        if let Err(error) = agent_client::stream_status_events(&path, sender).await {
+}
+
+async fn run_status_subscription_loop(app: tauri::AppHandle, cancel: agent_client::CancelToken) {
+    let path = agent_client::resolve_socket_path();
+    let mut last_delay: Option<std::time::Duration> = None;
+    while !cancel.is_cancelled() {
+        let (sender, mut receiver) = tokio::sync::mpsc::channel::<locket_agent::StatusEvent>(16);
+        let event_app = app.clone();
+        let forwarder = tauri::async_runtime::spawn(async move {
+            while let Some(event) = receiver.recv().await {
+                let _emit_result = event_app.emit(AGENT_STATUS_EVENT, &event);
+            }
+        });
+        let stream_result =
+            agent_client::stream_status_events_with_cancel(&path, sender, &cancel).await;
+        let _ = forwarder.await;
+        if cancel.is_cancelled() {
+            break;
+        }
+        if let Err(error) = stream_result {
             let _emit_result = app.emit(AGENT_STATUS_ERROR_EVENT, &error);
         }
-    });
-    Ok(())
+        let _emit_result = app.emit(AGENT_STATUS_DISCONNECTED_EVENT, ());
+        let delay = agent_client::next_reconnect_delay(last_delay);
+        last_delay = Some(delay);
+        tokio::select! {
+            biased;
+            () = cancel.cancelled() => break,
+            () = tokio::time::sleep(delay) => {}
+        }
+    }
 }
 
 /// Tauri command exposing the agent's `Lock` RPC to the webview and tray.
@@ -593,7 +671,7 @@ async fn tray_set_state(app: tauri::AppHandle, state: TrayState) -> Result<(), S
 /// application.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() -> tauri::Result<()> {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             agent_status,
             agent_subscribe_status,
@@ -627,5 +705,11 @@ pub fn run() -> tauri::Result<()> {
             tray::setup_tray(app.handle())?;
             Ok(())
         })
-        .run(tauri::generate_context!())
+        .build(tauri::generate_context!())?;
+    app.run(|_app, event| {
+        if matches!(event, RunEvent::ExitRequested { .. } | RunEvent::Exit) {
+            cancel_status_subscription();
+        }
+    });
+    Ok(())
 }

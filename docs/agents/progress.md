@@ -214,8 +214,10 @@ Slices 1+2 shipped (agent client, tray binding, 6 view scaffolds,
 
 - [ ] Tauri desktop app (`docs/specs/desktop.md:5-65`). Shell + agent
   client + tray binding + 6 primary views + tray icon-state pusher
-  shipped. Remaining: real data sources per view, tray menu actions,
-  SubscribeStatus stream consumer.
+  shipped. Push-based `SubscribeStatus` stream consumer landed with
+  heartbeat-aware connection-health badge and exponential-backoff
+  reconnect (1s → 30s). Remaining: real data sources per view, tray
+  menu actions.
 - [ ] Tray/status panel (`docs/specs/desktop.md:65-108`):
 - [ ] Desktop UI campaign — remaining slices:
   - [ ] **subtask** — desktop-reveal-modal: short-lived modal with

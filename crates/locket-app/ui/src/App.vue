@@ -71,8 +71,36 @@ type ViewKey =
   | 'recovery'
   | 'settings';
 
-const { status, error, loading, refresh } = useAgent();
+const { status, error, loading, lastSeenAt, connected, refresh } = useAgent();
 useTray(status, error);
+
+const connectionLabel = computed<string>(() => {
+  if (!connected.value) {
+    return 'Reconnecting…';
+  }
+  if (lastSeenAt.value === null) {
+    return 'Connected';
+  }
+  return `Live · ${formatLastSeen(lastSeenAt.value)}`;
+});
+
+const connectionTone = computed<'ok' | 'warn'>(() => (connected.value ? 'ok' : 'warn'));
+
+function formatLastSeen(iso: string): string {
+  const parsed = Date.parse(iso);
+  if (Number.isNaN(parsed)) {
+    return 'just now';
+  }
+  const seconds = Math.max(0, Math.round((Date.now() - parsed) / 1000));
+  if (seconds < 5) {
+    return 'just now';
+  }
+  if (seconds < 60) {
+    return `${seconds.toString()}s ago`;
+  }
+  const minutes = Math.round(seconds / 60);
+  return `${minutes.toString()}m ago`;
+}
 
 const currentView = ref<ViewKey>('dashboard');
 let unlistenTrayMenu: UnlistenFn | null = null;
@@ -908,6 +936,15 @@ onUnmounted(() => {
           <dd>{{ projectLabel }}</dd>
           <dt>Profile</dt>
           <dd>{{ profileLabel }}</dd>
+          <dt>Agent</dt>
+          <dd>
+            <span
+              :class="`shell__connection shell__connection--${connectionTone}`"
+              :data-connected="connected ? 'true' : 'false'"
+              role="status"
+              aria-live="polite"
+            >{{ connectionLabel }}</span>
+          </dd>
         </dl>
         <section class="shell__activity" aria-label="Recent activity">
           <div class="shell__activity-head">
@@ -1102,6 +1139,35 @@ html,
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.shell__connection {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.0625rem 0.375rem;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.shell__connection::before {
+  content: '';
+  width: 0.4rem;
+  height: 0.4rem;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.shell__connection--ok {
+  color: #8fd19e;
+  background: rgba(143, 209, 158, 0.12);
+}
+
+.shell__connection--warn {
+  color: #f2b879;
+  background: rgba(242, 184, 121, 0.14);
 }
 
 .shell__activity {

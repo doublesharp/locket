@@ -32,7 +32,9 @@ use locket_agent::{
     SuccessEnvelope, bind_socket_listener, decode_request_frame, encode_frame, handle_connection,
 };
 use locket_desktop_lib::{
-    AgentClientError, fetch_status, invoke_method, resolve_socket_path, stream_status_events,
+    AgentClientError, CancelToken, RECONNECT_INITIAL_BACKOFF, RECONNECT_MAX_BACKOFF, fetch_status,
+    invoke_method, next_reconnect_delay, resolve_socket_path, stream_status_events,
+    stream_status_events_with_cancel,
 };
 use locket_store::{AuditWrite, Store};
 use serde_json::json;
@@ -281,6 +283,156 @@ fn resolve_socket_path_returns_a_value() {
     // socket directly without depending on this helper.
     let path = resolve_socket_path();
     assert!(!path.as_os_str().is_empty());
+}
+
+#[tokio::test]
+async fn reconnect_schedule_is_exponential_capped_at_thirty_seconds() {
+    // Pins the desktop-spec backoff: 1s → 2s → 4s → 8s → 16s → 30s …
+    let mut current: Option<Duration> = None;
+    let mut observed = Vec::new();
+    for _ in 0..8 {
+        let next = next_reconnect_delay(current);
+        observed.push(next);
+        current = Some(next);
+    }
+    assert_eq!(observed[0], RECONNECT_INITIAL_BACKOFF);
+    assert_eq!(observed[0], Duration::from_secs(1));
+    assert_eq!(observed[1], Duration::from_secs(2));
+    assert_eq!(observed[2], Duration::from_secs(4));
+    assert_eq!(observed[3], Duration::from_secs(8));
+    assert_eq!(observed[4], Duration::from_secs(16));
+    for value in &observed[5..] {
+        assert_eq!(*value, RECONNECT_MAX_BACKOFF);
+    }
+}
+
+#[tokio::test]
+async fn stream_status_events_reports_close_then_reconnects_against_fresh_listener() {
+    // Mock-agent path: bind a Unix listener, write two status frames,
+    // close the socket, and assert the client surfaced both frames and
+    // returned a Protocol error for the close. Then bind a second
+    // listener at the same path and assert the client re-subscribes
+    // and observes another status frame — which is the loop's
+    // contract on close.
+    let dir = tempdir_user_only();
+    let socket_path = dir.path().join("reconnect.sock");
+
+    // First listener: send two frames then drop the connection.
+    let first_listener = UnixListener::bind(&socket_path).expect("bind first listener");
+    let first_server = tokio::spawn(async move {
+        let (mut stream, _addr) = first_listener.accept().await.expect("accept first client");
+        wait_for_subscribe(&mut stream).await;
+        let locked = StatusEvent::status(1, StatusPayload::locked(AGENT_VERSION));
+        write_status_event(&mut stream, &locked).await;
+        let mut unlocked = StatusPayload::locked(AGENT_VERSION);
+        unlocked.lock_state = LockState::Unlocked;
+        write_status_event(&mut stream, &StatusEvent::status(2, unlocked)).await;
+        // Close: drops `stream` which triggers EOF on the client side.
+    });
+
+    let cancel = CancelToken::new();
+    let (sender, mut receiver) = tokio::sync::mpsc::channel(8);
+    let first_client = {
+        let cancel = cancel.clone();
+        let path = socket_path.clone();
+        tokio::spawn(async move { stream_status_events_with_cancel(&path, sender, &cancel).await })
+    };
+
+    let first = receiver.recv().await.expect("first status");
+    assert_eq!(first.sequence, 1);
+    assert_eq!(first.status.lock_state, LockState::Locked);
+    let second = receiver.recv().await.expect("second status");
+    assert_eq!(second.sequence, 2);
+    assert_eq!(second.status.lock_state, LockState::Unlocked);
+
+    let first_result = first_client.await.expect("first client task");
+    assert!(
+        matches!(first_result, Err(AgentClientError::Protocol { .. })),
+        "expected close to surface as Protocol error, got {first_result:?}",
+    );
+    first_server.await.expect("first server task");
+
+    // Replicate what the desktop reconnect loop does: drop the closed
+    // socket file, rebind a fresh listener, retry the subscribe call.
+    let _ = std::fs::remove_file(&socket_path);
+    let second_listener = UnixListener::bind(&socket_path).expect("bind second listener");
+    let second_server = tokio::spawn(async move {
+        let (mut stream, _addr) = second_listener.accept().await.expect("accept second client");
+        wait_for_subscribe(&mut stream).await;
+        let event = StatusEvent::status(7, StatusPayload::locked(AGENT_VERSION));
+        write_status_event(&mut stream, &event).await;
+    });
+
+    let (sender, mut receiver) = tokio::sync::mpsc::channel(8);
+    let second_client = {
+        let cancel = cancel.clone();
+        let path = socket_path.clone();
+        tokio::spawn(async move { stream_status_events_with_cancel(&path, sender, &cancel).await })
+    };
+
+    let frame = receiver.recv().await.expect("post-reconnect status");
+    assert_eq!(frame.sequence, 7);
+    assert_eq!(frame.status.lock_state, LockState::Locked);
+
+    let second_result = second_client.await.expect("second client task");
+    assert!(
+        matches!(second_result, Err(AgentClientError::Protocol { .. })),
+        "expected second close to surface as Protocol error, got {second_result:?}",
+    );
+    second_server.await.expect("second server task");
+}
+
+#[tokio::test]
+async fn cancel_token_aborts_status_stream_without_protocol_error() {
+    // The Tauri shell flips the cancel token on app shutdown so the
+    // long-lived reader exits cleanly — the cancellation path must
+    // resolve to `Ok(())`, not surface a "stream closed" error.
+    let dir = tempdir_user_only();
+    let socket_path = dir.path().join("cancel.sock");
+    let listener = UnixListener::bind(&socket_path).expect("bind listener");
+    let server = tokio::spawn(async move {
+        let (mut stream, _addr) = listener.accept().await.expect("accept");
+        wait_for_subscribe(&mut stream).await;
+        let event = StatusEvent::status(1, StatusPayload::locked(AGENT_VERSION));
+        write_status_event(&mut stream, &event).await;
+        // Hold the connection open until the client drops it via cancel.
+        let mut sink = [0_u8; 256];
+        let _ = stream.read(&mut sink).await;
+    });
+
+    let cancel = CancelToken::new();
+    let (sender, mut receiver) = tokio::sync::mpsc::channel(4);
+    let client = {
+        let cancel = cancel.clone();
+        let path = socket_path.clone();
+        tokio::spawn(async move { stream_status_events_with_cancel(&path, sender, &cancel).await })
+    };
+
+    let event = receiver.recv().await.expect("first status");
+    assert_eq!(event.sequence, 1);
+
+    cancel.cancel();
+    drop(receiver);
+
+    let result =
+        tokio::time::timeout(Duration::from_secs(2), client).await.expect("client joins promptly");
+    let outcome = result.expect("client task");
+    assert!(matches!(outcome, Ok(())), "cancel must yield Ok(()), got {outcome:?}");
+    server.await.expect("server task");
+}
+
+async fn wait_for_subscribe(stream: &mut tokio::net::UnixStream) {
+    let mut buffer = Vec::new();
+    let mut chunk = [0_u8; 1024];
+    loop {
+        let read = stream.read(&mut chunk).await.expect("read subscribe request");
+        assert_ne!(read, 0, "client closed before SubscribeStatus");
+        buffer.extend_from_slice(&chunk[..read]);
+        if let Ok((request, _consumed)) = decode_request_frame(&buffer, DEFAULT_MAX_MESSAGE_SIZE) {
+            assert_eq!(request.method().ok(), Some(AgentMethod::SubscribeStatus));
+            break;
+        }
+    }
 }
 
 async fn write_status_event(stream: &mut tokio::net::UnixStream, event: &StatusEvent) {
