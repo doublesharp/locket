@@ -111,11 +111,15 @@ fn client_create_stores_locket_managed_private_key_refs() -> Result<(), Box<dyn 
 {
     let directory = tempdir()?;
     let context = test_context(&directory);
+    let mut init_output = Vec::new();
     run_with_context(
         Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
         &context,
-        &mut Vec::new(),
+        &mut init_output,
     )?;
+    let init_output = String::from_utf8(init_output)?;
+    let recovery_code = recovery_code_from_output(&init_output)?.to_owned();
+    let create_context = context_with_recovery_code(&context, &format!("{recovery_code}\n"));
     run_with_context(
         Cli::try_parse_from(["locket", "policy", "add", "ci", "--", "cargo", "test"])?,
         &context,
@@ -134,7 +138,7 @@ fn client_create_stores_locket_managed_private_key_refs() -> Result<(), Box<dyn 
             "--policy",
             "ci",
         ])?,
-        &context,
+        &create_context,
         &mut keychain_output,
     )?;
     let keychain_output = String::from_utf8(keychain_output)?;
@@ -167,7 +171,7 @@ fn client_create_stores_locket_managed_private_key_refs() -> Result<(), Box<dyn 
             "--policy",
             "ci",
         ])?,
-        &context,
+        &create_context,
         &mut file_output,
     )?;
     let file_output = String::from_utf8(file_output)?;
@@ -183,6 +187,15 @@ fn client_create_stores_locket_managed_private_key_refs() -> Result<(), Box<dyn 
     assert_eq!(file_ref.storage, "wrapped-local-file");
     assert!(file_ref.local_path_hash.is_some());
     assert!(file_ref.keychain_account.is_none());
+    let envelope = crate::load_recovery_envelope(&directory.path().join(".locket/recovery"))?;
+    assert!(envelope.entries.iter().any(|entry| {
+        entry.entry_kind == format!("automation_client_private_key:{}", keychain_client.id)
+            && entry.entry_id == keychain_client.id
+    }));
+    assert!(envelope.entries.iter().any(|entry| {
+        entry.entry_kind == format!("automation_client_private_key:{}", file_client.id)
+            && entry.entry_id == file_client.id
+    }));
     let key_file =
         directory.path().join("automation-clients").join(format!("{}.key", file_client.id));
     let key_file_text = fs::read_to_string(&key_file)?;
@@ -194,6 +207,19 @@ fn client_create_stores_locket_managed_private_key_refs() -> Result<(), Box<dyn 
 
         assert_eq!(fs::metadata(&key_file)?.permissions().mode() & 0o777, 0o600);
     }
+
+    context.key_store.delete_master_key(resolved.config.project_id.as_str())?;
+    context.automation_client_key_store.delete_client_key(&keychain_client.id)?;
+    fs::remove_file(&key_file)?;
+    let mut recover_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "recover"])?,
+        &create_context,
+        &mut recover_output,
+    )?;
+    let recover_output = String::from_utf8(recover_output)?;
+    assert!(recover_output.contains("recovered: automation_client_private_keys=2 skipped=0"));
+    assert!(key_file.exists());
 
     run_with_context(
         Cli::try_parse_from(["locket", "client", "revoke", "managed_file"])?,

@@ -8,8 +8,13 @@ use std::path::{Path, PathBuf};
 use data_encoding::BASE64URL_NOPAD;
 use ed25519_dalek::SigningKey;
 use locket_core::ClientId;
-use locket_crypto::{KeyPurpose, generate_key, wrap_dek_v1};
-use locket_platform::{secure_directory, write_user_only_file};
+use locket_crypto::{
+    KeyPurpose, derive_recovery_key_v1, generate_key, open_recovery_entry_v1, wrap_dek_v1,
+};
+use locket_platform::{
+    RecoveryEnvelope, load_recovery_envelope, load_recovery_kdf_toml, save_recovery_envelope,
+    secure_directory, write_user_only_file,
+};
 use locket_store::{
     AuditWrite, AutomationClientPrivateKeyRefRecord, AutomationClientRecord, Store,
 };
@@ -21,8 +26,11 @@ use crate::{
     CliError, ClientAddArgs, ClientCommand, ClientCreateArgs, ResolvedProject, RuntimeContext,
     ensure_project_exists, ensure_trusted_project_root, format_hex, format_unix_nanos,
     hex_nibble_with_message, invalid_reference_error, load_command_policy, load_project_key,
-    metadata_invalid_error, now_unix_nanos, open_store, policy_not_found_error, require_project,
+    metadata_invalid_error, now_unix_nanos, open_store, policy_not_found_error,
+    recovery_code_decode, require_project, seal_recovery_envelope_entry,
 };
+
+const AUTOMATION_CLIENT_PRIVATE_KEY_PREFIX: &str = "automation_client_private_key:";
 
 pub fn client_command(
     context: &RuntimeContext,
@@ -282,11 +290,11 @@ fn store_client_private_key(
     private_key: &locket_crypto::KeyBytes,
     timestamp: i64,
 ) -> Result<AutomationClientPrivateKeyRefRecord, CliError> {
-    match storage {
+    let reference = match storage {
         "os-keychain" => {
             let reference =
                 context.automation_client_key_store.store_client_key(client_id, private_key)?;
-            Ok(AutomationClientPrivateKeyRefRecord {
+            AutomationClientPrivateKeyRefRecord {
                 client_id: client_id.to_owned(),
                 storage: storage.to_owned(),
                 keychain_service: Some(reference.service),
@@ -299,7 +307,7 @@ fn store_client_private_key(
                 .to_string(),
                 created_at: timestamp,
                 updated_at: timestamp,
-            })
+            }
         }
         "wrapped-local-file" => {
             let path = automation_client_key_path(context, client_id)?;
@@ -325,7 +333,7 @@ fn store_client_private_key(
             });
             let contents = serde_json::to_vec_pretty(&file)?;
             write_user_only_file(&path, &contents)?;
-            Ok(AutomationClientPrivateKeyRefRecord {
+            AutomationClientPrivateKeyRefRecord {
                 client_id: client_id.to_owned(),
                 storage: storage.to_owned(),
                 keychain_service: None,
@@ -340,10 +348,84 @@ fn store_client_private_key(
                 .to_string(),
                 created_at: timestamp,
                 updated_at: timestamp,
-            })
+            }
         }
-        _ => Err(metadata_invalid_error("unsupported automation client private-key storage")),
+        _ => {
+            return Err(metadata_invalid_error(
+                "unsupported automation client private-key storage",
+            ));
+        }
+    };
+    if let Err(error) =
+        write_client_private_key_recovery_envelope(context, resolved, client_id, private_key)
+    {
+        cleanup_client_private_key(context, storage, client_id);
+        return Err(error);
     }
+    Ok(reference)
+}
+
+fn write_client_private_key_recovery_envelope(
+    context: &RuntimeContext,
+    resolved: &ResolvedProject,
+    client_id: &str,
+    private_key: &locket_crypto::KeyBytes,
+) -> Result<(), CliError> {
+    let project_id = resolved.config.project_id.as_str();
+    let recovery_dir = resolved.root.join(".locket").join("recovery");
+    let kdf = load_recovery_kdf_toml(&recovery_dir)
+        .map_err(|error| metadata_invalid_error(format!("recovery/kdf.toml: {error}")))?;
+    let envelope = load_recovery_envelope(&recovery_dir)
+        .map_err(|error| metadata_invalid_error(format!("recovery/envelope.bin: {error}")))?;
+    kdf.validate()?;
+    if envelope.kdf_profile_id != kdf.kdf_profile_id {
+        return Err(metadata_invalid_error("recovery envelope kdf profile mismatch"));
+    }
+    let code = context.recovery_code_reader.read_recovery_code("current recovery code")?;
+    let code_bytes = recovery_code_decode(code.trim())?;
+    let salt = kdf
+        .decode_salt()
+        .map_err(|error| metadata_invalid_error(format!("recovery kdf salt: {error}")))?;
+    let recovery_root = derive_recovery_key_v1(&code_bytes, &salt, kdf.to_crypto_params())?;
+    let master_entry = envelope
+        .entries
+        .iter()
+        .find(|entry| entry.entry_kind == "master_key" && entry.entry_id == project_id)
+        .ok_or_else(|| metadata_invalid_error("recovery envelope missing master_key entry"))?;
+    let _ = open_recovery_entry_v1(
+        &recovery_root,
+        &kdf.kdf_profile_id,
+        &master_entry.entry_kind,
+        &master_entry.entry_id,
+        &master_entry.nonce,
+        &master_entry.ciphertext,
+    )?;
+    let entry_kind = format!("{AUTOMATION_CLIENT_PRIVATE_KEY_PREFIX}{client_id}");
+    let mut entries = Vec::with_capacity(envelope.entries.len() + 1);
+    for entry in envelope.entries {
+        if entry.entry_id == client_id
+            && (entry.entry_kind == "automation_client_private_key"
+                || entry.entry_kind == entry_kind)
+        {
+            continue;
+        }
+        entries.push(entry);
+    }
+    entries.push(seal_recovery_envelope_entry(
+        &recovery_root,
+        &kdf.kdf_profile_id,
+        &entry_kind,
+        client_id,
+        private_key,
+    )?);
+    let envelope = RecoveryEnvelope {
+        kdf_profile_id: kdf.kdf_profile_id.clone(),
+        created_at_unix_nanos: envelope.created_at_unix_nanos,
+        entries,
+    };
+    save_recovery_envelope(&recovery_dir, &envelope)
+        .map_err(|error| metadata_invalid_error(format!("save recovery envelope: {error}")))?;
+    Ok(())
 }
 
 fn delete_client_private_key(

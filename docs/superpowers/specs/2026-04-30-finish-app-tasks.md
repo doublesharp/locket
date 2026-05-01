@@ -74,18 +74,6 @@ ship. Each bullet has spec ref + code ref + suggested touches.
 
 ### A. Crypto / recovery / bundle correctness
 
-- [~] (in-flight: feature/recovery-client-envelope) **recovery-rotate-fresh-user-verification**:
-  `team-sync-recovery.md:159,164-165` requires `locket recovery rotate`
-  to gate on fresh local user verification. `vault/recovery.rs:51-107`
-  calls neither helper. Insert verification call + embed
-  `UserVerificationAudit` into the `RECOVERY_ROTATE` row.
-- [~] (in-flight: feature/recovery-client-envelope) **client-create-writes-to-recovery-envelope**: `crypto.md:172`
-  says `locket client create` with `--storage os-keychain` or
-  `--storage wrapped-local-file` must add an
-  `automation_client_private_key:<client_id>` envelope entry at
-  creation. `team/client.rs:40-181` + `store_client_private_key:276-347`
-  only write to keychain/local file. Result: `recover_command`
-  always counts those as `skipped_automation_client_private`.
 - [ ] **bootstrap-shell-tool-presence-follow-up**: bootstrap reports shell
   policy tool checks as `tools_unchecked: shell:<first-token>` because
   safely and portably identifying every referenced tool inside arbitrary

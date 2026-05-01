@@ -58,6 +58,8 @@ pub fn recovery_rotate_command(
 ) -> Result<(), CliError> {
     let resolved = require_project(context)?;
     let project_id = resolved.config.project_id.as_str();
+    let user_verification =
+        require_user_verification(context, "recovery rotate", "Rotate the local recovery code")?;
     let recovery_dir = recovery_dir(&resolved);
     let timestamp = now_unix_nanos()?;
     let code_bytes = generate_recovery_code_bytes()?;
@@ -110,7 +112,13 @@ pub fn recovery_rotate_command(
         .map_err(|error| metadata_invalid_error(format!("save recovery kdf: {error}")))?;
     save_recovery_envelope(&recovery_dir, &new_envelope)
         .map_err(|error| metadata_invalid_error(format!("save recovery envelope: {error}")))?;
-    write_recovery_rotate_audit(context, &resolved, &new_kdf.kdf_profile_id, timestamp)?;
+    write_recovery_rotate_audit(
+        context,
+        &resolved,
+        &new_kdf.kdf_profile_id,
+        timestamp,
+        user_verification,
+    )?;
     display_recovery_code(output, &code_bytes)
 }
 
@@ -567,6 +575,7 @@ fn write_recovery_rotate_audit(
     resolved: &ResolvedProject,
     kdf_profile_id: &str,
     timestamp: i64,
+    user_verification: UserVerificationAudit,
 ) -> Result<(), CliError> {
     let mut store = open_store(context)?;
     let audit_key =
@@ -581,6 +590,7 @@ fn write_recovery_rotate_audit(
         "command": "recovery rotate",
         "kdf_profile_id": kdf_profile_id,
         "device_id": device_id,
+        "user_verification": user_verification,
     });
     let audit = AuditWrite {
         project_id: resolved.config.project_id.as_str(),

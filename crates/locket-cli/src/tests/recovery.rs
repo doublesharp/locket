@@ -409,7 +409,54 @@ fn recovery_rotate_creates_envelope_and_prints_full_code() -> Result<(), Box<dyn
     )?;
     assert!(metadata.contains("\"kdf_profile_id\""));
     assert!(metadata.contains("\"command\":\"recovery rotate\""));
+    assert!(metadata.contains("\"user_verification\""));
+    assert!(metadata.contains("\"method\":\"test\""));
     assert!(!metadata.contains(code_line));
+    Ok(())
+}
+
+#[test]
+fn recovery_rotate_requires_fresh_user_verification_before_writing()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    let mut init_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut init_output,
+    )?;
+    let initial_recovery_code =
+        recovery_code_from_output(&String::from_utf8(init_output)?)?.to_owned();
+    let recovery_dir = directory.path().join(".locket").join("recovery");
+    let envelope_before = fs::read(recovery_dir.join("envelope.bin"))?;
+    let kdf_before = fs::read_to_string(recovery_dir.join("kdf.toml"))?;
+    let rejecting_context = context_with_user_verifier(
+        &context_with_recovery_code(&context, &format!("{initial_recovery_code}\n")),
+        Arc::new(MemoryLocalUserVerifier::denying()),
+    );
+
+    let mut rotate_output = Vec::new();
+    let result = run_with_context(
+        Cli::try_parse_from(["locket", "recovery", "rotate"])?,
+        &rejecting_context,
+        &mut rotate_output,
+    );
+
+    let Err(error) = result else {
+        return Err("recovery rotate must fail when user verification is denied".into());
+    };
+    assert_eq!(error.exit_code(), locket_core::LocketError::UserVerificationFailed.exit_code());
+    assert!(rotate_output.is_empty());
+    assert_eq!(fs::read(recovery_dir.join("envelope.bin"))?, envelope_before);
+    assert_eq!(fs::read_to_string(recovery_dir.join("kdf.toml"))?, kdf_before);
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let rotate_rows: i64 = store.connection().query_row(
+        "SELECT COUNT(*) FROM audit_log WHERE action = 'RECOVERY_ROTATE'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(rotate_rows, 0);
     Ok(())
 }
 
