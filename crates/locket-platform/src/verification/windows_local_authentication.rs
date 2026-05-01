@@ -7,7 +7,7 @@
 //!   1. Construct a `UserConsentVerifier` request with the localized
 //!      reason via `UserConsentVerifier::RequestVerificationAsync`.
 //!   2. Resolve the returned `IAsyncOperation<UserConsentVerificationResult>`
-//!      synchronously (using `.get()` from the WinRT runtime).
+//!      synchronously (using `.join()` from the WinRT runtime).
 //!   3. Map `UserConsentVerificationResult::Verified` to `Ok(true)`,
 //!      `DeviceBusy`/`Canceled`/`RetriesExhausted` to `Ok(false)` (user
 //!      rejected), `DeviceNotPresent`/`NotConfiguredForUser`/
@@ -99,14 +99,14 @@ fn evaluate_local_user_via_windows_hello(reason: &str) -> Result<bool, LocalAuth
 
     let availability = UserConsentVerifier::CheckAvailabilityAsync()
         .map_err(map_windows_error)?
-        .get()
+        .join()
         .map_err(map_windows_error)?;
     map_availability(availability)?;
 
     let message = HSTRING::from(reason);
     let result = UserConsentVerifier::RequestVerificationAsync(&message)
         .map_err(map_windows_error)?
-        .get()
+        .join()
         .map_err(map_windows_error)?;
     map_verification_result(result)
 }

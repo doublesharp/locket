@@ -16,13 +16,20 @@ pub struct StdinConfirmationReader;
 
 impl ConfirmationReader for StdinConfirmationReader {
     fn read_confirmation(&self, prompt: &str) -> Result<String, CliError> {
-        if !io::stdin().is_terminal() {
-            return Err(tty_required_error(format!("{prompt} requires interactive confirmation")));
-        }
-        let mut confirmation = String::new();
-        io::stdin().read_line(&mut confirmation)?;
-        Ok(confirmation)
+        read_stdin_confirmation(prompt, io::stdin().is_terminal())
     }
+}
+
+/// Inner implementation of [`StdinConfirmationReader::read_confirmation`]
+/// with the TTY check injected so tests can exercise the non-TTY guard
+/// regardless of how `cargo test` is launched.
+pub fn read_stdin_confirmation(prompt: &str, stdin_is_terminal: bool) -> Result<String, CliError> {
+    if !stdin_is_terminal {
+        return Err(tty_required_error(format!("{prompt} requires interactive confirmation")));
+    }
+    let mut confirmation = String::new();
+    io::stdin().read_line(&mut confirmation)?;
+    Ok(confirmation)
 }
 
 pub trait PassphraseReader {
@@ -65,7 +72,21 @@ impl PassphraseReader for EnvOrPromptPassphraseReader {
 }
 
 pub fn require_interactive_passphrase(reason: &str) -> Result<(), CliError> {
-    if io::stdin().is_terminal() && io::stderr().is_terminal() {
+    require_interactive_passphrase_with(
+        reason,
+        io::stdin().is_terminal(),
+        io::stderr().is_terminal(),
+    )
+}
+
+/// Inner implementation of [`require_interactive_passphrase`] with the
+/// TTY checks injected so tests can drive the guard deterministically.
+pub fn require_interactive_passphrase_with(
+    reason: &str,
+    stdin_is_terminal: bool,
+    stderr_is_terminal: bool,
+) -> Result<(), CliError> {
+    if stdin_is_terminal && stderr_is_terminal {
         Ok(())
     } else {
         Err(tty_required_error(format!("{reason} requires an interactive TTY")))

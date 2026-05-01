@@ -188,20 +188,21 @@ fn tty_required_errors_exit_68() {
 
 #[test]
 fn prompt_tty_required_paths_exit_68() -> Result<(), Box<dyn std::error::Error>> {
-    use crate::ConfirmationReader;
-
     let confirmation_error =
-        crate::runtime::prompts::StdinConfirmationReader.read_confirmation("profile deletion");
+        crate::runtime::prompts::read_stdin_confirmation("profile deletion", false);
     let Err(confirmation_error) = confirmation_error else {
-        return Err("stdin confirmation should require an interactive TTY in tests".into());
+        return Err("non-TTY stdin confirmation should fail closed".into());
     };
     assert_eq!(confirmation_error.exit_code(), 68);
     assert!(confirmation_error.to_string().contains("requires interactive confirmation"));
 
-    let passphrase_error =
-        crate::runtime::prompts::require_interactive_passphrase("passphrase fallback setup");
+    let passphrase_error = crate::runtime::prompts::require_interactive_passphrase_with(
+        "passphrase fallback setup",
+        false,
+        false,
+    );
     let Err(passphrase_error) = passphrase_error else {
-        return Err("passphrase setup should require an interactive TTY in tests".into());
+        return Err("non-TTY passphrase setup should fail closed".into());
     };
     assert_eq!(passphrase_error.exit_code(), 68);
     assert!(passphrase_error.to_string().contains("requires an interactive TTY"));
