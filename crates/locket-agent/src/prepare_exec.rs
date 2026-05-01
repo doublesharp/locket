@@ -134,6 +134,13 @@ pub async fn handle_prepare_exec(
         cache.lookup(project_id, now_unix_nanos).is_some()
     };
     if !unlocked {
+        crate::degraded_audit::record_locked_refusal(
+            "PREPARE_EXEC",
+            Some(project_id),
+            "agent.PrepareExec",
+            None,
+            now_unix_nanos,
+        );
         return typed_error(
             request,
             ERROR_UNLOCK_REQUIRED,
@@ -431,6 +438,12 @@ mod tests {
             request_payload(Some(PROJECT_ID)),
         );
 
+        // The degraded-audit log path falls back to the user data dir
+        // when the request omits a store_path; we don't assert on the
+        // file here to avoid touching the real `${LOCKET_HOME}` from
+        // tests. The wiring is exercised by
+        // `degraded_audit::tests::record_locked_refusal_writes_to_store_path_parent`
+        // and the per-handler reveal/scan/resolve tests.
         let response = handle_prepare_exec(&envelope, &state, 1).await;
         let ResponseEnvelope::Error(error) = response else {
             panic!("expected error envelope");

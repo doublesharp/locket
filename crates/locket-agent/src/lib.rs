@@ -9,6 +9,7 @@ mod audit_deny;
 mod audit_verify;
 mod auth;
 mod config;
+mod degraded_audit;
 mod envelope;
 mod error;
 mod framing;

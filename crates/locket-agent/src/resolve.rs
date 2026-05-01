@@ -84,6 +84,7 @@ pub struct ResolveResponse {
 
 /// Handler for `ResolveReference`.
 #[cfg(unix)]
+#[allow(clippy::too_many_lines)]
 pub async fn handle_resolve(
     request: &RequestEnvelope,
     state: &crate::server::AgentSocketState,
@@ -162,6 +163,13 @@ pub async fn handle_resolve(
         cache.lookup(project_id, now_unix_nanos).map(|entry| entry.key_bytes().to_vec())
     };
     let Some(master_key) = master_key else {
+        crate::degraded_audit::record_locked_refusal(
+            "RESOLVE_REFERENCE",
+            Some(project_id),
+            "agent.ResolveReference",
+            Some(Path::new(store_path)),
+            now_unix_nanos,
+        );
         return typed_error(
             request,
             ERROR_UNLOCK_REQUIRED,
@@ -1317,6 +1325,19 @@ mod tests {
             return Err("expected unlock-required error".into());
         };
         assert_eq!(error.error, "UnlockRequired");
+
+        let degraded_log = fixture
+            .store_path
+            .parent()
+            .expect("store path parent")
+            .join(locket_platform::DEGRADED_AUDIT_LOG_FILENAME);
+        let body = std::fs::read_to_string(&degraded_log)?;
+        let row: serde_json::Value =
+            serde_json::from_str(body.lines().next().expect("at least one row"))?;
+        assert_eq!(row["action"], "RESOLVE_REFERENCE");
+        assert_eq!(row["status"], "DENIED_LOCKED");
+        assert_eq!(row["command"], "agent.ResolveReference");
+        assert_eq!(row["project_id"], PROJECT_ID);
         Ok(())
     }
 
