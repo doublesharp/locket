@@ -256,6 +256,15 @@ async fn agent_list_runtime_sessions(
         .await
 }
 
+/// Tauri command exposing the agent's metadata-only saved policy list.
+#[tauri::command]
+async fn agent_list_policies(
+    request: locket_agent::ListPoliciesRequest,
+) -> Result<locket_agent::ListPoliciesResponse, AgentClientError> {
+    let path = agent_client::resolve_socket_path();
+    agent_client::invoke_method(&path, locket_agent::AgentMethod::ListPolicies, &request).await
+}
+
 /// Tauri command exposing the agent's metadata-only active-profile secret list.
 #[tauri::command]
 async fn agent_list_secrets(
@@ -381,6 +390,7 @@ pub fn run() -> tauri::Result<()> {
             agent_resolve,
             agent_prepare_exec,
             agent_list_runtime_sessions,
+            agent_list_policies,
             agent_list_secrets,
             agent_read_config,
             agent_write_config,

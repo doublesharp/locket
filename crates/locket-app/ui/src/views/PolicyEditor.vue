@@ -9,9 +9,13 @@ interface Props {
   rows: CommandPolicyRow[];
   privacyMode: boolean;
   loading: boolean;
+  errorMessage?: string | null;
 }
 
 const props = defineProps<Props>();
+const emit = defineEmits<{
+  refresh: [];
+}>();
 
 const selectedId = ref<string | null>(null);
 const searchQuery = ref<string>('');
@@ -107,6 +111,10 @@ function ttlLabel(seconds: number): string {
 function selectPolicy(row: CommandPolicyRow): void {
   selectedId.value = row.id;
 }
+
+function refreshPolicies(): void {
+  emit('refresh');
+}
 </script>
 
 <template>
@@ -125,10 +133,13 @@ function selectPolicy(row: CommandPolicyRow): void {
           />
         </label>
         <span class="badge badge--neutral">read-only</span>
+        <button type="button" class="view__button" @click="refreshPolicies">Refresh</button>
       </div>
     </header>
 
     <p v-if="loading" class="view__loading" role="status">Loading policy metadata...</p>
+
+    <p v-else-if="errorMessage" class="view__empty">{{ errorMessage }}</p>
 
     <p v-else-if="isEmpty" class="view__empty">
       No saved command policies. Run <code>locket policy add dev -- &lt;cmd&gt;</code>.
@@ -321,6 +332,23 @@ function selectPolicy(row: CommandPolicyRow): void {
 
 .view__search input::placeholder {
   color: #667085;
+}
+
+.view__button {
+  min-height: 2rem;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 0.375rem;
+  background: rgba(255, 255, 255, 0.05);
+  color: #e6e8ec;
+  cursor: pointer;
+  font: inherit;
+  padding: 0.375rem 0.625rem;
+}
+
+.view__button:focus {
+  border-color: #f8d77a;
+  outline: 2px solid rgba(248, 215, 122, 0.24);
+  outline-offset: 1px;
 }
 
 .view__loading,

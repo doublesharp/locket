@@ -240,6 +240,7 @@ async fn list_audit_round_trips_against_a_live_agent_while_locked()
                 "profile_id": "profile-prod",
                 "secret_name": "DATABASE_URL",
                 "source": "user-local",
+                "access_mode": "clipboard",
                 "command": "deploy"
             }),
             timestamp: 100,

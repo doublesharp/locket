@@ -5,6 +5,7 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import AgentUnavailableBanner from './components/AgentUnavailableBanner.vue';
 import {
   listAudit,
+  listPolicies,
   listRuntimeSessions,
   listSecrets,
   listVersions,
@@ -14,6 +15,7 @@ import {
   writeConfig,
   verifyAudit,
 } from './agent/client';
+import { commandPolicyRow } from './agent/policies';
 import { runtimeSessionRow } from './agent/runtimeSessions';
 import { secretRow } from './agent/secrets';
 import { versionHistoryRow } from './agent/versions';
@@ -45,6 +47,7 @@ import type {
   AuditChainStatus,
   AuditWireRow,
   ListAuditRequest,
+  ListPoliciesRequest,
   ListRuntimeSessionsRequest,
   ListSecretsRequest,
   ListVersionsRequest,
@@ -149,6 +152,8 @@ const versionsLastRefreshed = ref<string | undefined>(undefined);
 const sessionsLoading = ref<boolean>(false);
 const sessionsError = ref<string | null>(null);
 const sessionsLastRefreshed = ref<string | undefined>(undefined);
+const policiesLoading = ref<boolean>(false);
+const policiesError = ref<string | null>(null);
 const settingsLoading = ref<boolean>(false);
 const settingsError = ref<string | null>(null);
 const auditLoading = ref<boolean>(false);
@@ -361,6 +366,7 @@ function triggerVerify(): void {
   void refreshSecrets();
   void refreshVersions();
   void refreshRuntimeSessions();
+  void refreshPolicies();
   void refreshAuditLog();
   void verifyAuditChain();
 }
@@ -411,6 +417,17 @@ const runtimeSessionRequest = computed<ListRuntimeSessionsRequest | null>(() => 
   return {
     project_id: currentStatus.project_id,
     profile_id: currentStatus.profile_name,
+    privacy_redact_names: settings.value.privacyRedactNames,
+  };
+});
+
+const policiesRequest = computed<ListPoliciesRequest | null>(() => {
+  const projectId = status.value?.project_id;
+  if (projectId === null || projectId === undefined) {
+    return null;
+  }
+  return {
+    project_id: projectId,
     privacy_redact_names: settings.value.privacyRedactNames,
   };
 });
@@ -551,6 +568,50 @@ async function refreshRuntimeSessions(): Promise<void> {
 
 watch(runtimeSessionRequest, () => {
   void refreshRuntimeSessions();
+});
+
+function policyErrorLabel(error: AgentClientError): string {
+  switch (error.kind) {
+    case 'unavailable':
+      return 'Agent unavailable.';
+    case 'protocol':
+      return 'Policy request failed.';
+    case 'rejected':
+      return error.code;
+    default:
+      return 'Policy request failed.';
+  }
+}
+
+let policyRefreshSequence = 0;
+
+async function refreshPolicies(): Promise<void> {
+  const request = policiesRequest.value;
+  const sequence = (policyRefreshSequence += 1);
+  if (request === null) {
+    policies.value = [];
+    policiesError.value = null;
+    policiesLoading.value = false;
+    return;
+  }
+
+  policiesLoading.value = true;
+  policiesError.value = null;
+  const result = await listPolicies(request);
+  if (sequence !== policyRefreshSequence) {
+    return;
+  }
+  if (result.ok) {
+    policies.value = result.value.rows.map(commandPolicyRow);
+  } else {
+    policies.value = [];
+    policiesError.value = policyErrorLabel(result.error);
+  }
+  policiesLoading.value = false;
+}
+
+watch(policiesRequest, () => {
+  void refreshPolicies();
 });
 
 const auditRequest = computed<ListAuditRequest | null>(() => {
@@ -896,7 +957,9 @@ onUnmounted(() => {
         v-else-if="currentView === 'policies'"
         :rows="policies"
         :privacy-mode="settings.privacyRedactNames"
-        :loading="loading"
+        :loading="policiesLoading || loading"
+        :error-message="policiesError"
+        @refresh="refreshPolicies"
       />
 
       <BackupRecovery v-else-if="currentView === 'recovery'" @action="triggerBackupAction" />

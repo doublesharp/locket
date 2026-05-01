@@ -113,6 +113,8 @@ export interface ResolveResponse {
 export interface PrepareExecRequest {
   policy_name: string;
   profile_id: string;
+  project_id?: string;
+  binding?: GrantBinding;
 }
 
 export interface GrantBinding {
@@ -153,6 +155,38 @@ export interface RuntimeSessionWireRow {
 
 export interface ListRuntimeSessionsResponse {
   rows: RuntimeSessionWireRow[];
+}
+
+export interface ListPoliciesRequest {
+  project_id: string;
+  privacy_redact_names: boolean;
+}
+
+export type CommandKindWire = 'argv' | 'shell';
+export type CommandEnvModeWire = 'minimal' | 'inherit' | 'strict';
+export type CommandOverrideModeWire = 'locket' | 'preserve' | 'fail';
+
+export interface CommandPolicyWireRow {
+  id: string;
+  name: string;
+  alias?: string;
+  command_kind: CommandKindWire;
+  command_preview: string;
+  required_secrets: string[];
+  optional_secrets: string[];
+  allowed_secrets: string[];
+  confirm: boolean;
+  require_user_verification: boolean;
+  require_agent: boolean;
+  allow_remote_docker: boolean;
+  ttl_seconds: number;
+  env_mode: CommandEnvModeWire;
+  override_mode: CommandOverrideModeWire;
+  updated_at_unix_nanos: number;
+}
+
+export interface ListPoliciesResponse {
+  rows: CommandPolicyWireRow[];
 }
 
 export interface ListSecretsRequest {

@@ -14,6 +14,8 @@ import type {
   CopyResponse,
   ListAuditRequest,
   ListAuditResponse,
+  ListPoliciesRequest,
+  ListPoliciesResponse,
   ListVersionsRequest,
   ListVersionsResponse,
   ListRuntimeSessionsRequest,
@@ -172,6 +174,12 @@ export async function listRuntimeSessions(
   request: ListRuntimeSessionsRequest,
 ): Promise<AgentResult<ListRuntimeSessionsResponse>> {
   return callTyped<ListRuntimeSessionsResponse>('agent_list_runtime_sessions', { request });
+}
+
+export async function listPolicies(
+  request: ListPoliciesRequest,
+): Promise<AgentResult<ListPoliciesResponse>> {
+  return callTyped<ListPoliciesResponse>('agent_list_policies', { request });
 }
 
 export async function listSecrets(
