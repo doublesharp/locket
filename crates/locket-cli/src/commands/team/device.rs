@@ -1,24 +1,31 @@
 use data_encoding::BASE64URL_NOPAD;
-use locket_core::DeviceId;
-use locket_crypto::{KeyPurpose, generate_key};
-use locket_platform::{LocalDevicePrivateKeyStorage, WrappedLocalFileDevicePrivateKeyStorage};
+use locket_core::{DeviceId, LocketError, ProjectConfig};
+use locket_crypto::{
+    KeyPurpose, derive_recovery_key_v1, generate_key, generate_recovery_code_bytes,
+    generate_recovery_salt,
+};
+use locket_platform::{
+    LocalDevicePrivateKeyStorage, PlatformError, RecoveryEnvelope, RecoveryKdfToml,
+    WrappedLocalFileDevicePrivateKeyStorage, save_recovery_envelope, save_recovery_kdf_toml,
+};
 use locket_store::{AuditContext, AuditWrite, DeviceRecord, Store};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
-use std::io::Write;
-use std::path::PathBuf;
+use std::io::{self, IsTerminal, Write};
+use std::path::{Path, PathBuf};
 use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret as X25519StaticSecret};
 
-use crate::runtime::error::corrupt_db_error;
+use crate::runtime::error::{confirmation_failed_error, corrupt_db_error, typed_cli_error};
 use crate::runtime::user_verification::{
     UserVerificationAudit, configured_user_verification, require_user_verification,
 };
 use crate::{
     CliError, DeviceAddArgs, DeviceCommand, DeviceInitArgs, DeviceListArgs, DeviceRemoveArgs,
-    RuntimeContext, access_denied_error, ensure_project_exists, format_hex,
+    ResolvedProject, RuntimeContext, access_denied_error, ensure_project_exists,
+    ensure_project_metadata, format_hex, formatted_recovery_code, insert_wrapped_key,
     invalid_reference_error, load_project_key, metadata_invalid_error, now_unix_nanos, open_store,
-    require_project,
+    require_project, seal_recovery_envelope_entry, store_master_key_with_fallback, trust_root,
 };
 
 pub fn device_command(
@@ -43,8 +50,12 @@ fn device_init_command(
     let resolved = require_project(context)?;
     let mut store = open_store(context)?;
     let project_id = resolved.config.project_id.as_str();
-    ensure_project_exists(&store, project_id)?;
     let timestamp = now_unix_nanos()?;
+    let bootstrapped =
+        maybe_bootstrap_first_run_on_machine(context, &mut store, &resolved, output, timestamp)?;
+    if !bootstrapped {
+        ensure_project_exists(&store, project_id)?;
+    }
 
     let existing_replacement = if let Some(existing) = store.get_active_local_device(project_id)? {
         if !args.force {
@@ -139,9 +150,7 @@ fn device_pubkey_command(
         .try_into()
         .map_err(|_| corrupt_db_error("device sealing public key has unexpected length"))?;
     if derived_public != stored_public {
-        return Err(corrupt_db_error(
-            "device private key does not match stored public key",
-        ));
+        return Err(corrupt_db_error("device private key does not match stored public key"));
     }
 
     writeln!(output, "device_id: {}", device.id)?;
@@ -537,6 +546,227 @@ const fn device_audit_write<'a>(
         metadata_json: metadata,
         timestamp,
     }
+}
+
+/// Detects whether `device init` is the first invocation on this machine and,
+/// if so, bootstraps the local master key, recovery envelope, recovery code,
+/// and project records before the regular `device init` flow proceeds.
+///
+/// Returns `Ok(true)` when the bootstrap was performed, `Ok(false)` when the
+/// existing-master-key path applies, and an `AmbiguousBootstrapState`-flavored
+/// error (mapped to `LostKeychainEntry`) when partial state is detected.
+fn maybe_bootstrap_first_run_on_machine(
+    context: &RuntimeContext,
+    store: &mut Store,
+    resolved: &ResolvedProject,
+    output: &mut impl Write,
+    timestamp: i64,
+) -> Result<bool, CliError> {
+    let project_id = resolved.config.project_id.as_str();
+    match context.key_store.load_master_key(project_id) {
+        Ok(_) => Ok(false),
+        Err(PlatformError::MasterKeyNotFound) => {
+            if context.passphrase_store.contains_project(project_id)? {
+                return Ok(false);
+            }
+            let envelope_present = recovery_envelope_present(&resolved.root);
+            let team_row_present =
+                store.get_project(project_id)?.is_some() && team_row_exists(store, project_id)?;
+            if envelope_present || team_row_present {
+                return Err(ambiguous_bootstrap_state_error(
+                    envelope_present,
+                    team_row_present,
+                ));
+            }
+            bootstrap_first_run_on_machine(context, store, resolved, output, timestamp)?;
+            Ok(true)
+        }
+        Err(error) => Err(CliError::Platform(error)),
+    }
+}
+
+fn recovery_envelope_present(root: &Path) -> bool {
+    let recovery_dir = root.join(".locket").join("recovery");
+    recovery_dir.join("envelope.bin").exists() || recovery_dir.join("kdf.toml").exists()
+}
+
+fn team_row_exists(store: &Store, project_id: &str) -> Result<bool, CliError> {
+    Ok(store.get_team_by_project(project_id)?.is_some())
+}
+
+fn ambiguous_bootstrap_state_error(envelope_present: bool, team_row_present: bool) -> CliError {
+    let message = match (envelope_present, team_row_present) {
+        (true, true) => {
+            "ambiguous bootstrap state: recovery envelope and team membership both present \
+             without a local master key; run `locket recover` to restore the keychain entry, \
+             or `locket team accept` if you have a fresh invite"
+        }
+        (true, false) => {
+            "ambiguous bootstrap state: recovery envelope is present but the local master key \
+             is missing; run `locket recover` to restore the keychain entry"
+        }
+        (false, true) => {
+            "ambiguous bootstrap state: a team record exists for this project but no local \
+             master key is present; run `locket team accept <invite>` or `locket recover`"
+        }
+        (false, false) => {
+            "ambiguous bootstrap state: master key is missing and partial state was detected"
+        }
+    };
+    typed_cli_error(LocketError::LostKeychainEntry, message)
+}
+
+/// Performs the first-run-on-machine bootstrap for `device init`.
+///
+/// This is invoked when no local master key exists and no partial state
+/// (recovery envelope, team membership) is detected. It generates a fresh
+/// master key, persists it via the configured master-key store with passphrase
+/// fallback, creates the project records, project key material, recovery
+/// envelope, and displays the recovery code under the same one-time-display
+/// rules used by `locket init`.
+fn bootstrap_first_run_on_machine(
+    context: &RuntimeContext,
+    store: &mut Store,
+    resolved: &ResolvedProject,
+    output: &mut impl Write,
+    timestamp: i64,
+) -> Result<(), CliError> {
+    let config = &resolved.config;
+    let project_id = config.project_id.as_str();
+
+    ensure_project_metadata(store, config, timestamp)?;
+
+    let master_key = generate_key()?;
+    store_master_key_with_fallback(context, project_id, &master_key, timestamp)?;
+
+    insert_wrapped_key(
+        store,
+        project_id,
+        None,
+        KeyPurpose::ProjectMetadata,
+        &master_key,
+        timestamp,
+    )?;
+    insert_wrapped_key(store, project_id, None, KeyPurpose::Audit, &master_key, timestamp)?;
+
+    let profile = store
+        .get_profile_by_name(project_id, config.default_profile.as_str())?
+        .ok_or_else(|| corrupt_db_error("default profile is missing after bootstrap"))?;
+    insert_wrapped_key(
+        store,
+        project_id,
+        Some(&profile.id),
+        KeyPurpose::ProfileSecret,
+        &master_key,
+        timestamp,
+    )?;
+    insert_wrapped_key(
+        store,
+        project_id,
+        Some(&profile.id),
+        KeyPurpose::ProfileFingerprint,
+        &master_key,
+        timestamp,
+    )?;
+
+    let code_bytes =
+        create_bootstrap_recovery_envelope(&resolved.root, config, &master_key, timestamp)?;
+
+    trust_root(store, config, &resolved.root, timestamp)?;
+
+    display_bootstrap_recovery_code(context, output, config, &code_bytes)?;
+
+    write_bootstrap_audit(context, store, resolved, &profile.id, timestamp)?;
+
+    Ok(())
+}
+
+fn create_bootstrap_recovery_envelope(
+    root: &Path,
+    config: &ProjectConfig,
+    master_key: &locket_crypto::KeyBytes,
+    timestamp: i64,
+) -> Result<[u8; locket_crypto::RECOVERY_CODE_BYTES], CliError> {
+    let recovery_dir = root.join(".locket").join("recovery");
+    let code_bytes = generate_recovery_code_bytes()?;
+    let salt = generate_recovery_salt()?;
+    let kdf_profile_id = format!("lk_kdf_{}", format_hex(&salt[..16]));
+    let kdf = RecoveryKdfToml::new_v1(kdf_profile_id, &salt, timestamp);
+    let recovery_root = derive_recovery_key_v1(&code_bytes, &salt, kdf.to_crypto_params())?;
+    let entry = seal_recovery_envelope_entry(
+        &recovery_root,
+        &kdf.kdf_profile_id,
+        "master_key",
+        config.project_id.as_str(),
+        master_key,
+    )?;
+    let envelope = RecoveryEnvelope {
+        kdf_profile_id: kdf.kdf_profile_id.clone(),
+        created_at_unix_nanos: i128::from(timestamp),
+        entries: vec![entry],
+    };
+    save_recovery_kdf_toml(&recovery_dir, &kdf)
+        .map_err(|error| metadata_invalid_error(format!("save recovery kdf: {error}")))?;
+    save_recovery_envelope(&recovery_dir, &envelope)
+        .map_err(|error| metadata_invalid_error(format!("save recovery envelope: {error}")))?;
+    Ok(code_bytes)
+}
+
+fn display_bootstrap_recovery_code(
+    context: &RuntimeContext,
+    output: &mut impl Write,
+    config: &ProjectConfig,
+    code_bytes: &[u8; locket_crypto::RECOVERY_CODE_BYTES],
+) -> Result<(), CliError> {
+    let code = formatted_recovery_code(code_bytes)?;
+    writeln!(output, "device_init_bootstrap: success")?;
+    writeln!(output, "recovery_code (shown once, store securely):")?;
+    writeln!(output, "{code}")?;
+    writeln!(output, "Write this down. It will not be shown again.")?;
+    writeln!(output, "warning: terminal scrollback may retain this code")?;
+    writeln!(output, "type project name '{}' after recording the recovery code", config.name)?;
+    let confirmation =
+        context.confirmation_reader.read_confirmation("device init recovery code")?;
+    if confirmation.trim_end_matches(['\r', '\n']) != config.name {
+        return Err(confirmation_failed_error("confirmation did not match project name"));
+    }
+    if io::stdout().is_terminal() {
+        let _ = io::stdout().write_all(b"\x1b[2J\x1b[H");
+    }
+    Ok(())
+}
+
+fn write_bootstrap_audit(
+    context: &RuntimeContext,
+    store: &mut Store,
+    resolved: &ResolvedProject,
+    default_profile_id: &str,
+    timestamp: i64,
+) -> Result<(), CliError> {
+    let project_id = resolved.config.project_id.as_str();
+    let audit_key = load_project_key(context, store, project_id, KeyPurpose::Audit)?;
+    let metadata = json!({
+        "schema_version": 1,
+        "action": "BOOTSTRAP",
+        "status": "SUCCESS",
+        "command": "device init",
+        "project_id": project_id,
+        "default_profile_id": default_profile_id,
+        "generated_files": Vec::<&str>::new(),
+        "recovery_code_displayed": true,
+    });
+    let audit = AuditWrite {
+        project_id,
+        profile_id: Some(default_profile_id),
+        action: "BOOTSTRAP",
+        status: "SUCCESS",
+        secret_name: None,
+        command: Some("device init"),
+        metadata_json: &metadata,
+        timestamp,
+    };
+    store.append_audit(audit_key.as_ref(), &audit)?;
+    Ok(())
 }
 
 #[derive(Debug, Deserialize, Serialize)]

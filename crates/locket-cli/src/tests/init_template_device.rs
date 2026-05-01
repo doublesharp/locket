@@ -1091,8 +1091,8 @@ fn team_remove_last_owner_is_rejected_with_team_role_denied()
 }
 
 #[test]
-fn developer_team_remove_emits_role_insufficient_denial()
--> Result<(), Box<dyn std::error::Error>> {
+fn developer_team_remove_emits_role_insufficient_denial() -> Result<(), Box<dyn std::error::Error>>
+{
     let directory = tempdir()?;
     let context = test_context(&directory);
     run_with_context(
@@ -1112,12 +1112,7 @@ fn developer_team_remove_emits_role_insufficient_denial()
         return Err("developer removing member must fail".into());
     };
     assert_eq!(error.exit_code(), 70);
-    assert_team_role_denial_audit(
-        &directory,
-        "TEAM_REMOVE",
-        "team remove",
-        "role_insufficient",
-    )?;
+    assert_team_role_denial_audit(&directory, "TEAM_REMOVE", "team remove", "role_insufficient")?;
     Ok(())
 }
 
@@ -2405,11 +2400,10 @@ fn team_accept_verifies_invite_displays_trust_summary_and_records_audit()
     // local team-membership/audit surface (`team_invites.accepted_at`
     // and the `audit_log` row asserted above).
     let row_count = |table: &str| -> Result<i64, Box<dyn std::error::Error>> {
-        let count: i64 = store.connection().query_row(
-            &format!("SELECT COUNT(*) FROM {table}"),
-            [],
-            |row| row.get(0),
-        )?;
+        let count: i64 =
+            store
+                .connection()
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| row.get(0))?;
         Ok(count)
     };
     // Profile key material rows: only the project audit + project-scoped
@@ -2429,11 +2423,7 @@ fn team_accept_verifies_invite_displays_trust_summary_and_records_audit()
     assert_eq!(row_count("secrets")?, 0, "team accept must not import secrets");
     assert_eq!(row_count("secret_versions")?, 0, "team accept must not import secret_versions");
     assert_eq!(row_count("blobs")?, 0, "team accept must not import secret blobs");
-    assert_eq!(
-        row_count("command_policies")?,
-        0,
-        "team accept must not import command_policies",
-    );
+    assert_eq!(row_count("command_policies")?, 0, "team accept must not import command_policies",);
     Ok(())
 }
 
@@ -3200,8 +3190,7 @@ fn device_envelope_path(directory: &tempfile::TempDir, device_id: &str) -> std::
 }
 
 #[test]
-fn device_init_force_cleans_up_prior_wrapped_envelope()
--> Result<(), Box<dyn std::error::Error>> {
+fn device_init_force_cleans_up_prior_wrapped_envelope() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempdir()?;
     let context = test_context(&directory);
 
@@ -3212,7 +3201,11 @@ fn device_init_force_cleans_up_prior_wrapped_envelope()
     )?;
 
     let mut init_output = Vec::new();
-    run_with_context(Cli::try_parse_from(["locket", "device", "init"])?, &context, &mut init_output)?;
+    run_with_context(
+        Cli::try_parse_from(["locket", "device", "init"])?,
+        &context,
+        &mut init_output,
+    )?;
     let init_output = String::from_utf8(init_output)?;
     let original_id = init_output
         .lines()
@@ -3249,8 +3242,7 @@ fn device_init_force_cleans_up_prior_wrapped_envelope()
 }
 
 #[test]
-fn device_remove_force_local_drops_wrapped_envelope()
--> Result<(), Box<dyn std::error::Error>> {
+fn device_remove_force_local_drops_wrapped_envelope() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempdir()?;
     let context = test_context(&directory);
     run_with_context(
@@ -3259,7 +3251,11 @@ fn device_remove_force_local_drops_wrapped_envelope()
         &mut Vec::new(),
     )?;
     let mut init_output = Vec::new();
-    run_with_context(Cli::try_parse_from(["locket", "device", "init"])?, &context, &mut init_output)?;
+    run_with_context(
+        Cli::try_parse_from(["locket", "device", "init"])?,
+        &context,
+        &mut init_output,
+    )?;
     let init_output = String::from_utf8(init_output)?;
     let device_id = init_output
         .lines()
@@ -3274,10 +3270,7 @@ fn device_remove_force_local_drops_wrapped_envelope()
         &context,
         &mut Vec::new(),
     )?;
-    assert!(
-        !envelope_path.exists(),
-        "wrapped envelope for revoked local device must be deleted"
-    );
+    assert!(!envelope_path.exists(), "wrapped envelope for revoked local device must be deleted");
     Ok(())
 }
 
@@ -3291,7 +3284,11 @@ fn doctor_reports_pass_for_healthy_device_private_key_storage()
         &context,
         &mut Vec::new(),
     )?;
-    run_with_context(Cli::try_parse_from(["locket", "device", "init"])?, &context, &mut Vec::new())?;
+    run_with_context(
+        Cli::try_parse_from(["locket", "device", "init"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
 
     let mut doctor_output = Vec::new();
     run_with_context(Cli::try_parse_from(["locket", "doctor"])?, &context, &mut doctor_output)?;
@@ -3314,7 +3311,11 @@ fn doctor_warns_when_device_envelope_missing() -> Result<(), Box<dyn std::error:
         &mut Vec::new(),
     )?;
     let mut init_output = Vec::new();
-    run_with_context(Cli::try_parse_from(["locket", "device", "init"])?, &context, &mut init_output)?;
+    run_with_context(
+        Cli::try_parse_from(["locket", "device", "init"])?,
+        &context,
+        &mut init_output,
+    )?;
     let init_output = String::from_utf8(init_output)?;
     let device_id = init_output
         .lines()
@@ -3336,8 +3337,7 @@ fn doctor_warns_when_device_envelope_missing() -> Result<(), Box<dyn std::error:
 }
 
 #[test]
-fn team_revoke_device_local_drops_wrapped_envelope()
--> Result<(), Box<dyn std::error::Error>> {
+fn team_revoke_device_local_drops_wrapped_envelope() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempdir()?;
     let context = test_context(&directory);
     run_with_context(
@@ -3346,7 +3346,11 @@ fn team_revoke_device_local_drops_wrapped_envelope()
         &mut Vec::new(),
     )?;
     let mut init_output = Vec::new();
-    run_with_context(Cli::try_parse_from(["locket", "device", "init"])?, &context, &mut init_output)?;
+    run_with_context(
+        Cli::try_parse_from(["locket", "device", "init"])?,
+        &context,
+        &mut init_output,
+    )?;
     let init_output = String::from_utf8(init_output)?;
     let device_id = init_output
         .lines()
@@ -3374,8 +3378,8 @@ fn team_revoke_device_local_drops_wrapped_envelope()
 }
 
 #[test]
-fn doctor_passes_degraded_audit_log_perms_when_log_absent()
--> Result<(), Box<dyn std::error::Error>> {
+fn doctor_passes_degraded_audit_log_perms_when_log_absent() -> Result<(), Box<dyn std::error::Error>>
+{
     let directory = tempdir()?;
     let context = test_context(&directory);
     run_with_context(
@@ -3446,10 +3450,7 @@ fn doctor_fails_degraded_audit_log_perms_when_world_readable()
         "vault_locked",
         "get",
     ))?;
-    std::fs::set_permissions(
-        logger.log_path(),
-        std::fs::Permissions::from_mode(0o644),
-    )?;
+    std::fs::set_permissions(logger.log_path(), std::fs::Permissions::from_mode(0o644))?;
 
     let mut doctor_output = Vec::new();
     run_with_context(Cli::try_parse_from(["locket", "doctor"])?, &context, &mut doctor_output)?;
@@ -3464,8 +3465,8 @@ fn doctor_fails_degraded_audit_log_perms_when_world_readable()
 
 #[cfg(unix)]
 #[test]
-fn doctor_fails_when_device_envelope_permissions_too_wide()
--> Result<(), Box<dyn std::error::Error>> {
+fn doctor_fails_when_device_envelope_permissions_too_wide() -> Result<(), Box<dyn std::error::Error>>
+{
     use std::os::unix::fs::PermissionsExt;
 
     let directory = tempdir()?;
@@ -3476,7 +3477,11 @@ fn doctor_fails_when_device_envelope_permissions_too_wide()
         &mut Vec::new(),
     )?;
     let mut init_output = Vec::new();
-    run_with_context(Cli::try_parse_from(["locket", "device", "init"])?, &context, &mut init_output)?;
+    run_with_context(
+        Cli::try_parse_from(["locket", "device", "init"])?,
+        &context,
+        &mut init_output,
+    )?;
     let init_output = String::from_utf8(init_output)?;
     let device_id = init_output
         .lines()
@@ -3494,5 +3499,168 @@ fn doctor_fails_when_device_envelope_permissions_too_wide()
         "doctor must fail when envelope perms are too wide: {doctor_output}"
     );
     assert!(doctor_output.contains("envelope_permissions_too_wide"));
+    Ok(())
+}
+
+fn write_committed_locket_toml(
+    directory: &tempfile::TempDir,
+) -> Result<locket_core::ProjectConfig, Box<dyn std::error::Error>> {
+    let config = locket_core::ProjectConfig::new(
+        locket_core::ProjectId::generate()?,
+        "app".to_owned(),
+        locket_core::ProfileName::new("dev".to_owned())?,
+    );
+    crate::write_project_config(&directory.path().join("locket.toml"), &config)?;
+    Ok(config)
+}
+
+#[test]
+fn device_init_bootstraps_when_master_key_and_envelope_are_absent()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    let config = write_committed_locket_toml(&directory)?;
+    let project_id = config.project_id.as_str().to_owned();
+
+    let mut output = Vec::new();
+    run_with_context(Cli::try_parse_from(["locket", "device", "init"])?, &context, &mut output)?;
+    let text = String::from_utf8(output)?;
+
+    assert!(text.contains("device_init_bootstrap: success"), "bootstrap header: {text}");
+    assert!(
+        text.contains("recovery_code (shown once, store securely):"),
+        "recovery code prompt: {text}"
+    );
+    assert!(text.contains("Write this down. It will not be shown again."));
+    assert!(text.contains("device: initialized"), "device init output: {text}");
+
+    assert!(
+        directory.path().join(".locket/recovery/envelope.bin").exists(),
+        "recovery envelope must exist after bootstrap"
+    );
+    assert!(directory.path().join(".locket/recovery/kdf.toml").exists());
+
+    let master_key = context.key_store.load_master_key(&project_id)?;
+    assert_eq!(master_key.len(), locket_crypto::KEY_LEN);
+
+    let store = crate::open_store(&context)?;
+    let bootstrap_metadata: String = store.connection().query_row(
+        "SELECT metadata_json FROM audit_log WHERE action = 'BOOTSTRAP' AND command = 'device init'",
+        [],
+        |row| row.get(0),
+    )?;
+    let bootstrap_metadata: serde_json::Value = serde_json::from_str(&bootstrap_metadata)?;
+    assert_eq!(bootstrap_metadata["action"], json!("BOOTSTRAP"));
+    assert_eq!(bootstrap_metadata["project_id"], json!(project_id));
+    assert_eq!(bootstrap_metadata["recovery_code_displayed"], json!(true));
+    assert!(bootstrap_metadata["default_profile_id"].is_string());
+
+    let device_count: i64 = store.connection().query_row(
+        "SELECT COUNT(*) FROM devices WHERE project_id = ?1 AND local = 1 AND revoked_at IS NULL",
+        [&project_id],
+        |row| row.get(0),
+    )?;
+    assert_eq!(device_count, 1);
+
+    Ok(())
+}
+
+#[test]
+fn device_init_skips_bootstrap_when_master_key_is_present()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+
+    let store_before = crate::open_store(&context)?;
+    let bootstrap_count_before: i64 = store_before.connection().query_row(
+        "SELECT COUNT(*) FROM audit_log WHERE action = 'BOOTSTRAP' AND command = 'device init'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(bootstrap_count_before, 0);
+    drop(store_before);
+
+    let mut output = Vec::new();
+    run_with_context(Cli::try_parse_from(["locket", "device", "init"])?, &context, &mut output)?;
+    let text = String::from_utf8(output)?;
+    assert!(text.contains("device: initialized"));
+    assert!(!text.contains("device_init_bootstrap"));
+    assert!(!text.contains("recovery_code (shown once"));
+
+    let store = crate::open_store(&context)?;
+    let bootstrap_count: i64 = store.connection().query_row(
+        "SELECT COUNT(*) FROM audit_log WHERE action = 'BOOTSTRAP' AND command = 'device init'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(bootstrap_count, 0, "bootstrap audit must not be written when master key exists");
+
+    Ok(())
+}
+
+#[test]
+fn device_init_returns_ambiguous_state_when_recovery_envelope_exists_without_master_key()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    let config = write_committed_locket_toml(&directory)?;
+    let recovery_dir = directory.path().join(".locket").join("recovery");
+    std::fs::create_dir_all(&recovery_dir)?;
+    std::fs::write(recovery_dir.join("envelope.bin"), b"placeholder")?;
+    std::fs::write(recovery_dir.join("kdf.toml"), b"placeholder")?;
+
+    let result = run_with_context(
+        Cli::try_parse_from(["locket", "device", "init"])?,
+        &context,
+        &mut Vec::new(),
+    );
+    let Err(error) = result else {
+        return Err("device init must fail when envelope is present without master key".into());
+    };
+    assert_eq!(error.exit_code(), locket_core::LocketError::LostKeychainEntry.exit_code());
+
+    drop(config);
+    Ok(())
+}
+
+#[test]
+fn device_init_bootstrap_is_not_idempotent_for_same_project()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    write_committed_locket_toml(&directory)?;
+
+    run_with_context(
+        Cli::try_parse_from(["locket", "device", "init"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+
+    let mut second_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "device", "init"])?,
+        &context,
+        &mut second_output,
+    )?;
+    let text = String::from_utf8(second_output)?;
+    assert!(
+        text.contains("device: already initialized"),
+        "second device init must report already initialized: {text}"
+    );
+    assert!(!text.contains("device_init_bootstrap"));
+
+    let store = crate::open_store(&context)?;
+    let bootstrap_count: i64 = store.connection().query_row(
+        "SELECT COUNT(*) FROM audit_log WHERE action = 'BOOTSTRAP' AND command = 'device init'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(bootstrap_count, 1, "bootstrap audit must be written exactly once");
+
     Ok(())
 }
