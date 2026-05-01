@@ -206,8 +206,7 @@ Slices 1+2 shipped (agent client, tray binding, 6 view scaffolds,
   - [ ] **subtask** — desktop-tray-reveal-copy: tray context menu
     actions for the selected secret. Pre-req: `tray-menu-actions`,
     `desktop-reveal-modal`, `desktop-clipboard-copy`. Slice 8.
-  - [ ] **subtask** — desktop-audit-data: wire `agent-list-audit` +
-    `agent-verify-audit` into `AuditLog.vue`. Slice 9.
+  - [~] [52c592db] branch agent-52c592db/desktop-audit-data, worktree .worktrees/agent-52c592db-desktop-audit-data; **subtask** — desktop-audit-data: wire `agent-list-audit` + `agent-verify-audit` into `AuditLog.vue`.
   - [ ] **subtask** — agent-scan-known-values-impl: real handler.
     Pre-req: `agent-unlock-cache` (matching) + `locket-scan`
     (pattern/entropy fallback). Emit `SCAN` rows.
