@@ -33,6 +33,9 @@ zeroize = { workspace = true }
 rustix = { workspace = true, features = ["process"] }
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "sync", "time"] }
 
+[target.'cfg(target_os = "windows")'.dependencies]
+tokio = { workspace = true, features = ["io-util", "net", "rt", "time"] }
+
 [target.'cfg(target_os = "linux")'.dependencies]
 rustix = { workspace = true, features = ["net"] }
 

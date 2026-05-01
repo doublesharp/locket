@@ -2689,6 +2689,7 @@ dependencies = [
  "time",
  "tokio",
  "toml 0.8.23",
+ "windows-sys 0.61.2",
  "x25519-dalek",
  "zeroize",
 ]

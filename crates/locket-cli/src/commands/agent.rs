@@ -116,7 +116,12 @@ fn ensure_agent_running_with_launcher(
     // If the pid file is missing or stale but the socket owner still
     // answers trusted status requests, preserve the live daemon and
     // keep start idempotent instead of unlinking its socket.
+    #[cfg(unix)]
     if socket_path.exists() && launcher.status_snapshot(&socket_path).is_ok() {
+        return Ok(AgentStartupReport { started: false, pid: None });
+    }
+    #[cfg(target_os = "windows")]
+    if launcher.status_snapshot(&socket_path).is_ok() {
         return Ok(AgentStartupReport { started: false, pid: None });
     }
 
@@ -128,9 +133,14 @@ fn ensure_agent_running_with_launcher(
 
     launcher.spawn(&socket_path, &pid_path)?;
 
-    // Poll for the socket to appear so the caller's first
+    // Poll for the endpoint so the caller's first
     // `agent status`/connect attempt does not race the child.
-    wait_for_path_to_exist(&socket_path, AGENT_START_SOCKET_WAIT, AGENT_START_POLL_INTERVAL);
+    wait_for_agent_endpoint(
+        launcher,
+        &socket_path,
+        AGENT_START_SOCKET_WAIT,
+        AGENT_START_POLL_INTERVAL,
+    );
 
     let pid = read_running_pid(context)?;
     launcher.status_snapshot(&socket_path).map_err(|error| {
@@ -196,13 +206,13 @@ fn agent_status_command(context: &RuntimeContext, output: &mut impl Write) -> Re
     }
 }
 
-#[cfg(all(unix, not(test)))]
+#[cfg(all(any(unix, target_os = "windows"), not(test)))]
 pub(super) fn request_agent_once(
     context: &RuntimeContext,
     method: locket_agent::AgentMethod,
     payload: Value,
 ) -> Result<Value, CliError> {
-    request_agent_socket(&agent_socket_path(context), method, payload).map_err(|error| {
+    request_agent_endpoint(&agent_socket_path(context), method, payload).map_err(|error| {
         typed_cli_error(
             locket_core::LocketError::AgentUnavailable,
             format!("agent request {} failed: {error}", method.as_str()),
@@ -210,7 +220,7 @@ pub(super) fn request_agent_once(
     })
 }
 
-#[cfg(all(not(unix), not(test)))]
+#[cfg(all(not(any(unix, target_os = "windows")), not(test)))]
 pub(super) fn request_agent_once(
     _context: &RuntimeContext,
     _method: (),
@@ -257,10 +267,21 @@ fn agent_stop_command(context: &RuntimeContext, output: &mut impl Write) -> Resu
         return Ok(());
     }
 
+    #[cfg(target_os = "windows")]
+    let _ = request_agent_endpoint(
+        &socket_path,
+        locket_agent::AgentMethod::Lock,
+        serde_json::json!({ "source": "process_exit" }),
+    );
+
     send_sigterm(pid)?;
 
     let deadline = Instant::now() + AGENT_STOP_WAIT;
     while Instant::now() < deadline {
+        #[cfg(target_os = "windows")]
+        if !process_is_live(pid) {
+            break;
+        }
         if !process_is_live(pid) && !pid_path.exists() {
             break;
         }
@@ -312,7 +333,26 @@ fn spawn_agent_daemon(socket: &Path, pid_file: &Path) -> Result<(), CliError> {
     Ok(())
 }
 
-#[cfg(not(unix))]
+#[cfg(target_os = "windows")]
+fn spawn_agent_daemon(socket: &Path, pid_file: &Path) -> Result<(), CliError> {
+    use std::process::{Command as StdCommand, Stdio};
+
+    let exe = std::env::current_exe()?;
+    let mut command = StdCommand::new(&exe);
+    command
+        .arg("internal-agent-serve")
+        .arg("--socket")
+        .arg(socket)
+        .arg("--pid-file")
+        .arg(pid_file)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let _child = command.spawn()?;
+    Ok(())
+}
+
+#[cfg(not(any(unix, target_os = "windows")))]
 fn spawn_agent_daemon(_socket: &Path, _pid_file: &Path) -> Result<(), CliError> {
     Err(typed_cli_error(
         locket_core::LocketError::AgentUnavailable,
@@ -320,10 +360,22 @@ fn spawn_agent_daemon(_socket: &Path, _pid_file: &Path) -> Result<(), CliError> 
     ))
 }
 
-fn wait_for_path_to_exist(path: &Path, timeout: StdDuration, interval: StdDuration) {
+fn wait_for_agent_endpoint(
+    launcher: &dyn AgentDaemonLauncher,
+    endpoint: &Path,
+    timeout: StdDuration,
+    interval: StdDuration,
+) {
+    #[cfg(not(target_os = "windows"))]
+    let _ = launcher;
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
-        if path.exists() {
+        #[cfg(unix)]
+        if endpoint.exists() {
+            return;
+        }
+        #[cfg(target_os = "windows")]
+        if launcher.status_snapshot(endpoint).is_ok() {
             return;
         }
         std::thread::sleep(interval);
@@ -371,9 +423,31 @@ fn process_is_live(pid: u32) -> bool {
     rustix::process::test_kill_process(rust_pid).is_ok()
 }
 
-#[cfg(not(unix))]
+#[cfg(not(any(unix, target_os = "windows")))]
 const fn process_is_live(_pid: u32) -> bool {
     false
+}
+
+#[cfg(target_os = "windows")]
+fn process_is_live(pid: u32) -> bool {
+    use windows_sys::Win32::Foundation::{CloseHandle, WAIT_TIMEOUT};
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, SYNCHRONIZE, WaitForSingleObject,
+    };
+
+    // SAFETY: `OpenProcess` is called with query/synchronize access for
+    // a PID read from the user-scoped pid file. A null handle means not live.
+    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, 0, pid) };
+    if handle.is_null() {
+        return false;
+    }
+    // SAFETY: `handle` is valid until closed below.
+    let wait = unsafe { WaitForSingleObject(handle, 0) };
+    // SAFETY: `handle` was opened by `OpenProcess`.
+    unsafe {
+        CloseHandle(handle);
+    }
+    wait == WAIT_TIMEOUT
 }
 
 #[cfg(unix)]
@@ -388,7 +462,31 @@ fn send_sigterm(pid: u32) -> Result<(), CliError> {
     Ok(())
 }
 
-#[cfg(not(unix))]
+#[cfg(target_os = "windows")]
+fn send_sigterm(pid: u32) -> Result<(), CliError> {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_TERMINATE, TerminateProcess};
+
+    // Temporary Windows stop behavior for the named-pipe skeleton:
+    // callers send a Lock RPC before this point, then terminate the
+    // daemon process until a dedicated Shutdown RPC lands.
+    let handle = unsafe { OpenProcess(PROCESS_TERMINATE, 0, pid) };
+    if handle.is_null() {
+        return Err(io::Error::last_os_error().into());
+    }
+    // SAFETY: `handle` is a process handle opened with PROCESS_TERMINATE.
+    let terminated = unsafe { TerminateProcess(handle, 0) };
+    // SAFETY: `handle` was opened by `OpenProcess`.
+    unsafe {
+        CloseHandle(handle);
+    }
+    if terminated == 0 {
+        return Err(io::Error::last_os_error().into());
+    }
+    Ok(())
+}
+
+#[cfg(not(any(unix, target_os = "windows")))]
 fn send_sigterm(_pid: u32) -> Result<(), CliError> {
     Err(typed_cli_error(
         locket_core::LocketError::AgentUnavailable,
@@ -396,29 +494,41 @@ fn send_sigterm(_pid: u32) -> Result<(), CliError> {
     ))
 }
 
-/// Connects to the socket, sends a `Status` request, and parses the
+/// Connects to the local endpoint, sends a `Status` request, and parses the
 /// response payload.
-#[cfg(unix)]
-fn request_status_snapshot(socket_path: &Path) -> Result<Value, io::Error> {
-    request_agent_socket(socket_path, locket_agent::AgentMethod::Status, serde_json::Value::Null)
+#[cfg(any(unix, target_os = "windows"))]
+fn request_status_snapshot(endpoint: &Path) -> Result<Value, io::Error> {
+    request_agent_endpoint(endpoint, locket_agent::AgentMethod::Status, serde_json::Value::Null)
+}
+
+#[cfg(any(unix, target_os = "windows"))]
+fn decode_agent_response(buffer: &[u8]) -> Option<Result<Value, io::Error>> {
+    use locket_agent::{DEFAULT_MAX_MESSAGE_SIZE, ResponseEnvelope, decode_response_frame};
+
+    let Ok((response, _)) = decode_response_frame(buffer, DEFAULT_MAX_MESSAGE_SIZE) else {
+        return None;
+    };
+    Some(match response {
+        ResponseEnvelope::Success(success) => Ok(success.payload),
+        ResponseEnvelope::Error(error) => {
+            Err(io::Error::other(format!("agent error: {} ({})", error.error, error.message)))
+        }
+    })
 }
 
 #[cfg(unix)]
-fn request_agent_socket(
-    socket_path: &Path,
+fn request_agent_endpoint(
+    endpoint: &Path,
     method: locket_agent::AgentMethod,
     payload: Value,
 ) -> Result<Value, io::Error> {
-    use locket_agent::{
-        DEFAULT_MAX_MESSAGE_SIZE, RequestEnvelope, ResponseEnvelope, decode_response_frame,
-        encode_frame,
-    };
+    use locket_agent::{DEFAULT_MAX_MESSAGE_SIZE, RequestEnvelope, encode_frame};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::UnixStream;
 
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
     runtime.block_on(async move {
-        let mut stream = UnixStream::connect(socket_path).await?;
+        let mut stream = UnixStream::connect(endpoint).await?;
         let request = RequestEnvelope::new("cli-request-1", method, payload);
         let frame = encode_frame(&request, DEFAULT_MAX_MESSAGE_SIZE)
             .map_err(|error| io::Error::other(error.to_string()))?;
@@ -427,14 +537,8 @@ fn request_agent_socket(
 
         let mut buffer = Vec::with_capacity(1024);
         loop {
-            if let Ok((response, _)) = decode_response_frame(&buffer, DEFAULT_MAX_MESSAGE_SIZE) {
-                return match response {
-                    ResponseEnvelope::Success(success) => Ok(success.payload),
-                    ResponseEnvelope::Error(error) => Err(io::Error::other(format!(
-                        "agent error: {} ({})",
-                        error.error, error.message
-                    ))),
-                };
+            if let Some(response) = decode_agent_response(&buffer) {
+                return response;
             }
             let mut chunk = [0_u8; 1024];
             let read = stream.read(&mut chunk).await?;
@@ -449,7 +553,43 @@ fn request_agent_socket(
     })
 }
 
-#[cfg(not(unix))]
+#[cfg(target_os = "windows")]
+fn request_agent_endpoint(
+    endpoint: &Path,
+    method: locket_agent::AgentMethod,
+    payload: Value,
+) -> Result<Value, io::Error> {
+    use locket_agent::{DEFAULT_MAX_MESSAGE_SIZE, RequestEnvelope, encode_frame};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+    runtime.block_on(async move {
+        let mut stream = locket_agent::connect_named_pipe_client(endpoint).await?;
+        let request = RequestEnvelope::new("cli-request-1", method, payload);
+        let frame = encode_frame(&request, DEFAULT_MAX_MESSAGE_SIZE)
+            .map_err(|error| io::Error::other(error.to_string()))?;
+        stream.write_all(&frame).await?;
+        stream.flush().await?;
+
+        let mut buffer = Vec::with_capacity(1024);
+        loop {
+            if let Some(response) = decode_agent_response(&buffer) {
+                return response;
+            }
+            let mut chunk = [0_u8; 1024];
+            let read = stream.read(&mut chunk).await?;
+            if read == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "agent closed connection without a response",
+                ));
+            }
+            buffer.extend_from_slice(&chunk[..read]);
+        }
+    })
+}
+
+#[cfg(not(any(unix, target_os = "windows")))]
 fn request_status_snapshot(_socket_path: &Path) -> Result<Value, io::Error> {
     Err(io::Error::other("agent daemon is only supported on Unix targets"))
 }
@@ -568,7 +708,71 @@ fn agent_signal_unix_nanos() -> i128 {
         .unwrap_or(0)
 }
 
-#[cfg(not(unix))]
+#[cfg(target_os = "windows")]
+pub fn run_internal_agent_serve(args: &InternalAgentServeArgs) -> Result<(), CliError> {
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+    let result = runtime.block_on(async {
+        let config = locket_agent::AgentPipeConfig::new(args.socket.clone());
+        let mut listener = locket_agent::bind_named_pipe_listener(&config)?;
+        write_pid_file(&args.pid_file)?;
+        loop {
+            listener.connect().await?;
+            let mut stream = listener;
+            handle_windows_pipe_connection(&mut stream).await?;
+            listener = locket_agent::bind_named_pipe_instance(&config)?;
+        }
+    });
+    let _ignored = fs::remove_file(&args.pid_file);
+    result.map_err(CliError::Io)
+}
+
+#[cfg(target_os = "windows")]
+async fn handle_windows_pipe_connection(
+    stream: &mut tokio::net::windows::named_pipe::NamedPipeServer,
+) -> io::Result<()> {
+    use locket_agent::{
+        AgentMethod, DEFAULT_MAX_MESSAGE_SIZE, ResponseEnvelope, StatusPayload, SuccessEnvelope,
+        decode_request_frame, encode_frame,
+    };
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let mut buffer = Vec::with_capacity(1024);
+    loop {
+        if let Ok((request, _)) = decode_request_frame(&buffer, DEFAULT_MAX_MESSAGE_SIZE) {
+            let response = match request.method() {
+                Ok(AgentMethod::Status) => {
+                    let payload =
+                        serde_json::to_value(StatusPayload::locked(env!("CARGO_PKG_VERSION")))
+                            .unwrap_or(serde_json::Value::Null);
+                    ResponseEnvelope::Success(SuccessEnvelope::new(request.id, payload))
+                }
+                Ok(AgentMethod::Lock) => ResponseEnvelope::Success(SuccessEnvelope::new(
+                    request.id,
+                    serde_json::Value::Null,
+                )),
+                _ => ResponseEnvelope::Error(locket_agent::ErrorEnvelope::new(
+                    request.id,
+                    "ProtocolError",
+                    "method is not implemented in the Windows pipe skeleton",
+                    false,
+                )),
+            };
+            let frame = encode_frame(&response, DEFAULT_MAX_MESSAGE_SIZE)
+                .map_err(|error| io::Error::other(error.to_string()))?;
+            stream.write_all(&frame).await?;
+            stream.flush().await?;
+            return Ok(());
+        }
+        let mut chunk = [0_u8; 1024];
+        let read = stream.read(&mut chunk).await?;
+        if read == 0 {
+            return Ok(());
+        }
+        buffer.extend_from_slice(&chunk[..read]);
+    }
+}
+
+#[cfg(not(any(unix, target_os = "windows")))]
 pub fn run_internal_agent_serve(_args: &InternalAgentServeArgs) -> Result<(), CliError> {
     Err(typed_cli_error(
         locket_core::LocketError::AgentUnavailable,
@@ -576,7 +780,7 @@ pub fn run_internal_agent_serve(_args: &InternalAgentServeArgs) -> Result<(), Cl
     ))
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, target_os = "windows"))]
 fn write_pid_file(path: &Path) -> Result<(), CliError> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;

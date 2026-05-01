@@ -38,6 +38,8 @@ mod status;
 mod status_stream;
 mod unlock_cache;
 mod versions;
+#[cfg(target_os = "windows")]
+mod windows_pipe;
 
 pub use audit::{AuditChainStatus, ListAuditRequest, ListAuditResponse, ListAuditRow};
 pub use audit_verify::{VerifyAuditRequest, VerifyAuditResponse};
@@ -104,6 +106,10 @@ pub use status::{
 pub use status_stream::{StatusHub, StatusSubscriber};
 pub use unlock_cache::{UnlockCache, UnlockEntry, UnlockMethod};
 pub use versions::{ListVersionsRequest, ListVersionsResponse, ListVersionsRow};
+#[cfg(target_os = "windows")]
+pub use windows_pipe::{
+    AgentPipeConfig, bind_named_pipe_instance, bind_named_pipe_listener, connect_named_pipe_client,
+};
 
 /// Maximum v1 protocol message size in bytes.
 pub const DEFAULT_MAX_MESSAGE_SIZE: usize = 1024 * 1024;

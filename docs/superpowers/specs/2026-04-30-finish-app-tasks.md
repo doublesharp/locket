@@ -82,10 +82,14 @@ ship. Each bullet has spec ref + code ref + suggested touches.
   transport work after `agent-windows-named-pipe-sid-path-partial`.
   The partial shipped shared SID-based pipe path helpers, protected
   current-user DACL SDDL generation, Windows diagnostics, and CLI path
-  resolution behind `cfg(windows)`. Remaining: create the Tokio Windows
-  named-pipe listener/client, pass the generated security descriptor
-  into pipe creation, port graceful start/status/stop over the pipe,
-  and add on-Windows ACL/transport integration coverage.
+  resolution behind `cfg(windows)`. Progress on
+  `feature/agent-windows-transport`: Tokio named-pipe listener/client
+  skeleton plus Windows CLI endpoint routing for start/status/stop.
+  Remaining: pass the generated current-user SECURITY_ATTRIBUTES into
+  pipe creation, replace the temporary Windows stop `Lock`+terminate
+  behavior with a graceful shutdown request, wire the full agent
+  dispatcher over named pipes, and add on-Windows ACL/transport
+  integration coverage.
 ### D. Desktop / integrations / scan
 
 - [~] (in-flight: feature/desktop-agent-core-final) **agent-export-bundle-core**: `ExportBundle` reaches the typed
