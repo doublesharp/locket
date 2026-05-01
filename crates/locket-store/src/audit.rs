@@ -665,6 +665,7 @@ const KNOWN_AUDIT_METADATA_FIELDS: &[&str] = &[
     "expires_at",
     "exit_code",
     "expected_secret_count",
+    "external_env_names",
     "external_env_sources",
     "external_sources",
     "fail_count",

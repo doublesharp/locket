@@ -94,6 +94,10 @@ pub struct RuntimeExecutionOutcome {
 struct PreparedPolicyExecution {
     selections: Vec<PolicySecretSelection>,
     secret_names: Vec<String>,
+    /// Names sourced from `policy.external_env_sources` (Parent/File/Compose/Ide).
+    /// Recorded as metadata-only `external_env_names` in the `RUN_POLICY`
+    /// audit row; never includes values.
+    external_env_names: Vec<String>,
     prepared: locket_exec::PreparedExecution,
 }
 
@@ -195,6 +199,7 @@ pub fn run_command(
         &policy,
         audit_status,
         &prepared_policy.selections,
+        &prepared_policy.external_env_names,
         status.code(),
         confirmation_source,
         user_verification.as_ref(),
@@ -306,8 +311,10 @@ fn prepare_policy_execution(
             .map(String::as_str)
             .chain(reference_secret_names.iter().map(String::as_str)),
     );
+    let external_env_names =
+        unique_secret_names(external_env_names.iter().map(String::as_str));
 
-    Ok(PreparedPolicyExecution { selections, secret_names, prepared })
+    Ok(PreparedPolicyExecution { selections, secret_names, external_env_names, prepared })
 }
 
 pub fn resolve_policy_external_env(

@@ -532,6 +532,62 @@ require_user_verification = true
     Ok(())
 }
 
+/// External env metadata: a successful `locket run` records the names sourced
+/// from `external_env_sources` in `external_env_names` (metadata-only, never
+/// values).
+#[test]
+fn e2e_policy_run_records_external_env_names_in_audit_metadata()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+
+    // External env file under the project root supplies one allowed name.
+    std::fs::write(
+        directory.path().join(".env.local"),
+        "DATABASE_URL=postgres://external/app\nNOT_ALLOWED=hidden\n",
+    )?;
+
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(directory.path().join("locket.toml"))?
+        .write_all(
+            br#"
+[commands.deploy]
+argv = ["/usr/bin/true"]
+optional_secrets = ["DATABASE_URL"]
+external_env_sources = [{ file = ".env.local" }]
+env_mode = "strict"
+"#,
+        )?;
+
+    run_with_context(
+        Cli::try_parse_from(["locket", "run", "deploy"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let metadata: String = store.connection().query_row(
+        "SELECT metadata_json FROM audit_log WHERE action = 'RUN_POLICY' AND status = 'SUCCESS'
+         ORDER BY sequence DESC LIMIT 1",
+        [],
+        |row| row.get(0),
+    )?;
+    let metadata_json: serde_json::Value = serde_json::from_str(&metadata)?;
+    assert_eq!(metadata_json["status"], "SUCCESS");
+    assert_eq!(metadata_json["external_env_names"], json!(["DATABASE_URL"]));
+    // The unauthorized name must never appear in metadata.
+    assert!(!metadata.contains("NOT_ALLOWED"));
+    // No values may be embedded.
+    assert!(!metadata.contains("postgres://external/app"));
+    Ok(())
+}
+
 /// Merge mode: parent environment is inherited and Locket secrets overlay it.
 /// The audit row records `env_mode = "merge"`.
 #[test]
