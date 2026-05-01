@@ -738,7 +738,7 @@ pub async fn dispatch(envelope: &RequestEnvelope, state: &AgentSocketState) -> R
         Ok(AgentMethod::ResolveReference) => {
             crate::resolve::handle_resolve(envelope, state, current_unix_nanos()).await
         }
-        Ok(AgentMethod::PrepareExec) => crate::prepare_exec::handle_prepare_exec(envelope),
+        Ok(AgentMethod::PrepareExec) => prepare_exec_dispatch(envelope, state).await,
         Ok(AgentMethod::ListSecrets) => handle_list_secrets(envelope),
         Ok(AgentMethod::ListVersions) => handle_list_versions(envelope),
         Ok(AgentMethod::SetSecret) => {
@@ -764,6 +764,13 @@ pub async fn dispatch(envelope: &RequestEnvelope, state: &AgentSocketState) -> R
             false,
         )),
     }
+}
+
+async fn prepare_exec_dispatch(
+    envelope: &RequestEnvelope,
+    state: &AgentSocketState,
+) -> ResponseEnvelope {
+    crate::prepare_exec::handle_prepare_exec(envelope, state, current_unix_nanos()).await
 }
 
 async fn handle_list_policies(
