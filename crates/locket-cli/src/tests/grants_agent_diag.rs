@@ -723,12 +723,22 @@ fn doctor_warns_when_degraded_audit_log_is_non_empty()
     run_git(directory.path(), &["init"])?;
 
     // Seed the degraded-audit log with two metadata-only refusal rows.
+    // Write at 0600 to mirror the production logger; otherwise the
+    // `degraded_audit_log_perms` check would `fail` (non-critical) and
+    // trip the exit code, masking the warn-only behavior under test.
     let degraded_log = directory.path().join(locket_platform::DEGRADED_AUDIT_LOG_FILENAME);
     fs::write(
         &degraded_log,
         "{\"schema_version\":1,\"action\":\"REVEAL\",\"status\":\"DENIED_LOCKED\",\"ts_unix_nanos\":1700000000000000000,\"failure_reason\":\"vault_locked\",\"command\":\"get --reveal\"}\n\
          {\"schema_version\":1,\"action\":\"COPY\",\"status\":\"DENIED_LOCKED\",\"ts_unix_nanos\":1700000000000000001,\"failure_reason\":\"vault_locked\",\"command\":\"agent.Copy\"}\n",
     )?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&degraded_log)?.permissions();
+        perms.set_mode(0o600);
+        fs::set_permissions(&degraded_log, perms)?;
+    }
     let bytes = fs::metadata(&degraded_log)?.len();
 
     let mut doctor_output = Vec::new();
