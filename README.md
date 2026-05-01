@@ -10,22 +10,6 @@
 
 </div>
 
-```text
-        .--------.
-       / .------. \
-      / /        \ \
-      | |        | |
-     _| |________| |_
-   .' |_|        |_| '.
-   '._____ ____ _____.'
-   |     .'____'.     |
-   |     | .--. |     |     L O C K E T
-   |     | |  | |     |     local-first secrets, sealed shut
-   |     | '--' |     |
-   |     '------'     |
-   '------------------'
-```
-
 Locket treats secrets as **capabilities** — granted to specific projects, profiles, commands, directories, editors, shells, and runtime sessions. No plaintext on disk. No values in shell history. No telemetry. No remote calls except the ones you explicitly ask for.
 
 ---
