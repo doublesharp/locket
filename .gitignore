@@ -39,3 +39,4 @@ crates/locket-app/ui/dist/
 crates/locket-app/ui/.vite/
 crates/locket-app/src-tauri/target/
 crates/locket-app/src-tauri/gen/
+/.claude
