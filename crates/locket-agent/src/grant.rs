@@ -188,6 +188,33 @@ impl GrantTable {
         now_unix_nanos: i128,
         current_binding: Option<&GrantBinding>,
     ) -> GrantValidation {
+        self.validate_any(
+            grant_id,
+            project_id,
+            profile_id,
+            &[action],
+            now_unix_nanos,
+            current_binding,
+        )
+    }
+
+    /// Validate a live grant where any of `actions` is acceptable.
+    ///
+    /// Used by the `ResolveReference` handler to accept a live
+    /// `PrepareExec` grant in lieu of a separately-requested
+    /// `ResolveReference` grant: `PrepareExec` already authorizes the
+    /// trusted CLI execution path to resolve the policy's allowed
+    /// references, so re-issuing a narrower grant is redundant.
+    #[must_use]
+    pub fn validate_any(
+        &self,
+        grant_id: &str,
+        project_id: &str,
+        profile_id: &str,
+        actions: &[GrantAction],
+        now_unix_nanos: i128,
+        current_binding: Option<&GrantBinding>,
+    ) -> GrantValidation {
         let Some(grant) = self.grants.get(grant_id) else {
             return GrantValidation::Unknown;
         };
@@ -196,7 +223,7 @@ impl GrantTable {
         }
         if grant.project_id != project_id
             || grant.profile_id != profile_id
-            || grant.action != action
+            || !actions.contains(&grant.action)
         {
             return GrantValidation::ProcessMismatch;
         }
@@ -371,6 +398,43 @@ mod tests {
         );
         assert_eq!(
             table.validate("grant-1", "p-1", "prof-1", GrantAction::Copy, 100, Some(&binding),),
+            GrantValidation::ProcessMismatch
+        );
+    }
+
+    #[test]
+    fn validate_any_accepts_prepare_exec_grant_for_resolve_reference() {
+        let mut table = GrantTable::default();
+        table.insert(grant_record(GrantAction::PrepareExec));
+        let binding = GrantBinding::new(4242, "start-a");
+
+        // A live PrepareExec grant satisfies a ResolveReference check
+        // when both are listed as acceptable actions, so the trusted
+        // CLI execution path can reuse the umbrella grant for follow-up
+        // `lk://` resolutions without re-issuing a narrower one.
+        assert_eq!(
+            table.validate_any(
+                "grant-1",
+                "p-1",
+                "prof-1",
+                &[GrantAction::ResolveReference, GrantAction::PrepareExec],
+                100,
+                Some(&binding),
+            ),
+            GrantValidation::Valid
+        );
+        // The narrow `validate` call still rejects the cross-action use
+        // so call sites that strictly need a ResolveReference grant are
+        // unaffected.
+        assert_eq!(
+            table.validate(
+                "grant-1",
+                "p-1",
+                "prof-1",
+                GrantAction::ResolveReference,
+                100,
+                Some(&binding),
+            ),
             GrantValidation::ProcessMismatch
         );
     }

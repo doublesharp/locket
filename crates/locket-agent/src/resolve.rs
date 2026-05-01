@@ -134,11 +134,15 @@ pub async fn handle_resolve(
             return grant_required(request);
         };
         let grants = state.grants.lock().await;
-        grants.validate(
+        // Accept a live `PrepareExec` grant in addition to the narrower
+        // `ResolveReference` grant: `PrepareExec` is the umbrella the
+        // trusted CLI execution path acquires up front, and reissuing a
+        // narrower grant for each `lk://` resolution is redundant.
+        grants.validate_any(
             grant_id,
             project_id,
             profile_id,
-            GrantAction::ResolveReference,
+            &[GrantAction::ResolveReference, GrantAction::PrepareExec],
             now_unix_nanos,
             typed.binding.as_ref(),
         )
@@ -1255,6 +1259,92 @@ mod tests {
         let response = resolve_with_fixture(&fixture, "lk://dev/DATABASE_URL@v99", 1).await?;
 
         assert_eq!(error_code(response)?, "SecretNotFound");
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn handle_resolve_accepts_prepare_exec_grant_id_returned_by_handle_prepare_exec()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // The trusted CLI execution path receives a `PrepareExec`
+        // grant_id on the `PrepareExecResponse`; the follow-up
+        // `ResolveReference` call must accept that umbrella grant
+        // without a separate `RequestGrant(ResolveReference)`.
+        use crate::policies::CommandPolicySnapshot;
+        use crate::prepare_exec::{
+            PrepareExecRequest, PrepareExecResponse, handle_prepare_exec,
+        };
+
+        let fixture = build_fixture()?;
+        let state = AgentSocketState::locked("test-version");
+        // Mirror the `unlocked_state` helper but skip pre-seeding the
+        // `ResolveReference` grant — we want the only live grant to be
+        // the one minted by `handle_prepare_exec`.
+        state.unlock_cache.lock().await.insert(
+            PROJECT_ID.to_owned(),
+            UnlockEntry::new(
+                fixture.master_key.to_vec(),
+                0,
+                Duration::from_secs(60),
+                UnlockMethod::Passphrase,
+            ),
+        );
+        state
+            .set_command_policies_for_tests(vec![CommandPolicySnapshot {
+                project_id: PROJECT_ID.to_owned(),
+                name: POLICY_NAME.to_owned(),
+                command_kind: "argv".to_owned(),
+                command_preview: "deploy".to_owned(),
+                required_secrets: vec![SECRET_NAME.to_owned()],
+                optional_secrets: Vec::new(),
+                allowed_secrets: vec![SECRET_NAME.to_owned()],
+                confirm: false,
+                require_user_verification: false,
+                require_agent: true,
+                allow_remote_docker: false,
+                ttl_seconds: 600,
+                env_mode: "minimal".to_owned(),
+                override_mode: "locket".to_owned(),
+                updated_at_unix_nanos: 1,
+            }])
+            .await;
+
+        let prepare_request = PrepareExecRequest {
+            policy_name: POLICY_NAME.to_owned(),
+            profile_id: PROFILE_ID.to_owned(),
+            project_id: Some(PROJECT_ID.to_owned()),
+            binding: Some(GrantBinding::new(std::process::id(), "0")),
+        };
+        let prepare_envelope = RequestEnvelope::new(
+            "req-prepare-resolve",
+            AgentMethod::PrepareExec,
+            serde_json::to_value(&prepare_request)?,
+        );
+        let prepare_response = handle_prepare_exec(&prepare_envelope, &state, 1).await;
+        let ResponseEnvelope::Success(prepare_success) = prepare_response else {
+            return Err("PrepareExec must succeed for the test fixture".into());
+        };
+        let prepare_decoded: PrepareExecResponse =
+            serde_json::from_value(prepare_success.payload)?;
+        assert!(
+            prepare_decoded.grant_id.starts_with("lk_grant_"),
+            "expected lk_grant_-prefixed grant_id, got {}",
+            prepare_decoded.grant_id
+        );
+        // Only the umbrella PrepareExec grant exists at this point;
+        // there is no separately-requested ResolveReference grant.
+        assert_eq!(state.grants.lock().await.len(), 1);
+
+        let mut resolve_req = resolve_request(&fixture);
+        resolve_req.grant_id = Some(prepare_decoded.grant_id.clone());
+        let resolve_envelope = RequestEnvelope::new(
+            "req-resolve-with-prepare-grant",
+            AgentMethod::ResolveReference,
+            serde_json::to_value(resolve_req)?,
+        );
+        let resolve_response = handle_resolve(&resolve_envelope, &state, 2).await;
+        let payload = resolve_payload(resolve_response)?;
+        assert_eq!(payload.value, fixture.expected_value);
+        assert_eq!(payload.profile_id, PROFILE_ID);
         Ok(())
     }
 
