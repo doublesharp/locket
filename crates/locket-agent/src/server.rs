@@ -230,6 +230,11 @@ pub struct AgentSocketState {
     pub command_policies: Arc<Mutex<Vec<crate::policies::CommandPolicySnapshot>>>,
     /// In-memory automation-client challenges issued by `ClientHello`.
     pub automation_challenges: Arc<Mutex<BTreeMap<String, crate::auth::IssuedChallenge>>>,
+    /// TTL-bound, names-only IDE env-session registry populated by
+    /// `RegisterIdeEnvSession` and consumed by `IdeEnvSession` lookups.
+    /// Values never enter this map: only the env-name allow-list and
+    /// TTL.
+    pub ide_env_sessions: crate::ide_env_session::IdeEnvSessionRegistry,
     /// Server-side fan-out hub for `SubscribeStatus` streams.
     pub status_hub: StatusHub,
     /// Test hook overriding the heartbeat cadence so unit tests can run
@@ -268,6 +273,7 @@ impl AgentSocketState {
             runtime_sessions: Arc::new(Mutex::new(Vec::new())),
             command_policies: Arc::new(Mutex::new(Vec::new())),
             automation_challenges: Arc::new(Mutex::new(BTreeMap::new())),
+            ide_env_sessions: crate::ide_env_session::new_registry(),
             status_hub,
             #[cfg(test)]
             test_heartbeat_interval: Arc::new(Mutex::new(None)),
@@ -295,6 +301,7 @@ impl AgentSocketState {
             runtime_sessions: Arc::new(Mutex::new(Vec::new())),
             command_policies: Arc::new(Mutex::new(Vec::new())),
             automation_challenges: Arc::new(Mutex::new(BTreeMap::new())),
+            ide_env_sessions: crate::ide_env_session::new_registry(),
             status_hub,
             test_heartbeat_interval: Arc::new(Mutex::new(None)),
             peer_credential_validator: Arc::new(crate::peer_cred::validate_peer_stream),
@@ -724,12 +731,8 @@ pub async fn dispatch(envelope: &RequestEnvelope, state: &AgentSocketState) -> R
         Ok(AgentMethod::RequestGrant) => handle_request_grant(envelope, state).await,
         Ok(AgentMethod::RevokeGrant) => handle_revoke_grant(envelope, state).await,
         Ok(AgentMethod::ExpireGrant) => handle_expire_grant(envelope, state).await,
-        Ok(AgentMethod::Reveal) => {
-            crate::reveal::handle_reveal(envelope, state, current_unix_nanos()).await
-        }
-        Ok(AgentMethod::Copy) => {
-            crate::reveal::handle_copy(envelope, state, current_unix_nanos()).await
-        }
+        Ok(AgentMethod::Reveal) => crate::reveal::handle_reveal(envelope, state, current_unix_nanos()).await,
+        Ok(AgentMethod::Copy) => crate::reveal::handle_copy(envelope, state, current_unix_nanos()).await,
         Ok(AgentMethod::ScanKnownValues) => {
             crate::scan::handle_scan(envelope, state, current_unix_nanos()).await
         }
@@ -751,6 +754,7 @@ pub async fn dispatch(envelope: &RequestEnvelope, state: &AgentSocketState) -> R
         Ok(AgentMethod::ListAudit) => handle_list_audit(envelope, state).await,
         Ok(AgentMethod::ReadConfig) => crate::config::handle_read_config(envelope),
         Ok(AgentMethod::WriteConfig) => crate::config::handle_write_config(envelope, state).await,
+        Ok(method @ (AgentMethod::RegisterIdeEnvSession | AgentMethod::IdeEnvSession)) => ide_env_session_dispatch(method, envelope, state).await,
         Ok(method) => ResponseEnvelope::Error(ErrorEnvelope::new(
             envelope.id.clone(),
             "ProtocolError",
@@ -771,6 +775,19 @@ async fn prepare_exec_dispatch(
     state: &AgentSocketState,
 ) -> ResponseEnvelope {
     crate::prepare_exec::handle_prepare_exec(envelope, state, current_unix_nanos()).await
+}
+
+async fn ide_env_session_dispatch(
+    method: AgentMethod,
+    envelope: &RequestEnvelope,
+    state: &AgentSocketState,
+) -> ResponseEnvelope {
+    let now = current_unix_nanos();
+    if matches!(method, AgentMethod::RegisterIdeEnvSession) {
+        crate::ide_env_session::handle_register_ide_env_session(envelope, state, now).await
+    } else {
+        crate::ide_env_session::handle_ide_env_session(envelope, state, now).await
+    }
 }
 
 async fn handle_list_policies(

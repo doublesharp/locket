@@ -53,6 +53,8 @@ fn agent_methods_round_trip_through_wire_names() -> Result<(), UnknownMethod> {
         AgentMethod::ListSecrets,
         AgentMethod::ListVersions,
         AgentMethod::SetActiveProfile,
+        AgentMethod::RegisterIdeEnvSession,
+        AgentMethod::IdeEnvSession,
     ];
 
     for method in methods {
