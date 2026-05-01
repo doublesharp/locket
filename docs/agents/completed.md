@@ -183,6 +183,8 @@ Slices that have merged to `main` and verified. Open work tracked in
   reference-resolution path.
 - [x] agent-resolve-reference-impl: Enforced the live grant profile scope during agent
   reference resolution.
+- [x] bench-smoke-coverage: Benchmark smoke coverage now measures metadata status and
+  staged scan paths. The policy summary gates all three sampled PR smoke surfaces.
 
 ## Full Spec Coverage TODO — Security/Recovery/Team
 
