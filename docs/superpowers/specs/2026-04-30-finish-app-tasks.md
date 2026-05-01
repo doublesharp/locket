@@ -64,6 +64,245 @@ are unblocked. One remaining critical-path item.
 | - | --- | --- |
 | 1 | LocalUserVerifier Windows + Linux backends | `--verify-user` works without a memory-only stub on Windows / Linux hosts (macOS shipped) |
 
+## Spec audit follow-ups (2026-05-01)
+
+A 21-file spec-vs-code audit on 2026-05-01 surfaced 36 new gaps not
+already tracked above. They are listed here in one block so worker
+agents can claim them; the section exists for triage only and items
+should be moved into their proper home sections (or removed) as they
+ship. Each bullet has spec ref + code ref + suggested touches.
+
+### A. Crypto / recovery / bundle correctness
+
+- [ ] **device-key-recovery-envelope-entries**: recovery envelope
+  must carry `device_signing_private_key` + `device_sealing_private_key`
+  per `crypto.md:158,171` and `team-sync-recovery.md:131`. Today
+  envelope only carries `master_key` + `automation_client_private_key:*`,
+  so a host that loses its keychain wedges at `KeychainEntryMissing`.
+  Touches: `team/device.rs:683-694` (bootstrap envelope creation)
+  and `vault/recovery.rs:25-39` (restore path); map missing entries
+  to `LocalVaultUnrecoverable` per spec table line 147.
+- [ ] **device-init-force-rewraps-envelope**: `team-sync-recovery.md:44`
+  requires `device init --force` to atomically update the recovery
+  envelope with new device-key wraps. `team/device.rs:84-118` +
+  `replace_local_device_with_audit:461-501` only swap the
+  wrapped-local-file storage. Pre-req: `device-key-recovery-envelope-entries`.
+- [ ] **recovery-rotate-fresh-user-verification**:
+  `team-sync-recovery.md:159,164-165` requires `locket recovery rotate`
+  to gate on fresh local user verification. `vault/recovery.rs:51-107`
+  calls neither helper. Insert verification call + embed
+  `UserVerificationAudit` into the `RECOVERY_ROTATE` row.
+- [ ] **recovery-rotate-carries-device-keys**: `crypto.md:172` says
+  rotate must rewrap all active managed client private keys "in the
+  same atomic replacement as the master and device key wraps". Pair
+  with `device-key-recovery-envelope-entries`.
+- [ ] **bundle-verify-attempts-decrypt-when-recipient**:
+  `team-sync-recovery.md:213` says verify must attempt decryption
+  when device has a matching recipient key. `team/bundle.rs:1459-1476`
+  + `verify_bundle_file:1913-1929` are structural-only. Hardcoded
+  `decryptable_by_this_device: no` at `:1473` and JSON `false` at
+  `:2055-2063`. Touch: when matching device sealing private key is
+  available, decrypt + validate inner manifest references + report
+  truthful flag.
+- [ ] **bundle-import-rotate-uses-import-timestamp**:
+  `team-sync-recovery.md:224` says newer-incoming over active target
+  sets `SecretMeta.last_rotated_at` to the import timestamp.
+  `team/bundle.rs:828-846` writes the bundle's value, not local
+  `now`. Touch + e2e regression in `e2e_bundle_roundtrip.rs`.
+- [ ] **client-create-writes-to-recovery-envelope**: `crypto.md:172`
+  says `locket client create` with `--storage os-keychain` or
+  `--storage wrapped-local-file` must add an
+  `automation_client_private_key:<client_id>` envelope entry at
+  creation. `team/client.rs:40-181` + `store_client_private_key:276-347`
+  only write to keychain/local file. Result: `recover_command`
+  always counts those as `skipped_automation_client_private`.
+- [ ] **bootstrap-checklist-coverage-incomplete**:
+  `team-sync-recovery.md:31-42` enumerates 9 required `locket
+  bootstrap` checks. `project/bootstrap.rs:62-150` implements only
+  7. Missing: agent running-or-startable check, active-profile-
+  unlock-state probe (only checks profile row exists), referenced-
+  tools presence check, and actually running the configured
+  `smoke_policy` (reports presence but never invokes
+  `locket run <policy>`).
+- [ ] **privacy-alias-canonical-encoding**: `invariants.md:37`
+  defines aliases as `SHA-256("locket-privacy-alias-v1" ||
+  field("kind", kind) || field("id", id))` with length-prefixed
+  UTF-8 `field` from `crypto.md`. CLI (`main.rs:1955-1961`) and UI
+  (`privacy.ts:12-18`) hash the ad-hoc string `"kind:{kind};id:{id}"`.
+  Touch: switch both to canonical `field()` byte layout + add a
+  vector test.
+
+### B. Schema / data-model alignment
+
+- [ ] **audit-verify-validator-arm**: `required_fields_for_action`
+  (`audit.rs:551-588`) has no `AUDIT_VERIFY` arm. `audit.md:55`
+  requires `check_names` + pass/warn/fail/skip counts.
+  `audit.rs:1156-1170` already emits these, so just add the
+  validator arm + a unit test that rejects an `AUDIT_VERIFY` write
+  with stripped metadata.
+- [ ] **passkey-credentials-missing-cols**: `passkey_credentials`
+  (`schema.rs:298-313`) lacks `device_id`, `member_id`, `public_key`,
+  `user_handle` per `data-model.md:267-285`. WebAuthn assertion
+  needs `public_key`; `user_handle` is the stable random handle.
+  Touches: schema migration + `PasskeyCredentialRecord` updates in
+  `locket-store/src/passkey.rs` + registrar plumbing in
+  `locket-platform`.
+- [ ] **directory-grants-missing-revoked-and-granted-by**:
+  `directory_grants` (`schema.rs:156-167`) missing `granted_by` +
+  `revoked_at` per `data-model.md:221-228`. `grants.rs:133-156`
+  hard-deletes on deny instead of setting `revoked_at`, losing the
+  audit-correlation breadcrumb.
+- [ ] **imported-audit-chain-optionality**: `data-model.md:421-432`
+  declares `source_device_fingerprint`, `encrypted_rows_nonce`,
+  `encrypted_rows` as Option. `imported_audit_chains` schema makes
+  all three NOT NULL → checkpoint-only imports can't persist.
+  Reconcile spec vs schema (one is wrong).
+- [ ] **bundle-conflict-index-by-profile-name-version**:
+  `storage.md:149` requires composite index for bundle-apply
+  conflict lookup by profile/name/version. Today `secrets` has
+  `(project_id, profile_id, name)` (no version) and `secret_versions`
+  is keyed by `(secret_id, version)`. No covering index for the
+  apply path. Add a covering index + doctor check.
+- [ ] **devices-missing-member-id-and-label**: `Device`
+  (`data-model.md:254-265`) declares `member_id: Option<MemberId>`
+  + separate `label: String`. `devices` schema (`:272-284`) has only
+  `name`, no `member_id`. Reconcile spec vs schema.
+
+### C. CLI / runtime / agent
+
+- [ ] **agent-register-revoke-client-rpc**: `agent.md:86-87`
+  requires `RegisterClient` + `RevokeClient` RPCs storing scoped
+  automation-client public key + `CLIENT_ADD`/`CLIENT_REVOKE` audit.
+  Variants exist in `method.rs:17,19` but `server.rs:823-828` falls
+  through to "method not implemented in this build". Test at
+  `tests.rs:2532-2559` even pins missing-dispatch behavior. Touches:
+  new agent handlers, `CLIENT_ADD`/`CLIENT_REVOKE` audit emission,
+  server.rs dispatch arms.
+- [ ] **agent-socket-path-xdg-runtime-dir**: `agent.md:18-21`
+  requires Linux `$XDG_RUNTIME_DIR/locket/agent.sock`, macOS
+  `~/Library/Application Support/locket/agent.sock`, Windows
+  `\\.\pipe\locket-agent-<sid>`. `main.rs:2122` derives socket path
+  from `context.store_path.parent().join("agent.sock")` — sockets
+  land next to the SQLite store. Touches: `agent_socket_path`,
+  `agent_pid_path`, `agent_data_dir` + Windows named-pipe branch.
+- [ ] **external-env-file-error-band**: `runtime.md:117` requires
+  `ExternalEnvSource::File` path validation failures to produce
+  `InvalidPolicy` (band 65). `exec/run.rs:549-579` returns
+  `metadata_invalid_error(...)` → `MetadataInvalid` → exit 64. Wrong
+  typed error and wrong band. Mirror fix in `agent/prepare_exec.rs`.
+- [ ] **external-env-file-symlink-tests**: `runtime.md:117` requires
+  symlinks resolving outside project root be rejected.
+  `canonicalize().starts_with(canonical_root)` covers escape, but no
+  explicit symlink rejection test in `tests/`. Add tests for
+  symlink-pointing-outside and symlink-pointing-inside-but-required
+  scenarios.
+
+### D. Desktop / integrations / scan
+
+- [ ] **status-payload-tray-fields**: `desktop.md:69-78` requires
+  the tray panel to surface running session count, recent
+  scan-warning count, recent audit status, active expiring/expired
+  pinned-reference warning count. `agent/status.rs:22-36` carries
+  none of those. Touches: extend `StatusPayload` + `StatusHub`
+  publish path, recompute on relevant audit/scan/runtime-session
+  writes, render in tray tooltip.
+- [ ] **scan-warning-tray-state-producer**: tray icon-state machine
+  has `ScanWarning` variant with PNG assets (`tray.rs:373,383,393`)
+  but `deriveTrayState` in `useTray.ts:35-58` never returns
+  `'scan-warning'`. Spec (`desktop.md:105`) ties this icon to "one
+  or more unresolved scan warnings". Pre-req:
+  `status-payload-tray-fields` for `scan_warning_count`.
+- [ ] **backup-recovery-view-not-wired**: `BackupRecovery.vue`
+  renders forms for export/import/verify/recovery-rotate but
+  `@action` events all funnel into `App.vue:1212-1214`'s
+  `triggerBackupAction` which only calls `refresh()`. No agent RPC
+  invoked. `desktop.md:20` lists this as a primary view. Touches:
+  add Tauri commands wrapping `ExportBundle`/`ImportBundle`/
+  `VerifyBundle`/`RecoveryRotate` (some need new agent RPCs — none
+  in `agent/method.rs:9-72`); typed-confirmation for destructive
+  paths.
+- [ ] **secret-row-cross-reference-deprecation**: `desktop.md:34`
+  requires secret rows to surface version-level deprecation warnings
+  when current policy/command-preview/`lk://...@vN` reference
+  depends on a deprecated version with active or expired grace.
+  `SecretMetadataList.vue` only shows per-row `hasDeprecatedGrace`
+  badge from row's own state.
+- [ ] **integrations-suppress-marker-spec-conflict**:
+  `integrations.md:115` mandates `locket-allow` /
+  `locket-allow-next-line` markers; `scan-redaction.md:80-95`
+  mandates `locket-suppress*` family. `suppressions.rs:30-39` only
+  honors `locket-suppress*`. **Spec-vs-spec contradiction** — pick
+  one canonical marker family, edit the loser spec.
+- [ ] **process-env-pattern-non-js-coverage**: VS Code diagnostic
+  in `extensions/vscode/src/diagnosticsModel.ts:34` only matches
+  `process.env.KEY` (Node). `integrations.md:49` says "process.env.KEY
+  *and similar references*". Python (`os.environ["KEY"]`,
+  `os.getenv`), Rust (`env::var`), Go (`os.Getenv`), shell
+  (`$KEY`/`${KEY}`) not detected, even though `referenceCompletion.ts:11-32`
+  registers diagnostics-eligible language IDs for all of them.
+- [ ] **tray-privacy-alias-not-applied**: `desktop.md:37,72-73,94-95`
+  requires tray tooltip + notifications to use stable local aliases
+  when `privacy.redact_names = true`. Rust `tray::tooltip_for`
+  (`tray.rs:345-347`) returns static `descriptor().label`
+  regardless. Forward-looking gap once `status-payload-tray-fields`
+  lands and tooltips include project/profile context.
+
+### E. Quality / ops / build
+
+- [ ] **github-actions-workflows-missing**: repo has **no
+  `.github/` directory at all**. `dist/release-ci-runners.md` and
+  `operations.md:39` document `release.yml`; `fuzzing.md:39`
+  requires nightly fuzz CI; coverage/SLSA gates are documented but
+  not enforced anywhere outside local `make` invocation. Ship
+  `.github/workflows/{ci.yml,release.yml,fuzz-nightly.yml}` matching
+  the existing `make` targets.
+- [ ] **reference-runner-setup-scripts**:
+  `performance-reference-runner.md:87,99` mandates
+  `scripts/reference-runners/` per-class setup scripts that record
+  applied state into `target/quality/reference-runner-setup.json`
+  and are invoked before sample collection. Directory missing
+  entirely. Add `arm64-mac.sh` / `x86-linux.sh` + a fingerprint JSON
+  writer; wire `bench-smoke.sh` to read the fingerprint.
+- [ ] **fuzz-corpus-seed-thinness**: `fuzzing.md:41` requires
+  diverse versioned corpora; most directories under `fuzz/corpus/`
+  carry one trivial seed (e.g. `fuzz_lk_uri/basic.txt`). Seed each
+  with edge-case / malformed / boundary inputs.
+- [ ] **mutation-scope-mismatch**: `testing.md:43` and
+  `engineering.md:34` require mutation testing on policy / env-merge
+  / typed-error / authz **areas**. `scripts/mutation-smoke.sh`
+  runs whole packages with no `--file` filter, so env-merge code in
+  `locket-cli` is not mutated and per-package runs dilute density on
+  spec-named hot zones. Add `--file` glob filters and pull in
+  `locket-cli`.
+- [ ] **canary-harness-surface-coverage**: `testing.md:84-89`
+  requires the canary helper to cover CLI, agent, scan, redaction,
+  audit, debug bundle, UI, tray, VS Code, Docker, and recovery
+  flows. Today only `locket-cli/src/tests/leak_canary.rs` and
+  `locket-scan/tests/leak_canary.rs`. Extend into agent reveal/copy,
+  Docker compose helper, audit row writer, desktop UI smoke, VSIX
+  integration.
+- [ ] **doublcov-html-not-canonical**: `testing.md:48` names
+  `cargo llvm-cov` as canonical. `scripts/coverage.sh` mode `html`
+  shells out to `npx -y @0xdoublesharp/doublcov@0.4.3` — adds a
+  Node/network dependency to a security-sensitive coverage path
+  that isn't documented in the spec. Default to native
+  `cargo llvm-cov --html`; gate doublcov behind opt-in.
+- [ ] **bench-report-spec-claim**: `performance.md:31` lists
+  `make bench-report` as required. `bench-smoke.sh` mode `report`
+  only reprints a previously recorded `target/quality/bench-report.md`
+  and errors out if `make bench-ci` was never run. Either auto-run
+  a smoke pass first or document the bench-ci pre-req on the
+  Makefile target.
+- [ ] **sanitizer-not-required-in-smoke**: `fuzzing.md:43` says
+  smoke jobs should use ASan/UBSan where available.
+  `scripts/fuzz-smoke.sh` only sets `sanitizer=address` in nightly
+  mode; PR `make fuzz-smoke` runs without sanitizers. Enable
+  `FUZZ_SANITIZER=address` by default in smoke on supported hosts.
+- [ ] **fuzz-nightly-ci-job**: subtask of
+  `github-actions-workflows-missing`. Schedule `make fuzz-nightly`
+  with artifact upload of `fuzz/artifacts/` and `fuzz/corpus/` per
+  `fuzzing.md:39`.
+
 ## P0 — Correctness / Security Drift (audit findings)
 
 These are spec contracts the code currently violates or silently
@@ -263,9 +502,14 @@ shipped. Core-dump suppression also shipped on all three platforms:
 - Shipped: **harden-prctl-set-dumpable** — Linux core-dump
   suppression via `prctl(PR_SET_DUMPABLE, 0)` + `RLIMIT_CORE=0`
   (commit 97058f69).
-- Shipped: **harden-macos-windows-core-dump** — macOS core-dump
-  suppression via `RLIMIT_CORE=0`, Windows via `SetErrorMode`
-  (commit 9923b7f0).
+- Shipped: **harden-macos-core-dump** — macOS core-dump suppression
+  via `RLIMIT_CORE=0` (part of commit 9923b7f0).
+- [ ] **harden-windows-core-dump-real**: `disable_windows_core_dumps`
+  is still a stub returning `Unsupported`
+  (`crates/locket-platform/src/core_dumps.rs:182-202`). Wire the
+  `windows` crate, call `SetErrorMode(SEM_NOGPFAULTERRORBOX |
+  SEM_FAILCRITICALERRORS)`, return `Suppressed`, and update the
+  doctor check to confirm. Spec ref: `docs/specs/agent.md`.
 
 ### `device init` first-run-on-machine bootstrap
 (`device-init-bootstrap` shipped: first-run-on-machine generates
