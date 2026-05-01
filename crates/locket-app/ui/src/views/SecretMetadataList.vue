@@ -96,9 +96,30 @@ function searchText(row: SecretRowMeta): string {
     ...(row.tags ?? []),
     `v${row.currentVersion}`,
     row.hasDeprecatedGrace ? 'deprecated grace' : '',
+    ...(row.deprecatedReferenceWarnings ?? []).map(warningSearchText),
   ]
     .join(' ')
     .toLowerCase();
+}
+
+function warningLabel(
+  warning: NonNullable<SecretRowMeta['deprecatedReferenceWarnings']>[number],
+): string {
+  const status = warning.status === 'expired-grace' ? 'expired grace' : 'active grace';
+  const surface = warning.surface === 'command-preview' ? 'command preview' : 'policy';
+  const count = warning.referenceCount > 1 ? ` (${warning.referenceCount.toString()})` : '';
+  return `v${warning.version.toString()} ${status} ${surface}${count}`;
+}
+
+function warningSearchText(
+  warning: NonNullable<SecretRowMeta['deprecatedReferenceWarnings']>[number],
+): string {
+  return [
+    `v${warning.version}`,
+    warning.status,
+    warning.surface,
+    warning.referenceCount > 1 ? `${warning.referenceCount} references` : '1 reference',
+  ].join(' ');
 }
 
 function onActivate(row: SecretRowMeta): void {
@@ -273,7 +294,21 @@ function onKey(event: KeyboardEvent, row: SecretRowMeta): void {
             <span class="view__muted">v{{ row.currentVersion }}</span>
           </td>
           <td>
-            <span v-if="row.hasDeprecatedGrace" class="badge badge--warning" role="note">
+            <span
+              v-if="row.deprecatedReferenceWarnings && row.deprecatedReferenceWarnings.length > 0"
+              class="view__badges"
+            >
+              <span
+                v-for="warning in row.deprecatedReferenceWarnings"
+                :key="`${row.id}:v${warning.version}:${warning.status}:${warning.surface}`"
+                class="badge badge--warning"
+                role="note"
+                :title="warning.graceUntil ? `Grace until ${warning.graceUntil}` : undefined"
+              >
+                {{ warningLabel(warning) }}
+              </span>
+            </span>
+            <span v-else-if="row.hasDeprecatedGrace" class="badge badge--warning" role="note">
               deprecated grace
             </span>
             <span v-else class="view__muted">—</span>
@@ -492,6 +527,12 @@ function onKey(event: KeyboardEvent, row: SecretRowMeta): void {
 }
 
 .view__tags {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+}
+
+.view__badges {
   display: inline-flex;
   flex-wrap: wrap;
   gap: 0.25rem;

@@ -113,12 +113,11 @@ ship. Each bullet has spec ref + code ref + suggested touches.
   typed agent path and enforces one-time-display acknowledgement, but
   still lacks fresh platform/current-code verification and recovery
   envelope rewrite from `vault/recovery.rs`.
-- [~] (in-flight: feature/desktop-polish-final) **secret-row-cross-reference-deprecation**: `desktop.md:34`
-  requires secret rows to surface version-level deprecation warnings
-  when current policy/command-preview/`lk://...@vN` reference
-  depends on a deprecated version with active or expired grace.
-  `SecretMetadataList.vue` only shows per-row `hasDeprecatedGrace`
-  badge from row's own state.
+- [x] **secret-row-cross-reference-deprecation**: desktop secret rows now
+  derive metadata-only warnings from loaded policy and version rows when
+  pinned policy/command-preview `lk://...@vN` references target deprecated
+  versions with active or expired grace. Badges show version, grace state,
+  reference surface, and count only; no secret values or command text.
 ### E. Quality / ops / build
 
 - [~] (in-flight: feature/os-validation-final) **canary-packaged-os-follow-up**: remaining canary surfaces that

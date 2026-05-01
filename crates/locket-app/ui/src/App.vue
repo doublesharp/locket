@@ -41,6 +41,7 @@ import { secretRow } from './agent/secrets';
 import { versionHistoryRow } from './agent/versions';
 import { useAgent } from './composables/useAgent';
 import { useTray } from './composables/useTray';
+import { secretRowsWithDeprecationWarnings } from './secret/deprecationWarnings';
 import AuditLog from './views/AuditLog.vue';
 import BackupRecovery from './views/BackupRecovery.vue';
 import type { BundleAction } from './backup/actions';
@@ -235,6 +236,15 @@ const backupBusy = ref<boolean>(false);
 const backupNotice = ref<string | null>(null);
 const backupError = ref<string | null>(null);
 const auditChainOk = ref<boolean>(true);
+
+const secretRows = computed<SecretRowMeta[]>(() =>
+  secretRowsWithDeprecationWarnings(
+    secrets.value,
+    versions.value,
+    policies.value,
+    nowUnixNanos(),
+  ),
+);
 
 const settings = ref<SettingsState>({
   privacyRedactNames: false,
@@ -1463,7 +1473,7 @@ onUnmounted(() => {
 
       <SecretMetadataList
         v-else-if="currentView === 'secrets'"
-        :rows="secrets"
+        :rows="secretRows"
         :privacy-mode="settings.privacyRedactNames"
         :loading="secretsLoading"
         :error-message="secretsError"
@@ -1474,7 +1484,7 @@ onUnmounted(() => {
 
       <SecretEditorView
         v-else-if="currentView === 'secret-editor'"
-        :rows="secrets"
+        :rows="secretRows"
         :privacy-mode="settings.privacyRedactNames"
         :loading="secretsLoading"
         :error-message="secretsError"

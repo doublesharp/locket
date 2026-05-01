@@ -17,6 +17,18 @@ export interface SecretRowMeta {
   rotatedAt?: string;
   currentVersion: number;
   hasDeprecatedGrace: boolean;
+  deprecatedReferenceWarnings?: SecretDeprecationWarning[];
+}
+
+export type SecretDeprecationWarningStatus = 'active-grace' | 'expired-grace';
+export type SecretDeprecationWarningSurface = 'policy' | 'command-preview';
+
+export interface SecretDeprecationWarning {
+  version: number;
+  status: SecretDeprecationWarningStatus;
+  surface: SecretDeprecationWarningSurface;
+  graceUntil?: string;
+  referenceCount: number;
 }
 
 export interface VersionHistoryRow {
