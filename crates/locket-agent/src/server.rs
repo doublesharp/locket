@@ -359,7 +359,7 @@ impl AgentSocketState {
         }
     }
 
-    async fn publish_status_snapshot(&self, now_unix_nanos: i128) -> StatusPayload {
+    pub(crate) async fn publish_status_snapshot(&self, now_unix_nanos: i128) -> StatusPayload {
         let snapshot = self.status_snapshot(now_unix_nanos).await;
         self.status_hub.publish(snapshot.clone()).await;
         snapshot
@@ -628,6 +628,9 @@ pub async fn dispatch(envelope: &RequestEnvelope, state: &AgentSocketState) -> R
         Ok(AgentMethod::ListVersions) => handle_list_versions(envelope),
         Ok(AgentMethod::SetSecret) => {
             crate::set_secret::handle_set_secret(envelope, state, current_unix_nanos()).await
+        }
+        Ok(AgentMethod::SetActiveProfile) => {
+            crate::profile::handle_set_active_profile(envelope, state, current_unix_nanos()).await
         }
         Ok(AgentMethod::VerifyAudit) => handle_verify_audit(envelope, state).await,
         Ok(AgentMethod::ListAudit) => handle_list_audit(envelope, state).await,

@@ -200,8 +200,6 @@ Slices 1+2 shipped (agent client, tray binding, 6 view scaffolds,
   - [ ] **subtask** — desktop-profile-switcher-view: switch profile +
     dangerous-profile typed confirmation. Pre-req:
     `agent-set-active-profile`.
-  - [~] [52c592db] branch agent-52c592db/agent-set-active-profile, worktree .worktrees/agent-52c592db-agent-set-active-profile; **subtask** — agent-set-active-profile: RPC; invalidates
-    profile-scoped grants; documented audit row.
   - [ ] **subtask** — desktop-secret-editor-view: `SecretEditor.vue`
     set/update with TTL-bound reveal. Pre-req:
     `desktop-reveal-modal`, `agent-set-secret`.

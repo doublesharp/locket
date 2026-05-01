@@ -57,6 +57,8 @@ pub enum AgentMethod {
     ListVersions,
     /// Create or rotate one secret value through a gated path.
     SetSecret,
+    /// Switch the active project profile.
+    SetActiveProfile,
 }
 
 impl AgentMethod {
@@ -89,6 +91,7 @@ impl AgentMethod {
             Self::ListSecrets => "ListSecrets",
             Self::ListVersions => "ListVersions",
             Self::SetSecret => "SetSecret",
+            Self::SetActiveProfile => "SetActiveProfile",
         }
     }
 }
@@ -123,6 +126,7 @@ impl FromStr for AgentMethod {
             "ListSecrets" => Ok(Self::ListSecrets),
             "ListVersions" => Ok(Self::ListVersions),
             "SetSecret" => Ok(Self::SetSecret),
+            "SetActiveProfile" => Ok(Self::SetActiveProfile),
             other => Err(UnknownMethod { method: other.to_owned() }),
         }
     }

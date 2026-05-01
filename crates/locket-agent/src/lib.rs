@@ -17,6 +17,7 @@ mod method;
 mod peer_cred;
 mod policies;
 mod prepare_exec;
+mod profile;
 mod resolve;
 mod reveal;
 mod runtime_sessions;
@@ -52,6 +53,7 @@ pub use policies::{
     CommandPolicyRow, CommandPolicySnapshot, ListPoliciesRequest, ListPoliciesResponse,
 };
 pub use prepare_exec::{PrepareExecRequest, PrepareExecResponse};
+pub use profile::{SetActiveProfileRequest, SetActiveProfileResponse};
 pub use resolve::{ResolveRequest, ResolveResponse};
 pub use reveal::{CopyRequest, CopyResponse, RevealRequest, RevealResponse};
 pub use runtime_sessions::{

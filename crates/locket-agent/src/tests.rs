@@ -52,6 +52,7 @@ fn agent_methods_round_trip_through_wire_names() -> Result<(), UnknownMethod> {
         AgentMethod::ClientHello,
         AgentMethod::ListSecrets,
         AgentMethod::ListVersions,
+        AgentMethod::SetActiveProfile,
     ];
 
     for method in methods {
@@ -1304,12 +1305,60 @@ fn seed_automation_client_store(
     Ok(store)
 }
 
+fn write_profile_test_config(
+    path: &std::path::Path,
+    project_id: &str,
+    profile_name: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let config = locket_core::ProjectConfig::new(
+        locket_core::ProjectId::new(project_id)?,
+        "agent profile".to_owned(),
+        locket_core::ProfileName::new(profile_name)?,
+    );
+    std::fs::write(path, toml::to_string_pretty(&config)?)?;
+    Ok(())
+}
+
+fn read_profile_test_config(
+    path: &std::path::Path,
+) -> Result<locket_core::ProjectConfig, Box<dyn std::error::Error>> {
+    Ok(toml::from_str(&std::fs::read_to_string(path)?)?)
+}
+
+fn seed_profile_test_store(
+    store_path: &std::path::Path,
+    project_id: &str,
+) -> Result<locket_store::Store, Box<dyn std::error::Error>> {
+    let mut store = locket_store::Store::open(store_path)?;
+    store.initialize_schema()?;
+    store.insert_project_if_absent(project_id, "agent profile", 1)?;
+    store.insert_profile_if_absent("lk_prof_dev", project_id, "dev", false, 1)?;
+    store.insert_profile_if_absent("lk_prof_prod", project_id, "prod", true, 2)?;
+    store.insert_profile_if_absent("lk_prof_staging", project_id, "staging", false, 3)?;
+    Ok(store)
+}
+
 async fn unlock_auth_project(state: &crate::server::AgentSocketState) {
     use crate::unlock_cache::{UnlockEntry, UnlockMethod};
     use std::time::Duration;
 
     state.unlock_cache.lock().await.insert(
         "lk_proj_auth".to_owned(),
+        UnlockEntry::new(
+            vec![42_u8; 32],
+            crate::server::current_unix_nanos(),
+            Duration::from_secs(60),
+            UnlockMethod::Passphrase,
+        ),
+    );
+}
+
+async fn unlock_profile_test_state(state: &crate::server::AgentSocketState, project_id: &str) {
+    use crate::unlock_cache::{UnlockEntry, UnlockMethod};
+    use std::time::Duration;
+
+    state.unlock_cache.lock().await.insert(
+        project_id.to_owned(),
         UnlockEntry::new(
             vec![42_u8; 32],
             crate::server::current_unix_nanos(),
@@ -1485,6 +1534,147 @@ async fn automation_client_auth_accepts_signed_request_and_audits()
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn set_active_profile_switches_profile_revokes_project_grants_and_audits()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::envelope::{RequestEnvelope, ResponseEnvelope};
+    use crate::grant::{GrantAction, GrantBinding, GrantRecord, GrantRecordFields};
+    use crate::method::AgentMethod;
+    use crate::profile::SetActiveProfileResponse;
+    use crate::server::{AgentSocketState, dispatch};
+    use serde_json::json;
+
+    let directory = tempfile::tempdir()?;
+    let store_path = directory.path().join("store.db");
+    let config_path = directory.path().join("locket.toml");
+    let project_id = "lk_proj_agent_profile";
+    seed_profile_test_store(&store_path, project_id)?;
+    write_profile_test_config(&config_path, project_id, "dev")?;
+
+    let state = AgentSocketState::locked("test-version");
+    unlock_profile_test_state(&state, project_id).await;
+    state.grants.lock().await.insert(GrantRecord::new(GrantRecordFields {
+        grant_id: "lk_grant_profile".to_owned(),
+        project_id: project_id.to_owned(),
+        profile_id: "lk_prof_dev".to_owned(),
+        action: GrantAction::RunPolicy,
+        binding: GrantBinding::new(std::process::id(), "0"),
+        issued_at_unix_nanos: 0,
+        ttl_seconds: 30,
+        expires_at_unix_nanos: i128::MAX,
+    }));
+    state.grants.lock().await.insert(GrantRecord::new(GrantRecordFields {
+        grant_id: "lk_grant_other".to_owned(),
+        project_id: "lk_proj_other".to_owned(),
+        profile_id: "lk_prof_other".to_owned(),
+        action: GrantAction::RunPolicy,
+        binding: GrantBinding::new(std::process::id(), "0"),
+        issued_at_unix_nanos: 0,
+        ttl_seconds: 30,
+        expires_at_unix_nanos: i128::MAX,
+    }));
+
+    let request = RequestEnvelope::new(
+        "set-profile",
+        AgentMethod::SetActiveProfile,
+        json!({
+            "config_path": config_path,
+            "store_path": store_path,
+            "project_id": project_id,
+            "profile_name": "staging",
+            "privacy_redact_names": true,
+            "root_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }),
+    );
+    let ResponseEnvelope::Success(success) = dispatch(&request, &state).await else {
+        panic!("SetActiveProfile should succeed");
+    };
+    let payload: SetActiveProfileResponse = serde_json::from_value(success.payload)?;
+    assert!(payload.changed);
+    assert_eq!(payload.profile_name, "staging");
+    assert!(payload.profile_label.starts_with("profile-"));
+    assert_eq!(payload.prior_profile_name, "dev");
+    assert_eq!(payload.live_grants_revoked, 1);
+    assert!(state.grants.lock().await.get("lk_grant_profile").is_none());
+    assert!(state.grants.lock().await.get("lk_grant_other").is_some());
+
+    let config = read_profile_test_config(&directory.path().join("locket.toml"))?;
+    assert_eq!(config.default_profile.as_str(), "staging");
+
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let (profile_id, command, secret_name, metadata): (
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        String,
+    ) = store.connection().query_row(
+        "SELECT profile_id, command, secret_name, metadata_json
+         FROM audit_log
+         WHERE action = 'PROFILE_CHANGE'
+         ORDER BY sequence DESC LIMIT 1",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+    )?;
+    let metadata: serde_json::Value = serde_json::from_str(&metadata)?;
+    assert_eq!(profile_id.as_deref(), Some("lk_prof_staging"));
+    assert_eq!(command.as_deref(), Some("agent set-active-profile"));
+    assert_eq!(secret_name, None);
+    assert_eq!(metadata["action"], json!("PROFILE_CHANGE"));
+    assert_eq!(metadata["status"], json!("SUCCESS"));
+    assert_eq!(metadata["operation"], json!("use"));
+    assert_eq!(metadata["command"], json!("agent set-active-profile"));
+    assert_eq!(metadata["project_id"], json!(project_id));
+    assert_eq!(metadata["prior_profile_name"], json!("dev"));
+    assert_eq!(metadata["new_profile_name"], json!("staging"));
+    assert_eq!(metadata["new_profile_id"], json!("lk_prof_staging"));
+    assert_eq!(metadata["live_grants_revoked"], json!(1));
+    assert_eq!(metadata["root_hash"].as_str().map(str::len), Some(64));
+    assert!(metadata.get("secret_name").is_none());
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn set_active_profile_locked_vault_fails_before_writing()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::envelope::{RequestEnvelope, ResponseEnvelope};
+    use crate::method::AgentMethod;
+    use crate::server::{AgentSocketState, dispatch};
+    use serde_json::json;
+
+    let directory = tempfile::tempdir()?;
+    let store_path = directory.path().join("store.db");
+    let config_path = directory.path().join("locket.toml");
+    let project_id = "lk_proj_agent_profile";
+    seed_profile_test_store(&store_path, project_id)?;
+    write_profile_test_config(&config_path, project_id, "dev")?;
+
+    let state = AgentSocketState::locked("test-version");
+    let request = RequestEnvelope::new(
+        "set-profile-locked",
+        AgentMethod::SetActiveProfile,
+        json!({
+            "config_path": config_path,
+            "store_path": store_path,
+            "project_id": project_id,
+            "profile_name": "staging"
+        }),
+    );
+    let ResponseEnvelope::Error(error) = dispatch(&request, &state).await else {
+        panic!("locked SetActiveProfile should fail");
+    };
+    assert_eq!(error.error, "UnlockRequired");
+    let config = read_profile_test_config(&directory.path().join("locket.toml"))?;
+    assert_eq!(config.default_profile.as_str(), "dev");
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let count: i64 = store.connection().query_row(
+        "SELECT COUNT(*) FROM audit_log WHERE action = 'PROFILE_CHANGE'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(count, 0);
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn automation_client_auth_rejects_policy_mismatch_and_replay()
 -> Result<(), Box<dyn std::error::Error>> {
     use crate::auth::IssuedChallenge;
@@ -1577,6 +1767,82 @@ async fn automation_client_auth_rejects_policy_mismatch_and_replay()
         return Err("replayed nonce should fail".into());
     };
     assert_eq!(error.error, "AutomationClientReplayDetected");
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn set_active_profile_rejects_invalid_missing_and_unconfirmed_dangerous_profile()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::envelope::{RequestEnvelope, ResponseEnvelope};
+    use crate::method::AgentMethod;
+    use crate::server::{AgentSocketState, dispatch};
+    use serde_json::json;
+
+    let directory = tempfile::tempdir()?;
+    let store_path = directory.path().join("store.db");
+    let config_path = directory.path().join("locket.toml");
+    let project_id = "lk_proj_agent_profile";
+    seed_profile_test_store(&store_path, project_id)?;
+    write_profile_test_config(&config_path, project_id, "dev")?;
+
+    let state = AgentSocketState::locked("test-version");
+    unlock_profile_test_state(&state, project_id).await;
+
+    let invalid = RequestEnvelope::new(
+        "set-profile-invalid",
+        AgentMethod::SetActiveProfile,
+        json!({
+            "config_path": config_path,
+            "store_path": store_path,
+            "project_id": project_id,
+            "profile_name": "Prod"
+        }),
+    );
+    let ResponseEnvelope::Error(error) = dispatch(&invalid, &state).await else {
+        panic!("invalid profile name should fail");
+    };
+    assert_eq!(error.error, "InvalidProfileName");
+
+    let missing = RequestEnvelope::new(
+        "set-profile-missing",
+        AgentMethod::SetActiveProfile,
+        json!({
+            "config_path": directory.path().join("locket.toml"),
+            "store_path": directory.path().join("store.db"),
+            "project_id": project_id,
+            "profile_name": "qa"
+        }),
+    );
+    let ResponseEnvelope::Error(error) = dispatch(&missing, &state).await else {
+        panic!("missing profile should fail");
+    };
+    assert_eq!(error.error, "ProfileNotFound");
+
+    let dangerous = RequestEnvelope::new(
+        "set-profile-dangerous",
+        AgentMethod::SetActiveProfile,
+        json!({
+            "config_path": directory.path().join("locket.toml"),
+            "store_path": directory.path().join("store.db"),
+            "project_id": project_id,
+            "profile_name": "prod",
+            "confirmation": "wrong"
+        }),
+    );
+    let ResponseEnvelope::Error(error) = dispatch(&dangerous, &state).await else {
+        panic!("unconfirmed dangerous profile should fail");
+    };
+    assert_eq!(error.error, "ConfirmationFailed");
+
+    let config = read_profile_test_config(&directory.path().join("locket.toml"))?;
+    assert_eq!(config.default_profile.as_str(), "dev");
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let count: i64 = store.connection().query_row(
+        "SELECT COUNT(*) FROM audit_log WHERE action = 'PROFILE_CHANGE'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(count, 0);
     Ok(())
 }
 

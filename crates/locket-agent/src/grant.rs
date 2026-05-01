@@ -135,10 +135,25 @@ impl GrantTable {
         self.grants.clear();
     }
 
+    /// Remove every live grant scoped to a project.
+    ///
+    /// Returns the number of grant records removed without exposing grant ids.
+    pub fn revoke_for_project(&mut self, project_id: &str) -> usize {
+        let before = self.grants.len();
+        self.grants.retain(|_, grant| grant.project_id != project_id);
+        before.saturating_sub(self.grants.len())
+    }
+
     /// Count live grant records without exposing grant ids.
     #[must_use]
     pub fn len(&self) -> usize {
         self.grants.len()
+    }
+
+    /// Count live grant records scoped to a project without exposing grant ids.
+    #[must_use]
+    pub fn count_for_project(&self, project_id: &str) -> usize {
+        self.grants.values().filter(|grant| grant.project_id == project_id).count()
     }
 
     /// Return whether the grant table is empty.
@@ -343,6 +358,27 @@ mod tests {
             table.validate("grant-1", "p-1", "prof-1", GrantAction::Copy, 100, Some(&binding),),
             GrantValidation::ProcessMismatch
         );
+    }
+
+    #[test]
+    fn revoke_for_project_drops_only_matching_project_grants() {
+        let mut table = GrantTable::default();
+        table.insert(grant_record(GrantAction::Reveal));
+        table.insert(GrantRecord::new(GrantRecordFields {
+            grant_id: "grant-other".to_owned(),
+            project_id: "p-2".to_owned(),
+            profile_id: "prof-1".to_owned(),
+            action: GrantAction::Reveal,
+            binding: GrantBinding::new(4242, "start-a"),
+            issued_at_unix_nanos: 0,
+            ttl_seconds: 60,
+            expires_at_unix_nanos: 100,
+        }));
+
+        assert_eq!(table.count_for_project("p-1"), 1);
+        assert_eq!(table.revoke_for_project("p-1"), 1);
+        assert!(table.get("grant-1").is_none());
+        assert!(table.get("grant-other").is_some());
     }
 
     #[test]
