@@ -14,8 +14,28 @@ export function connectingStatusBarPlan(): StatusBarPlan {
   };
 }
 
+/// Render a plan from a stream `StatusEvent`. Both `status` and
+/// `heartbeat` events refresh the lock-state badge; the tooltip always
+/// reflects the event kind so users can read the heartbeat timestamp.
 export function statusEventBarPlan(event: StatusEvent): StatusBarPlan {
-  return statusPayloadBarPlan(event, `sequence ${event.sequence}`);
+  const detail = event.kind === 'heartbeat'
+    ? `last seen sequence ${event.sequence} (heartbeat)`
+    : `sequence ${event.sequence}`;
+  return statusPayloadBarPlan(event, detail);
+}
+
+/// Refresh just the tooltip on a heartbeat without recomputing the
+/// badge. Returned plan reuses the most recent status snapshot's text
+/// and background so the badge does not flicker between heartbeats.
+export function heartbeatTooltipPlan(
+  base: StatusBarPlan,
+  event: StatusEvent,
+): StatusBarPlan {
+  return {
+    text: base.text,
+    background: base.background,
+    tooltip: `${base.tooltip.split(' (last seen')[0]} (last seen sequence ${event.sequence})`,
+  };
 }
 
 export function statusPayloadBarPlan(status: StatusPayload, detail = 'snapshot'): StatusBarPlan {
@@ -60,4 +80,19 @@ export function unavailableStatusBarPlan(error: AgentClientError | Error): Statu
     tooltip: `Locket agent unavailable${message.length > 0 ? `: ${message}` : ''}`,
     background: 'warning',
   };
+}
+
+/// Reconnect-with-backoff schedule. The controller calls this with the
+/// number of consecutive failed attempts (1-based) and gets the delay
+/// before the next subscribe attempt. Exponential up to a 30 second
+/// ceiling so transient agent restarts settle quickly while a hard-down
+/// agent is not retried in a tight loop.
+export function reconnectDelayMs(attempt: number): number {
+  if (attempt <= 0) {
+    return 0;
+  }
+  const base = 500;
+  const ceiling = 30_000;
+  const exp = base * 2 ** Math.min(attempt - 1, 10);
+  return Math.min(exp, ceiling);
 }

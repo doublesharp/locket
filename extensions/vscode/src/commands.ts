@@ -9,7 +9,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 
-import { AgentClient, AgentClientError, AgentMethod, StatusPayload } from './agentClient';
+import { AgentClient, AgentMethod, StatusPayload } from './agentClient';
 import { buildAuditWebviewHtml } from './auditView';
 import {
   CopyResponsePayload,
@@ -22,7 +22,6 @@ import {
   buildLockRequest,
   buildScanKnownValuesRequest,
   buildSetActiveProfileRequest,
-  buildUnlockRequest,
 } from './commandsModel';
 import {
   RevealResponsePayload,
@@ -30,6 +29,7 @@ import {
   buildRevealWebviewHtml,
   revealTtlMilliseconds,
 } from './revealWebview';
+import { runUnlockFlow } from './unlockHandler';
 
 // Register every Locket command-palette entry against `agentClient`.
 export function registerLocketCommands(agentClient: AgentClient): vscode.Disposable {
@@ -183,66 +183,42 @@ async function unlock(agentClient: AgentClient): Promise<void> {
   // hint, and an `audit` block with the store path so the agent can
   // append the UNLOCK row. We attempt OS-keychain unwrap first
   // (`passphrase: null`); on a typed `UnlockRequired` rejection we
-  // prompt for the vault passphrase and retry once.
-  const project = await promptForActiveProject(agentClient);
-  if (project === undefined) {
-    return;
-  }
-  const storePath = await vscode.window.showInputBox({
-    title: 'Locket Unlock',
-    prompt: 'Path to store.db',
-    placeHolder: '~/.locket/store.db',
-    ignoreFocusOut: false,
+  // prompt for the vault passphrase and retry once. The flow itself
+  // lives in `unlockHandler.ts` so it can be unit-tested without the
+  // `vscode.window` API; this adapter just wires the prompts in.
+  await runUnlockFlow(agentClient, {
+    promptProjectId: async () => {
+      const project = await promptForActiveProject(agentClient);
+      return project?.projectId;
+    },
+    promptStorePath: () =>
+      Promise.resolve(
+        vscode.window.showInputBox({
+          title: 'Locket Unlock',
+          prompt: 'Path to store.db',
+          placeHolder: '~/.locket/store.db',
+          ignoreFocusOut: false,
+        }),
+      ),
+    promptPassphrase: () =>
+      Promise.resolve(
+        vscode.window.showInputBox({
+          password: true,
+          prompt: 'Locket vault passphrase',
+          ignoreFocusOut: false,
+        }),
+      ),
+    showInfo: (message) => {
+      void vscode.window.showInformationMessage(message);
+    },
+    showWarning: (message) => {
+      void vscode.window.showWarningMessage(message);
+    },
+    showError: (message) => {
+      void vscode.window.showErrorMessage(message);
+    },
+    profileId: null,
   });
-  if (storePath === undefined) {
-    return;
-  }
-  let firstRequest;
-  try {
-    firstRequest = buildUnlockRequest(project.projectId, storePath, null, null);
-  } catch (error) {
-    void vscode.window.showWarningMessage(
-      error instanceof Error ? error.message : 'Locket unlock inputs were invalid.',
-    );
-    return;
-  }
-  try {
-    await agentClient.invoke('Unlock', firstRequest);
-    void vscode.window.showInformationMessage('vault unlocked');
-    return;
-  } catch (error) {
-    if (!(error instanceof AgentClientError) || error.code !== 'UnlockRequired') {
-      void vscode.window.showErrorMessage(agentErrorMessage(error));
-      return;
-    }
-  }
-  const passphrase = await vscode.window.showInputBox({
-    password: true,
-    prompt: 'Locket vault passphrase',
-    ignoreFocusOut: false,
-  });
-  if (passphrase === undefined) {
-    return;
-  }
-  let retryRequest;
-  try {
-    retryRequest = buildUnlockRequest(project.projectId, storePath, null, passphrase);
-  } catch (error) {
-    void vscode.window.showWarningMessage(
-      error instanceof Error ? error.message : 'Locket unlock inputs were invalid.',
-    );
-    return;
-  }
-  try {
-    await agentClient.invoke('Unlock', retryRequest);
-    void vscode.window.showInformationMessage('vault unlocked');
-  } catch (error) {
-    if (error instanceof AgentClientError && error.code === 'UnlockRequired') {
-      void vscode.window.showErrorMessage('passphrase did not authenticate');
-      return;
-    }
-    void vscode.window.showErrorMessage(agentErrorMessage(error));
-  }
 }
 
 async function lock(agentClient: AgentClient): Promise<void> {
