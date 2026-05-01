@@ -179,14 +179,14 @@ Windows named-pipe/SID transport remains tracked below.)
 
 ### D. Desktop / integrations / scan
 
-- [ ] **status-payload-tray-fields**: `desktop.md:69-78` requires
+- [~] (in-flight: Codex status/tray worker) **status-payload-tray-fields**: `desktop.md:69-78` requires
   the tray panel to surface running session count, recent
   scan-warning count, recent audit status, active expiring/expired
   pinned-reference warning count. `agent/status.rs:22-36` carries
   none of those. Touches: extend `StatusPayload` + `StatusHub`
   publish path, recompute on relevant audit/scan/runtime-session
   writes, render in tray tooltip.
-- [ ] **scan-warning-tray-state-producer**: tray icon-state machine
+- [~] (in-flight: Codex status/tray worker) **scan-warning-tray-state-producer**: tray icon-state machine
   has `ScanWarning` variant with PNG assets (`tray.rs:373,383,393`)
   but `deriveTrayState` in `useTray.ts:35-58` never returns
   `'scan-warning'`. Spec (`desktop.md:105`) ties this icon to "one
