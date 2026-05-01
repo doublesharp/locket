@@ -1,11 +1,20 @@
 //! Core-dump suppression for processes that hold key material.
 //!
-//! On Unix this lowers `RLIMIT_CORE` to zero (so the kernel writes no
-//! core file even if the user's shell raised the limit) and on Linux
-//! additionally clears `PR_SET_DUMPABLE` (so `/proc/<pid>/mem` and
-//! `ptrace` from same-uid debuggers don't yield key material). Windows
-//! support is out of scope for this slice; calling the helper there
-//! returns `Unsupported` so diagnostics can surface the gap.
+//! Per `docs/specs/agent.md`:
+//!
+//! - Linux agents must call `prctl(PR_SET_DUMPABLE, 0)` and set
+//!   `RLIMIT_CORE = 0` where available.
+//! - macOS and Windows agents must use the closest platform-supported
+//!   core-dump suppression and process hardening available to a
+//!   user-space app.
+//!
+//! On Linux this lowers `RLIMIT_CORE` to zero (so the kernel writes no
+//! core file even if the user's shell raised the limit) and clears
+//! `PR_SET_DUMPABLE` (so `/proc/<pid>/mem` and `ptrace` from same-uid
+//! debuggers don't yield key material). On other Unixes only
+//! `RLIMIT_CORE = 0` is available — `prctl` has no portable equivalent.
+//! Windows support is out of scope for this slice; calling the helper
+//! there returns `Unsupported` so diagnostics can surface the gap.
 
 use std::fmt::{self, Display};
 
@@ -36,9 +45,11 @@ impl Display for CoreDumpHardening {
 
 /// Disables core-dump generation for the current process.
 ///
-/// On Unix, sets the soft and hard `RLIMIT_CORE` to zero. On Linux,
-/// also clears `PR_SET_DUMPABLE`. The call is idempotent and safe to
-/// invoke from any process; on Windows it returns `Unsupported`.
+/// On Linux this delegates to [`unix::disable_linux_core_dumps`], which
+/// runs `prctl(PR_SET_DUMPABLE, 0)` and `setrlimit(RLIMIT_CORE, 0, 0)`.
+/// On other Unixes only `RLIMIT_CORE = 0` is available. On Windows it
+/// returns `Unsupported`. The call is idempotent and safe to invoke
+/// from any process.
 #[must_use]
 pub fn disable_core_dumps() -> CoreDumpHardening {
     #[cfg(unix)]
@@ -76,6 +87,36 @@ mod unix {
     use super::CoreDumpHardening;
 
     pub fn disable_core_dumps() -> CoreDumpHardening {
+        #[cfg(target_os = "linux")]
+        {
+            disable_linux_core_dumps()
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let core_ok = set_core_rlimit_zero();
+            let dumpable_ok = clear_dumpable_flag();
+            if core_ok && dumpable_ok {
+                CoreDumpHardening::Active
+            } else {
+                CoreDumpHardening::Degraded
+            }
+        }
+    }
+
+    /// Linux-specific entry point: `prctl(PR_SET_DUMPABLE, 0)` plus
+    /// `setrlimit(RLIMIT_CORE, 0, 0)`. Both calls in one place so the
+    /// agent boot path and tests can target the Linux contract
+    /// directly. Equivalent to:
+    ///
+    /// ```text
+    /// libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0);
+    /// libc::setrlimit(libc::RLIMIT_CORE, &rlim { rlim_cur: 0, rlim_max: 0 });
+    /// ```
+    ///
+    /// Routed through `rustix` so the call is `unsafe`-free and shares
+    /// the typed `DumpableBehavior` enum with the doctor read path.
+    #[cfg(target_os = "linux")]
+    pub fn disable_linux_core_dumps() -> CoreDumpHardening {
         let core_ok = set_core_rlimit_zero();
         let dumpable_ok = clear_dumpable_flag();
         if core_ok && dumpable_ok { CoreDumpHardening::Active } else { CoreDumpHardening::Degraded }
@@ -96,6 +137,7 @@ mod unix {
         setrlimit(Resource::Core, Rlimit { current: Some(0), maximum: Some(0) }).is_ok()
     }
 
+    /// `prctl(PR_SET_DUMPABLE, 0)` via rustix's typed wrapper.
     #[cfg(target_os = "linux")]
     fn clear_dumpable_flag() -> bool {
         rustix::process::set_dumpable_behavior(rustix::process::DumpableBehavior::NotDumpable)
@@ -110,6 +152,7 @@ mod unix {
         true
     }
 
+    /// `prctl(PR_GET_DUMPABLE)` via rustix's typed wrapper.
     #[cfg(target_os = "linux")]
     fn dumpable_flag_cleared() -> bool {
         matches!(
@@ -157,6 +200,26 @@ mod tests {
         let second = disable_core_dumps();
         assert_eq!(first, CoreDumpHardening::Active);
         assert_eq!(second, CoreDumpHardening::Active);
+    }
+
+    /// Subtask 1: explicit Linux entry-point smoke test — confirms
+    /// `disable_linux_core_dumps` returns `Active` on Linux hosts.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn disable_linux_core_dumps_returns_ok() {
+        assert_eq!(super::unix::disable_linux_core_dumps(), CoreDumpHardening::Active);
+    }
+
+    /// Subtask 1: confirm `prctl(PR_GET_DUMPABLE)` returns 0 after
+    /// `disable_linux_core_dumps()` runs.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn disable_linux_core_dumps_clears_pr_get_dumpable() {
+        use rustix::process::{DumpableBehavior, dumpable_behavior};
+
+        let outcome = super::unix::disable_linux_core_dumps();
+        assert_eq!(outcome, CoreDumpHardening::Active);
+        assert!(matches!(dumpable_behavior(), Ok(DumpableBehavior::NotDumpable)));
     }
 
     #[cfg(not(unix))]
