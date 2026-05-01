@@ -634,7 +634,7 @@ env_mode = "strict"
     let Err(error) = result else {
         return Err("absolute external env file paths must be rejected".into());
     };
-    assert_eq!(error.exit_code(), locket_core::LocketError::MetadataInvalid.exit_code());
+    assert_eq!(error.exit_code(), locket_core::LocketError::InvalidPolicy.exit_code());
     Ok(())
 }
 
@@ -665,7 +665,7 @@ env_mode = "strict"
     let Err(error) = result else {
         return Err("external env paths outside the project root must be rejected".into());
     };
-    assert_eq!(error.exit_code(), locket_core::LocketError::MetadataInvalid.exit_code());
+    assert_eq!(error.exit_code(), locket_core::LocketError::InvalidPolicy.exit_code());
     Ok(())
 }
 

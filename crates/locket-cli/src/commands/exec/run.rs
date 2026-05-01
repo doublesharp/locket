@@ -552,27 +552,27 @@ fn resolve_external_env_file(
     policy: &CommandPolicy,
 ) -> Result<locket_exec::EnvMap, CliError> {
     if declared_path.is_absolute() {
-        return Err(metadata_invalid_error(format!(
+        return Err(invalid_policy_error(format!(
             "external env file {} must be a project-relative path",
             declared_path.display()
         )));
     }
 
     let canonical_root = project_root.canonicalize().map_err(|error| {
-        metadata_invalid_error(format!(
+        invalid_policy_error(format!(
             "could not canonicalize project root {}: {error}",
             project_root.display()
         ))
     })?;
     let candidate = project_root.join(declared_path);
     let canonical_candidate = candidate.canonicalize().map_err(|error| {
-        metadata_invalid_error(format!(
+        invalid_policy_error(format!(
             "external env file {} could not be opened: {error}",
             declared_path.display()
         ))
     })?;
     if !canonical_candidate.starts_with(&canonical_root) {
-        return Err(metadata_invalid_error(format!(
+        return Err(invalid_policy_error(format!(
             "external env file {} resolves outside the project root",
             declared_path.display()
         )));
@@ -1236,10 +1236,23 @@ fn load_command_policy_or_audit_denial(
 /// Maps a `prepare_policy_execution` failure to the metadata-only
 /// `failure_reason` recorded in the DENIED `RUN_POLICY` audit row. Names are
 /// stable identifiers and never include human-readable messages or values.
-const fn denial_failure_reason(error: &CliError) -> &'static str {
+fn denial_failure_reason(error: &CliError) -> &'static str {
     match error {
-        CliError::Typed { kind, .. } => match kind {
-            LocketError::InvalidPolicy => "missing_required_secret",
+        CliError::Typed { kind, message } => match kind {
+            LocketError::InvalidPolicy => {
+                // External env file path validation also raises InvalidPolicy
+                // per runtime.md:117. Disambiguate via the canonical message
+                // prefix used by `resolve_external_env_file` so the audit
+                // failure_reason stays distinct from generic missing-secret
+                // denials.
+                if message.starts_with("external env file ")
+                    || message.starts_with("could not canonicalize project root ")
+                {
+                    "external_source_metadata_invalid"
+                } else {
+                    "missing_required_secret"
+                }
+            }
             LocketError::ExternalSourceUnavailable => "external_source_unavailable",
             LocketError::MetadataInvalid => "external_source_metadata_invalid",
             LocketError::InvalidReference => "invalid_lk_reference",

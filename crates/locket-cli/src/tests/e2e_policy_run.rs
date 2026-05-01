@@ -205,7 +205,9 @@ fn e2e_policy_run_external_env_source_failure_emits_denial_audit()
     )?;
 
     // The path is project-relative but escapes the project root via `..`,
-    // so external env file resolution fails before spawn with MetadataInvalid.
+    // so external env file resolution fails before spawn with InvalidPolicy
+    // per runtime.md (paths failing validation cause policy execution to fail
+    // with `InvalidPolicy`).
     std::fs::OpenOptions::new()
         .append(true)
         .open(directory.path().join("locket.toml"))?
@@ -226,7 +228,7 @@ env_mode = "strict"
     let Err(error) = result else {
         return Err("run with bad external env file must fail".into());
     };
-    assert_eq!(error.exit_code(), locket_core::LocketError::MetadataInvalid.exit_code());
+    assert_eq!(error.exit_code(), locket_core::LocketError::InvalidPolicy.exit_code());
 
     let store = locket_store::Store::open(directory.path().join("store.db"))?;
     let run_count: i64 =
