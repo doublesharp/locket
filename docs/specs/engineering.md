@@ -18,6 +18,8 @@ Locket will handle secret material, so the default engineering posture is strict
 - Rust code must pass `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, and `cargo test --workspace --all-targets --all-features` before merge.
 - Production crates must deny `clippy::unwrap_used`, `clippy::expect_used`, `clippy::panic`, `clippy::todo`, `clippy::unimplemented`, `clippy::dbg_macro`, `clippy::print_stdout`, and `clippy::print_stderr`. Test modules and fuzz harnesses may allow these lints locally only when the exception is narrow and does not hide production behavior.
 - Security-critical crates (`locket-core`, `locket-crypto`, `locket-store`, `locket-agent`, and `locket-exec`) must deny undocumented `unsafe`; any required `unsafe` must be isolated behind platform modules with tests and a safety comment.
+- Documented `unsafe` inventory (audit before each release; cross-check against `cargo geiger` output in `target/quality/unsafe-inventory.md`):
+  - `locket-platform::macos_local_authentication` — wraps `LAContext::evaluatePolicy:localizedReason:reply:` for the macOS user-verification backend (`docs/specs/crypto.md:192-218`). The `unsafe` is confined to that module via a `SAFETY-AUDIT` comment; the rest of `locket-platform` keeps `unsafe_code = "deny"` and `MacosLocalUserVerifier` itself has zero `unsafe`.
 - Public APIs must use typed ids and typed errors, not raw strings, for project/profile/secret/key/device/member/client identifiers.
 - Logging must be structured and metadata-only. Tests must include assertions that known secret values do not appear in logs, audit rows, generated files, debug bundles, or error messages.
 

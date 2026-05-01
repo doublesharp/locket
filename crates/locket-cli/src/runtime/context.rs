@@ -8,7 +8,7 @@ use directories::{BaseDirs, ProjectDirs};
 use locket_platform::{
     AutomationClientKeyStore, KeyringAutomationClientKeyStore, KeyringMasterKeyStore,
     LocalUserVerifier, MasterKeyStore, PassphraseFallbackMasterKeyStore,
-    UnavailableLocalUserVerifier,
+    default_local_user_verifier,
 };
 
 use crate::CONFIG_TOML;
@@ -62,7 +62,7 @@ impl RuntimeContext {
             recovery_code_reader: Arc::new(TtyRecoveryCodeReader),
             confirmation_reader: Arc::new(StdinConfirmationReader),
             secret_value_reader: Arc::new(StdinOrPromptSecretValueReader),
-            user_verifier: Arc::new(UnavailableLocalUserVerifier),
+            user_verifier: default_local_user_verifier(),
         })
     }
 }
