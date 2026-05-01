@@ -50,6 +50,7 @@ import ScanResults from './views/ScanResults.vue';
 import SecretMetadataList from './views/SecretMetadataList.vue';
 import SecretVersionHistory from './views/SecretVersionHistory.vue';
 import Settings from './views/Settings.vue';
+import TeamInviteView from './views/TeamInviteView.vue';
 import type {
   AuditLogRow,
   CommandPolicyRow,
@@ -86,6 +87,7 @@ type ViewKey =
   | 'scan'
   | 'policies'
   | 'profiles'
+  | 'team'
   | 'recovery'
   | 'settings';
 
@@ -146,6 +148,7 @@ const navItems: ReadonlyArray<{ key: ViewKey; label: string }> = [
   { key: 'scan', label: 'Scan' },
   { key: 'policies', label: 'Policies' },
   { key: 'profiles', label: 'Profiles' },
+  { key: 'team', label: 'Team' },
   { key: 'recovery', label: 'Recovery' },
   { key: 'settings', label: 'Settings' },
 ];
@@ -198,6 +201,8 @@ const deviceMembers = ref<DeviceMemberRow[]>([]);
 const auditRows = ref<AuditLogRow[]>([]);
 const findings = ref<ScanFindingRow[]>([]);
 const policies = ref<CommandPolicyRow[]>([]);
+const rawAuditRows = ref<AuditWireRow[]>([]);
+const teamInviteNotice = ref<string | null>(null);
 const secretsLoading = ref<boolean>(false);
 const secretsError = ref<string | null>(null);
 const secretsLastRefreshed = ref<string | undefined>(undefined);
@@ -1090,10 +1095,12 @@ async function refreshAuditLog(): Promise<void> {
   if (result.ok) {
     const hmacOk = result.value.chain_status.hmac_ok !== false;
     auditRows.value = result.value.rows.map((row) => auditLogRow(row, result.value.chain_status));
+    rawAuditRows.value = [...result.value.rows];
     auditChainOk.value = hmacOk;
     auditLastRefreshed.value = new Date().toISOString();
   } else {
     auditRows.value = [];
+    rawAuditRows.value = [];
     auditError.value = auditErrorLabel(result.error);
     auditChainOk.value = true;
   }
@@ -1196,6 +1203,22 @@ async function triggerRescan(): Promise<void> {
 
 function triggerBackupAction(): void {
   void refresh();
+}
+
+const TEAM_INVITE_RPC_MISSING =
+  'Agent does not yet expose ListTeamInvites/CreateTeamInvite/AcceptTeamInvite/RevokeTeamInvite. ' +
+  'Form input validated; submit blocked until the agent ships those RPCs.';
+
+function handleTeamInviteIssue(): void {
+  teamInviteNotice.value = TEAM_INVITE_RPC_MISSING;
+}
+
+function handleTeamInviteAccept(): void {
+  teamInviteNotice.value = TEAM_INVITE_RPC_MISSING;
+}
+
+function handleTeamInviteRevoke(): void {
+  teamInviteNotice.value = TEAM_INVITE_RPC_MISSING;
 }
 
 onMounted(() => {
@@ -1369,6 +1392,20 @@ onUnmounted(() => {
         :error-message="profileSwitchError"
         :last-switched-at="profileSwitchLastAt"
         @switch="handleProfileSwitch"
+      />
+
+      <TeamInviteView
+        v-else-if="currentView === 'team'"
+        :audit-rows="rawAuditRows"
+        :dangerous-profiles="settings.dangerousProfileFlag ? (status?.profile_name ?? '') : ''"
+        :require-accept-user-verification="settings.requireUserVerification"
+        :loading="auditLoading"
+        :error-message="auditError ?? teamInviteNotice"
+        :last-refreshed-at="auditLastRefreshed"
+        @refresh="refreshAuditLog"
+        @issue="handleTeamInviteIssue"
+        @accept="handleTeamInviteAccept"
+        @revoke="handleTeamInviteRevoke"
       />
 
       <BackupRecovery v-else-if="currentView === 'recovery'" @action="triggerBackupAction" />
