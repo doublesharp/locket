@@ -270,11 +270,11 @@ flows.
 ### Tray / status panel
 Spec ref: `docs/specs/desktop.md:65-108`.
 
-- [~] (in-flight: feature/desktop-polish-final) **tray-panel-spec-deep-audit**: re-read
-  `docs/specs/desktop.md:65-108` against `crates/locket-app/`
-  and enumerate any unmet tray-panel requirements as concrete
-  subtasks. The lighter sweep on 2026-04-30 returned clean; a deep
-  pass can surface anything else.
+Deep audit on 2026-05-01 found no remaining tray-panel subtasks.
+`crates/locket-app/` covers the compact status surface, safe project/profile
+labels, running session / scan / audit / pinned-reference counts, agent state,
+tray action routing, selection-gated reveal/copy, saved-policy-only launch,
+notification privacy, and platform icon variants from `desktop.md:65-108`.
 
 ### Desktop UI campaign — remaining slices
 
