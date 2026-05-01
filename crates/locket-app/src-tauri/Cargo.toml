@@ -22,6 +22,7 @@ path = "src/main.rs"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+arboard = { workspace = true }
 directories = { workspace = true }
 locket-agent = { path = "../../locket-agent" }
 locket-app = { path = ".." }

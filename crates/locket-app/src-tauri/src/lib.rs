@@ -20,15 +20,21 @@ use locket_store as _;
 use tempfile as _;
 
 mod agent_client;
+mod clipboard;
 mod tray;
 
 pub use agent_client::{
     AgentClientError, fetch_status, invoke_method, resolve_socket_path, stream_status_events,
 };
+pub use clipboard::{
+    ClipboardCopyDecision, ClipboardCopyOutcome, ClipboardError, ClipboardPlatform,
+    ClipboardSession, clipboard_platform, decide_clear,
+};
 pub use tray::{
-    LOCKET_TRAY_ID, TRAY_MENU_ACTION_EVENT, TrayMenuAction, TrayState, icon_bytes_for, setup_tray,
-    tooltip_for, tray_menu_action_for_id, tray_menu_actions, tray_state_for_status,
-    tray_state_for_status_event, update_tray_state,
+    LOCKET_TRAY_ID, TRAY_MENU_ACTION_EVENT, TrayMenuAction, TrayMenuSideEffect, TrayState,
+    icon_bytes_for, setup_tray, tooltip_for, tray_menu_action_for_id, tray_menu_action_side_effect,
+    tray_menu_action_view, tray_menu_actions, tray_state_for_status, tray_state_for_status_event,
+    update_tray_state,
 };
 
 const CONFIG_TOML: &str = "config.toml";
@@ -40,6 +46,16 @@ struct DesktopListSecretsRequest {
     profile_id: String,
     #[serde(default)]
     redact_names: bool,
+}
+
+#[derive(Deserialize)]
+struct DesktopListDeviceMembersRequest {
+    store_path: Option<PathBuf>,
+    project_id: String,
+    #[serde(default)]
+    redact_names: bool,
+    #[serde(default = "default_true")]
+    include_revoked_devices: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -156,6 +172,11 @@ fn default_config_path() -> Result<PathBuf, AgentClientError> {
 fn default_store_path() -> Result<PathBuf, AgentClientError> {
     Ok(project_dirs()?.data_dir().join("store.db"))
 }
+
+const fn default_true() -> bool {
+    true
+}
+
 const AGENT_STATUS_EVENT: &str = "agent-status";
 const AGENT_STATUS_ERROR_EVENT: &str = "agent-status-error";
 
@@ -194,6 +215,110 @@ async fn agent_subscribe_status(app: tauri::AppHandle) -> Result<(), AgentClient
 async fn agent_lock() -> Result<(), AgentClientError> {
     let path = agent_client::resolve_socket_path();
     agent_client::invoke_method(&path, locket_agent::AgentMethod::Lock, &()).await
+}
+
+/// Source describing how the agent should derive the unwrapped key.
+///
+/// Stays distinct from the agent's wire format so we can grow the set
+/// of unlock paths without leaking key material to the webview. Only
+/// `passphrase` is wired today; the other variants are placeholders for
+/// later slices and currently surface a typed `unsupported-source`
+/// protocol error.
+#[derive(Debug, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+enum UnlockSource {
+    Passphrase {
+        passphrase: String,
+    },
+    Recovery {
+        #[allow(dead_code)]
+        recovery: String,
+    },
+    OsKeychain,
+}
+
+#[derive(Debug, Deserialize)]
+struct DesktopUnlockAudit {
+    store_path: Option<PathBuf>,
+    profile_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DesktopUnlockRequest {
+    project_id: String,
+    ttl_seconds: u64,
+    source: UnlockSource,
+    #[serde(default)]
+    audit: Option<DesktopUnlockAudit>,
+}
+
+/// Tauri command exposing the agent's `Unlock` RPC behind a passphrase
+/// fallback. The agent owns the unwrap path: it pulls the master key
+/// from the OS keychain when no passphrase is supplied, and from the
+/// passphrase-fallback envelope otherwise. The webview never holds the
+/// unwrapped key.
+#[tauri::command]
+async fn agent_unlock(request: DesktopUnlockRequest) -> Result<(), AgentClientError> {
+    let passphrase: Option<String> = match request.source {
+        UnlockSource::Passphrase { passphrase } => Some(passphrase),
+        UnlockSource::OsKeychain => None,
+        UnlockSource::Recovery { .. } => {
+            return Err(AgentClientError::Protocol {
+                reason: "unsupported unlock source".to_owned(),
+            });
+        }
+    };
+    let mut payload = serde_json::json!({
+        "project_id": request.project_id,
+        "ttl_seconds": request.ttl_seconds,
+    });
+    if let Some(passphrase) = passphrase {
+        payload["passphrase"] = serde_json::json!(passphrase);
+        payload["method"] = serde_json::json!("passphrase");
+    }
+    if let Some(audit) = request.audit {
+        let mut audit_value = serde_json::json!({});
+        if let Some(store_path) = audit.store_path {
+            audit_value["store_path"] = serde_json::json!(store_path.display().to_string());
+        }
+        if let Some(profile_id) = audit.profile_id {
+            audit_value["profile_id"] = serde_json::json!(profile_id);
+        }
+        payload["audit"] = audit_value;
+    }
+    let path = agent_client::resolve_socket_path();
+    agent_client::invoke_method(&path, locket_agent::AgentMethod::Unlock, &payload).await
+}
+
+#[derive(Debug, Deserialize)]
+struct DesktopSetActiveProfileRequest {
+    config_path: Option<PathBuf>,
+    store_path: Option<PathBuf>,
+    project_id: String,
+    profile_name: String,
+    confirmation: Option<String>,
+    #[serde(default)]
+    privacy_redact_names: bool,
+    root_hash: Option<String>,
+}
+
+/// Tauri command exposing the agent's `SetActiveProfile` RPC.
+#[tauri::command]
+async fn agent_set_active_profile(
+    request: DesktopSetActiveProfileRequest,
+) -> Result<locket_agent::SetActiveProfileResponse, AgentClientError> {
+    let path = agent_client::resolve_socket_path();
+    let agent_request = locket_agent::SetActiveProfileRequest {
+        config_path: request.config_path.unwrap_or(default_config_path()?),
+        store_path: request.store_path.unwrap_or(default_store_path()?),
+        project_id: request.project_id,
+        profile_name: request.profile_name,
+        confirmation: request.confirmation,
+        privacy_redact_names: request.privacy_redact_names,
+        root_hash: request.root_hash,
+    };
+    agent_client::invoke_method(&path, locket_agent::AgentMethod::SetActiveProfile, &agent_request)
+        .await
 }
 
 /// Tauri command exposing the agent's `Reveal` RPC to the webview.
@@ -263,6 +388,25 @@ async fn agent_list_policies(
 ) -> Result<locket_agent::ListPoliciesResponse, AgentClientError> {
     let path = agent_client::resolve_socket_path();
     agent_client::invoke_method(&path, locket_agent::AgentMethod::ListPolicies, &request).await
+}
+
+/// Tauri command exposing the agent's metadata-only device/member directory.
+#[tauri::command]
+async fn agent_list_device_members(
+    request: DesktopListDeviceMembersRequest,
+) -> Result<locket_agent::ListDeviceMembersResponse, AgentClientError> {
+    let path = agent_client::resolve_socket_path();
+    let store_path = match request.store_path {
+        Some(path) => path,
+        None => default_store_path()?,
+    };
+    let request = locket_agent::ListDeviceMembersRequest {
+        store_path,
+        project_id: request.project_id,
+        redact_names: request.redact_names,
+        include_revoked_devices: request.include_revoked_devices,
+    };
+    agent_client::invoke_method(&path, locket_agent::AgentMethod::ListDeviceMembers, &request).await
 }
 
 /// Tauri command exposing the agent's metadata-only active-profile secret list.
@@ -354,6 +498,76 @@ async fn agent_list_versions(
     agent_client::invoke_method(&path, locket_agent::AgentMethod::ListVersions, &request).await
 }
 
+#[derive(Debug, Deserialize)]
+struct DesktopClipboardCopyRequest {
+    secret_name: String,
+    profile_id: String,
+    project_id: Option<String>,
+    store_path: Option<PathBuf>,
+    grant_id: Option<String>,
+    ttl_seconds: Option<u32>,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+enum DesktopClipboardCopyResponse {
+    Copied {
+        ttl_seconds: u32,
+    },
+    Unsupported {
+        unsupported_reason: String,
+    },
+}
+
+/// Tauri `agent_copy_secret` command. Calls the agent `Copy` RPC,
+/// writes the returned value to the OS clipboard, and schedules a
+/// TTL-bound clear that re-reads the clipboard before wiping anything.
+/// Returns an `unsupported` shape on Wayland sessions and skips the
+/// timer.
+#[tauri::command]
+async fn agent_copy_secret(
+    request: DesktopClipboardCopyRequest,
+) -> Result<DesktopClipboardCopyResponse, AgentClientError> {
+    if matches!(clipboard::clipboard_platform(), clipboard::ClipboardPlatform::Wayland) {
+        return Ok(DesktopClipboardCopyResponse::Unsupported {
+            unsupported_reason: "wayland-session".to_owned(),
+        });
+    }
+    let path = agent_client::resolve_socket_path();
+    let agent_request = locket_agent::CopyRequest {
+        secret_name: request.secret_name,
+        profile_id: request.profile_id,
+        project_id: request.project_id,
+        store_path: request.store_path,
+        grant_id: request.grant_id,
+        binding: None,
+    };
+    let response: locket_agent::CopyResponse = agent_client::invoke_method(
+        &path,
+        locket_agent::AgentMethod::Copy,
+        &agent_request,
+    )
+    .await?;
+    let ttl_seconds = request.ttl_seconds.unwrap_or(response.ttl_seconds.max(1));
+    if let Err(error) = clipboard::write_clipboard(&response.value) {
+        return Err(AgentClientError::Protocol {
+            reason: format!("clipboard write failed: {error}"),
+        });
+    }
+    let value_for_timer = response.value;
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(u64::from(ttl_seconds))).await;
+        let current = clipboard::read_clipboard().ok();
+        if matches!(
+            clipboard::decide_clear(current.as_deref(), &value_for_timer),
+            clipboard::ClipboardCopyDecision::Clear,
+        ) {
+            let _ = clipboard::clear_clipboard();
+        }
+    });
+    Ok(DesktopClipboardCopyResponse::Copied { ttl_seconds })
+}
+
 /// Tauri command pushing a new tray icon state from the webview.
 ///
 /// The frontend's `useTray` composable derives the desired
@@ -384,6 +598,8 @@ pub fn run() -> tauri::Result<()> {
             agent_status,
             agent_subscribe_status,
             agent_lock,
+            agent_unlock,
+            agent_set_active_profile,
             agent_reveal,
             agent_copy,
             agent_scan,
@@ -391,12 +607,14 @@ pub fn run() -> tauri::Result<()> {
             agent_prepare_exec,
             agent_list_runtime_sessions,
             agent_list_policies,
+            agent_list_device_members,
             agent_list_secrets,
             agent_read_config,
             agent_write_config,
             agent_list_audit,
             agent_verify_audit,
             agent_list_versions,
+            agent_copy_secret,
             tray_set_state,
         ])
         .setup(|app| {

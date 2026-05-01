@@ -12,6 +12,7 @@
 
 // Pull all dev-deps in so `unused_crate_dependencies` stays quiet for
 // crates the rest of the test references via paths/macros only.
+use arboard as _;
 use directories as _;
 use locket_app as _;
 use locket_core as _;

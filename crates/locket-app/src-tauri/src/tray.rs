@@ -105,6 +105,53 @@ pub fn tray_menu_action_for_id(id: &str) -> Option<TrayMenuAction> {
     tray_menu_actions().iter().copied().find(|action| action.id() == id)
 }
 
+/// Stable webview view key a tray menu action should focus before any
+/// side-effect runs. Returns `None` for actions that do not change the
+/// focused view (e.g. `LockVault`).
+#[must_use]
+pub const fn tray_menu_action_view(action: TrayMenuAction) -> Option<&'static str> {
+    match action {
+        TrayMenuAction::OpenApp | TrayMenuAction::UnlockVault | TrayMenuAction::SwitchProfile => {
+            Some("dashboard")
+        }
+        TrayMenuAction::LockVault => None,
+        TrayMenuAction::RunPolicy => Some("policies"),
+        TrayMenuAction::StartScan => Some("scan"),
+    }
+}
+
+/// Categories of side-effects the desktop performs after focusing the
+/// view returned by [`tray_menu_action_view`]. Pure helper so the tests
+/// can pin the contract independently of the Tauri runtime.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TrayMenuSideEffect {
+    /// Open or focus the desktop without running another action.
+    None,
+    /// Invoke the agent `Lock` RPC.
+    LockVault,
+    /// Open the unlock modal so the user can submit a passphrase.
+    OpenUnlockModal,
+    /// Open the profile switcher modal.
+    OpenProfileSwitcher,
+    /// Refresh the policy list before showing the policy view.
+    RefreshPolicies,
+    /// Trigger a fresh scan against the agent.
+    StartScan,
+}
+
+/// Pure mapping from a tray menu action to its side-effect category.
+#[must_use]
+pub const fn tray_menu_action_side_effect(action: TrayMenuAction) -> TrayMenuSideEffect {
+    match action {
+        TrayMenuAction::OpenApp => TrayMenuSideEffect::None,
+        TrayMenuAction::LockVault => TrayMenuSideEffect::LockVault,
+        TrayMenuAction::UnlockVault => TrayMenuSideEffect::OpenUnlockModal,
+        TrayMenuAction::SwitchProfile => TrayMenuSideEffect::OpenProfileSwitcher,
+        TrayMenuAction::RunPolicy => TrayMenuSideEffect::RefreshPolicies,
+        TrayMenuAction::StartScan => TrayMenuSideEffect::StartScan,
+    }
+}
+
 // macOS template (alpha-mask) variants.
 const MACOS_AGENT_UNLOCKED: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/tray/macos/agent-unlocked.png"));
@@ -325,23 +372,29 @@ fn handle_tray_menu_event<R: Runtime>(app: &AppHandle<R>, event: &MenuEvent) {
     let Some(action) = tray_menu_action_for_id(event.id().as_ref()) else {
         return;
     };
-    if action == TrayMenuAction::OpenApp {
+    // Every action that maps to a focused view also reveals the main
+    // window; lock-vault is the only headless action and stays in the
+    // menu bar.
+    if tray_menu_action_view(action).is_some() {
         show_main_window(app);
     }
-    if action == TrayMenuAction::LockVault {
-        let app = app.clone();
-        tauri::async_runtime::spawn(async move {
-            let _ = crate::agent_client::invoke_method::<(), ()>(
-                &crate::agent_client::resolve_socket_path(),
-                locket_agent::AgentMethod::Lock,
-                &(),
-            )
-            .await;
+    match tray_menu_action_side_effect(action) {
+        TrayMenuSideEffect::LockVault => {
+            let app = app.clone();
+            tauri::async_runtime::spawn(async move {
+                let _ = crate::agent_client::invoke_method::<(), ()>(
+                    &crate::agent_client::resolve_socket_path(),
+                    locket_agent::AgentMethod::Lock,
+                    &(),
+                )
+                .await;
+                let _ = app.emit(TRAY_MENU_ACTION_EVENT, action);
+            });
+        }
+        _ => {
             let _ = app.emit(TRAY_MENU_ACTION_EVENT, action);
-        });
-        return;
+        }
     }
-    let _ = app.emit(TRAY_MENU_ACTION_EVENT, action);
 }
 
 fn show_main_window<R: Runtime>(app: &AppHandle<R>) {
@@ -403,8 +456,9 @@ pub fn update_tray_state<R: Runtime>(
 #[cfg(test)]
 mod tests {
     use super::{
-        TrayMenuAction, TrayState, dark_bytes, icon_bytes_for, light_bytes, macos_bytes,
-        tooltip_for, tray_menu_action_for_id, tray_menu_actions, tray_state_for_status,
+        TrayMenuAction, TrayMenuSideEffect, TrayState, dark_bytes, icon_bytes_for, light_bytes,
+        macos_bytes, tooltip_for, tray_menu_action_for_id, tray_menu_action_side_effect,
+        tray_menu_action_view, tray_menu_actions, tray_state_for_status,
         tray_state_for_status_event,
     };
     use locket_agent::{LockState, StatusEvent, StatusPayload};
@@ -474,6 +528,48 @@ mod tests {
         for state in tray_icon_states() {
             assert_eq!(tooltip_for(*state), state.descriptor().label);
             assert!(!tooltip_for(*state).is_empty());
+        }
+    }
+
+    #[test]
+    fn tray_menu_action_view_routes_each_action_to_a_focusable_surface() {
+        let pairs = [
+            (TrayMenuAction::OpenApp, Some("dashboard")),
+            (TrayMenuAction::LockVault, None),
+            (TrayMenuAction::UnlockVault, Some("dashboard")),
+            (TrayMenuAction::SwitchProfile, Some("dashboard")),
+            (TrayMenuAction::RunPolicy, Some("policies")),
+            (TrayMenuAction::StartScan, Some("scan")),
+        ];
+        for (action, expected) in pairs {
+            assert_eq!(tray_menu_action_view(action), expected, "{action:?}");
+        }
+    }
+
+    #[test]
+    fn tray_menu_action_side_effect_covers_every_action() {
+        let pairs = [
+            (TrayMenuAction::OpenApp, TrayMenuSideEffect::None),
+            (TrayMenuAction::LockVault, TrayMenuSideEffect::LockVault),
+            (TrayMenuAction::UnlockVault, TrayMenuSideEffect::OpenUnlockModal),
+            (TrayMenuAction::SwitchProfile, TrayMenuSideEffect::OpenProfileSwitcher),
+            (TrayMenuAction::RunPolicy, TrayMenuSideEffect::RefreshPolicies),
+            (TrayMenuAction::StartScan, TrayMenuSideEffect::StartScan),
+        ];
+        for (action, expected) in pairs {
+            assert_eq!(tray_menu_action_side_effect(action), expected, "{action:?}");
+        }
+    }
+
+    #[test]
+    fn lock_vault_is_the_only_headless_tray_action() {
+        for action in tray_menu_actions() {
+            let view = tray_menu_action_view(*action);
+            if *action == TrayMenuAction::LockVault {
+                assert!(view.is_none(), "lock-vault must stay in the menu bar");
+            } else {
+                assert!(view.is_some(), "{action:?} must focus a webview surface");
+            }
         }
     }
 

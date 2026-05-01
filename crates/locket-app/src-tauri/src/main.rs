@@ -8,6 +8,7 @@
 // Runtime + test deps consumed only via the lib crate trip
 // `unused_crate_dependencies` at the bin boundary; pull each in
 // explicitly so the lint stays quiet without disabling it.
+use arboard as _;
 use directories as _;
 use locket_agent as _;
 use locket_app as _;

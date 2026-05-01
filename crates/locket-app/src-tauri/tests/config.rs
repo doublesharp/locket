@@ -14,6 +14,7 @@
 
 // Pull dev-deps into the integration test target so `unused_crate_dependencies`
 // stays quiet for crates referenced only via path lookups below.
+use arboard as _;
 use directories as _;
 use locket_agent as _;
 use locket_core as _;
