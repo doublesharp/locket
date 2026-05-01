@@ -56,6 +56,8 @@ pub fn write_example_emit_audit(
         "command": "emit-example",
         "path_kind": "project_env_example",
         "path_hash": format_hex(&path_hash),
+        "example_path_kind": "project_env_example",
+        "example_path_hash": format_hex(&path_hash),
         "secret_name_count": result.secret_name_count,
         "marker_only": !result.replaced_unmanaged,
         "replaced_unmanaged": result.replaced_unmanaged,

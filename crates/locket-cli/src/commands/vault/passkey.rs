@@ -160,6 +160,7 @@ fn write_passkey_remove_audit_if_available(
         "backup_eligible": credential.backup_eligible,
         "backup_state": credential.backup_state,
         "user_verification": user_verification,
+        "auth_result": "removed",
     });
     let audit = AuditWrite {
         project_id: resolved.config.project_id.as_str(),

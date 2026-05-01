@@ -219,6 +219,13 @@ fn write_scan_suppression_audit(
         "suppressions": entries,
         "kept_blocking_count": severity_count(kept, policy, Severity::Blocking),
         "kept_warning_count": severity_count(kept, policy, Severity::Warning),
+        "known_value_coverage": "pattern_only",
+        "finding_counts": {
+            "suppressed": suppressed.len(),
+            "blocking": severity_count(kept, policy, Severity::Blocking),
+            "warning": severity_count(kept, policy, Severity::Warning),
+        },
+        "pattern_only": true,
     });
     let audit = AuditWrite {
         project_id: project.config.project_id.as_str(),

@@ -553,6 +553,8 @@ fn policy_update_metadata(operation: &str, policy: &str) -> serde_json::Value {
         "command": "policy",
         "operation": operation,
         "policy": policy,
+        "policy_name": policy,
+        "change_kind": operation,
         "metadata_only": true,
     })
 }

@@ -436,12 +436,16 @@ fn write_recovery_rotate_audit(
     let mut store = open_store(context)?;
     let audit_key =
         load_project_key(context, &store, resolved.config.project_id.as_str(), KeyPurpose::Audit)?;
+    let device_id = store
+        .get_active_local_device(resolved.config.project_id.as_str())?
+        .map_or_else(|| "unknown".to_owned(), |d| d.id);
     let metadata = json!({
         "schema_version": 1,
         "action": "RECOVERY_ROTATE",
         "status": "SUCCESS",
         "command": "recovery rotate",
         "kdf_profile_id": kdf_profile_id,
+        "device_id": device_id,
     });
     let audit = AuditWrite {
         project_id: resolved.config.project_id.as_str(),
@@ -476,6 +480,9 @@ fn write_recover_audit(
     if restored.automation_client_private > 0 {
         restored_entry_kinds.push("automation_client_private_key");
     }
+    let device_id = store
+        .get_active_local_device(resolved.config.project_id.as_str())?
+        .map_or_else(|| "unknown".to_owned(), |d| d.id);
     let mut metadata = json!({
         "schema_version": 1,
         "action": "RECOVER",
@@ -491,6 +498,7 @@ fn write_recover_audit(
             "automation_client_private_key_skipped": restored.skipped_automation_client_private,
         },
         "force": force,
+        "device_id": device_id,
     });
     if let Some(user_verification) = user_verification {
         metadata["user_verification"] = serde_json::to_value(user_verification)?;

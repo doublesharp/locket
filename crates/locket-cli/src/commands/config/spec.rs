@@ -358,6 +358,11 @@ pub fn write_config_update_audit_if_available(
     }
     let audit_key =
         load_project_key(context, &store, resolved.config.project_id.as_str(), KeyPurpose::Audit)?;
+    let config_path_hash = {
+        use sha2::{Digest, Sha256};
+        let digest = Sha256::digest(context.config_path.to_string_lossy().as_bytes());
+        crate::format_hex(&digest)
+    };
     let metadata = json!({
         "schema_version": 1,
         "action": "CONFIG_UPDATE",
@@ -366,6 +371,8 @@ pub fn write_config_update_audit_if_available(
         "operation": operation,
         "key": key,
         "value": "hidden",
+        "config_path_hash": config_path_hash,
+        "config_keys": [key],
     });
     let audit = AuditWrite {
         project_id: resolved.config.project_id.as_str(),

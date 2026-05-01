@@ -210,6 +210,7 @@ fn team_revoke_invite_command(
         "operation": "revoke",
         "project_id": project_id,
         "team_id": &issuer.team.id,
+        "member_id": &invite.issuer_member_id,
         "invite_id": &invite.id,
         "issuer_member_id": &invite.issuer_member_id,
         "revoker_member_id": &issuer.member.id,
@@ -453,12 +454,17 @@ fn accept_invite_with_audit(
     let audit_key = load_project_key(context, store, project_id, KeyPurpose::Audit)?;
     let accepted_at = now_unix_nanos()?;
     let invite_id = invite.payload.invite_id.as_str();
+    let team_id = store
+        .get_team_by_project(project_id)?
+        .map_or_else(|| "unknown".to_owned(), |team| team.id);
     let metadata = json!({
         "schema_version": 1,
         "action": "TEAM_ACCEPT",
         "status": "SUCCESS",
         "command": "team accept",
         "project_id": project_id,
+        "team_id": team_id,
+        "member_id": invite.payload.issuer_member_id.as_str(),
         "invite_id": invite_id,
         "issuer_member_id": invite.payload.issuer_member_id.as_str(),
         "issuer_device_fingerprint": &invite.payload.issuer_device_fingerprint,
@@ -517,12 +523,17 @@ fn append_team_accept_denial(
 ) -> Result<(), CliError> {
     let timestamp = now_unix_nanos()?;
     let audit_key = load_project_key(context, store, project_id, KeyPurpose::Audit)?;
+    let team_id = store
+        .get_team_by_project(project_id)?
+        .map_or_else(|| "unknown".to_owned(), |team| team.id);
     let metadata = json!({
         "schema_version": 1,
         "action": "TEAM_ACCEPT",
         "status": "DENIED",
         "command": "team accept",
         "project_id": project_id,
+        "team_id": team_id,
+        "member_id": invite.payload.issuer_member_id.as_str(),
         "invite_id": invite.payload.invite_id.as_str(),
         "issuer_member_id": invite.payload.issuer_member_id.as_str(),
         "issuer_device_fingerprint": &invite.payload.issuer_device_fingerprint,
@@ -882,6 +893,7 @@ fn persist_invite(
         "command": "team invite",
         "project_id": project_id,
         "team_id": issuer.team.id,
+        "member_id": issuer.member.id,
         "invite_id": invite_record.id,
         "issuer_member_id": issuer.member.id,
         "issuer_device_id": issuer.local_device.id,

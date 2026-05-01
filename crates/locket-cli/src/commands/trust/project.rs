@@ -167,6 +167,7 @@ fn write_trust_root_audit(
         "status": "SUCCESS",
         "command": "project",
         "operation": operation,
+        "trust_operation": operation,
         "root_hash": format_hex(root_hash),
         "directory_grants_revoked": directory_grants_revoked,
     });

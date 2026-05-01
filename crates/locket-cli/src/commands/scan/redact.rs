@@ -170,6 +170,10 @@ fn write_redact_audit_if_available(
         "redaction_counts_by_rule": counts_by_rule,
         "known_secret_names_redacted": coverage.known_secret_names,
         "invalid_utf8_passthrough": invalid_utf8_passthrough,
+        "scope": input_kind,
+        "known_value_coverage": if coverage.known_coverage_active { "active" } else { "pattern_only" },
+        "finding_counts": &counts_by_rule,
+        "pattern_only": !coverage.known_coverage_active,
     });
     let audit = AuditWrite {
         project_id: project.config.project_id.as_str(),

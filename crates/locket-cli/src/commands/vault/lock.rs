@@ -65,6 +65,8 @@ pub fn lock_command(context: &RuntimeContext, output: &mut impl Write) -> Result
         "agent_available": false,
         "cached_keys_cleared": 0,
         "live_grants_revoked": 0,
+        "grant_actions": [],
+        "ttl_seconds": 0,
     });
     let audit = AuditWrite {
         project_id,
@@ -115,6 +117,8 @@ pub fn unlock_command(
             "satisfied": false,
             "method": null,
         },
+        "grant_actions": [],
+        "ttl_seconds": 0,
     });
     let audit = AuditWrite {
         project_id,
