@@ -1363,18 +1363,14 @@ fn insert_imported_audit_chain(
     // any row. If verification fails we surface BundleVerificationFailed
     // so the outer transaction rolls back.
     let decoded_rows = decrypt_audit_chain(audit_chain, BUNDLE_SCHEMA_V1)?;
-    let imported_rows = decoded_rows
-        .iter()
-        .map(decoded_row_to_imported_row)
-        .collect::<Result<Vec<_>, _>>()?;
+    let imported_rows =
+        decoded_rows.iter().map(decoded_row_to_imported_row).collect::<Result<Vec<_>, _>>()?;
     verify_imported_audit_chain_structure(
         &imported_rows,
         audit_chain.checkpoint_sequence,
         &checkpoint_hmac,
     )
-    .map_err(|_| {
-        bundle_verification_error("imported audit chain integrity broken")
-    })?;
+    .map_err(|_| bundle_verification_error("imported audit chain integrity broken"))?;
     let row_count = imported_rows.len();
 
     transaction

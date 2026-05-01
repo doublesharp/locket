@@ -2675,10 +2675,7 @@ fn team_accept_user_verification_denied_fails_closed_with_denial_audit()
     assert_eq!(metadata["failure_reason"], "user_verification_failed");
     assert_eq!(metadata["user_verification"]["required"], true);
     assert_eq!(metadata["user_verification"]["satisfied"], false);
-    assert_eq!(
-        metadata["exit_code"],
-        locket_core::LocketError::UserVerificationFailed.exit_code(),
-    );
+    assert_eq!(metadata["exit_code"], locket_core::LocketError::UserVerificationFailed.exit_code(),);
     Ok(())
 }
 

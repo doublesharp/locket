@@ -271,7 +271,7 @@ fn passkey_entry(credential_id: &[u8]) -> Result<Entry, PlatformError> {
         .map_err(|_| PlatformError::PasskeyUnsupported)
 }
 
-pub(super) fn passkey_account(credential_id: &[u8]) -> String {
+pub fn passkey_account(credential_id: &[u8]) -> String {
     format!("{PASSKEY_ACCOUNT_PREFIX}{}", BASE64URL_NOPAD.encode(credential_id))
 }
 
@@ -290,11 +290,11 @@ fn decode_passkey_secret(encoded: &str) -> Result<Zeroizing<[u8; KEY_LEN]>, Plat
     Ok(secret)
 }
 
-pub(super) fn public_metadata_key(secret: &[u8; KEY_LEN]) -> Vec<u8> {
+pub fn public_metadata_key(secret: &[u8; KEY_LEN]) -> Vec<u8> {
     Sha256::new().chain_update(PASSKEY_PUBLIC_KEY_DOMAIN).chain_update(secret).finalize().to_vec()
 }
 
-pub(super) fn derive_passkey_prf(
+pub fn derive_passkey_prf(
     secret: &[u8; KEY_LEN],
     salt: &[u8],
 ) -> Result<[u8; KEY_LEN], PlatformError> {
@@ -305,14 +305,14 @@ pub(super) fn derive_passkey_prf(
     Ok(mac.finalize().into_bytes().into())
 }
 
-fn map_passkey_get_error(error: &keyring::Error) -> PlatformError {
+const fn map_passkey_get_error(error: &keyring::Error) -> PlatformError {
     match error {
         keyring::Error::NoEntry => PlatformError::PasskeyNotFound,
         _ => PlatformError::PasskeyAuthFailed,
     }
 }
 
-pub(super) const fn platform_transport_label() -> &'static str {
+pub const fn platform_transport_label() -> &'static str {
     #[cfg(target_os = "macos")]
     {
         "macos-keychain"

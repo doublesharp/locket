@@ -570,11 +570,11 @@ required_secrets = ["API_KEY"]
     #[test]
     fn rejects_command_body_that_is_not_a_table() {
         let result = PolicyDocument::from_toml_str(
-            r#"
+            r"
 schema_version = 1
 [commands]
 dev = 42
-"#,
+",
         );
         assert_eq!(result, Err(PolicyParseError::CommandMustBeTable { command: "dev".to_owned() }));
     }
@@ -676,7 +676,7 @@ external_env_sources = [{ file = "/abs/path.env" }]
     }
 
     #[test]
-    fn ttl_zero_seconds_is_rejected_by_invalid_ttl() {
+    fn ttl_zero_seconds_is_rejected_by_invalid_ttl() -> Result<(), Box<dyn Error>> {
         // "0s" is invalid grammar per existing test; "0m"/"0h" too. Verify "1s" parses.
         let document = PolicyDocument::from_toml_str(
             r#"
@@ -687,9 +687,10 @@ ttl = "1s"
 "#,
         );
         assert!(document.is_ok());
-        let document = document.unwrap();
-        let policy = document.commands.get("dev").unwrap();
+        let document = document?;
+        let policy = document.commands.get("dev").ok_or("missing dev")?;
         assert_eq!(policy.ttl.as_secs(), 1);
+        Ok(())
     }
 
     #[test]

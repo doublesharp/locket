@@ -607,7 +607,7 @@ mod tests {
 
         // Forward-compat: a JSON document without the field still
         // deserializes via #[serde(default)].
-        let mut bare = encoded.clone();
+        let mut bare = encoded;
         bare.as_object_mut().unwrap().remove("sealed_payload");
         let recovered: InvitePayload = serde_json::from_value(bare).unwrap();
         assert_eq!(recovered, payload);
@@ -642,7 +642,7 @@ mod tests {
         assert!(matches!(tampered.verify(), Err(InviteVerifyError::InvalidSignature)));
 
         // Stripping the sealed payload after signing must also fail.
-        let mut stripped = invite.clone();
+        let mut stripped = invite;
         stripped.payload.sealed_payload = None;
         assert!(matches!(stripped.verify(), Err(InviteVerifyError::InvalidSignature)));
     }

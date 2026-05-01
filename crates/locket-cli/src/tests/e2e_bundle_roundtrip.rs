@@ -576,7 +576,7 @@ fn deleted_vs_active_arm() -> Result<(), Box<dyn std::error::Error>> {
 /// Parity contract for the `team accept` -> `import-bundle` flow per the
 /// SPEC-CLARIFICATION block in `crates/locket-cli/src/commands/team/members.rs`:
 /// `team accept` is metadata-only today and the substantive rows
-/// (profiles, secrets, secret_versions, blobs, command_policies) only
+/// (profiles, secrets, `secret_versions`, blobs, `command_policies`) only
 /// arrive at the receiver through a follow-up `import-bundle`.
 ///
 /// This test pins that contract by comparing two arms over the same
@@ -589,6 +589,7 @@ fn deleted_vs_active_arm() -> Result<(), Box<dyn std::error::Error>> {
 /// only delta is the accepted-invite row + `TEAM_ACCEPT` audit metadata,
 /// which are explicitly out-of-scope for the parity invariant.
 #[test]
+#[allow(clippy::too_many_lines)]
 fn team_accept_then_import_bundle_matches_import_only_state()
 -> Result<(), Box<dyn std::error::Error>> {
     use ed25519_dalek::SigningKey;
@@ -598,9 +599,7 @@ fn team_accept_then_import_bundle_matches_import_only_state()
     };
     use rusqlite::params;
 
-    fn substantive_counts(
-        store_path: &Path,
-    ) -> Result<[i64; 5], Box<dyn std::error::Error>> {
+    fn substantive_counts(store_path: &Path) -> Result<[i64; 5], Box<dyn std::error::Error>> {
         Ok([
             store_row_count(store_path, "SELECT COUNT(*) FROM profiles")?,
             store_row_count(store_path, "SELECT COUNT(*) FROM secrets")?,
@@ -714,10 +713,8 @@ fn team_accept_then_import_bundle_matches_import_only_state()
     let (invite_path, issuer_fingerprint) =
         build_self_invite(&context_b, "lk_invite_parity_team_accept")?;
     let counts_b_before_accept = substantive_counts(&context_b.store_path)?;
-    let confirming_context = context_with_confirmation(
-        &context_b,
-        &format!("{issuer_fingerprint}\n"),
-    );
+    let confirming_context =
+        context_with_confirmation(&context_b, &format!("{issuer_fingerprint}\n"));
     run_with_context(
         Cli::try_parse_from([
             "locket",
@@ -801,8 +798,7 @@ fn imported_audit_chain_lands_in_imported_audit_chains_with_structural_verificat
 
     let store_path = context.store_path.clone();
     drop(context);
-    let stored_chains =
-        store_row_count(&store_path, "SELECT COUNT(*) FROM imported_audit_chains")?;
+    let stored_chains = store_row_count(&store_path, "SELECT COUNT(*) FROM imported_audit_chains")?;
     assert_eq!(stored_chains, 1, "exactly one imported_audit_chains row expected");
 
     // The stored row must reference the bundle's digest as its
@@ -830,6 +826,9 @@ fn imported_audit_chain_lands_in_imported_audit_chains_with_structural_verificat
 #[test]
 fn tampered_audit_chain_rejects_with_bundle_verification_failed()
 -> Result<(), Box<dyn std::error::Error>> {
+    use sha2::{Digest, Sha256};
+    use std::fmt::Write as _;
+
     // Flipping a byte inside the encrypted age payload (which carries
     // the inner audit-chain ciphertext) MUST cause age decryption or
     // inner XChaCha20-Poly1305 tag verification to fail and surface as
@@ -848,13 +847,11 @@ fn tampered_audit_chain_rejects_with_bundle_verification_failed()
     assert!(payload_len > 0, "encrypted payload must be non-empty");
     let target = payload_len - 1;
     container.encrypted_payload[target] ^= 0x01;
-    use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
     hasher.update(&container.encrypted_payload);
     let new_digest = hasher.finalize();
     let mut hex = String::with_capacity(new_digest.len() * 2);
-    for byte in new_digest.iter() {
-        use std::fmt::Write as _;
+    for byte in &new_digest {
         write!(&mut hex, "{byte:02x}")?;
     }
     container.manifest.payload_digest = hex;
@@ -883,15 +880,16 @@ fn tampered_audit_chain_rejects_with_bundle_verification_failed()
         crate::CliError::Typed { kind, .. } => {
             assert_eq!(*kind, locket_core::LocketError::BundleVerificationFailed);
         }
-        other => return Err(format!("expected typed BundleVerificationFailed, got {other:?}").into()),
+        other => {
+            return Err(format!("expected typed BundleVerificationFailed, got {other:?}").into());
+        }
     }
 
     // The import transaction must have rolled back: imported_audit_chains
     // should be empty (the tampered import never reached commit).
     let store_path = context.store_path.clone();
     drop(context);
-    let stored_chains =
-        store_row_count(&store_path, "SELECT COUNT(*) FROM imported_audit_chains")?;
+    let stored_chains = store_row_count(&store_path, "SELECT COUNT(*) FROM imported_audit_chains")?;
     assert_eq!(stored_chains, 0, "tampered import must leave imported_audit_chains empty");
     Ok(())
 }

@@ -657,9 +657,8 @@ fn append_team_accept_denial_with_user_verification(
 ) -> Result<(), CliError> {
     let timestamp = now_unix_nanos()?;
     let audit_key = load_project_key(context, store, project_id, KeyPurpose::Audit)?;
-    let team_id = store
-        .get_team_by_project(project_id)?
-        .map_or_else(|| "unknown".to_owned(), |team| team.id);
+    let team_id =
+        store.get_team_by_project(project_id)?.map_or_else(|| "unknown".to_owned(), |team| team.id);
     let mut metadata = json!({
         "schema_version": 1,
         "action": "TEAM_ACCEPT",
@@ -679,8 +678,9 @@ fn append_team_accept_denial_with_user_verification(
         "exit_code": kind.exit_code(),
     });
     if let Some(audit) = user_verification {
-        metadata["user_verification"] = serde_json::to_value(audit)
-            .map_err(|error| metadata_invalid_error(format!("user_verification encode: {error}")))?;
+        metadata["user_verification"] = serde_json::to_value(audit).map_err(|error| {
+            metadata_invalid_error(format!("user_verification encode: {error}"))
+        })?;
     }
     let audit = AuditWrite {
         project_id,

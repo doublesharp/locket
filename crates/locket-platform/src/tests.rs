@@ -569,7 +569,7 @@ fn unavailable_passkey_registrar_reports_unsupported() {
 }
 
 #[test]
-fn memory_passkey_registrar_round_trips_register_then_prf() {
+fn memory_passkey_registrar_round_trips_register_then_prf() -> Result<(), PlatformError> {
     let registration = PasskeyRegistration {
         credential_id: vec![0x01, 0x02, 0x03, 0x04],
         public_key: vec![0xaa, 0xbb],
@@ -579,15 +579,15 @@ fn memory_passkey_registrar_round_trips_register_then_prf() {
         backup_state: Some(false),
     };
     let registrar = MemoryPlatformPasskeyRegistrar::allowing(registration.clone(), [5_u8; 32]);
-    let result = registrar.register_passkey("label", "rp").expect("registers");
+    let result = registrar.register_passkey("label", "rp")?;
     assert_eq!(result.credential_id, registration.credential_id);
-    let prf =
-        registrar.evaluate_prf(&registration.credential_id, &[0xcc; 16]).expect("prf evaluates");
+    let prf = registrar.evaluate_prf(&registration.credential_id, &[0xcc; 16])?;
     assert_eq!(*prf, [5_u8; 32]);
     assert!(matches!(
         registrar.evaluate_prf(&[0x99; 4], &[0xcc; 16]),
         Err(PlatformError::PasskeyNotFound)
     ));
+    Ok(())
 }
 
 #[test]

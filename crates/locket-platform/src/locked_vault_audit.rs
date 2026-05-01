@@ -273,6 +273,7 @@ const fn ensure_user_only_permissions(_path: &Path) -> Result<(), PlatformError>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::error::Error;
     use tempfile::tempdir;
 
     fn sample_row<'a>(action: &'a str, command: &'a str) -> LockedVaultDenialRow<'a> {
@@ -286,51 +287,50 @@ mod tests {
     }
 
     #[test]
-    fn append_writes_one_json_line_per_call() {
-        let directory = tempdir().expect("temp dir");
+    fn append_writes_one_json_line_per_call() -> Result<(), Box<dyn Error>> {
+        let directory = tempdir()?;
         let logger = LockedVaultAuditLogger::new(directory.path());
-        logger.append(&sample_row("GET", "get")).expect("append 1");
-        logger.append(&sample_row("REVEAL", "get --reveal")).expect("append 2");
+        logger.append(&sample_row("GET", "get"))?;
+        logger.append(&sample_row("REVEAL", "get --reveal"))?;
 
-        let body = fs::read_to_string(logger.log_path()).expect("read log");
+        let body = fs::read_to_string(logger.log_path())?;
         let lines: Vec<&str> = body.lines().collect();
         assert_eq!(lines.len(), 2);
         for line in &lines {
-            let value: serde_json::Value = serde_json::from_str(line).expect("valid json");
+            let value: serde_json::Value = serde_json::from_str(line)?;
             assert_eq!(value["schema_version"], 1);
             assert_eq!(value["status"], "DENIED_LOCKED");
             assert_eq!(value["failure_reason"], "vault_locked");
             assert_eq!(value["project_id"], "lk_proj_x");
             assert!(value.get("secret_name").is_none(), "must never include secret_name");
         }
-        assert_eq!(serde_json::from_str::<serde_json::Value>(lines[0]).unwrap()["action"], "GET");
-        assert_eq!(
-            serde_json::from_str::<serde_json::Value>(lines[1]).unwrap()["action"],
-            "REVEAL"
-        );
+        assert_eq!(serde_json::from_str::<serde_json::Value>(lines[0])?["action"], "GET");
+        assert_eq!(serde_json::from_str::<serde_json::Value>(lines[1])?["action"], "REVEAL");
+        Ok(())
     }
 
     #[cfg(unix)]
     #[test]
-    fn append_sets_user_only_file_mode() {
+    fn append_sets_user_only_file_mode() -> Result<(), Box<dyn Error>> {
         use std::os::unix::fs::PermissionsExt;
-        let directory = tempdir().expect("temp dir");
+        let directory = tempdir()?;
         let logger = LockedVaultAuditLogger::new(directory.path());
-        logger.append(&sample_row("GET", "get")).expect("append");
-        let metadata = fs::metadata(logger.log_path()).expect("metadata");
+        logger.append(&sample_row("GET", "get"))?;
+        let metadata = fs::metadata(logger.log_path())?;
         let mode = metadata.permissions().mode() & 0o777;
         assert_eq!(mode, 0o600, "degraded audit log must be mode 0600");
+        Ok(())
     }
 
     #[test]
-    fn rotation_at_threshold_keeps_at_most_max_rotations() {
-        let directory = tempdir().expect("temp dir");
+    fn rotation_at_threshold_keeps_at_most_max_rotations() -> Result<(), Box<dyn Error>> {
+        let directory = tempdir()?;
         let log_path = directory.path().join("audit-degraded.log");
         // Tiny threshold so a single row triggers rotation.
         let logger = LockedVaultAuditLogger::with_policy(log_path.clone(), 16, 3);
 
         for _ in 0..6 {
-            logger.append(&sample_row("GET", "get")).expect("append");
+            logger.append(&sample_row("GET", "get"))?;
         }
 
         assert!(log_path.exists(), "active log re-created after rotation");
@@ -341,63 +341,67 @@ mod tests {
             !log_path.with_file_name("audit-degraded.log.4").exists(),
             "rotations beyond max must not exist"
         );
+        Ok(())
     }
 
     #[test]
-    fn has_records_reports_log_state() {
-        let directory = tempdir().expect("temp dir");
+    fn has_records_reports_log_state() -> Result<(), Box<dyn Error>> {
+        let directory = tempdir()?;
         let logger = LockedVaultAuditLogger::new(directory.path());
         assert!(!logger.has_records(), "fresh logger reports no records");
-        logger.append(&sample_row("GET", "get")).expect("append");
+        logger.append(&sample_row("GET", "get"))?;
         assert!(logger.has_records(), "logger with one row reports records present");
         assert!(logger.current_size_bytes() > 0);
+        Ok(())
     }
 
     #[cfg(unix)]
     #[test]
-    fn rotation_creates_new_tip_file_at_user_only_mode() {
+    fn rotation_creates_new_tip_file_at_user_only_mode() -> Result<(), Box<dyn Error>> {
         use std::os::unix::fs::PermissionsExt;
-        let directory = tempdir().expect("temp dir");
+        let directory = tempdir()?;
         let log_path = directory.path().join("audit-degraded.log");
         let logger = LockedVaultAuditLogger::with_policy(log_path.clone(), 16, 3);
 
         // Force at least one rotation by writing many rows past the threshold.
         for _ in 0..3 {
-            logger.append(&sample_row("GET", "get")).expect("append");
+            logger.append(&sample_row("GET", "get"))?;
         }
         // The active tip file must be at 0600 even after rotation.
-        let metadata = fs::metadata(&log_path).expect("metadata for active tip");
+        let metadata = fs::metadata(&log_path)?;
         let mode = metadata.permissions().mode() & 0o777;
         assert_eq!(mode, 0o600, "rotated tip file must remain mode 0600");
         // The first rotated file must also still be 0600 (rename preserves
         // mode bits, the prior tip was 0600 when written).
         let rotated = log_path.with_file_name("audit-degraded.log.1");
-        let rotated_meta = fs::metadata(&rotated).expect("metadata for rotated copy");
+        let rotated_meta = fs::metadata(&rotated)?;
         let rotated_mode = rotated_meta.permissions().mode() & 0o777;
         assert_eq!(rotated_mode, 0o600, "rotated copy must remain mode 0600");
+        Ok(())
     }
 
     #[cfg(unix)]
     #[test]
-    fn permission_mode_reports_active_tip_mode() {
+    fn permission_mode_reports_active_tip_mode() -> Result<(), Box<dyn Error>> {
         use std::os::unix::fs::PermissionsExt;
-        let directory = tempdir().expect("temp dir");
+        let directory = tempdir()?;
         let logger = LockedVaultAuditLogger::new(directory.path());
         // Absent file -> None.
-        assert_eq!(logger.permission_mode().expect("query mode"), None);
-        logger.append(&sample_row("GET", "get")).expect("append");
-        assert_eq!(logger.permission_mode().expect("query mode after append"), Some(0o600));
+        assert_eq!(logger.permission_mode()?, None);
+        logger.append(&sample_row("GET", "get"))?;
+        assert_eq!(logger.permission_mode()?, Some(0o600));
         // Drift the perms on disk: the helper must surface the actual mode.
-        fs::set_permissions(logger.log_path(), fs::Permissions::from_mode(0o644))
-            .expect("widen perms");
-        assert_eq!(logger.permission_mode().expect("query mode after drift"), Some(0o644));
+        fs::set_permissions(logger.log_path(), fs::Permissions::from_mode(0o644))?;
+        assert_eq!(logger.permission_mode()?, Some(0o644));
+        Ok(())
     }
 
     #[test]
-    fn never_serializes_secret_name() {
+    fn never_serializes_secret_name() -> Result<(), Box<dyn Error>> {
         let row = sample_row("REVEAL", "get --reveal");
-        let json = serde_json::to_string(&row).expect("serialize");
+        let json = serde_json::to_string(&row)?;
         assert!(!json.contains("secret_name"));
         assert!(!json.contains("\"value\""));
+        Ok(())
     }
 }
