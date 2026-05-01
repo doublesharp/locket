@@ -86,10 +86,7 @@ skill set fits a leaf better.
 - [~] `locket run` spec coverage. Argv policy execution exists.
   Remaining (`docs/specs/runtime.md:5-122`, `docs/specs/policy.md`):
   - [~] [4ab55ee9] branch agent-4ab55ee9/run-ttl-grant, worktree .worktrees/agent-4ab55ee9-run-ttl-grant; enforce policy ttl grants with process binding for run.
-  - [ ] **subtask** — run-agent-backed: route through
-    `ResolveReference`/grant RPCs once daemon ships; surface
-    `AgentUnavailable` (80) when daemon is down and policy declares
-    `require_agent = true`.
+  - [~] [52c592db] branch agent-52c592db/run-agent-backed, worktree .worktrees/agent-52c592db-run-agent-backed; **subtask** — run-agent-backed: route through `ResolveReference`/grant RPCs once daemon ships; surface `AgentUnavailable` (80) when daemon is down and policy declares `require_agent = true`.
 - [~] External env source resolution
   (`docs/specs/runtime.md:117-118`). `::Parent`, `::File`, `::Compose`
   shipped. Remaining:
