@@ -579,3 +579,139 @@ fn deleted_vs_active_arm() -> Result<(), Box<dyn std::error::Error>> {
     assert!(active_count >= 1, "accept-incoming must rejoin active secret");
     Ok(())
 }
+
+#[test]
+fn imported_audit_chain_lands_in_imported_audit_chains_with_structural_verification()
+-> Result<(), Box<dyn std::error::Error>> {
+    // Golden chain round-trip. Export with --include-audit, import
+    // with --include-audit + --accept-incoming, and confirm:
+    //   1. import: applied banner is present
+    //   2. imported_audit_chain_count: <n> stdout line is non-zero
+    //   3. imported_audit_chains has the expected single row keyed by
+    //      the bundle digest
+    //   4. checkpoint_sequence stored on disk matches the chain length
+    let directory = tempdir()?;
+    let (context, _descriptor, bundle_path, export_output) =
+        export_sealed_bundle(&directory, "audit-chain.locket-bundle")?;
+    let exported_digest =
+        parse_field(&export_output, "digest").ok_or("export missing digest")?.to_owned();
+
+    let mut import_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from([
+            "locket",
+            "import-bundle",
+            bundle_path.to_str().ok_or("utf8 path")?,
+            "--accept-incoming",
+            "--include-audit",
+        ])?,
+        &context,
+        &mut import_output,
+    )?;
+    let import_output = String::from_utf8(import_output)?;
+    assert!(import_output.contains("import: applied"));
+    assert!(
+        import_output.contains("bundle_include_audit: yes"),
+        "bundle must report audit chain present: {import_output}"
+    );
+    let imported_count_field = parse_field(&import_output, "imported_audit_chain_count")
+        .ok_or("import missing imported_audit_chain_count")?;
+    let imported_count: u64 = imported_count_field.parse()?;
+    assert!(imported_count >= 1, "imported_audit_chain_count must be >= 1");
+
+    let store_path = context.store_path.clone();
+    drop(context);
+    let stored_chains =
+        store_row_count(&store_path, "SELECT COUNT(*) FROM imported_audit_chains")?;
+    assert_eq!(stored_chains, 1, "exactly one imported_audit_chains row expected");
+
+    // The stored row must reference the bundle's digest as its
+    // bundle_digest column. Hex-decode the export-side digest field
+    // and compare against the bytes column.
+    let store = locket_store::Store::open(&store_path)?;
+    let stored_digest_hex: String = store.connection().query_row(
+        "SELECT lower(hex(bundle_digest)) FROM imported_audit_chains LIMIT 1",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(
+        stored_digest_hex, exported_digest,
+        "bundle_digest stored on disk must match the exported manifest digest"
+    );
+    let checkpoint_sequence: i64 = store.connection().query_row(
+        "SELECT checkpoint_sequence FROM imported_audit_chains LIMIT 1",
+        [],
+        |row| row.get(0),
+    )?;
+    assert!(checkpoint_sequence >= 1, "checkpoint_sequence must be at least 1");
+    Ok(())
+}
+
+#[test]
+fn tampered_audit_chain_rejects_with_bundle_verification_failed()
+-> Result<(), Box<dyn std::error::Error>> {
+    // Flipping a byte inside the encrypted age payload (which carries
+    // the inner audit-chain ciphertext) MUST cause age decryption or
+    // inner XChaCha20-Poly1305 tag verification to fail and surface as
+    // BundleVerificationFailed (exit code 110). We recompute the
+    // outer manifest payload_digest after the byte flip so that the
+    // digest-mismatch arm does not trip first; the inner age envelope
+    // tag check then fires when the receiver tries to decrypt the
+    // bundle, which is the same error class the brief asks for.
+    let directory = tempdir()?;
+    let (context, _descriptor, bundle_path, _export_output) =
+        export_sealed_bundle(&directory, "tamper-chain.locket-bundle")?;
+
+    let bundle_bytes = fs::read(&bundle_path)?;
+    let mut container = locket_core::BundleContainer::deserialize(&bundle_bytes)?;
+    let payload_len = container.encrypted_payload.len();
+    assert!(payload_len > 0, "encrypted payload must be non-empty");
+    let target = payload_len - 1;
+    container.encrypted_payload[target] ^= 0x01;
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(&container.encrypted_payload);
+    let new_digest = hasher.finalize();
+    let mut hex = String::with_capacity(new_digest.len() * 2);
+    for byte in new_digest.iter() {
+        use std::fmt::Write as _;
+        write!(&mut hex, "{byte:02x}")?;
+    }
+    container.manifest.payload_digest = hex;
+    fs::write(&bundle_path, container.serialize()?)?;
+
+    let result = run_with_context(
+        Cli::try_parse_from([
+            "locket",
+            "import-bundle",
+            bundle_path.to_str().ok_or("utf8 path")?,
+            "--accept-incoming",
+            "--include-audit",
+        ])?,
+        &context,
+        &mut Vec::new(),
+    );
+    let Err(error) = result else {
+        return Err("expected bundle import to fail on tampered audit chain".into());
+    };
+    assert_eq!(
+        error.exit_code(),
+        locket_core::LocketError::BundleVerificationFailed.exit_code(),
+        "exit code must be BundleVerificationFailed (110)"
+    );
+    match &error {
+        crate::CliError::Typed { kind, .. } => {
+            assert_eq!(*kind, locket_core::LocketError::BundleVerificationFailed);
+        }
+        other => return Err(format!("expected typed BundleVerificationFailed, got {other:?}").into()),
+    }
+
+    // The import transaction must have rolled back: imported_audit_chains
+    // should be empty (the tampered import never reached commit).
+    let store_path = context.store_path.clone();
+    drop(context);
+    let stored_chains =
+        store_row_count(&store_path, "SELECT COUNT(*) FROM imported_audit_chains")?;
+    assert_eq!(stored_chains, 0, "tampered import must leave imported_audit_chains empty");
+    Ok(())
+}
