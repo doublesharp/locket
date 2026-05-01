@@ -141,15 +141,20 @@ extends `BACKUP_IMPORT` `metadata_json` with applied counts and
 `crates/locket-cli/src/tests/e2e_bundle_roundtrip.rs` exercises
 each conflict arm.)
 
-- [~] **bundle-include-audit-import** (in-flight: agent 13c): append imported audit rows
-  to `imported_audit_chains` with HMAC structural verification.
-  Pre-req: `bundle-payload-include-audit-rows` (shipped),
-  `bundle-apply-and-conflicts` (shipped).
-- [~] **bundle-team-accept-parity-test** (in-flight: agent 13b):
-  integration test asserting `team accept` and `import-bundle`
-  produce identical store state for newer-incoming. Pre-req:
-  `team-accept-row-apply-path`, `bundle-apply-and-conflicts`
-  (shipped).
+(`bundle-include-audit-import` shipped — `import-bundle --include-audit`
+decrypts the carried audit-chain payload, structurally verifies it
+via `verify_imported_audit_chain_structure`, and only then writes
+the encrypted blob into `imported_audit_chains`. Tamper paths roll
+back the apply transaction. CLI emits `imported_audit_chain_count`
+and the `BACKUP_IMPORT` audit row carries the same field. Two e2e
+tests cover the golden round-trip and byte-flipped tamper path
+(commit `62f63881`).)
+(`bundle-team-accept-parity-test` shipped — new test
+`team_accept_then_import_bundle_matches_import_only_state` in
+`crates/locket-cli/src/tests/e2e_bundle_roundtrip.rs` proves the
+two flows converge on the same substantive 5-tuple
+(profiles/secrets/secret_versions/blobs/command_policies) plus
+pins that `team accept` is metadata-only (commit `5cfc8ba3`).)
 
 ### Team command surfaces
 Spec ref: `docs/specs/team-sync-recovery.md:5-110`.
@@ -185,7 +190,7 @@ Shipped: `invite-codec`, `invite-replay-protect`,
 issuer fingerprint confirmation, accept denial rows, and revoke
 flows. 2026-04-30 audit found one remaining gap:
 
-- [~] **invite-sealed-payload-import** (in-flight: agent 13c): spec lines 7, 28, and 67
+- [ ] **invite-sealed-payload-import** (partial — type lands; encrypt+apply deferred): spec lines 7, 28, and 67
   require invites to carry plaintext profile secret/fingerprint
   keys and command policies inside an age-sealed payload addressed
   to the recipient device sealing key, with `team accept` rewrapping
@@ -199,6 +204,11 @@ flows. 2026-04-30 audit found one remaining gap:
   format), `team invite` issuer side (encrypt-to-recipient), and
   `team accept` apply path (rewrap + insert profile/key/policy
   rows). Pre-req: `bundle-profile-key-rewrap-helper` (shipped).
+  Status: type definition shipped (`SealedInvitePayloadV1` +
+  optional `InvitePayload.sealed_payload`, signature-covered,
+  legacy-byte-stable, commit `21064bfa`); the encrypt-on-issue
+  and decrypt+apply-on-accept slices are deferred behind
+  `TODO(invite-sealed-payload-apply)` breadcrumbs and remain open.
 
 ### Audit coverage
 Reveal/copy denial rows, role denials, grant denials, dangerous-
