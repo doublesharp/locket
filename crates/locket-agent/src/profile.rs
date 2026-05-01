@@ -4,11 +4,10 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use locket_core::{PROJECT_CONFIG_SCHEMA_VERSION, ProfileName, ProjectConfig};
+use locket_core::{PROJECT_CONFIG_SCHEMA_VERSION, ProfileName, ProjectConfig, privacy_alias};
 use locket_store::{AuditWrite, ProfileRecord, Store};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use sha2::{Digest, Sha256};
 
 use crate::envelope::{ErrorEnvelope, RequestEnvelope, ResponseEnvelope, SuccessEnvelope};
 
@@ -289,14 +288,6 @@ fn response_payload(
 
 fn profile_label(profile: &ProfileRecord, redact_names: bool) -> String {
     if redact_names { privacy_alias("profile", &profile.id) } else { profile.name.clone() }
-}
-
-fn privacy_alias(kind: &str, id: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(b"locket-privacy-alias-v1");
-    hasher.update(format!("kind:{kind};id:{id}").as_bytes());
-    let digest = hasher.finalize();
-    format!("{kind}-{:02x}{:02x}{:02x}{:02x}", digest[0], digest[1], digest[2], digest[3])
 }
 
 fn success_response<T: Serialize>(request: &RequestEnvelope, payload: T) -> ResponseEnvelope {

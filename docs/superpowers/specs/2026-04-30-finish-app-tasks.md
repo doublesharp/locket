@@ -124,13 +124,15 @@ ship. Each bullet has spec ref + code ref + suggested touches.
   tools presence check, and actually running the configured
   `smoke_policy` (reports presence but never invokes
   `locket run <policy>`).
-- [~] (in-flight: agent 14e) **privacy-alias-canonical-encoding**: `invariants.md:37`
-  defines aliases as `SHA-256("locket-privacy-alias-v1" ||
-  field("kind", kind) || field("id", id))` with length-prefixed
-  UTF-8 `field` from `crypto.md`. CLI (`main.rs:1955-1961`) and UI
-  (`privacy.ts:12-18`) hash the ad-hoc string `"kind:{kind};id:{id}"`.
-  Touch: switch both to canonical `field()` byte layout + add a
-  vector test.
+- Shipped: **privacy-alias-canonical-encoding** — moved every
+  surface (`locket-core::privacy_alias`, CLI `privacy_alias` shim,
+  agent local copies, UI `privacyAlias`) onto the canonical
+  `SHA-256("locket-privacy-alias-v1" || field("kind", kind) ||
+  field("id", id))` body with length-prefixed UTF-8 `field()` from
+  `crypto.md:134`. Added Rust + TS vector tests with cross-language
+  KATs and a guard that the new digest does NOT match the legacy
+  `kind:{kind};id:{id}` body. Removed five duplicate `privacy_alias`
+  copies inside `locket-agent`.
 
 ### B. Schema / data-model alignment
 
@@ -484,12 +486,14 @@ shipped. Core-dump suppression also shipped on all three platforms:
   (commit 97058f69).
 - Shipped: **harden-macos-core-dump** — macOS core-dump suppression
   via `RLIMIT_CORE=0` (part of commit 9923b7f0).
-- [~] (in-flight: agent 14e) **harden-windows-core-dump-real**: `disable_windows_core_dumps`
-  is still a stub returning `Unsupported`
-  (`crates/locket-platform/src/core_dumps.rs:182-202`). Wire the
-  `windows` crate, call `SetErrorMode(SEM_NOGPFAULTERRORBOX |
-  SEM_FAILCRITICALERRORS)`, return `Suppressed`, and update the
-  doctor check to confirm. Spec ref: `docs/specs/agent.md`.
+- Shipped: **harden-windows-core-dump-real** — wired
+  `windows-sys` (gated behind `target_os = "windows"`) and replaced
+  the stub with `SetErrorMode(SEM_NOGPFAULTERRORBOX |
+  SEM_FAILCRITICALERRORS)`. Added a `Suppressed` variant to
+  `CoreDumpHardening`, taught `core_dump_hardening_state` to read
+  `GetErrorMode`, taught `locket doctor` (`diagnostics.rs:873`) to
+  treat `Suppressed` as a pass, and added Windows-only compile +
+  idempotency tests. Spec ref: `docs/specs/agent.md`.
 
 ### `device init` first-run-on-machine bootstrap
 (`device-init-bootstrap` shipped: first-run-on-machine generates
