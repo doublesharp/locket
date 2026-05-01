@@ -25,7 +25,9 @@ export type AgentMethod =
   | 'Copy'
   | 'SubscribeStatus'
   | 'CancelSubscription'
-  | 'ClientHello';
+  | 'ClientHello'
+  | 'RegisterIdeEnvSession'
+  | 'IdeEnvSession';
 
 export type LockState = 'locked' | 'unlocked' | 'unknown';
 export type StatusEventKind = 'status' | 'heartbeat';

@@ -5,6 +5,8 @@
 // values; those are agent-side concerns.
 
 import { randomBytes } from 'node:crypto';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import * as vscode from 'vscode';
 
 import { AgentClient, AgentClientError, AgentMethod, StatusPayload } from './agentClient';
@@ -13,12 +15,14 @@ import {
   CopyResponsePayload,
   ListAuditResponsePayload,
   ListPoliciesResponsePayload,
+  ResolvedLocketProject,
   agentErrorMessage,
   buildListAuditRequest,
   buildListPoliciesRequest,
   buildLockRequest,
   buildScanKnownValuesRequest,
   buildSetActiveProfileRequest,
+  buildUnlockRequest,
 } from './commandsModel';
 import {
   RevealResponsePayload,
@@ -174,27 +178,67 @@ async function pushToClipboardWithTtl(value: string, ttlSeconds: number): Promis
 }
 
 async function unlock(agentClient: AgentClient): Promise<void> {
-  // The agent's V1 `Unlock` payload requires raw key bytes. The agent
-  // owns the keychain/passphrase unwrap path (see
-  // crates/locket-agent/src/server.rs:619 TODO). Until that path is
-  // wired, the extension cannot safely construct the payload from
-  // user input and instead surfaces the spec-compliant
-  // `UnlockRequired` next-action message and routes the user to the
-  // CLI flow. The command id is registered so palette discovery and
-  // any keybindings still work, and the call to `Unlock` is exercised
-  // through the AgentClient with an explicit empty payload, which the
-  // agent will reject with a typed error the user can act on.
+  // The agent owns the keychain/passphrase unwrap path: the wire
+  // payload now carries `project_id`, `passphrase: null`, a `ttl_seconds`
+  // hint, and an `audit` block with the store path so the agent can
+  // append the UNLOCK row. We attempt OS-keychain unwrap first
+  // (`passphrase: null`); on a typed `UnlockRequired` rejection we
+  // prompt for the vault passphrase and retry once.
+  const project = await promptForActiveProject(agentClient);
+  if (project === undefined) {
+    return;
+  }
+  const storePath = await vscode.window.showInputBox({
+    title: 'Locket Unlock',
+    prompt: 'Path to store.db',
+    placeHolder: '~/.locket/store.db',
+    ignoreFocusOut: false,
+  });
+  if (storePath === undefined) {
+    return;
+  }
+  let firstRequest;
   try {
-    await agentClient.invoke('Unlock', {});
-    void vscode.window.showInformationMessage('Locket vault is unlocked.');
+    firstRequest = buildUnlockRequest(project.projectId, storePath, null, null);
   } catch (error) {
-    if (
-      error instanceof AgentClientError &&
-      (error.kind === 'protocol' || error.code === 'ProtocolError')
-    ) {
-      void vscode.window.showInformationMessage(
-        'Locket Unlock requires CLI keychain unwrap. Run `locket unlock` from a terminal, then retry.',
-      );
+    void vscode.window.showWarningMessage(
+      error instanceof Error ? error.message : 'Locket unlock inputs were invalid.',
+    );
+    return;
+  }
+  try {
+    await agentClient.invoke('Unlock', firstRequest);
+    void vscode.window.showInformationMessage('vault unlocked');
+    return;
+  } catch (error) {
+    if (!(error instanceof AgentClientError) || error.code !== 'UnlockRequired') {
+      void vscode.window.showErrorMessage(agentErrorMessage(error));
+      return;
+    }
+  }
+  const passphrase = await vscode.window.showInputBox({
+    password: true,
+    prompt: 'Locket vault passphrase',
+    ignoreFocusOut: false,
+  });
+  if (passphrase === undefined) {
+    return;
+  }
+  let retryRequest;
+  try {
+    retryRequest = buildUnlockRequest(project.projectId, storePath, null, passphrase);
+  } catch (error) {
+    void vscode.window.showWarningMessage(
+      error instanceof Error ? error.message : 'Locket unlock inputs were invalid.',
+    );
+    return;
+  }
+  try {
+    await agentClient.invoke('Unlock', retryRequest);
+    void vscode.window.showInformationMessage('vault unlocked');
+  } catch (error) {
+    if (error instanceof AgentClientError && error.code === 'UnlockRequired') {
+      void vscode.window.showErrorMessage('passphrase did not authenticate');
       return;
     }
     void vscode.window.showErrorMessage(agentErrorMessage(error));
@@ -363,4 +407,52 @@ async function openAuditView(agentClient: AgentClient): Promise<void> {
     rows: response.rows,
     chainStatus: response.chain_status,
   });
+}
+
+/// Resolves the Locket project that contains `cwd` by walking the
+/// VS Code workspace folders. The terminal-autobind handler calls this
+/// for every newly-opened integrated terminal; it must remain cheap and
+/// return `undefined` whenever `cwd` is outside any workspace folder.
+///
+/// VS Code does not expose project ids directly; we surface a stable
+/// fallback derived from the workspace folder name so the agent has a
+/// non-empty key to dedupe against. A real project id is resolved by
+/// the agent against `locket.toml` once a grant is requested.
+export function resolveLocketProject(cwd: string): ResolvedLocketProject | undefined {
+  const folders = vscode.workspace.workspaceFolders;
+  if (folders === undefined || folders.length === 0) {
+    return undefined;
+  }
+  const normalized = path.resolve(cwd);
+  let bestMatch: { root: string; name: string } | undefined;
+  for (const folder of folders) {
+    const root = folder.uri.fsPath;
+    if (normalized === root || normalized.startsWith(`${root}${path.sep}`)) {
+      if (bestMatch === undefined || root.length > bestMatch.root.length) {
+        bestMatch = { root, name: folder.name };
+      }
+    }
+  }
+  if (bestMatch === undefined) {
+    return undefined;
+  }
+  return {
+    root: bestMatch.root,
+    projectId: `lk_proj_${bestMatch.name}`,
+    defaultProfileId: 'default',
+  };
+}
+
+/// Returns the store-db path the extension uses for agent calls that
+/// need to address the local store (e.g. the autobind directory grant
+/// audit and the IDE env-session register payload). The shared default
+/// follows the same `~/.locket/store.db` convention the other commands
+/// use; users can override via the `LOCKET_STORE_PATH` environment
+/// variable when they keep the store outside the home directory.
+export function resolveStorePath(): string {
+  const override = process.env.LOCKET_STORE_PATH?.trim();
+  if (override !== undefined && override.length > 0) {
+    return override;
+  }
+  return path.join(os.homedir(), '.locket', 'store.db');
 }
