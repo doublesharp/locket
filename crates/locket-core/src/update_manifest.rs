@@ -345,6 +345,7 @@ fn signed_payload_bytes(payload: &UpdateManifestPayload) -> Result<Vec<u8>, Upda
 mod tests {
     use data_encoding::BASE64URL_NOPAD;
     use ed25519_dalek::{Signer, SigningKey};
+    use proptest::prelude::*;
     use serde_json::json;
 
     use super::{
@@ -564,6 +565,80 @@ mod tests {
         Ok(())
     }
 
+    proptest! {
+        #[test]
+        fn valid_signed_manifest_payloads_verify(
+            artifact in release_artifact_strategy(),
+            version in "[0-9]{1,2}\\.[0-9]{1,2}\\.[0-9]{1,2}",
+            published_day in 1u8..=28,
+        ) {
+            let payload = UpdateManifestPayload {
+                channel: UpdateChannel::Stable,
+                version,
+                published_at: format!("2026-04-{published_day:02}T00:00:00Z"),
+                artifacts: vec![artifact],
+            };
+            let (manifest, key_id, public_key) = signed_manifest_with_payload(payload.clone())
+                .expect("generated valid manifest should sign");
+
+            let verified = verify_update_manifest(&manifest, &key_id, &public_key)
+                .expect("generated valid manifest should verify");
+
+            prop_assert_eq!(verified.key_id, key_id);
+            prop_assert_eq!(verified.payload, payload);
+        }
+
+        #[test]
+        fn signed_manifest_rejects_valid_metadata_changed_after_signing(
+            artifact in release_artifact_strategy(),
+            changed_sha256 in lowercase_sha256_strategy(),
+        ) {
+            prop_assume!(changed_sha256 != artifact.sha256);
+            let payload = UpdateManifestPayload {
+                channel: UpdateChannel::Stable,
+                version: "0.2.0".to_owned(),
+                published_at: "2026-04-29T00:00:00Z".to_owned(),
+                artifacts: vec![artifact],
+            };
+            let (manifest, key_id, public_key) = signed_manifest_with_payload(payload)
+                .expect("generated valid manifest should sign");
+            let mut envelope: SignedUpdateManifest = serde_json::from_slice(&manifest).unwrap();
+            envelope.signed.artifacts[0].sha256 = changed_sha256;
+            let changed_manifest = serde_json::to_vec(&envelope).unwrap();
+
+            let error = verify_update_manifest(&changed_manifest, &key_id, &public_key)
+                .expect_err("valid metadata changed after signing must not verify");
+
+            prop_assert_eq!(error, UpdateManifestError::SignatureVerificationFailed);
+        }
+    }
+
+    fn release_artifact_strategy() -> impl Strategy<Value = UpdateArtifact> {
+        (
+            prop_oneof![
+                Just("macos".to_owned()),
+                Just("windows".to_owned()),
+                Just("linux".to_owned()),
+            ],
+            prop_oneof![Just("aarch64".to_owned()), Just("x86_64".to_owned())],
+            prop::collection::vec("[a-z0-9][a-z0-9._+-]{0,12}", 1..4),
+            lowercase_sha256_strategy(),
+            1_u64..=100_000_000,
+        )
+            .prop_map(|(platform, arch, path, sha256, size_bytes)| UpdateArtifact {
+                platform,
+                arch,
+                url: format!("https://updates.example.test/{}", path.join("/")),
+                sha256,
+                size_bytes,
+            })
+    }
+
+    fn lowercase_sha256_strategy() -> impl Strategy<Value = String> {
+        prop::collection::vec(prop_oneof![b'0'..=b'9', b'a'..=b'f'], 64)
+            .prop_map(|bytes| String::from_utf8(bytes).expect("hex bytes are utf8"))
+    }
+
     fn signed_manifest() -> Result<(Vec<u8>, String, String), Box<dyn std::error::Error>> {
         signed_manifest_with_url("https://updates.example.test/releases/locket-0.2.0-aarch64.pkg")
     }
@@ -595,11 +670,22 @@ mod tests {
     fn signed_manifest_with_artifact(
         artifact: UpdateArtifact,
     ) -> Result<(Vec<u8>, String, String), Box<dyn std::error::Error>> {
+        signed_manifest_with_payload(UpdateManifestPayload {
+            channel: UpdateChannel::Stable,
+            version: "0.2.0".to_owned(),
+            published_at: "2026-04-29T00:00:00Z".to_owned(),
+            artifacts: vec![artifact],
+        })
+    }
+
+    fn signed_manifest_with_payload(
+        payload: UpdateManifestPayload,
+    ) -> Result<(Vec<u8>, String, String), Box<dyn std::error::Error>> {
         let key_id = "release-key-v1".to_owned();
         let signing_key = SigningKey::from_bytes(&[7; 32]);
         let public_key = BASE64URL_NOPAD.encode(signing_key.verifying_key().as_bytes());
         let manifest =
-            signed_manifest_with_artifact_and_keys(artifact, vec![(key_id.clone(), signing_key)])?;
+            signed_manifest_with_payload_and_keys(payload, vec![(key_id.clone(), signing_key)])?;
         Ok((manifest, key_id, public_key))
     }
 
@@ -613,6 +699,13 @@ mod tests {
             published_at: "2026-04-29T00:00:00Z".to_owned(),
             artifacts: vec![artifact],
         };
+        signed_manifest_with_payload_and_keys(payload, signers)
+    }
+
+    fn signed_manifest_with_payload_and_keys(
+        payload: UpdateManifestPayload,
+        signers: Vec<(String, SigningKey)>,
+    ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
         let signed_payload = super::signed_payload_bytes(&payload)?;
         let envelope = SignedUpdateManifest {
             v: 1,
