@@ -400,6 +400,8 @@ Slices that have merged to `main` and verified. Open work tracked in
   The desktop shell reads activity through the agent audit-list bridge.
 - [x] desktop-audit-data: Desktop audit view now loads and verifies agent-backed audit
   metadata.
+- [x] desktop-versions-data: The desktop version history view now refreshes from the
+  agent-backed metadata list.
 
 ## Full Spec Coverage TODO — Code Health and Bug Fixes
 

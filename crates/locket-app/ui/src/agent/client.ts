@@ -12,6 +12,10 @@ import type {
   CopyResponse,
   ListAuditRequest,
   ListAuditResponse,
+  ListSecretsRequest,
+  ListSecretsResponse,
+  ListVersionsRequest,
+  ListVersionsResponse,
   ListRuntimeSessionsRequest,
   ListRuntimeSessionsResponse,
   ListSecretsRequest,
@@ -158,4 +162,8 @@ export async function verifyAudit(
   request: VerifyAuditRequest,
 ): Promise<AgentResult<VerifyAuditResponse>> {
   return callTyped<VerifyAuditResponse>('agent_verify_audit', { request });
+export async function listVersions(
+  request: ListVersionsRequest,
+): Promise<AgentResult<ListVersionsResponse>> {
+  return callTyped<ListVersionsResponse>('agent_list_versions', { request });
 }

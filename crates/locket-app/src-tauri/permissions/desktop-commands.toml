@@ -18,6 +18,7 @@ commands.allow = [
   "agent_list_audit",
   "agent_list_audit",
   "agent_verify_audit",
+  "agent_list_versions",
   "tray_set_state",
 ]
 commands.deny = []

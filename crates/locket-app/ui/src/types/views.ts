@@ -20,6 +20,9 @@ export interface SecretRowMeta {
 }
 
 export interface VersionHistoryRow {
+  id?: string;
+  secretName?: string;
+  source?: string;
   version: number;
   state: 'current' | 'deprecated' | 'purged';
   deprecatedAt?: string; // ISO 8601

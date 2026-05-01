@@ -281,3 +281,40 @@ export interface VerifyAuditResponse {
   rows_verified: number;
   locked: boolean;
 }
+
+export interface ListVersionsRequest {
+  store_path?: string;
+  project_id: string;
+  profile_id: string;
+  secret_name?: string;
+  source?: string;
+  now_unix_nanos: number;
+  redact_names: boolean;
+}
+
+export type VersionSourceWire = 'team-managed' | 'user-local' | 'machine-local';
+export type VersionStateWire = 'current' | 'deprecated' | 'purged';
+
+export interface VersionWireRow {
+  secret_id: string;
+  profile_id: string;
+  name: string;
+  source: VersionSourceWire;
+  source_precedence: number;
+  origin: string;
+  secret_state: string;
+  current_version: number;
+  last_rotated_at: number | null;
+  version: number;
+  version_state: VersionStateWire;
+  created_at: number;
+  deprecated_at: number | null;
+  grace_until: number | null;
+  purged_at: number | null;
+  pinned_reference_eligible: boolean;
+  scan_included: boolean;
+}
+
+export interface ListVersionsResponse {
+  rows: VersionWireRow[];
+}

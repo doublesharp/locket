@@ -6,26 +6,40 @@ import type { VersionHistoryRow } from '../types/views';
 interface Props {
   rows: VersionHistoryRow[];
   secretLabel: string;
+  loading?: boolean;
+  errorMessage?: string | null;
+  lastRefreshedAt?: string;
 }
 
 const props = defineProps<Props>();
+const emit = defineEmits<{
+  (e: 'refresh'): void;
+}>();
 
 const isEmpty = computed<boolean>(() => props.rows.length === 0);
 
-const expanded = ref<Set<number>>(new Set());
+const expanded = ref<Set<string>>(new Set());
 
-function toggle(version: number): void {
+function rowKey(row: VersionHistoryRow): string {
+  return row.id ?? `v${row.version}`;
+}
+
+function rowLabel(row: VersionHistoryRow): string {
+  return row.secretName ?? props.secretLabel;
+}
+
+function toggle(key: string): void {
   const next = new Set(expanded.value);
-  if (next.has(version)) {
-    next.delete(version);
+  if (next.has(key)) {
+    next.delete(key);
   } else {
-    next.add(version);
+    next.add(key);
   }
   expanded.value = next;
 }
 
-function isExpanded(version: number): boolean {
-  return expanded.value.has(version);
+function isExpanded(key: string): boolean {
+  return expanded.value.has(key);
 }
 
 function stateLabel(state: VersionHistoryRow['state']): string {
@@ -40,19 +54,35 @@ function stateLabel(state: VersionHistoryRow['state']): string {
       return state;
   }
 }
+
+function refresh(): void {
+  emit('refresh');
+}
 </script>
 
 <template>
   <section class="view" aria-labelledby="secret-version-history-heading">
     <header class="view__header">
       <h2 id="secret-version-history-heading">Version history — {{ secretLabel }}</h2>
+      <div class="view__actions">
+        <span v-if="lastRefreshedAt" class="view__muted">
+          <time :datetime="lastRefreshedAt">{{ lastRefreshedAt }}</time>
+        </span>
+        <button type="button" class="view__button" :disabled="loading" @click="refresh">
+          Refresh
+        </button>
+      </div>
     </header>
 
-    <p v-if="isEmpty" class="view__empty">No version history available.</p>
+    <p v-if="errorMessage" class="view__error">{{ errorMessage }}</p>
+    <p v-else-if="loading && isEmpty" class="view__empty">Loading version history…</p>
+    <p v-else-if="isEmpty" class="view__empty">No version history available.</p>
 
     <table v-else class="view__table" aria-describedby="secret-version-history-heading">
       <thead>
         <tr>
+          <th scope="col">Secret</th>
+          <th scope="col">Source</th>
           <th scope="col">Version</th>
           <th scope="col">State</th>
           <th scope="col">Deprecated at</th>
@@ -63,8 +93,14 @@ function stateLabel(state: VersionHistoryRow['state']): string {
         </tr>
       </thead>
       <tbody>
-        <template v-for="row in rows" :key="row.version">
+        <template v-for="row in rows" :key="rowKey(row)">
           <tr>
+            <td>
+              <span class="view__name">{{ rowLabel(row) }}</span>
+            </td>
+            <td>
+              <span class="view__muted">{{ row.source ?? '—' }}</span>
+            </td>
             <td>
               <span class="view__name">v{{ row.version }}</span>
             </td>
@@ -106,22 +142,22 @@ function stateLabel(state: VersionHistoryRow['state']): string {
                 v-if="row.rotationAuditSummary"
                 type="button"
                 class="view__expand"
-                :aria-expanded="isExpanded(row.version)"
-                :aria-controls="`rotation-audit-v${row.version}`"
+                :aria-expanded="isExpanded(rowKey(row))"
+                :aria-controls="`rotation-audit-${rowKey(row)}`"
                 :aria-label="`Toggle rotation audit summary for version ${row.version}`"
-                @click="toggle(row.version)"
+                @click="toggle(rowKey(row))"
               >
-                {{ isExpanded(row.version) ? 'Hide' : 'Show' }}
+                {{ isExpanded(rowKey(row)) ? 'Hide' : 'Show' }}
               </button>
               <span v-else class="view__muted">—</span>
             </td>
           </tr>
           <tr
-            v-if="row.rotationAuditSummary && isExpanded(row.version)"
-            :id="`rotation-audit-v${row.version}`"
+            v-if="row.rotationAuditSummary && isExpanded(rowKey(row))"
+            :id="`rotation-audit-${rowKey(row)}`"
             class="view__detail"
           >
-            <td colspan="7">
+            <td colspan="9">
               <p class="view__detail-text">{{ row.rotationAuditSummary }}</p>
             </td>
           </tr>
@@ -153,10 +189,38 @@ function stateLabel(state: VersionHistoryRow['state']): string {
   text-transform: uppercase;
 }
 
+.view__actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.625rem;
+}
+
+.view__button {
+  min-height: 2rem;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 0.375rem;
+  background: rgba(255, 255, 255, 0.06);
+  color: #e6e8ec;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.8125rem;
+  padding: 0.25rem 0.625rem;
+}
+
+.view__button:disabled {
+  color: #667085;
+  cursor: not-allowed;
+}
+
 .view__empty {
   margin: 0;
   font-size: 0.875rem;
   color: #9aa3b2;
+}
+
+.view__error {
+  color: #ffb4a8;
+  margin: 0;
 }
 
 .view__table {

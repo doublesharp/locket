@@ -110,6 +110,18 @@ struct DesktopListAuditRequest {
     redact_names: bool,
 }
 
+#[derive(Debug, Deserialize)]
+struct DesktopListVersionsRequest {
+    store_path: Option<PathBuf>,
+    project_id: String,
+    profile_id: String,
+    secret_name: Option<String>,
+    source: Option<String>,
+    now_unix_nanos: i64,
+    #[serde(default)]
+    redact_names: bool,
+}
+
 impl DesktopListAuditRequest {
     fn into_agent_request(self) -> Result<locket_agent::ListAuditRequest, AgentClientError> {
         let store_path = match self.store_path {
@@ -289,6 +301,28 @@ async fn agent_verify_audit(
     agent_client::invoke_method(&path, locket_agent::AgentMethod::VerifyAudit, &request).await
 }
 
+/// Tauri command exposing the agent's metadata-only secret version history.
+#[tauri::command]
+async fn agent_list_versions(
+    request: DesktopListVersionsRequest,
+) -> Result<locket_agent::ListVersionsResponse, AgentClientError> {
+    let path = agent_client::resolve_socket_path();
+    let store_path = match request.store_path {
+        Some(path) => path,
+        None => default_store_path()?,
+    };
+    let request = locket_agent::ListVersionsRequest {
+        store_path,
+        project_id: request.project_id,
+        profile_id: request.profile_id,
+        secret_name: request.secret_name,
+        source: request.source,
+        now_unix_nanos: request.now_unix_nanos,
+        redact_names: request.redact_names,
+    };
+    agent_client::invoke_method(&path, locket_agent::AgentMethod::ListVersions, &request).await
+}
+
 /// Tauri command pushing a new tray icon state from the webview.
 ///
 /// The frontend's `useTray` composable derives the desired
@@ -329,6 +363,7 @@ pub fn run() -> tauri::Result<()> {
             agent_write_config,
             agent_list_audit,
             agent_verify_audit,
+            agent_list_versions,
             tray_set_state,
         ])
         .setup(|app| {

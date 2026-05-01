@@ -7,6 +7,7 @@ import {
   listAudit,
   listRuntimeSessions,
   listSecrets,
+  listVersions,
   lockVault,
   readConfig,
   scan as scanKnownValues,
@@ -15,6 +16,7 @@ import {
 } from './agent/client';
 import { runtimeSessionRow } from './agent/runtimeSessions';
 import { secretRow } from './agent/secrets';
+import { versionHistoryRow } from './agent/versions';
 import { useAgent } from './composables/useAgent';
 import { useTray } from './composables/useTray';
 import AuditLog from './views/AuditLog.vue';
@@ -45,6 +47,7 @@ import type {
   ListAuditRequest,
   ListRuntimeSessionsRequest,
   ListSecretsRequest,
+  ListVersionsRequest,
   ScanFinding,
   WriteConfigChanges,
 } from './agent/types';
@@ -140,6 +143,9 @@ const policies = ref<CommandPolicyRow[]>([]);
 const secretsLoading = ref<boolean>(false);
 const secretsError = ref<string | null>(null);
 const secretsLastRefreshed = ref<string | undefined>(undefined);
+const versionsLoading = ref<boolean>(false);
+const versionsError = ref<string | null>(null);
+const versionsLastRefreshed = ref<string | undefined>(undefined);
 const sessionsLoading = ref<boolean>(false);
 const sessionsError = ref<string | null>(null);
 const sessionsLastRefreshed = ref<string | undefined>(undefined);
@@ -353,9 +359,14 @@ function selectSecret(): void {
 function triggerVerify(): void {
   void refresh();
   void refreshSecrets();
+  void refreshVersions();
   void refreshRuntimeSessions();
   void refreshAuditActivity();
   void verifyAuditChain();
+}
+
+function nowUnixNanos(): number {
+  return Date.now() * 1_000_000;
 }
 
 const secretsRequest = computed<ListSecretsRequest | null>(() => {
@@ -369,6 +380,22 @@ const secretsRequest = computed<ListSecretsRequest | null>(() => {
   return {
     project_id: currentStatus.project_id,
     profile_id: currentStatus.profile_name,
+    redact_names: settings.value.privacyRedactNames,
+  };
+});
+
+const versionsRequest = computed<ListVersionsRequest | null>(() => {
+  const currentStatus = status.value;
+  if (currentStatus?.project_id === null || currentStatus?.project_id === undefined) {
+    return null;
+  }
+  if (currentStatus.profile_name === null || currentStatus.profile_name === undefined) {
+    return null;
+  }
+  return {
+    project_id: currentStatus.project_id,
+    profile_id: currentStatus.profile_name,
+    now_unix_nanos: nowUnixNanos(),
     redact_names: settings.value.privacyRedactNames,
   };
 });
@@ -432,6 +459,52 @@ async function refreshSecrets(): Promise<void> {
 
 watch(secretsRequest, () => {
   void refreshSecrets();
+});
+
+function versionErrorLabel(error: AgentClientError): string {
+  switch (error.kind) {
+    case 'unavailable':
+      return 'Agent unavailable.';
+    case 'protocol':
+      return 'Version request failed.';
+    case 'rejected':
+      return error.code;
+    default:
+      return 'Version request failed.';
+  }
+}
+
+let versionRefreshSequence = 0;
+
+async function refreshVersions(): Promise<void> {
+  const request = versionsRequest.value;
+  const sequence = (versionRefreshSequence += 1);
+  if (request === null) {
+    versions.value = [];
+    versionsError.value = null;
+    versionsLoading.value = false;
+    versionsLastRefreshed.value = undefined;
+    return;
+  }
+
+  versionsLoading.value = true;
+  versionsError.value = null;
+  const result = await listVersions({ ...request, now_unix_nanos: nowUnixNanos() });
+  if (sequence !== versionRefreshSequence) {
+    return;
+  }
+  if (result.ok) {
+    versions.value = result.value.rows.map(versionHistoryRow);
+    versionsLastRefreshed.value = new Date().toISOString();
+  } else {
+    versions.value = [];
+    versionsError.value = versionErrorLabel(result.error);
+  }
+  versionsLoading.value = false;
+}
+
+watch(versionsRequest, () => {
+  void refreshVersions();
 });
 
 function sessionErrorLabel(error: AgentClientError): string {
@@ -799,7 +872,11 @@ onUnmounted(() => {
       <SecretVersionHistory
         v-else-if="currentView === 'versions'"
         :rows="versions"
-        secret-label="—"
+        secret-label="All secrets"
+        :loading="versionsLoading"
+        :error-message="versionsError"
+        :last-refreshed-at="versionsLastRefreshed"
+        @refresh="refreshVersions"
       />
 
       <ExecutionMonitor
