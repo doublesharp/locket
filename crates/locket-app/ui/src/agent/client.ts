@@ -27,6 +27,8 @@ import type {
   ScanResponse,
   WriteConfigRequest,
   WriteConfigResponse,
+  VerifyAuditRequest,
+  VerifyAuditResponse,
 } from './types';
 
 export type AgentStatusResult =
@@ -150,4 +152,10 @@ export async function listAudit(
   request: ListAuditRequest,
 ): Promise<AgentResult<ListAuditResponse>> {
   return callTyped<ListAuditResponse>('agent_list_audit', { request });
+}
+
+export async function verifyAudit(
+  request: VerifyAuditRequest,
+): Promise<AgentResult<VerifyAuditResponse>> {
+  return callTyped<VerifyAuditResponse>('agent_verify_audit', { request });
 }

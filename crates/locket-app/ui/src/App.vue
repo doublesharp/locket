@@ -3,7 +3,6 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 
 import AgentUnavailableBanner from './components/AgentUnavailableBanner.vue';
-import { auditLogRow } from './agent/audit';
 import {
   listAudit,
   listRuntimeSessions,
@@ -12,6 +11,7 @@ import {
   readConfig,
   scan as scanKnownValues,
   writeConfig,
+  verifyAudit,
 } from './agent/client';
 import { runtimeSessionRow } from './agent/runtimeSessions';
 import { secretRow } from './agent/secrets';
@@ -40,6 +40,8 @@ import type {
 import type {
   AgentClientError,
   AgentConfigSettings,
+  AuditChainStatus,
+  AuditWireRow,
   ListAuditRequest,
   ListRuntimeSessionsRequest,
   ListSecretsRequest,
@@ -353,6 +355,7 @@ function triggerVerify(): void {
   void refreshSecrets();
   void refreshRuntimeSessions();
   void refreshAuditActivity();
+  void verifyAuditChain();
 }
 
 const secretsRequest = computed<ListSecretsRequest | null>(() => {
@@ -478,6 +481,7 @@ watch(runtimeSessionRequest, () => {
 });
 
 const auditActivityRequest = computed<ListAuditRequest | null>(() => {
+const auditRequest = computed<ListAuditRequest | null>(() => {
   const projectId = status.value?.project_id;
   if (projectId === null || projectId === undefined) {
     return null;
@@ -488,6 +492,7 @@ const auditActivityRequest = computed<ListAuditRequest | null>(() => {
     action: null,
     status: null,
     limit: 25,
+    limit: 100,
     redact_names: settings.value.privacyRedactNames,
   };
 });
@@ -515,6 +520,58 @@ async function refreshAuditActivity(): Promise<void> {
     auditError.value = null;
     auditLoading.value = false;
     auditLastRefreshed.value = undefined;
+function auditStatusLabel(status: string): AuditLogRow['status'] {
+  switch (status.toUpperCase()) {
+    case 'SUCCESS':
+    case 'OK':
+      return 'OK';
+    case 'DENIED':
+      return 'DENIED';
+    default:
+      return 'FAILED';
+  }
+}
+
+function auditTimestamp(timestampUnixNanos: number): string {
+  return new Date(Math.trunc(timestampUnixNanos / 1_000_000)).toISOString();
+}
+
+function auditRowHmacOk(row: AuditWireRow, chainStatus: AuditChainStatus): boolean {
+  if (chainStatus.hmac_ok !== false || chainStatus.first_break_sequence === null) {
+    return true;
+  }
+  return row.sequence < chainStatus.first_break_sequence;
+}
+
+function auditLogRow(row: AuditWireRow, chainStatus: AuditChainStatus): AuditLogRow {
+  const statusLabel = auditStatusLabel(row.status);
+  const metadata: Record<string, string | number> = {
+    action: row.action,
+    status: row.status,
+  };
+  if (row.command !== null) {
+    metadata.command = row.command;
+  }
+  return {
+    sequence: row.sequence,
+    action: row.action,
+    status: statusLabel,
+    timestamp: auditTimestamp(row.timestamp),
+    profile: row.profile_id ?? undefined,
+    secretName: row.secret_name ?? undefined,
+    metadataJson: JSON.stringify(metadata),
+    denialReason: statusLabel === 'DENIED' ? row.status : undefined,
+    hmacOk: auditRowHmacOk(row, chainStatus),
+  };
+}
+
+let auditRefreshSequence = 0;
+
+async function refreshAuditLog(): Promise<void> {
+  const request = auditRequest.value;
+  const sequence = (auditRefreshSequence += 1);
+  if (request === null) {
+    auditRows.value = [];
     auditChainOk.value = true;
     return;
   }
@@ -558,6 +615,29 @@ const recentActivityRows = computed(() => {
       tone: auditChainOk.value ? 'ok' : 'warn',
     },
   ];
+    auditChainOk.value = result.value.chain_status.hmac_ok !== false;
+    auditRows.value = result.value.rows.map((row) => auditLogRow(row, result.value.chain_status));
+  } else {
+    auditRows.value = [];
+  }
+}
+
+async function verifyAuditChain(): Promise<void> {
+  const request = auditRequest.value;
+  if (request === null) {
+    auditRows.value = [];
+    auditChainOk.value = true;
+    return;
+  }
+  const result = await verifyAudit({ project_id: request.project_id });
+  if (result.ok) {
+    auditChainOk.value = result.value.hmac_ok !== false;
+  }
+  await refreshAuditLog();
+}
+
+watch(auditRequest, () => {
+  void refreshAuditLog();
 });
 
 function scanErrorLabel(error: AgentClientError): string {

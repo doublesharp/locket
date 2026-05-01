@@ -179,7 +179,6 @@ Slices 1+2 shipped (agent client, tray binding, 6 view scaffolds,
   - [ ] **subtask** — desktop-tray-reveal-copy: tray context menu
     actions for the selected secret. Pre-req: `tray-menu-actions`,
     `desktop-reveal-modal`, `desktop-clipboard-copy`. Slice 8.
-  - [~] [52c592db] branch agent-52c592db/desktop-audit-data, worktree .worktrees/agent-52c592db-desktop-audit-data; **subtask** — desktop-audit-data: wire `agent-list-audit` + `agent-verify-audit` into `AuditLog.vue`.
   - [ ] **subtask** — agent-policy-doctor-rpc: RPC exercising
     `lk://` resolution + env-mode expansion. Pre-req:
     `agent-resolve-reference-impl`.

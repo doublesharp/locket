@@ -234,6 +234,8 @@ export interface AgentConfigSettings {
 export interface WriteConfigResponse {
   settings: AgentConfigSettings;
   changed_keys: string[];
+}
+
 export interface ListAuditRequest {
   store_path?: string | null;
   project_id: string;
@@ -266,4 +268,16 @@ export interface AuditWireRow {
 export interface ListAuditResponse {
   rows: AuditWireRow[];
   chain_status: AuditChainStatus;
+}
+
+export interface VerifyAuditRequest {
+  project_id: string;
+}
+
+export interface VerifyAuditResponse {
+  hmac_ok: boolean | null;
+  first_break_sequence: number | null;
+  first_break_reason: string | null;
+  rows_verified: number;
+  locked: boolean;
 }

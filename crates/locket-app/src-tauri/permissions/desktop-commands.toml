@@ -16,6 +16,8 @@ commands.allow = [
   "agent_read_config",
   "agent_write_config",
   "agent_list_audit",
+  "agent_list_audit",
+  "agent_verify_audit",
   "tray_set_state",
 ]
 commands.deny = []

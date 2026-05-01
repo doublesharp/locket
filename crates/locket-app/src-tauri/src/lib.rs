@@ -261,6 +261,11 @@ async fn agent_write_config(
     agent_client::invoke_method(&path, locket_agent::AgentMethod::WriteConfig, &request).await
 }
 
+#[derive(Deserialize)]
+struct DesktopVerifyAuditRequest {
+    project_id: String,
+}
+
 /// Tauri command exposing the agent's metadata-only audit list.
 #[tauri::command]
 async fn agent_list_audit(
@@ -269,6 +274,19 @@ async fn agent_list_audit(
     let request = request.into_agent_request()?;
     let path = agent_client::resolve_socket_path();
     agent_client::invoke_method(&path, locket_agent::AgentMethod::ListAudit, &request).await
+}
+
+/// Tauri command exposing read-only audit chain verification.
+#[tauri::command]
+async fn agent_verify_audit(
+    request: DesktopVerifyAuditRequest,
+) -> Result<locket_agent::VerifyAuditResponse, AgentClientError> {
+    let path = agent_client::resolve_socket_path();
+    let request = locket_agent::VerifyAuditRequest {
+        store_path: default_store_path()?,
+        project_id: request.project_id,
+    };
+    agent_client::invoke_method(&path, locket_agent::AgentMethod::VerifyAudit, &request).await
 }
 
 /// Tauri command pushing a new tray icon state from the webview.
@@ -310,6 +328,7 @@ pub fn run() -> tauri::Result<()> {
             agent_read_config,
             agent_write_config,
             agent_list_audit,
+            agent_verify_audit,
             tray_set_state,
         ])
         .setup(|app| {
