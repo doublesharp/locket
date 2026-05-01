@@ -112,7 +112,7 @@ Scanner ignore behavior:
 - Scanner respects `.gitignore` for repository scans unless `--no-gitignore` is provided.
 - `.locketignore` can suppress paths or patterns for Locket scans.
 - Inline suppression comments are allowed for high-entropy findings only, not known-secret matches.
-- Inline suppression markers are case-sensitive comment fragments anywhere on a line. `locket-allow` (optionally followed by `: <reason>`) suppresses high-entropy findings on the same line. `locket-allow-next-line` (optionally followed by `: <reason>`) suppresses high-entropy findings on the next non-empty line. Provider-token, `.env` file, and known-secret matches always pass through.
+- Inline suppression markers are case-sensitive comment fragments anywhere on a line. The canonical marker family is the `locket-suppress*` directives defined in `scan-redaction.md` (line-level `locket-suppress: <reason>`, block-level `locket-suppress-block-start: <reason>` ... `locket-suppress-block-end`, and file-level `locket-suppress-file: <reason>` within the first five lines). See `scan-redaction.md` lines 80-100 for the full directive grammar, reason-length bounds, and audit semantics. Provider-token, `.env` file, and known-secret matches always pass through.
 - Suppressed findings are recorded as metadata-only `SCAN` audit rows with status `SUPPRESSED` when project context is available. Each row includes path label, line, column, rule id, reason, and scope (`tree` or `staged`); it never includes the matched value.
 
 Scan scope:

@@ -85,9 +85,10 @@ class LocketDiagnostics implements LocketDiagnosticsController {
       this.collection.delete(document.uri);
       return;
     }
-    const diagnostics = locketDiagnosticPlans(document.getText(), this.context).map((plan) =>
-      toDiagnostic(document, plan),
-    );
+    const diagnostics = locketDiagnosticPlans(document.getText(), {
+      ...this.context,
+      languageId: document.languageId,
+    }).map((plan) => toDiagnostic(document, plan));
     this.collection.set(document.uri, diagnostics);
   }
 }

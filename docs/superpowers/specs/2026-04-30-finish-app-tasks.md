@@ -591,6 +591,14 @@ first). Remaining surfaces:
 The terminal autobind modules and unlock-with-passphrase flow are
 live alongside the existing palette commands.)
 
+(`vscode-diagnostics-similar-env-refs` shipped — diagnostics now
+thread VS Code `document.languageId` into the model and cover common
+environment-reference idioms across JS/TS, Python, Rust, Go, Ruby,
+Java/Kotlin, PHP, C/C++, C#, Swift, and shell while preserving the
+Node-style fallback for unknown document types. The integrations
+spec also points scanner suppression wording at the canonical
+`locket-suppress*` directives in `scan-redaction.md`.)
+
 ## Diagnostics, Distribution, and Quality Gates
 
 ### Coverage
