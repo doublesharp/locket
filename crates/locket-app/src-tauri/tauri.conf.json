@@ -29,10 +29,31 @@
     }
   },
   "bundle": {
-    "active": false,
+    "active": true,
     "targets": "all",
+    "category": "DeveloperTool",
+    "shortDescription": "Local-first secrets control plane",
+    "longDescription": "Locket is a local-first secrets control plane for development environments.",
     "icon": [
       "icons/icon.png"
-    ]
+    ],
+    "macOS": {
+      "entitlements": "../../../dist/installers/macos/entitlements.plist",
+      "hardenedRuntime": true,
+      "minimumSystemVersion": "12.0"
+    },
+    "windows": {
+      "wix": {
+        "language": "en-US"
+      }
+    },
+    "linux": {
+      "deb": {
+        "depends": []
+      },
+      "rpm": {
+        "depends": []
+      }
+    }
   }
 }

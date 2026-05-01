@@ -41,6 +41,9 @@ jobs:
       - name: Check supply-chain exception ledger
         run: make supply-chain-exceptions
 
+      - name: Validate distribution package definitions
+        run: make distribution-check
+
       - name: Cargo check workspace
         run: cargo check --workspace --all-targets --all-features --locked
 

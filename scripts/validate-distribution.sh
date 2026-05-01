@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+cd "${repo_root}"
+
+check() {
+  echo "==> $*"
+  "$@"
+}
+
+skip_or_check() {
+  local tool="$1"
+  shift
+  if command -v "${tool}" >/dev/null 2>&1; then
+    check "$@"
+  else
+    echo "skip: ${tool} not on PATH"
+  fi
+}
+
+check bash -n scripts/package-vscode-extension.sh
+check bash -n scripts/package-native-installers.sh
+check bash -n scripts/render-homebrew-formula.sh
+check bash -n tools/vsix-sign.sh
+
+check node -e '
+const fs = require("fs");
+for (const file of [
+  "dist/installers/package-matrix.json",
+  "dist/keys/locket-release-quorum-v1.json",
+  "crates/locket-app/src-tauri/tauri.conf.json",
+  "extensions/vscode/package.json"
+]) {
+  JSON.parse(fs.readFileSync(file, "utf8"));
+}
+const matrix = JSON.parse(fs.readFileSync("dist/installers/package-matrix.json", "utf8"));
+const required = new Set(["homebrew-formula", "cargo-install", "macos-pkg", "windows-msi", "linux-deb", "linux-rpm", "vscode-vsix"]);
+for (const target of matrix.targets || []) required.delete(target.id);
+if (required.size) throw new Error(`missing package targets: ${[...required].join(", ")}`);
+const tauri = JSON.parse(fs.readFileSync("crates/locket-app/src-tauri/tauri.conf.json", "utf8"));
+if (!tauri.bundle || tauri.bundle.active !== true) throw new Error("Tauri bundle.active must be true");
+const vsix = JSON.parse(fs.readFileSync("extensions/vscode/package.json", "utf8"));
+if (vsix.private !== false) throw new Error("VSIX package must be publishable: private=false");
+if (!vsix.publisher || !vsix.repository) throw new Error("VSIX package metadata is incomplete");
+'
+
+skip_or_check ruby ruby -c dist/homebrew/locket.rb
+skip_or_check ruby ruby -c dist/homebrew/locket.rb.in
+check scripts/render-homebrew-formula.sh --version 0.1.0 --url https://github.com/doublesharp/locket/releases/download/v0.1.0/locket-0.1.0-src.tar.gz --sha256 1111111111111111111111111111111111111111111111111111111111111111 --out target/package/homebrew/locket.rb
+skip_or_check plutil plutil -lint dist/installers/macos/entitlements.plist
+skip_or_check xmllint xmllint --noout dist/installers/macos/distribution.xml
+skip_or_check actionlint actionlint .github/workflows/ci.yml .github/workflows/release.yml .github/workflows/fuzz-nightly.yml
+
+check scripts/package-native-installers.sh --target all --dry-run
+
+if command -v cargo >/dev/null 2>&1; then
+  echo "==> cargo metadata --no-deps --locked --format-version 1"
+  cargo metadata --no-deps --locked --format-version 1 >/dev/null
+  if [[ "${LOCKET_VALIDATE_CARGO_PACKAGE:-0}" == "1" ]]; then
+    check cargo package -p locket-cli --locked --allow-dirty --list
+  else
+    echo "skip: set LOCKET_VALIDATE_CARGO_PACKAGE=1 to run cargo package --list"
+  fi
+else
+  echo "skip: cargo not on PATH"
+fi
+
+if command -v pnpm >/dev/null 2>&1; then
+  if [[ -d extensions/vscode/node_modules ]]; then
+    check pnpm --dir extensions/vscode exec vsce ls --no-dependencies
+  else
+    echo "skip: extensions/vscode/node_modules missing; run pnpm --dir extensions/vscode install --frozen-lockfile for VSIX packaging checks"
+  fi
+else
+  echo "skip: pnpm not on PATH"
+fi
+
+echo "validate-distribution.sh: done"

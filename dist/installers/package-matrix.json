@@ -1,0 +1,187 @@
+{
+  "schema_version": 1,
+  "product": "Locket",
+  "version_source": "workspace.package.version",
+  "artifact_root": "target/package",
+  "targets": [
+    {
+      "id": "homebrew-formula",
+      "platform": "macos-linux",
+      "format": "homebrew-formula",
+      "builder": "scripts/render-homebrew-formula.sh --version <version> --url <signed-source-url> --sha256 <sha256>",
+      "dry_run": "scripts/render-homebrew-formula.sh --version 0.1.0 --url https://github.com/doublesharp/locket/releases/download/v0.1.0/locket-0.1.0-src.tar.gz --sha256 <64 lowercase hex>",
+      "unsigned_inputs": [
+        "dist/homebrew/locket.rb.in"
+      ],
+      "signed_outputs": [
+        "target/package/homebrew/locket.rb"
+      ],
+      "required_tools": [
+        "ruby",
+        "brew"
+      ],
+      "signing_inputs": [
+        "signed source tarball URL",
+        "signed source tarball SHA256"
+      ],
+      "verification": [
+        "ruby -c <formula>",
+        "brew audit --strict --new-formula <formula>"
+      ]
+    },
+    {
+      "id": "cargo-install",
+      "platform": "all",
+      "format": "crates.io",
+      "builder": "cargo publish -p locket-cli --locked",
+      "dry_run": "cargo publish -p locket-cli --locked --dry-run",
+      "unsigned_inputs": [
+        "crates/locket-cli/Cargo.toml",
+        "Cargo.lock"
+      ],
+      "signed_outputs": [
+        "crates.io locket-cli <version>"
+      ],
+      "required_tools": [
+        "cargo"
+      ],
+      "signing_inputs": [
+        "CARGO_REGISTRY_TOKEN",
+        "signed release tag"
+      ],
+      "verification": [
+        "cargo package -p locket-cli --locked --list",
+        "cargo install locket-cli --locked --version <version>"
+      ]
+    },
+    {
+      "id": "macos-pkg",
+      "platform": "macos",
+      "format": "pkg",
+      "builder": "scripts/package-native-installers.sh --target macos-pkg",
+      "dry_run": "scripts/package-native-installers.sh --target macos-pkg --dry-run",
+      "unsigned_inputs": [
+        "target/release/bundle/macos/Locket.app"
+      ],
+      "signed_outputs": [
+        "target/package/installers/macos/Locket-<version>-<arch>.pkg"
+      ],
+      "required_tools": [
+        "cargo-tauri",
+        "pkgbuild",
+        "productbuild",
+        "xcrun"
+      ],
+      "signing_inputs": [
+        "APPLE_DEVELOPER_ID_INSTALLER",
+        "APPLE_ID",
+        "APPLE_APP_SPECIFIC_PASSWORD",
+        "APPLE_TEAM_ID"
+      ],
+      "verification": [
+        "pkgutil --check-signature <pkg>",
+        "spctl -a -vv -t install <pkg>",
+        "xcrun stapler validate <pkg>"
+      ]
+    },
+    {
+      "id": "windows-msi",
+      "platform": "windows",
+      "format": "msi",
+      "builder": "scripts/package-native-installers.sh --target windows-msi",
+      "dry_run": "scripts/package-native-installers.sh --target windows-msi --dry-run",
+      "unsigned_inputs": [
+        "target/release/bundle/msi/Locket_<version>_<arch>_en-US.msi"
+      ],
+      "signed_outputs": [
+        "target/package/installers/windows/Locket-<version>-<arch>.msi"
+      ],
+      "required_tools": [
+        "cargo-tauri",
+        "signtool"
+      ],
+      "signing_inputs": [
+        "WINDOWS_EV_CERT_SHA1",
+        "WINDOWS_TIMESTAMP_URL"
+      ],
+      "verification": [
+        "signtool verify /pa /v <msi>"
+      ]
+    },
+    {
+      "id": "linux-deb",
+      "platform": "linux",
+      "format": "deb",
+      "builder": "scripts/package-native-installers.sh --target linux-deb",
+      "dry_run": "scripts/package-native-installers.sh --target linux-deb --dry-run",
+      "unsigned_inputs": [
+        "target/release/bundle/deb/locket_<version>_<arch>.deb"
+      ],
+      "signed_outputs": [
+        "target/package/installers/linux/locket_<version>_<arch>.deb"
+      ],
+      "required_tools": [
+        "cargo-tauri",
+        "debsign"
+      ],
+      "signing_inputs": [
+        "LOCKET_DEB_GPG_KEY"
+      ],
+      "verification": [
+        "dpkg-deb --info <deb>",
+        "debsig-verify <deb>"
+      ]
+    },
+    {
+      "id": "linux-rpm",
+      "platform": "linux",
+      "format": "rpm",
+      "builder": "scripts/package-native-installers.sh --target linux-rpm",
+      "dry_run": "scripts/package-native-installers.sh --target linux-rpm --dry-run",
+      "unsigned_inputs": [
+        "target/release/bundle/rpm/locket-<version>-1.<arch>.rpm"
+      ],
+      "signed_outputs": [
+        "target/package/installers/linux/locket-<version>-1.<arch>.rpm"
+      ],
+      "required_tools": [
+        "cargo-tauri",
+        "rpmsign"
+      ],
+      "signing_inputs": [
+        "LOCKET_RPM_GPG_NAME"
+      ],
+      "verification": [
+        "rpm --checksig <rpm>"
+      ]
+    },
+    {
+      "id": "vscode-vsix",
+      "platform": "all",
+      "format": "vsix",
+      "builder": "scripts/package-vscode-extension.sh",
+      "signed_builder": "scripts/package-vscode-extension.sh --sign <key-id>",
+      "dry_run": "scripts/validate-distribution.sh",
+      "unsigned_inputs": [
+        "target/package/vscode/locket-<version>.vsix"
+      ],
+      "signed_outputs": [
+        "target/package/vscode/locket-<version>.signed.vsix",
+        "target/package/vscode/locket-<version>.signed.vsix.sig"
+      ],
+      "required_tools": [
+        "pnpm",
+        "node",
+        "vsce",
+        "minisign"
+      ],
+      "signing_inputs": [
+        "LOCKET_MINISIGN_SECRET_KEY",
+        "LOCKET_RELEASE_KEY_ID"
+      ],
+      "verification": [
+        "minisign -V -p dist/keys/<key-id>.pub -m <vsix> -x <vsix>.sig"
+      ]
+    }
+  ]
+}

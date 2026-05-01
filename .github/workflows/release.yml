@@ -55,6 +55,9 @@ jobs:
           cargo install cargo-auditable --locked
           cargo install cargo-audit --locked
 
+      - name: Validate package manifests and signing inputs
+        run: make distribution-check
+
       - name: Build auditable binaries
         run: make release-auditable
 
@@ -65,6 +68,8 @@ jobs:
           path: |
             target/release/locket
             target/release/locket-desktop
+            dist/installers/package-matrix.json
+            dist/homebrew/locket.rb.in
           if-no-files-found: error
 
       - name: Attest release binaries
@@ -73,4 +78,3 @@ jobs:
           subject-path: |
             target/release/locket
             target/release/locket-desktop
-

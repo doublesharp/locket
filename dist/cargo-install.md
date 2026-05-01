@@ -98,3 +98,22 @@ Known dry-run constraints:
   `release-key-offline` plan covers the publication ordering.
 - Build-time `unused_crate_dependencies` warnings are surfaced as warnings,
   not errors, by `cargo publish` and do not block the dry-run.
+
+## Repository-side readiness check
+
+The local package gate verifies the cargo-install path without uploading:
+
+```sh
+scripts/validate-distribution.sh
+```
+
+By default this checks Cargo metadata and the release package manifest. Set
+`LOCKET_VALIDATE_CARGO_PACKAGE=1` to additionally run:
+
+```sh
+cargo package -p locket-cli --locked --allow-dirty --list
+```
+
+The actual crates.io publish remains an operator step because it requires a
+`CARGO_REGISTRY_TOKEN`, signed release tag, and the internal `locket-*` crate
+publication order to be complete.

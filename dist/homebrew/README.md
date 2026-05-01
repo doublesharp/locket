@@ -19,6 +19,26 @@ While the draft is in this directory:
 - The `sha256` and `url` fields contain placeholders; do not publish the
   formula in this state.
 
+The publishable formula is generated from `dist/homebrew/locket.rb.in` using
+the signed source-tarball URL and SHA-256 recorded by the release ceremony:
+
+```sh
+scripts/render-homebrew-formula.sh \
+  --version 0.1.0 \
+  --url https://github.com/doublesharp/locket/releases/download/v0.1.0/locket-0.1.0-src.tar.gz \
+  --sha256 <64 lowercase hex>
+```
+
+The unified package gate also renders a syntax-checked formula into
+`target/package/homebrew/locket.rb`:
+
+```sh
+scripts/validate-distribution.sh
+```
+
+Set `LOCKET_HOMEBREW_AUDIT=1` when rendering on a host with Homebrew to run
+`brew audit --strict --new-formula` on the generated formula.
+
 ## Intended tap path
 
 Once `release-key-offline` ships, the formula will live at:
@@ -35,8 +55,8 @@ Once `release-key-offline` ships, the formula will live at:
 2. The release pipeline publishes a signed source tarball as a GitHub
    release asset and records its SHA256.
 3. A formula-update job copies `dist/homebrew/locket.rb` from the source
-   tree, replaces the version, the placeholder `sha256`, and the placeholder
-   `url` with the signed-asset values, and opens a pull request against the
+   tree, renders `dist/homebrew/locket.rb.in` with the version, `sha256`,
+   and signed source-tarball URL, and opens a pull request against the
    `doublesharp/homebrew-locket` tap repository.
 4. The tap PR runs `brew audit --strict --new-formula` and the formula's
    `test do` block in CI before merging.

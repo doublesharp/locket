@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<installer-gui-script minSpecVersion="1">
+  <title>Locket</title>
+  <options customize="never" require-scripts="false"/>
+  <domains enable_anywhere="false" enable_currentUserHome="false" enable_localSystem="true"/>
+  <pkg-ref id="app.locket.desktop.pkg"/>
+  <choices-outline>
+    <line choice="default">
+      <line choice="app.locket.desktop.pkg"/>
+    </line>
+  </choices-outline>
+  <choice id="default"/>
+  <choice id="app.locket.desktop.pkg" visible="false">
+    <pkg-ref id="app.locket.desktop.pkg"/>
+  </choice>
+  <pkg-ref id="app.locket.desktop.pkg" version="__LOCKET_VERSION__" auth="Root">locket-component.pkg</pkg-ref>
+</installer-gui-script>

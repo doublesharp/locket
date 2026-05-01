@@ -312,18 +312,32 @@ exist. Remaining: auditable builds and signing.
 ### Package builders and signing
 Spec ref: `docs/specs/operations.md:27-53`.
 
-- [~] (in-flight: feature/distribution-package-final) **homebrew-formula-publish**: publish the shipped
-  `dist/homebrew/locket.rb` formula to a tap (e.g.
-  `doublesharp/homebrew-locket`); verify binary against release
-  manifest signature.
-- [~] (in-flight: feature/distribution-package-final) **cargo-install-publish**: `crates.io` publish run for
-  `locket-cli`. Manifest is now publishable (`dist/cargo-install.md`
-  has the dry-run notes); run with the signed-tag flow.
-- [~] (in-flight: feature/distribution-package-final) **macos-pkg-signed**: signed `.pkg` with notarization.
-- [~] (in-flight: feature/distribution-package-final) **windows-msi-signed**: signed `.msi` with EV cert.
-- [~] (in-flight: feature/distribution-package-final) **linux-deb-rpm**: signed `.deb` and `.rpm` where toolchain
-  is practical.
-- [~] (in-flight: feature/distribution-package-final) **vsix-signed**: signed VS Code VSIX direct download path.
+- [x] **package-dry-run-manifests**: repository-side package manifests,
+  validators, signing-input contracts, and CI hooks now cover Homebrew,
+  cargo install / crates.io, signed VSIX, macOS pkg, Windows MSI, and
+  Linux deb/rpm. Local readiness command: `make distribution-check`.
+- [ ] **homebrew-tap-publish-operator**: with signed source tarball URL
+  and SHA-256, run `scripts/render-homebrew-formula.sh`, run
+  `LOCKET_HOMEBREW_AUDIT=1`, and open the tap PR using tap credentials.
+- [ ] **cargo-install-publish-operator**: after internal `locket-*`
+  crates are published or reserved, run `cargo publish --dry-run -p
+  locket-cli --locked` and the real publish with `CARGO_REGISTRY_TOKEN`
+  from the signed release tag.
+- [ ] **macos-pkg-sign-notarize-operator**: run
+  `scripts/package-native-installers.sh --target macos-pkg` on the
+  release macOS signer with Developer ID Installer and notarization
+  credentials.
+- [ ] **windows-msi-sign-operator**: run
+  `scripts/package-native-installers.sh --target windows-msi` on the
+  release Windows signer with the EV certificate available to `signtool`.
+- [ ] **linux-deb-rpm-sign-operator**: run
+  `scripts/package-native-installers.sh --target linux-deb` and
+  `--target linux-rpm` with the release GPG keys, then publish through
+  the package repository operator path.
+- [ ] **vsix-release-sign-operator**: run
+  `scripts/package-vscode-extension.sh --sign <key-id>` on the offline
+  signing host with `LOCKET_MINISIGN_SECRET_KEY`; verify the detached
+  signature against `dist/keys/<key-id>.pub` before upload.
 
 ### Cold-start budgets
 Spec ref: `docs/specs/performance.md`. Each subtask adds one

@@ -3,7 +3,7 @@
   "displayName": "Locket",
   "description": "Local-first secrets management for Visual Studio Code, backed by the Locket agent.",
   "version": "0.0.0-dev",
-  "private": true,
+  "private": false,
   "license": "Apache-2.0 OR MIT",
   "publisher": "locket",
   "repository": {
