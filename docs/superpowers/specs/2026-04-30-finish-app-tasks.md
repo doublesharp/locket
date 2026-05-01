@@ -78,7 +78,7 @@ ship. Each bullet has spec ref + code ref + suggested touches.
 
 ### C. CLI / runtime / agent
 
-- [~] (in-flight: feature/agent-windows-transport) **agent-windows-named-pipe-transport**: finish the remaining hard
+- [~] (in-flight: feature/windows-transport-final) **agent-windows-named-pipe-transport**: finish the remaining hard
   transport work after `agent-windows-named-pipe-sid-path-partial`.
   The partial shipped shared SID-based pipe path helpers, protected
   current-user DACL SDDL generation, Windows diagnostics, and CLI path
@@ -92,28 +92,28 @@ ship. Each bullet has spec ref + code ref + suggested touches.
   integration coverage.
 ### D. Desktop / integrations / scan
 
-- [ ] **agent-export-bundle-audit-chain**: agent `ExportBundle`
+- [~] (in-flight: feature/agent-bundle-import-recovery) **agent-export-bundle-audit-chain**: agent `ExportBundle`
   now writes sealed bundles for selected profile scope using unlock
   audit context, recipient descriptor validation, encrypted blobs,
   profile keys, export audit metadata, and metadata-only response.
   Remaining export parity: support `include_audit=true` by extracting
   CLI sealed audit-chain encryption into shared bundle helpers instead
   of returning the current typed `PolicyValidationIncomplete` error.
-- [ ] **agent-export-bundle-command-policies**: agent `ExportBundle`
+- [~] (in-flight: feature/agent-bundle-import-recovery) **agent-export-bundle-command-policies**: agent `ExportBundle`
   currently exports store-backed profiles/secrets/versions/blobs/profile
   keys only. Add a shared policy-document/snapshot source so command
   policies are included in the sealed payload without depending on CLI
   `RuntimeContext`.
-- [~] (in-flight: feature/desktop-agent-core-final) **agent-import-bundle-core**: `ImportBundle` reaches the typed
+- [~] (in-flight: feature/agent-bundle-import-recovery) **agent-import-bundle-core**: `ImportBundle` reaches the typed
   agent path, validates unlock state and input path, then returns
   `not-implemented`. Extract/apply the bundle import core in the
   agent with conflict policies (`review`, `accept-incoming`,
   `accept-local`) and local audit writes.
-- [~] (in-flight: feature/desktop-agent-core-final) **agent-recovery-rotate-core**: `RecoveryRotate` reaches the
+- [~] (in-flight: feature/agent-bundle-import-recovery) **agent-recovery-rotate-core**: `RecoveryRotate` reaches the
   typed agent path and enforces one-time-display acknowledgement, but
   still lacks fresh platform/current-code verification and recovery
   envelope rewrite from `vault/recovery.rs`.
-- [~] (in-flight: feature/desktop-agent-core-final) **secret-row-cross-reference-deprecation**: `desktop.md:34`
+- [~] (in-flight: feature/desktop-polish-final) **secret-row-cross-reference-deprecation**: `desktop.md:34`
   requires secret rows to surface version-level deprecation warnings
   when current policy/command-preview/`lk://...@vN` reference
   depends on a deprecated version with active or expired grace.
@@ -121,7 +121,7 @@ ship. Each bullet has spec ref + code ref + suggested touches.
   badge from row's own state.
 ### E. Quality / ops / build
 
-- [ ] **canary-packaged-os-follow-up**: remaining canary surfaces that
+- [~] (in-flight: feature/os-validation-final) **canary-packaged-os-follow-up**: remaining canary surfaces that
   genuinely require OS/manual packaging jobs: signed desktop webview
   smoke, OS clipboard/tray integration on each target, packaged VSIX
   execution, and full recovery restore e2e with artifact scanning.
@@ -243,11 +243,11 @@ Spec ref: `docs/specs/crypto.md:192-218`,
 `LAContext` wrapper shipped. Linux Secret Service and Windows Hello
 backends are wired behind target cfgs.
 
-- [ ] **lauthn-linux-fido2-fallback**: add and validate the
+- [~] (in-flight: feature/os-validation-final) **lauthn-linux-fido2-fallback**: add and validate the
   `libfido2-sys` hardware-key user-presence fallback on a Linux host
   with a physical security key. The Secret Service backend is wired;
   this remains the headless/security-key fallback path.
-- [ ] **lauthn-real-host-validation**: exercise Linux Secret Service on
+- [~] (in-flight: feature/os-validation-final) **lauthn-real-host-validation**: exercise Linux Secret Service on
   locked/unlocked desktop sessions and Windows Hello
   `UserConsentVerifier` on an enrolled Windows host. macOS cannot
   locally execute those OS prompt APIs.
@@ -270,7 +270,7 @@ flows.
 ### Tray / status panel
 Spec ref: `docs/specs/desktop.md:65-108`.
 
-- [~] (in-flight: feature/desktop-agent-core-final) **tray-panel-spec-deep-audit**: re-read
+- [~] (in-flight: feature/desktop-polish-final) **tray-panel-spec-deep-audit**: re-read
   `docs/specs/desktop.md:65-108` against `crates/locket-app/`
   and enumerate any unmet tray-panel requirements as concrete
   subtasks. The lighter sweep on 2026-04-30 returned clean; a deep
@@ -323,25 +323,25 @@ exist. Remaining: auditable builds and signing.
 ### Package builders and signing
 Spec ref: `docs/specs/operations.md:27-53`.
 
-- [ ] **homebrew-tap-publish-operator**: with signed source tarball URL
+- [~] (in-flight: feature/release-operator-final) **homebrew-tap-publish-operator**: with signed source tarball URL
   and SHA-256, run `scripts/render-homebrew-formula.sh`, run
   `LOCKET_HOMEBREW_AUDIT=1`, and open the tap PR using tap credentials.
-- [ ] **cargo-install-publish-operator**: after internal `locket-*`
+- [~] (in-flight: feature/release-operator-final) **cargo-install-publish-operator**: after internal `locket-*`
   crates are published or reserved, run `cargo publish --dry-run -p
   locket-cli --locked` and the real publish with `CARGO_REGISTRY_TOKEN`
   from the signed release tag.
-- [ ] **macos-pkg-sign-notarize-operator**: run
+- [~] (in-flight: feature/release-operator-final) **macos-pkg-sign-notarize-operator**: run
   `scripts/package-native-installers.sh --target macos-pkg` on the
   release macOS signer with Developer ID Installer and notarization
   credentials.
-- [ ] **windows-msi-sign-operator**: run
+- [~] (in-flight: feature/release-operator-final) **windows-msi-sign-operator**: run
   `scripts/package-native-installers.sh --target windows-msi` on the
   release Windows signer with the EV certificate available to `signtool`.
-- [ ] **linux-deb-rpm-sign-operator**: run
+- [~] (in-flight: feature/release-operator-final) **linux-deb-rpm-sign-operator**: run
   `scripts/package-native-installers.sh --target linux-deb` and
   `--target linux-rpm` with the release GPG keys, then publish through
   the package repository operator path.
-- [ ] **vsix-release-sign-operator**: run
+- [~] (in-flight: feature/release-operator-final) **vsix-release-sign-operator**: run
   `scripts/package-vscode-extension.sh --sign <key-id>` on the offline
   signing host with `LOCKET_MINISIGN_SECRET_KEY`; verify the detached
   signature against `dist/keys/<key-id>.pub` before upload.
