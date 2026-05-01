@@ -65,11 +65,19 @@ fn allow_and_deny_manage_profile_scoped_directory_grants() -> Result<(), Box<dyn
     let deny_all_output = String::from_utf8(deny_all_output)?;
     assert!(deny_all_output.contains("directory grants revoked: 1"));
     assert!(!deny_all_output.contains("postgres://localhost/app"));
-    let remaining: u32 =
+    // Soft-revoke: row survives with revoked_at set, so no active grants
+    // remain but the audit-bound row stays.
+    let active_remaining: u32 = store.connection().query_row(
+        "SELECT COUNT(*) FROM directory_grants WHERE revoked_at IS NULL",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(active_remaining, 0);
+    let total_rows: u32 =
         store
             .connection()
             .query_row("SELECT COUNT(*) FROM directory_grants", [], |row| row.get(0))?;
-    assert_eq!(remaining, 0);
+    assert_eq!(total_rows, 1);
     Ok(())
 }
 
@@ -202,6 +210,10 @@ fn deny_writes_deny_directory_audit_row_with_prior_grant() -> Result<(), Box<dyn
     assert!(metadata.contains("\"status\":\"SUCCESS\""));
     assert!(metadata.contains("\"grant_scope\":\"project-root\""));
     assert!(metadata.contains("\"prior_grant\":{"));
+    // Soft-revoke records granted_by from the prior row and the new
+    // revoked_at timestamp.
+    assert!(metadata.contains("\"granted_by\":"));
+    assert!(metadata.contains("\"revoked_at\":"));
     assert!(metadata.contains("\"result_state\":\"removed\""));
 
     // Deny again with no grant present records absent state and null prior_grant.
@@ -212,7 +224,10 @@ fn deny_writes_deny_directory_audit_row_with_prior_grant() -> Result<(), Box<dyn
         |row| row.get(0),
     )?;
     assert!(metadata2.contains("\"result_state\":\"absent\""));
-    assert!(metadata2.contains("\"prior_grant\":null"));
+    // After a soft-revoke, the prior row is still present in the table
+    // (revoked_at IS NOT NULL). get_directory_grant_any_state surfaces it
+    // so re-deny audit still records prior_grant for forensics.
+    assert!(metadata2.contains("\"prior_grant\":{"));
     Ok(())
 }
 
@@ -253,12 +268,15 @@ fn deny_all_writes_deny_directory_audit_row_with_revoked_count()
     assert_eq!(metadata["grant_scope"], "all");
     assert_eq!(metadata["revoked_count"], 2);
     assert_eq!(metadata["result_state"], "all");
+    assert!(metadata["revoked_at"].is_i64());
     assert!(!metadata.to_string().contains("postgres://localhost/app"));
-    let remaining: u32 =
-        store
-            .connection()
-            .query_row("SELECT COUNT(*) FROM directory_grants", [], |row| row.get(0))?;
-    assert_eq!(remaining, 0);
+    // Soft-revoke leaves both rows with revoked_at set.
+    let active_remaining: u32 = store.connection().query_row(
+        "SELECT COUNT(*) FROM directory_grants WHERE revoked_at IS NULL",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(active_remaining, 0);
     Ok(())
 }
 
@@ -416,11 +434,14 @@ fn untrust_root_requires_hash_confirmation_and_revokes_directory_grants()
     )?;
     let untrust_output = String::from_utf8(untrust_output)?;
     assert!(untrust_output.contains("directory_grants_revoked: 1"));
-    let remaining_grants: u32 =
-        store
-            .connection()
-            .query_row("SELECT COUNT(*) FROM directory_grants", [], |row| row.get(0))?;
-    assert_eq!(remaining_grants, 0);
+    // Soft-revoke: row stays so audit chain references stay valid; only
+    // active grants drop to zero.
+    let active_remaining: u32 = store.connection().query_row(
+        "SELECT COUNT(*) FROM directory_grants WHERE revoked_at IS NULL",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(active_remaining, 0);
     Ok(())
 }
 
