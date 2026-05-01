@@ -17,6 +17,19 @@ pub enum LockState {
     Unknown,
 }
 
+/// Metadata-only health summary for recent audit writes/verification.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RecentAuditStatus {
+    /// No recent audit signal is available for the compact status surface.
+    #[default]
+    Unknown,
+    /// Recent audit activity is healthy.
+    Ok,
+    /// Recent audit activity needs user attention.
+    Warning,
+}
+
 /// Metadata-only status payload shared by `Status` and status events.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct StatusPayload {
@@ -33,6 +46,18 @@ pub struct StatusPayload {
     /// Remaining unlock TTL, in whole seconds, when an unlock cache
     /// entry is live. `None` when the agent is locked.
     pub unlock_ttl_seconds: Option<u64>,
+    /// Count of running runtime sessions.
+    #[serde(default)]
+    pub running_session_count: u32,
+    /// Count of unresolved scan warnings from the most recent scan signal.
+    #[serde(default)]
+    pub scan_warning_count: u32,
+    /// Recent audit health summary, metadata-only.
+    #[serde(default)]
+    pub recent_audit_status: RecentAuditStatus,
+    /// Count of active warnings for expiring or expired pinned references.
+    #[serde(default)]
+    pub pinned_reference_warning_count: u32,
 }
 
 impl StatusPayload {
@@ -46,6 +71,10 @@ impl StatusPayload {
             live_grant_count: 0,
             agent_version: agent_version.into(),
             unlock_ttl_seconds: None,
+            running_session_count: 0,
+            scan_warning_count: 0,
+            recent_audit_status: RecentAuditStatus::Unknown,
+            pinned_reference_warning_count: 0,
         }
     }
 }

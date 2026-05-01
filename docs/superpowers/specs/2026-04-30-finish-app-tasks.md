@@ -179,19 +179,24 @@ Windows named-pipe/SID transport remains tracked below.)
 
 ### D. Desktop / integrations / scan
 
-- [~] (in-flight: Codex status/tray worker) **status-payload-tray-fields**: `desktop.md:69-78` requires
+- [x] **status-payload-tray-fields**: `desktop.md:69-78` requires
   the tray panel to surface running session count, recent
   scan-warning count, recent audit status, active expiring/expired
   pinned-reference warning count. `agent/status.rs:22-36` carries
   none of those. Touches: extend `StatusPayload` + `StatusHub`
   publish path, recompute on relevant audit/scan/runtime-session
   writes, render in tray tooltip.
-- [~] (in-flight: Codex status/tray worker) **scan-warning-tray-state-producer**: tray icon-state machine
+- [x] **scan-warning-tray-state-producer**: tray icon-state machine
   has `ScanWarning` variant with PNG assets (`tray.rs:373,383,393`)
   but `deriveTrayState` in `useTray.ts:35-58` never returns
   `'scan-warning'`. Spec (`desktop.md:105`) ties this icon to "one
   or more unresolved scan warnings". Pre-req:
   `status-payload-tray-fields` for `scan_warning_count`.
+(Shipped in this branch: agent status now includes tray-safe running
+session, scan warning, audit, and pinned-reference warning fields;
+scan success updates unresolved warning count and publishes status;
+Rust and Vue tray state producers return `scan-warning` when unresolved
+scan warnings exist, with tooltip count coverage.)
 - [ ] **backup-recovery-view-not-wired**: `BackupRecovery.vue`
   renders forms for export/import/verify/recovery-rotate but
   `@action` events all funnel into `App.vue:1212-1214`'s

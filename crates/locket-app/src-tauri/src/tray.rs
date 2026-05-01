@@ -349,11 +349,29 @@ pub fn tooltip_for(state: TrayIconState) -> &'static str {
 /// Pure mapping from agent status metadata to the generic tray state.
 #[must_use]
 pub const fn tray_state_for_status(status: &StatusPayload) -> TrayIconState {
+    if status.scan_warning_count > 0 {
+        return TrayIconState::ScanWarning;
+    }
     match status.lock_state {
         LockState::Unlocked => TrayIconState::AgentUnlocked,
         LockState::Locked => TrayIconState::AgentLocked,
         LockState::Unknown => TrayIconState::ErrorDegraded,
     }
+}
+
+/// Metadata-only tooltip for a status-derived tray update.
+#[must_use]
+pub fn tooltip_for_status(status: &StatusPayload) -> String {
+    let state = tray_state_for_status(status);
+    format!(
+        "{}; running sessions: {}; scan warnings: {}; audit: {:?}; pinned reference warnings: {}",
+        tooltip_for(state),
+        status.running_session_count,
+        status.scan_warning_count,
+        status.recent_audit_status,
+        status.pinned_reference_warning_count
+    )
+    .to_lowercase()
 }
 
 /// Pure mapping from a stream event to a tray state update.
@@ -584,14 +602,14 @@ fn start_tray_status_subscription<R: Runtime>(app: AppHandle<R>) {
         let cancel = crate::agent_client::CancelToken::new();
         let mut last_delay: Option<std::time::Duration> = None;
         loop {
-            let (sender, mut receiver) = tokio::sync::mpsc::channel(16);
+            let (sender, mut receiver) = tokio::sync::mpsc::channel::<StatusEvent>(16);
             let updater_app = app.clone();
             let updater = tauri::async_runtime::spawn(async move {
                 while let Some(event) = receiver.recv().await {
-                    let Some(state) = tray_state_for_status_event(&event) else {
+                    if !event.is_state_change() {
                         continue;
-                    };
-                    let _ = update_tray_state(&updater_app, state);
+                    }
+                    let _ = update_tray_status(&updater_app, &event.status);
                 }
             });
             let result =
@@ -610,6 +628,18 @@ fn start_tray_status_subscription<R: Runtime>(app: AppHandle<R>) {
             tokio::time::sleep(delay).await;
         }
     });
+}
+
+fn update_tray_status<R: Runtime>(app: &AppHandle<R>, status: &StatusPayload) -> tauri::Result<()> {
+    let Some(tray) = app.tray_by_id(LOCKET_TRAY_ID) else {
+        return Ok(());
+    };
+    let state = tray_state_for_status(status);
+    let bytes = platform_icon_bytes(app, state);
+    let image = Image::from_bytes(bytes)?;
+    tray.set_icon(Some(image))?;
+    tray.set_tooltip(Some(&tooltip_for_status(status)))?;
+    Ok(())
 }
 
 /// Update the registered tray icon to reflect a new `TrayIconState`.
@@ -644,9 +674,10 @@ pub fn update_tray_state<R: Runtime>(
 mod tests {
     use super::{
         TrayMenuAction, TrayMenuSideEffect, TraySelectionState, TrayState, dark_bytes,
-        icon_bytes_for, light_bytes, macos_bytes, tooltip_for, tray_menu_action_enablement,
-        tray_menu_action_for_id, tray_menu_action_side_effect, tray_menu_action_view,
-        tray_menu_actions, tray_state_for_status, tray_state_for_status_event,
+        icon_bytes_for, light_bytes, macos_bytes, tooltip_for, tooltip_for_status,
+        tray_menu_action_enablement, tray_menu_action_for_id, tray_menu_action_side_effect,
+        tray_menu_action_view, tray_menu_actions, tray_state_for_status,
+        tray_state_for_status_event,
     };
     use locket_agent::{LockState, StatusEvent, StatusPayload};
     use locket_app::{TrayIconState, tray_icon_states};
@@ -870,6 +901,22 @@ mod tests {
 
         status.lock_state = LockState::Unknown;
         assert_eq!(tray_state_for_status(&status), TrayIconState::ErrorDegraded);
+    }
+
+    #[test]
+    fn status_payload_scan_warnings_take_tray_precedence_and_tooltip_counts() {
+        let mut status = StatusPayload::locked("test-version");
+        status.lock_state = LockState::Unlocked;
+        status.running_session_count = 2;
+        status.scan_warning_count = 3;
+        status.pinned_reference_warning_count = 1;
+
+        assert_eq!(tray_state_for_status(&status), TrayIconState::ScanWarning);
+        let tooltip = tooltip_for_status(&status);
+        assert!(tooltip.contains("scan warning"));
+        assert!(tooltip.contains("running sessions: 2"));
+        assert!(tooltip.contains("scan warnings: 3"));
+        assert!(tooltip.contains("pinned reference warnings: 1"));
     }
 
     #[test]

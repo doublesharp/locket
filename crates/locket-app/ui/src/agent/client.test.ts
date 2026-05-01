@@ -25,6 +25,10 @@ function makeEvent(kind: 'status' | 'heartbeat', sequence: number): AgentStatusE
     live_grant_count: 0,
     agent_version: '0.0.0-test',
     unlock_ttl_seconds: null,
+    running_session_count: 0,
+    scan_warning_count: 0,
+    recent_audit_status: 'unknown',
+    pinned_reference_warning_count: 0,
   };
 }
 

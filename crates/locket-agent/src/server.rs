@@ -31,7 +31,7 @@ use crate::method::AgentMethod;
 use crate::session_lock::{
     SessionLockAudit, SessionLockOutcome, SessionLockSource, append_lock_audit,
 };
-use crate::status::{LockState, StatusPayload};
+use crate::status::{LockState, RecentAuditStatus, StatusPayload};
 use crate::status_stream::StatusHub;
 
 #[cfg(test)]
@@ -256,6 +256,9 @@ pub struct AgentSocketState {
     pub runtime_sessions: Arc<Mutex<Vec<crate::runtime_sessions::RuntimeSessionSnapshot>>>,
     /// Metadata-only saved command policy snapshots used by desktop views.
     pub command_policies: Arc<Mutex<Vec<crate::policies::CommandPolicySnapshot>>>,
+    /// Compact tray/status counters that are produced by agent activity
+    /// and do not contain names or values.
+    status_metrics: Arc<Mutex<StatusMetrics>>,
     /// In-memory automation-client challenges issued by `ClientHello`.
     pub automation_challenges: Arc<Mutex<BTreeMap<String, crate::auth::IssuedChallenge>>>,
     /// TTL-bound, names-only IDE env-session registry populated by
@@ -326,6 +329,7 @@ impl AgentSocketState {
             grants: Arc::new(Mutex::new(crate::grant::GrantTable::default())),
             runtime_sessions: Arc::new(Mutex::new(Vec::new())),
             command_policies: Arc::new(Mutex::new(Vec::new())),
+            status_metrics: Arc::new(Mutex::new(StatusMetrics::default())),
             automation_challenges: Arc::new(Mutex::new(BTreeMap::new())),
             ide_env_sessions: crate::ide_env_session::new_registry(),
             master_key_store,
@@ -356,6 +360,7 @@ impl AgentSocketState {
             grants: Arc::new(Mutex::new(crate::grant::GrantTable::default())),
             runtime_sessions: Arc::new(Mutex::new(Vec::new())),
             command_policies: Arc::new(Mutex::new(Vec::new())),
+            status_metrics: Arc::new(Mutex::new(StatusMetrics::default())),
             automation_challenges: Arc::new(Mutex::new(BTreeMap::new())),
             ide_env_sessions: crate::ide_env_session::new_registry(),
             master_key_store: Arc::new(locket_platform::MemoryMasterKeyStore::default()),
@@ -437,6 +442,11 @@ impl AgentSocketState {
             let grants = self.grants.lock().await;
             grants.len()
         };
+        let running_session_count = {
+            let sessions = self.runtime_sessions.lock().await;
+            sessions.iter().filter(|session| session.ended_at.is_none()).count()
+        };
+        let metrics = self.status_metrics.lock().await;
         StatusPayload {
             lock_state: if summary.any_live { LockState::Unlocked } else { LockState::Locked },
             project_id: None,
@@ -444,6 +454,10 @@ impl AgentSocketState {
             live_grant_count: u32::try_from(grant_count).unwrap_or(u32::MAX),
             agent_version: self.agent_version.clone(),
             unlock_ttl_seconds: summary.max_remaining_seconds,
+            running_session_count: u32::try_from(running_session_count).unwrap_or(u32::MAX),
+            scan_warning_count: metrics.scan_warning_count,
+            recent_audit_status: metrics.recent_audit_status,
+            pinned_reference_warning_count: metrics.pinned_reference_warning_count,
         }
     }
 
@@ -451,6 +465,14 @@ impl AgentSocketState {
         let snapshot = self.status_snapshot(now_unix_nanos).await;
         self.status_hub.publish(snapshot.clone()).await;
         snapshot
+    }
+
+    /// Records the latest unresolved scan-warning count for compact
+    /// status/tray clients. A zero-count scan clears the warning state.
+    pub(crate) async fn record_scan_warning_count(&self, count: u32) {
+        let mut metrics = self.status_metrics.lock().await;
+        metrics.scan_warning_count = count;
+        metrics.recent_audit_status = RecentAuditStatus::Ok;
     }
 
     /// Clears unlocked key material and live grants for a session-lock event.
@@ -531,6 +553,13 @@ fn append_lock_audits(
         )?;
     }
     Ok(())
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct StatusMetrics {
+    scan_warning_count: u32,
+    recent_audit_status: RecentAuditStatus,
+    pinned_reference_warning_count: u32,
 }
 
 /// Snapshot of live unlock-cache state used to fill a `StatusPayload`.

@@ -712,7 +712,11 @@ fn heartbeat_status_event_uses_spec_wire_shape() -> Result<(), serde_json::Error
             "profile_name": null,
             "live_grant_count": 0,
             "agent_version": "0.1.0",
-            "unlock_ttl_seconds": null
+            "unlock_ttl_seconds": null,
+            "running_session_count": 0,
+            "scan_warning_count": 0,
+            "recent_audit_status": "unknown",
+            "pinned_reference_warning_count": 0
         })
     );
     Ok(())
@@ -1299,6 +1303,54 @@ async fn unlock_with_no_passphrase_and_empty_keychain_returns_unlock_required() 
     };
     assert_eq!(error.error, "UnlockRequired");
     assert!(state.unlock_cache.lock().await.is_empty());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn status_snapshot_includes_tray_safe_counts() {
+    use crate::RuntimeSessionSnapshot;
+    use crate::server::AgentSocketState;
+
+    let state = AgentSocketState::locked("test-version");
+    state
+        .set_runtime_sessions_for_tests(vec![
+            RuntimeSessionSnapshot {
+                session_id: "sess-running".to_owned(),
+                project_id: "project-main".to_owned(),
+                profile_id: "profile-dev".to_owned(),
+                policy_name: Some("test".to_owned()),
+                process_id: 101,
+                process_start_time: 1,
+                started_at: 2,
+                ended_at: None,
+                exit_status: None,
+                secret_name_count: 0,
+                spawn_audit_sequence: None,
+                completion_audit_sequence: None,
+            },
+            RuntimeSessionSnapshot {
+                session_id: "sess-done".to_owned(),
+                project_id: "project-main".to_owned(),
+                profile_id: "profile-dev".to_owned(),
+                policy_name: Some("test".to_owned()),
+                process_id: 102,
+                process_start_time: 1,
+                started_at: 2,
+                ended_at: Some(3),
+                exit_status: Some(0),
+                secret_name_count: 0,
+                spawn_audit_sequence: None,
+                completion_audit_sequence: None,
+            },
+        ])
+        .await;
+    state.record_scan_warning_count(4).await;
+
+    let status = state.status_snapshot(10).await;
+
+    assert_eq!(status.running_session_count, 1);
+    assert_eq!(status.scan_warning_count, 4);
+    assert_eq!(status.recent_audit_status, crate::status::RecentAuditStatus::Ok);
+    assert_eq!(status.pinned_reference_warning_count, 0);
 }
 
 #[tokio::test(flavor = "current_thread")]

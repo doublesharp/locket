@@ -39,6 +39,10 @@ export interface StatusPayload {
   readonly live_grant_count: number;
   readonly agent_version: string;
   readonly unlock_ttl_seconds?: number | null;
+  readonly running_session_count?: number;
+  readonly scan_warning_count?: number;
+  readonly recent_audit_status?: 'unknown' | 'ok' | 'warning';
+  readonly pinned_reference_warning_count?: number;
 }
 
 export interface StatusEvent extends StatusPayload {

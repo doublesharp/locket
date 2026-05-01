@@ -4,9 +4,7 @@
 //
 // Outside a Tauri webview (e.g. during a plain `vite preview` shell)
 // invoke is a no-op so the same composable can power the dev surface
-// without crashing on the missing IPC bridge. Scan-warning routing is
-// driven by a separate signal in a later slice; this composable only
-// folds the lock state and agent reachability into the tray.
+// without crashing on the missing IPC bridge.
 
 import { watch, type Ref } from 'vue';
 import { invoke, isTauri } from '@tauri-apps/api/core';
@@ -28,8 +26,9 @@ export type TrayState =
  *
  * 1. Agent unreachable (`unavailable`) → `agent-stopped`.
  * 2. Wire faults (`protocol`, `rejected`) → `error-degraded`.
- * 3. Lock state from a successful status response.
- * 4. Loading / pre-poll → `agent-stopped` so the menu bar reflects
+ * 3. Unresolved scan warnings from a successful status response.
+ * 4. Lock state from a successful status response.
+ * 5. Loading / pre-poll → `agent-stopped` so the menu bar reflects
  *    "no live agent" until the first poll lands.
  */
 export function deriveTrayState(
@@ -44,6 +43,9 @@ export function deriveTrayState(
   }
   if (status === null) {
     return 'agent-stopped';
+  }
+  if (status.scan_warning_count > 0) {
+    return 'scan-warning';
   }
   switch (status.lock_state) {
     case 'unlocked':

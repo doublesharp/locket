@@ -32,6 +32,10 @@ function statusFromEvent(event: AgentStatusEvent): AgentStatus {
     live_grant_count: event.live_grant_count,
     agent_version: event.agent_version,
     unlock_ttl_seconds: event.unlock_ttl_seconds,
+    running_session_count: event.running_session_count,
+    scan_warning_count: event.scan_warning_count,
+    recent_audit_status: event.recent_audit_status,
+    pinned_reference_warning_count: event.pinned_reference_warning_count,
   };
 }
 

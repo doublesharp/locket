@@ -232,7 +232,12 @@ pub async fn handle_scan(
 
     match scan_known_values(&typed, project_id, profile_id, store_path, &master_key, now_unix_nanos)
     {
-        Ok(response) => success_response(request, &response),
+        Ok(response) => {
+            let count = u32::try_from(response.findings.len()).unwrap_or(u32::MAX);
+            state.record_scan_warning_count(count).await;
+            state.publish_status_snapshot(now_unix_nanos).await;
+            success_response(request, &response)
+        }
         Err(error) => typed_failure(request, &error),
     }
 }
@@ -801,6 +806,8 @@ mod tests {
         let payload = scan_payload(response)?;
         assert!(!payload.locked);
         assert_eq!(payload.findings.len(), 2);
+        let status = state.status_snapshot(1).await;
+        assert_eq!(status.scan_warning_count, 2);
         let current = payload
             .findings
             .iter()

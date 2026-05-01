@@ -11,6 +11,10 @@ export interface AgentStatus {
   live_grant_count: number;
   agent_version: string;
   unlock_ttl_seconds: number | null;
+  running_session_count: number;
+  scan_warning_count: number;
+  recent_audit_status: 'unknown' | 'ok' | 'warning';
+  pinned_reference_warning_count: number;
 }
 
 export type AgentStatusEventKind = 'status' | 'heartbeat';
