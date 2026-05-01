@@ -166,6 +166,8 @@ Slices that have merged to `main` and verified. Open work tracked in
   TOML before replacing the active policy row.
 - [x] lk-resolve-rpc: `ResolveReference` parses `lk://` references,
   validates grants, and returns typed resolution errors.
+- [x] lk-resolve-audit: Agent reference resolution now records
+  metadata-only audit rows for success and failure.
 - [x] automation-private-key-storage: Locket-managed automation client
   private keys are stored by metadata-only key references.
 - [x] clipboard-ttl-clear: clipboard copies schedule TTL clearing and
