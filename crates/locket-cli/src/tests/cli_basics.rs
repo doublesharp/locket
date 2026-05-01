@@ -661,7 +661,7 @@ fn import_bundle_with_corrupt_age_payload_fails_verification()
     let mut hasher = <sha2::Sha256 as sha2::Digest>::new();
     <sha2::Sha256 as sha2::Digest>::update(&mut hasher, &container.encrypted_payload);
     container.manifest.payload_digest =
-        format!("{:x}", <sha2::Sha256 as sha2::Digest>::finalize(hasher));
+        crate::format_hex(<sha2::Sha256 as sha2::Digest>::finalize(hasher).as_slice());
     let rebuilt =
         locket_core::BundleContainer::new(container.manifest, container.encrypted_payload)?;
     fs::write(&bundle_path, rebuilt.serialize()?)?;

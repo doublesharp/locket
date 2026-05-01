@@ -1,2 +1,2 @@
-pub(crate) mod core_dumps;
-pub(crate) mod memory_lock;
+pub mod core_dumps;
+pub mod memory_lock;

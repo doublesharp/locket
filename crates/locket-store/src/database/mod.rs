@@ -1,2 +1,2 @@
-pub(crate) mod row;
-pub(crate) mod schema;
+pub mod row;
+pub mod schema;

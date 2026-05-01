@@ -1,7 +1,7 @@
 //! Random byte and key generation helpers.
 
-use chacha20poly1305::aead::{OsRng, rand_core::RngCore};
-use rand::TryRngCore as _;
+use rand::TryRng as _;
+use rand::rngs::SysRng;
 use zeroize::Zeroizing;
 
 use crate::error::{CryptoError, CryptoResult};
@@ -17,7 +17,7 @@ use crate::{
 /// unavailable.
 pub fn random_bytes<const N: usize>() -> CryptoResult<[u8; N]> {
     let mut bytes = [0_u8; N];
-    OsRng.try_fill_bytes(&mut bytes).map_err(|_| CryptoError::RandomFailed)?;
+    SysRng.try_fill_bytes(&mut bytes).map_err(|_| CryptoError::RandomFailed)?;
     Ok(bytes)
 }
 
@@ -48,7 +48,7 @@ pub fn generate_passphrase_salt() -> CryptoResult<[u8; PASSPHRASE_FALLBACK_SALT_
 /// Returns `CryptoError::RandomFailed` if the OS RNG fails.
 pub fn generate_recovery_code_bytes() -> CryptoResult<[u8; RECOVERY_CODE_BYTES]> {
     let mut bytes = [0u8; RECOVERY_CODE_BYTES];
-    rand::rngs::OsRng.try_fill_bytes(&mut bytes).map_err(|_| CryptoError::RandomFailed)?;
+    SysRng.try_fill_bytes(&mut bytes).map_err(|_| CryptoError::RandomFailed)?;
     Ok(bytes)
 }
 
@@ -59,6 +59,6 @@ pub fn generate_recovery_code_bytes() -> CryptoResult<[u8; RECOVERY_CODE_BYTES]>
 /// Returns `CryptoError::RandomFailed` if the OS RNG fails.
 pub fn generate_recovery_salt() -> CryptoResult<[u8; RECOVERY_SALT_LEN]> {
     let mut salt = [0u8; RECOVERY_SALT_LEN];
-    rand::rngs::OsRng.try_fill_bytes(&mut salt).map_err(|_| CryptoError::RandomFailed)?;
+    SysRng.try_fill_bytes(&mut salt).map_err(|_| CryptoError::RandomFailed)?;
     Ok(salt)
 }

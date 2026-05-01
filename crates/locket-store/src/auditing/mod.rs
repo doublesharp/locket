@@ -1,1 +1,1 @@
-pub(crate) mod audit;
+pub mod audit;

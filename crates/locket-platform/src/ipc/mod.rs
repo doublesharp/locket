@@ -1,2 +1,2 @@
-pub(crate) mod agent_pipe;
-pub(crate) mod process;
+pub mod agent_pipe;
+pub mod process;

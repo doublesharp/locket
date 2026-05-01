@@ -7,7 +7,7 @@
 use std::sync::Mutex;
 
 use data_encoding::BASE64URL_NOPAD;
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use keyring::Entry;
 use locket_crypto::{KEY_LEN, generate_key, random_bytes};
 use sha2::{Digest, Sha256};
@@ -31,7 +31,7 @@ pub struct PasskeyRegistration {
     pub credential_id: Vec<u8>,
     /// Public key bytes for the credential. Never private key material.
     pub public_key: Vec<u8>,
-    /// Stable random WebAuthn user handle for this credential.
+    /// Stable random `WebAuthn` user handle for this credential.
     pub user_handle: Vec<u8>,
     /// Transport hints reported by the platform/authenticator.
     pub transports: Vec<String>,

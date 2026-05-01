@@ -41,9 +41,9 @@ pub struct PasskeyCredentialRecord {
     pub label: String,
     /// Public `WebAuthn` credential id bytes. Never private key material.
     pub credential_id: Vec<u8>,
-    /// Public key bytes for WebAuthn assertion verification.
+    /// Public key bytes for `WebAuthn` assertion verification.
     pub public_key: Vec<u8>,
-    /// Stable random WebAuthn user handle. Never printed by default.
+    /// Stable random `WebAuthn` user handle. Never printed by default.
     pub user_handle: Vec<u8>,
     /// Transport hints exposed by the platform/authenticator.
     pub transports: Vec<String>,

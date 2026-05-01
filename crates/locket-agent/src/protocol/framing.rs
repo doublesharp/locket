@@ -41,7 +41,10 @@ pub fn encode_frame<T: Serialize>(
 /// Returns [`ProtocolError::IncompleteFrame`] when fewer than one complete
 /// frame is available, [`ProtocolError::MessageTooLarge`] when the frame
 /// declares an oversized payload, [`ProtocolError::Json`] for malformed JSON,
-/// and [`ProtocolError::UnsupportedVersion`] for non-v1 requests.
+/// and [`ProtocolError::UnsupportedVersion`] for non-v1 requests. Unknown
+/// `kind` values decode successfully — the dispatcher answers them with a
+/// `ProtocolError` envelope so the connection can keep serving subsequent
+/// frames instead of stalling on a transport-level decode error.
 pub fn decode_request_frame(
     bytes: &[u8],
     maximum_size: usize,
@@ -51,7 +54,6 @@ pub fn decode_request_frame(
     if envelope.v != PROTOCOL_VERSION {
         return Err(ProtocolError::UnsupportedVersion { version: envelope.v });
     }
-    envelope.method()?;
     Ok((envelope, consumed))
 }
 

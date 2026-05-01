@@ -1,6 +1,6 @@
 //! Secret value encryption, decryption, and keyed fingerprinting.
 
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;
 use zeroize::{Zeroize, Zeroizing};
 
@@ -34,7 +34,7 @@ pub fn secret_fingerprint_v1(
     value: &str,
 ) -> CryptoResult<FingerprintBytes> {
     validate_secret_value(value)?;
-    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(profile_fingerprint_key)
+    let mut mac = <Hmac<Sha256> as KeyInit>::new_from_slice(profile_fingerprint_key)
         .map_err(|_| CryptoError::KeyDerivationFailed)?;
     mac.update(b"locket-secret-fingerprint-v1");
     mac.update(value.as_bytes());

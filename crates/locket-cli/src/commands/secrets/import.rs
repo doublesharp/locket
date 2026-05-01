@@ -3,7 +3,7 @@
 use std::collections::BTreeSet;
 use std::ffi::OsStr;
 use std::fs;
-use std::io::{self, IsTerminal, Write};
+use std::io::Write;
 use std::path::Path;
 
 use locket_core::{LocketError, ProfileName, SecretName};
@@ -18,7 +18,7 @@ use super::set::{SecretWriteRequest, set_secret_value_in_profile};
 use crate::runtime::RuntimeContext;
 use crate::runtime::error::{
     CliError, confirmation_failed_error, invalid_profile_name_error, invalid_secret_name_error,
-    profile_not_found_error, secret_not_found_error, tty_required_error,
+    profile_not_found_error, secret_not_found_error,
 };
 use crate::runtime::key_access::load_project_key;
 use crate::runtime::prompts::ConfirmationReader;
@@ -40,7 +40,7 @@ pub fn import_command(
     ensure_trusted_project_root(&store, &resolved)?;
     let profile = import_target_profile(&store, &resolved, args.profile.as_deref())?;
     if args.overwrite && profile.dangerous {
-        confirm_dangerous_import_overwrite(output, &profile)?;
+        confirm_dangerous_import_overwrite(output, &profile, context.confirmation_reader.as_ref())?;
     }
     let path = absolutize(&context.cwd, Path::new(&args.file));
     let env_file_text = fs::read_to_string(&path)?;
@@ -144,19 +144,18 @@ fn import_target_profile(
 fn confirm_dangerous_import_overwrite(
     output: &mut impl Write,
     profile: &ProfileRecord,
+    confirmation_reader: &dyn ConfirmationReader,
 ) -> Result<(), CliError> {
     writeln!(output, "dangerous_profile: {}", profile.name)?;
     writeln!(output, "metadata_only: yes")?;
-    if !io::stdin().is_terminal() {
-        return Err(tty_required_error(
-            "import --overwrite targets a dangerous profile and requires interactive confirmation",
-        ));
-    }
-    writeln!(output, "type '{}' to confirm dangerous import overwrite", profile.name)?;
-    let mut confirmation = String::new();
-    io::stdin().read_line(&mut confirmation)?;
+    let prompt = format!("type '{}' to confirm dangerous import overwrite", profile.name);
+    writeln!(output, "{prompt}")?;
+    let confirmation = confirmation_reader.read_confirmation(&prompt)?;
     if confirmation.trim_end() != profile.name {
-        return Err(confirmation_failed_error("confirmation did not match"));
+        return Err(confirmation_failed_error(format!(
+            "dangerous profile import overwrite confirmation did not match '{}'",
+            profile.name
+        )));
     }
     Ok(())
 }

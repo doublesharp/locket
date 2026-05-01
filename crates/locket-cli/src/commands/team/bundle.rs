@@ -1553,10 +1553,11 @@ fn try_decrypt_bundle_for_local_device(
         Err(PlatformError::DevicePrivateKeyNotFound) => return Ok(None),
         Err(other) => return Err(CliError::Platform(other)),
     };
-    let plaintext = decrypt_bundle_payload_with_x25519_secret(&bundle.encrypted_payload, &private_key)
-        .map_err(|error| {
-            bundle_verification_error(format!("bundle verification failed: {error}"))
-        })?;
+    let plaintext =
+        decrypt_bundle_payload_with_x25519_secret(&bundle.encrypted_payload, &private_key)
+            .map_err(|error| {
+                bundle_verification_error(format!("bundle verification failed: {error}"))
+            })?;
     let payload: SealedBundlePayloadV1 = serde_json::from_slice(&plaintext).map_err(|error| {
         bundle_verification_error(format!("bundle verification failed: {error}"))
     })?;

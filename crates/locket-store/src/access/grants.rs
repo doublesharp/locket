@@ -57,8 +57,7 @@ pub fn directory_grant_record_from_row(
     })
 }
 
-const DIRECTORY_GRANT_COLUMNS: &str =
-    "grant_id, project_id, profile_id, root_hash, directory_hash, grant_scope, display_path, \
+const DIRECTORY_GRANT_COLUMNS: &str = "grant_id, project_id, profile_id, root_hash, directory_hash, grant_scope, display_path, \
      granted_by, created_at, updated_at, revoked_at";
 
 impl Store {

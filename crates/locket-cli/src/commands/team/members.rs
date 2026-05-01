@@ -1303,6 +1303,7 @@ fn invite_command_policy(policy: &CommandPolicy) -> InviteSealedCommandPolicyV1 
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_signed_invite(
     project_id: &str,
     issuer: &InviteIssuer,

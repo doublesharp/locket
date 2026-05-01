@@ -43,8 +43,7 @@ pub struct DeviceRecord {
     pub revoked_at: Option<i64>,
 }
 
-const DEVICE_COLUMNS: &str =
-    "id, project_id, member_id, name, label, signing_public_key, sealing_public_key, \
+const DEVICE_COLUMNS: &str = "id, project_id, member_id, name, label, signing_public_key, sealing_public_key, \
      fingerprint, safety_words_json, local, created_at, last_seen_at, revoked_at";
 
 fn device_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<DeviceRecord> {

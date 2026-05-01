@@ -1,12 +1,12 @@
 use locket_crypto::{KEY_LEN, NONCE_LEN};
 
 use super::{
-    LocalDevicePrivateKeyStorage, LocalUserVerificationMethod, LocalUserVerificationRequest,
-    LocalUserVerifier, MasterKeyStore, MemoryDevicePrivateKeyStorage, MemoryLocalUserVerifier,
-    MemoryMasterKeyStore, MemoryPlatformPasskeyRegistrar, MockMasterKeyStore,
-    MockMasterKeyStoreFailure, PasskeyRegistration, PassphraseFallbackMasterKeyStore,
-    PlatformError, PlatformPasskeyRegistrar, ProcessBinding, RecoveryEnvelope,
-    RecoveryEnvelopeEntry, RecoveryKdfToml, UnavailableLocalUserVerifier,
+    KeyringMasterKeyStore, LocalDevicePrivateKeyStorage, LocalUserVerificationMethod,
+    LocalUserVerificationRequest, LocalUserVerifier, MasterKeyStore, MemoryDevicePrivateKeyStorage,
+    MemoryLocalUserVerifier, MemoryMasterKeyStore, MemoryPlatformPasskeyRegistrar,
+    MockMasterKeyStore, MockMasterKeyStoreFailure, PasskeyRegistration,
+    PassphraseFallbackMasterKeyStore, PlatformError, PlatformPasskeyRegistrar, ProcessBinding,
+    RecoveryEnvelope, RecoveryEnvelopeEntry, RecoveryKdfToml, UnavailableLocalUserVerifier,
     UnavailablePlatformPasskeyRegistrar, WrappedLocalFileDevicePrivateKeyStorage,
     current_process_binding, decode_key, encode_key, load_recovery_envelope,
     load_recovery_kdf_toml, master_key_account, process_binding_matches_live_process,
@@ -107,6 +107,48 @@ fn mock_keychain_covers_success_and_error_paths() -> Result<(), PlatformError> {
 #[test]
 fn keyring_account_is_project_scoped() {
     assert_eq!(master_key_account(PROJECT_ID), "master:lk_proj_test");
+}
+
+// Regression: keyring v3 ships with all OS backends behind cargo features.
+// If `locket-platform` forgets to enable the per-OS feature, the crate
+// silently falls back to a stub that returns Ok from `set_password` but
+// `NoEntry` from `get_password`, which surfaced as `locket init` printing
+// "master key not found" right after writing the master key. This test
+// rejects that regression by performing a real store→load→delete round
+// trip against the host keyring. Opt-in because it mutates the user's
+// real keychain/secret-service and needs an unlocked session; CI that
+// wants coverage sets `LOCKET_KEYRING_HOST_TEST=1`.
+#[test]
+fn keyring_store_round_trips_against_host_keychain() -> Result<(), PlatformError> {
+    if std::env::var_os("LOCKET_KEYRING_HOST_TEST").is_none() {
+        return Ok(());
+    }
+
+    let project_id = format!(
+        "lk_proj_test_keyring_{}_{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    );
+    let store = KeyringMasterKeyStore;
+
+    assert!(matches!(store.load_master_key(&project_id), Err(PlatformError::MasterKeyNotFound)));
+
+    store.store_master_key(&project_id, &MASTER_KEY)?;
+    let loaded = match store.load_master_key(&project_id) {
+        Ok(loaded) => loaded,
+        Err(error) => {
+            let _ignored = store.delete_master_key(&project_id);
+            return Err(error);
+        }
+    };
+    assert_eq!(&*loaded, &MASTER_KEY);
+
+    store.delete_master_key(&project_id)?;
+    assert!(matches!(store.load_master_key(&project_id), Err(PlatformError::MasterKeyNotFound)));
+    Ok(())
 }
 
 #[test]

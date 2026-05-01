@@ -632,7 +632,7 @@ fn rejects_unknown_protocol_version() -> Result<(), ProtocolError> {
 }
 
 #[test]
-fn rejects_unknown_request_methods() -> Result<(), ProtocolError> {
+fn unknown_request_methods_decode_then_fail_method_lookup() -> Result<(), ProtocolError> {
     let request = RequestEnvelope {
         v: PROTOCOL_VERSION,
         id: "req-1".to_owned(),
@@ -641,8 +641,11 @@ fn rejects_unknown_request_methods() -> Result<(), ProtocolError> {
     };
     let frame = encode_frame(&request, DEFAULT_MAX_MESSAGE_SIZE)?;
 
+    let (decoded, consumed) = decode_request_frame(&frame, DEFAULT_MAX_MESSAGE_SIZE)?;
+    assert_eq!(consumed, frame.len());
+    assert_eq!(decoded.kind, "Nope");
     assert!(matches!(
-        decode_request_frame(&frame, DEFAULT_MAX_MESSAGE_SIZE),
+        decoded.method(),
         Err(ProtocolError::UnknownMethod(error)) if error.method == "Nope"
     ));
     Ok(())

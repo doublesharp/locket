@@ -1,6 +1,6 @@
 //! Audit-log row types, append/verify helpers, and `Store` audit methods.
 
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use locket_core::{
     AUDIT_HMAC_LEN, AuditHmacInput, Timestamp, audit_hmac_v1_bytes, canonical_json_string,
 };
@@ -583,9 +583,7 @@ fn required_fields_for_action(action: &str) -> &'static [&'static str] {
         "BACKUP_EXPORT" | "BACKUP_IMPORT" | "BUNDLE_VERIFY" => &["bundle_digest"],
         "SCHEMA_MIGRATE" => &["check_names", "schema_versions", "migration_count"],
         "DOCTOR" => &["check_names"],
-        "AUDIT_VERIFY" => {
-            &["check_names", "pass_count", "warn_count", "fail_count", "skip_count"]
-        }
+        "AUDIT_VERIFY" => &["check_names", "pass_count", "warn_count", "fail_count", "skip_count"],
         "HOOK_INSTALL" => &["hook_path_kind", "hook_path_hash"],
         _ => &[],
     }

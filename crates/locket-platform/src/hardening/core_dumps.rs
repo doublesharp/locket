@@ -351,10 +351,7 @@ mod tests {
             super::windows_impl::disable_windows_core_dumps(),
             CoreDumpHardening::Suppressed
         );
-        assert_eq!(
-            super::windows_impl::core_dump_hardening_state(),
-            CoreDumpHardening::Suppressed
-        );
+        assert_eq!(super::windows_impl::core_dump_hardening_state(), CoreDumpHardening::Suppressed);
     }
 
     /// Windows idempotency: a second call must not flip the result

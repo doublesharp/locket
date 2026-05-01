@@ -1024,8 +1024,9 @@ mod tests {
         let preferences = TrayNotificationPreferences { do_not_disturb: false };
 
         for kind in tray_notification_kinds() {
-            let notification =
-                route_tray_notification(*kind, &context, preferences).expect("notification");
+            let notification = route_tray_notification(*kind, &context, preferences);
+            assert!(notification.is_some(), "expected notification for kind {kind:?}");
+            let Some(notification) = notification else { continue };
             let rendered = format!("{} {}", notification.title, notification.body);
             for forbidden in ["DATABASE_URL", "deploy-prod", "payments-api", canary] {
                 assert!(!rendered.contains(forbidden), "{kind:?} leaked {forbidden}");

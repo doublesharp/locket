@@ -139,4 +139,3 @@ fn profile_label(value: &str, redact_names: bool) -> String {
 fn secret_label(value: &str, redact_names: bool) -> String {
     if redact_names { privacy_alias("secret", value) } else { value.to_owned() }
 }
-

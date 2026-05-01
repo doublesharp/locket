@@ -903,8 +903,8 @@ fn tampered_audit_chain_rejects_with_bundle_verification_failed()
 ///    on its CLI output.
 /// 3. Never apply rows — `bundle verify` is metadata-only.
 #[test]
-fn bundle_verify_decrypts_when_local_device_is_recipient()
--> Result<(), Box<dyn std::error::Error>> {
+fn bundle_verify_decrypts_when_local_device_is_recipient() -> Result<(), Box<dyn std::error::Error>>
+{
     let directory = tempdir()?;
     let (context, _descriptor, bundle_path, export_output) =
         export_sealed_bundle(&directory, "verify-decrypt.locket-bundle")?;
@@ -958,10 +958,7 @@ fn bundle_verify_decrypts_when_local_device_is_recipient()
         decrypted_secrets, exported_secrets,
         "verify decrypted secret count must mirror export"
     );
-    assert_eq!(
-        decrypted_blobs, exported_blobs,
-        "verify decrypted blob count must mirror export"
-    );
+    assert_eq!(decrypted_blobs, exported_blobs, "verify decrypted blob count must mirror export");
     assert_eq!(
         decrypted_command_policies, exported_command_policies,
         "verify decrypted command_policy count must mirror export"
@@ -993,8 +990,8 @@ fn bundle_verify_decrypts_when_local_device_is_recipient()
 /// against a local row with a deeply different value; the new local
 /// row must be much newer than the bundle's value.
 #[test]
-fn bundle_import_sets_last_rotated_at_to_import_timestamp()
--> Result<(), Box<dyn std::error::Error>> {
+fn bundle_import_sets_last_rotated_at_to_import_timestamp() -> Result<(), Box<dyn std::error::Error>>
+{
     let directory = tempdir()?;
     let (context, _descriptor, bundle_path, _export_output) =
         export_sealed_bundle(&directory, "rotate-ts.locket-bundle")?;
@@ -1038,9 +1035,10 @@ fn bundle_import_sets_last_rotated_at_to_import_timestamp()
 
     drop(context);
     let store = locket_store::Store::open(&store_path)?;
-    let post_last_rotated_at: i64 = store
-        .connection()
-        .query_row("SELECT last_rotated_at FROM secrets LIMIT 1", [], |row| row.get(0))?;
+    let post_last_rotated_at: i64 =
+        store
+            .connection()
+            .query_row("SELECT last_rotated_at FROM secrets LIMIT 1", [], |row| row.get(0))?;
     assert!(
         post_last_rotated_at > bundle_last_rotated_at,
         "post-import last_rotated_at ({post_last_rotated_at}) must NOT be the bundle's value ({bundle_last_rotated_at}); spec requires the import timestamp"
