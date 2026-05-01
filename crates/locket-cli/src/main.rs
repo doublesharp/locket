@@ -2101,7 +2101,7 @@ fn agent_data_dir(context: &RuntimeContext) -> PathBuf {
     context.store_path.parent().map_or_else(|| context.cwd.clone(), Path::to_path_buf)
 }
 
-fn agent_socket_path(context: &RuntimeContext) -> PathBuf {
+pub(crate) fn agent_socket_path(context: &RuntimeContext) -> PathBuf {
     agent_data_dir(context).join("agent.sock")
 }
 

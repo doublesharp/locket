@@ -63,6 +63,8 @@ pub enum AgentMethod {
     RegisterIdeEnvSession,
     /// Look up a registered IDE env-session by its `LOCKET_IDE_ENV_SESSION` UUID.
     IdeEnvSession,
+    /// Replace the agent's in-memory command policy snapshot for a project.
+    RegisterCommandPolicies,
 }
 
 impl AgentMethod {
@@ -98,6 +100,7 @@ impl AgentMethod {
             Self::SetActiveProfile => "SetActiveProfile",
             Self::RegisterIdeEnvSession => "RegisterIdeEnvSession",
             Self::IdeEnvSession => "IdeEnvSession",
+            Self::RegisterCommandPolicies => "RegisterCommandPolicies",
         }
     }
 }
@@ -135,6 +138,7 @@ impl FromStr for AgentMethod {
             "SetActiveProfile" => Ok(Self::SetActiveProfile),
             "RegisterIdeEnvSession" => Ok(Self::RegisterIdeEnvSession),
             "IdeEnvSession" => Ok(Self::IdeEnvSession),
+            "RegisterCommandPolicies" => Ok(Self::RegisterCommandPolicies),
             other => Err(UnknownMethod { method: other.to_owned() }),
         }
     }

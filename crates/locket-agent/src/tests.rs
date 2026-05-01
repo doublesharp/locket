@@ -3023,3 +3023,204 @@ mod server_tests {
         Ok(())
     }
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn register_command_policies_replaces_project_snapshot_and_runs_prepare_exec()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::server::{AgentSocketState, dispatch};
+
+    let directory = tempfile::tempdir()?;
+    let store_path = directory.path().join("store.db");
+    let mut store = locket_store::Store::open(&store_path)?;
+    store.initialize_schema()?;
+    store.insert_project_if_absent("p-pump", "pump project", 1)?;
+    drop(store);
+
+    let state = AgentSocketState::locked("test-version");
+    unlock_profile_test_state(&state, "p-pump").await;
+    {
+        let mut cache = state.unlock_cache.lock().await;
+        let entry = cache.lookup("p-pump", crate::server::current_unix_nanos()).expect("entry");
+        let key = entry.key_bytes().to_vec();
+        cache.insert(
+            "p-pump".to_owned(),
+            crate::unlock_cache::UnlockEntry::new(
+                key,
+                crate::server::current_unix_nanos(),
+                std::time::Duration::from_secs(60),
+                crate::unlock_cache::UnlockMethod::Passphrase,
+            )
+            .with_audit_context(crate::unlock_cache::UnlockAuditContext {
+                store_path: store_path.clone(),
+                profile_id: None,
+            }),
+        );
+    }
+
+    let request = RequestEnvelope::new(
+        "pump-1",
+        AgentMethod::RegisterCommandPolicies,
+        json!({
+            "project_id": "p-pump",
+            "store_path": store_path,
+            "policies": [{
+                "project_id": "p-pump",
+                "name": "deploy",
+                "command_kind": "argv",
+                "command_preview": "pnpm deploy",
+                "required_secrets": ["DATABASE_URL"],
+                "optional_secrets": [],
+                "allowed_secrets": ["DATABASE_URL"],
+                "confirm": false,
+                "require_user_verification": false,
+                "require_agent": false,
+                "allow_remote_docker": false,
+                "ttl_seconds": 600,
+                "env_mode": "minimal",
+                "override_mode": "locket",
+                "updated_at_unix_nanos": 100,
+            }],
+        }),
+    );
+    assert!(matches!(dispatch(&request, &state).await, ResponseEnvelope::Success(_)));
+
+    let snapshot = state.command_policies.lock().await;
+    let entry =
+        snapshot.iter().find(|s| s.project_id == "p-pump" && s.name == "deploy").expect("snapshot");
+    assert_eq!(entry.ttl_seconds, 600);
+
+    // PrepareExec on the agent is still a stub, but RequestGrant resolves
+    // the policy ttl, which is the moral equivalent of "prepare-exec
+    // resolves correctly" in this build.
+    drop(snapshot);
+    let grant_request = RequestEnvelope::new(
+        "g-1",
+        AgentMethod::RequestGrant,
+        json!({
+            "project_id": "p-pump",
+            "profile_id": "prof-1",
+            "policy_name": "deploy",
+            "action": "RunPolicy",
+            "ttl_seconds": 1,
+            "binding": { "pid": std::process::id(), "process_start_time": "0" }
+        }),
+    );
+    let ResponseEnvelope::Success(success) = dispatch(&grant_request, &state).await else {
+        unreachable!("grant for pumped policy must succeed");
+    };
+    assert!(success.payload["grant_id"].as_str().is_some());
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn register_command_policies_requires_unlock() -> Result<(), Box<dyn std::error::Error>> {
+    use crate::server::{AgentSocketState, dispatch};
+
+    let directory = tempfile::tempdir()?;
+    let store_path = directory.path().join("store.db");
+    let mut store = locket_store::Store::open(&store_path)?;
+    store.initialize_schema()?;
+    store.insert_project_if_absent("p-locked", "locked project", 1)?;
+    drop(store);
+
+    let state = AgentSocketState::locked("test-version");
+    let request = RequestEnvelope::new(
+        "pump-locked",
+        AgentMethod::RegisterCommandPolicies,
+        json!({
+            "project_id": "p-locked",
+            "store_path": store_path,
+            "policies": [],
+        }),
+    );
+    let ResponseEnvelope::Error(error) = dispatch(&request, &state).await else {
+        return Err("locked vault must reject pump".into());
+    };
+    assert_eq!(error.error, "UnlockRequired");
+    assert!(state.command_policies.lock().await.is_empty());
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn register_command_policies_does_not_drop_other_projects()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::CommandPolicySnapshot;
+    use crate::server::{AgentSocketState, dispatch};
+
+    let directory = tempfile::tempdir()?;
+    let store_path = directory.path().join("store.db");
+    let mut store = locket_store::Store::open(&store_path)?;
+    store.initialize_schema()?;
+    store.insert_project_if_absent("p-a", "a", 1)?;
+    drop(store);
+
+    let state = AgentSocketState::locked("test-version");
+    state
+        .set_command_policies_for_tests(vec![CommandPolicySnapshot {
+            project_id: "p-b".to_owned(),
+            name: "b-policy".to_owned(),
+            command_kind: "argv".to_owned(),
+            command_preview: "echo".to_owned(),
+            required_secrets: vec![],
+            optional_secrets: vec![],
+            allowed_secrets: vec![],
+            confirm: false,
+            require_user_verification: false,
+            require_agent: false,
+            allow_remote_docker: false,
+            ttl_seconds: 60,
+            env_mode: "minimal".to_owned(),
+            override_mode: "locket".to_owned(),
+            updated_at_unix_nanos: 1,
+        }])
+        .await;
+    {
+        let mut cache = state.unlock_cache.lock().await;
+        cache.insert(
+            "p-a".to_owned(),
+            crate::unlock_cache::UnlockEntry::new(
+                vec![42_u8; 32],
+                crate::server::current_unix_nanos(),
+                std::time::Duration::from_secs(60),
+                crate::unlock_cache::UnlockMethod::Passphrase,
+            )
+            .with_audit_context(crate::unlock_cache::UnlockAuditContext {
+                store_path: store_path.clone(),
+                profile_id: None,
+            }),
+        );
+    }
+
+    let request = RequestEnvelope::new(
+        "pump-a",
+        AgentMethod::RegisterCommandPolicies,
+        json!({
+            "project_id": "p-a",
+            "store_path": store_path,
+            "policies": [{
+                "project_id": "p-a",
+                "name": "a-policy",
+                "command_kind": "argv",
+                "command_preview": "echo a",
+                "required_secrets": [],
+                "optional_secrets": [],
+                "allowed_secrets": [],
+                "confirm": false,
+                "require_user_verification": false,
+                "require_agent": false,
+                "allow_remote_docker": false,
+                "ttl_seconds": 60,
+                "env_mode": "minimal",
+                "override_mode": "locket",
+                "updated_at_unix_nanos": 2,
+            }],
+        }),
+    );
+    assert!(matches!(dispatch(&request, &state).await, ResponseEnvelope::Success(_)));
+
+    let snapshots = state.command_policies.lock().await;
+    assert_eq!(snapshots.iter().filter(|s| s.project_id == "p-a").count(), 1);
+    assert_eq!(snapshots.iter().filter(|s| s.project_id == "p-b").count(), 1);
+    Ok(())
+}

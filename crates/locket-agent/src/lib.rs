@@ -60,6 +60,7 @@ pub use method::{AgentMethod, UnknownMethod};
 pub use peer_cred::{current_process_uid, validate_peer_stream, validate_peer_uid};
 pub use policies::{
     CommandPolicyRow, CommandPolicySnapshot, ListPoliciesRequest, ListPoliciesResponse,
+    RegisterCommandPoliciesRequest,
 };
 pub use prepare_exec::{PrepareExecRequest, PrepareExecResponse};
 pub use profile::{SetActiveProfileRequest, SetActiveProfileResponse};
