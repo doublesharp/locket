@@ -153,6 +153,15 @@ CREATE TABLE IF NOT EXISTS project_roots (
 CREATE INDEX IF NOT EXISTS project_roots_root_hash_idx
   ON project_roots(root_hash);
 
+-- `directory_grants.granted_by` and `directory_grants.revoked_at`:
+--   `docs/specs/data-model.md` (lines 221-228) declares
+--   `DirectoryGrant.granted_by: Option<MemberId>` and
+--   `DirectoryGrant.revoked_at: Option<Timestamp>`. Deny is a soft-revoke:
+--   the row survives with `revoked_at` set so the audit chain references the
+--   surviving grant id and downstream re-allow can revive it by clearing
+--   `revoked_at` (deny → allow on the same scope reuses the prior row).
+--   `granted_by` is nullable because v1 install paths predate the team
+--   member binding; see `crates/locket-cli/src/commands/shell.rs` allow path.
 CREATE TABLE IF NOT EXISTS directory_grants (
   grant_id TEXT PRIMARY KEY,
   project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -161,13 +170,19 @@ CREATE TABLE IF NOT EXISTS directory_grants (
   directory_hash BLOB NOT NULL CHECK (length(directory_hash) = 32),
   grant_scope TEXT NOT NULL CHECK (grant_scope IN ('project-root')),
   display_path TEXT,
+  granted_by TEXT REFERENCES team_members(id) ON DELETE SET NULL,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
+  revoked_at INTEGER,
   UNIQUE (project_id, profile_id, root_hash, directory_hash, grant_scope)
 );
 
 CREATE INDEX IF NOT EXISTS directory_grants_project_root_idx
   ON directory_grants(project_id, root_hash);
+
+CREATE INDEX IF NOT EXISTS directory_grants_active_idx
+  ON directory_grants(project_id, profile_id, root_hash, directory_hash, grant_scope)
+  WHERE revoked_at IS NULL;
 
 CREATE TABLE IF NOT EXISTS secrets (
   id TEXT PRIMARY KEY,

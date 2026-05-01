@@ -95,18 +95,14 @@ fn untrust_root_command(
 
     let hash = parse_root_hash(root_hash)?;
     confirm_untrust_root(context, output, &hash)?;
+    let timestamp = now_unix_nanos()?;
     let removed = store.untrust_project_root(resolved.config.project_id.as_str(), &hash)?;
-    let revoked =
-        store.deny_directory_grants_for_root(resolved.config.project_id.as_str(), &hash)?;
-    write_trust_root_audit(
-        context,
-        &mut store,
-        &resolved,
+    let revoked = store.deny_directory_grants_for_root(
+        resolved.config.project_id.as_str(),
         &hash,
-        "untrust",
-        revoked,
-        now_unix_nanos()?,
+        timestamp,
     )?;
+    write_trust_root_audit(context, &mut store, &resolved, &hash, "untrust", revoked, timestamp)?;
     writeln!(
         output,
         "{}",

@@ -124,6 +124,9 @@ pub fn allow_command(context: &RuntimeContext, output: &mut impl Write) -> Resul
     let timestamp = now_unix_nanos()?;
     let directory_hash = root_hash;
     let display_path = resolved.root.to_string_lossy().to_string();
+    // `granted_by` is None for v1 shell installs (no team-member binding
+    // is wired through the `locket allow` CLI yet); see
+    // `docs/specs/data-model.md` lines 221-228.
     let grant = DirectoryGrantRecord {
         grant_id: directory_grant_id(
             resolved.config.project_id.as_str(),
@@ -138,18 +141,20 @@ pub fn allow_command(context: &RuntimeContext, output: &mut impl Write) -> Resul
         directory_hash,
         grant_scope: DIRECTORY_GRANT_SCOPE_PROJECT_ROOT.to_owned(),
         display_path: Some(display_path),
+        granted_by: None,
         created_at: timestamp,
         updated_at: timestamp,
+        revoked_at: None,
     };
 
-    let prior_grant = store.get_directory_grant(
+    let prior_grant = store.get_directory_grant_any_state(
         resolved.config.project_id.as_str(),
         &profile.id,
         &root_hash,
         &directory_hash,
         DIRECTORY_GRANT_SCOPE_PROJECT_ROOT,
     )?;
-    let existed = prior_grant.is_some();
+    let existed = prior_grant.as_ref().is_some_and(|prior| prior.revoked_at.is_none());
     store.allow_directory_grant(&grant)?;
 
     let audit_key =
@@ -212,7 +217,8 @@ pub fn deny_command(
         load_project_key(context, &store, resolved.config.project_id.as_str(), KeyPurpose::Audit)?;
 
     if args.all {
-        let removed = store.deny_all_directory_grants(resolved.config.project_id.as_str())?;
+        let removed =
+            store.deny_all_directory_grants(resolved.config.project_id.as_str(), timestamp)?;
         let metadata = json!({
             "schema_version": 1,
             "action": "DENY_DIRECTORY",
@@ -224,6 +230,7 @@ pub fn deny_command(
             "directory_hash": "*",
             "grant_scope": "all",
             "revoked_count": removed,
+            "revoked_at": timestamp,
             "result_state": "all",
         });
         let audit = AuditWrite {
@@ -247,7 +254,7 @@ pub fn deny_command(
     let profile = default_profile(&store, &resolved.config)?;
     let root_hash = root_hash(&resolved.root)?;
     let directory_hash = root_hash;
-    let prior_grant = store.get_directory_grant(
+    let prior_grant = store.get_directory_grant_any_state(
         resolved.config.project_id.as_str(),
         &profile.id,
         &root_hash,
@@ -260,6 +267,7 @@ pub fn deny_command(
         &root_hash,
         &directory_hash,
         DIRECTORY_GRANT_SCOPE_PROJECT_ROOT,
+        timestamp,
     )?;
 
     let metadata = json!({
@@ -274,9 +282,11 @@ pub fn deny_command(
         "directory_hash": format_hex(&directory_hash),
         "prior_grant": prior_grant.as_ref().map(|prior| json!({
             "grant_id": &prior.grant_id,
+            "granted_by": &prior.granted_by,
             "created_at": prior.created_at,
             "updated_at": prior.updated_at,
         })),
+        "revoked_at": if removed { Some(timestamp) } else { None },
         "result_state": if removed { "removed" } else { "absent" },
     });
     let audit = AuditWrite {
