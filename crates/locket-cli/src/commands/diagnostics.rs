@@ -435,6 +435,7 @@ fn collect_diagnostics(
     }
 
     checks.push(check_agent_placeholder(context));
+    checks.push(check_degraded_audit_log_perms(context));
     checks.push(check_hardening());
     checks.push(check_degraded_audit_log(context));
     for check in SKIPPED_LOCKED_CHECKS {
@@ -828,6 +829,49 @@ fn check_device_private_key_storage(
             false,
             format!("envelope_integrity_failure device_id={} error={error}", device.id),
         ),
+    }
+}
+
+fn check_degraded_audit_log_perms(context: &RuntimeContext) -> DiagnosticCheck {
+    const NAME: &str = "degraded_audit_log_perms";
+
+    let Some(locket_home) = context.store_path.parent() else {
+        return DiagnosticCheck::fail(
+            NAME,
+            false,
+            "could not resolve locket home for degraded-audit log",
+        );
+    };
+    let logger = locket_platform::LockedVaultAuditLogger::new(locket_home);
+
+    let mode = match logger.permission_mode() {
+        Ok(Some(mode)) => mode,
+        Ok(None) => return DiagnosticCheck::pass(NAME, "log_absent=yes"),
+        Err(error) => return DiagnosticCheck::fail(NAME, false, error.to_string()),
+    };
+
+    // Pass: only owner has any access (no group/other bits set).
+    // Fail: anything looser than 0600 surfaces the actual octal mode so
+    // operators can see exactly what drifted.
+    #[cfg(unix)]
+    {
+        if mode.trailing_zeros() >= 6 {
+            DiagnosticCheck::pass(NAME, format!("mode={mode:#o}"))
+        } else {
+            DiagnosticCheck::fail(
+                NAME,
+                false,
+                format!("mode={mode:#o} expected=0o600_or_stricter"),
+            )
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        // On Windows we rely on ACLs that limit access to the current user;
+        // the helper synthesizes mode 0o600 in that case. Pass when we have
+        // no signal that the file is more permissive.
+        let _ = mode;
+        DiagnosticCheck::pass(NAME, "platform=non-unix acl_restricted_to_current_user=assumed")
     }
 }
 

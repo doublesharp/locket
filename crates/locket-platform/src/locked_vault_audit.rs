@@ -181,6 +181,20 @@ impl LockedVaultAuditLogger {
         self.current_size_bytes() > 0
     }
 
+    /// Returns the on-disk permission mode bits of the active log file.
+    ///
+    /// Returns `Ok(None)` when the file is absent. On non-Unix platforms the
+    /// returned mode reflects whatever Rust surfaces via [`fs::Metadata`]; on
+    /// Unix the returned value is the lower 9 bits (`mode & 0o777`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PlatformError::Io`] when the file exists but cannot be
+    /// stat'd (e.g. permission denied on the parent directory).
+    pub fn permission_mode(&self) -> Result<Option<u32>, PlatformError> {
+        permission_mode(&self.log_path)
+    }
+
     fn rotate(&self) -> Result<(), PlatformError> {
         // Discard the oldest, then shift each rotation up by one index.
         let oldest = rotated_path(&self.log_path, self.max_rotations);
@@ -201,6 +215,32 @@ impl LockedVaultAuditLogger {
             fs::rename(&self.log_path, &first)?;
         }
         Ok(())
+    }
+}
+
+/// Returns the on-disk permission bits of `path`.
+///
+/// Returns `Ok(None)` when the path does not exist. On Unix the returned mode
+/// is masked to the lower 9 bits (`mode & 0o777`).
+///
+/// # Errors
+///
+/// Returns [`PlatformError::Io`] for stat failures other than `NotFound`.
+pub fn permission_mode(path: &Path) -> Result<Option<u32>, PlatformError> {
+    let metadata = match fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        Ok(Some(metadata.permissions().mode() & 0o777))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = metadata;
+        Ok(Some(0o600))
     }
 }
 
@@ -301,6 +341,52 @@ mod tests {
         logger.append(&sample_row("GET", "get")).expect("append");
         assert!(logger.has_records(), "logger with one row reports records present");
         assert!(logger.current_size_bytes() > 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rotation_creates_new_tip_file_at_user_only_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempdir().expect("temp dir");
+        let log_path = directory.path().join("audit-degraded.log");
+        let logger = LockedVaultAuditLogger::with_policy(log_path.clone(), 16, 3);
+
+        // Force at least one rotation by writing many rows past the threshold.
+        for _ in 0..3 {
+            logger.append(&sample_row("GET", "get")).expect("append");
+        }
+        // The active tip file must be at 0600 even after rotation.
+        let metadata = fs::metadata(&log_path).expect("metadata for active tip");
+        let mode = metadata.permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "rotated tip file must remain mode 0600");
+        // The first rotated file must also still be 0600 (rename preserves
+        // mode bits, the prior tip was 0600 when written).
+        let rotated = log_path.with_file_name("audit-degraded.log.1");
+        let rotated_meta = fs::metadata(&rotated).expect("metadata for rotated copy");
+        let rotated_mode = rotated_meta.permissions().mode() & 0o777;
+        assert_eq!(rotated_mode, 0o600, "rotated copy must remain mode 0600");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn permission_mode_reports_active_tip_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempdir().expect("temp dir");
+        let logger = LockedVaultAuditLogger::new(directory.path());
+        // Absent file -> None.
+        assert_eq!(logger.permission_mode().expect("query mode"), None);
+        logger.append(&sample_row("GET", "get")).expect("append");
+        assert_eq!(
+            logger.permission_mode().expect("query mode after append"),
+            Some(0o600)
+        );
+        // Drift the perms on disk: the helper must surface the actual mode.
+        fs::set_permissions(logger.log_path(), fs::Permissions::from_mode(0o644))
+            .expect("widen perms");
+        assert_eq!(
+            logger.permission_mode().expect("query mode after drift"),
+            Some(0o644)
+        );
     }
 
     #[test]

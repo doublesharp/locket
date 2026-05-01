@@ -3373,6 +3373,95 @@ fn team_revoke_device_local_drops_wrapped_envelope()
     Ok(())
 }
 
+#[test]
+fn doctor_passes_degraded_audit_log_perms_when_log_absent()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    let mut doctor_output = Vec::new();
+    run_with_context(Cli::try_parse_from(["locket", "doctor"])?, &context, &mut doctor_output)?;
+    let doctor_output = String::from_utf8(doctor_output)?;
+    assert!(
+        doctor_output.contains("pass degraded_audit_log_perms"),
+        "doctor must pass when log is absent: {doctor_output}"
+    );
+    assert!(doctor_output.contains("log_absent=yes"));
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn doctor_passes_degraded_audit_log_perms_for_user_only_log()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    let logger = locket_platform::LockedVaultAuditLogger::new(directory.path());
+    logger.append(&locket_platform::LockedVaultDenialRow::new(
+        "GET",
+        Some("lk_proj_test"),
+        1,
+        "vault_locked",
+        "get",
+    ))?;
+
+    let mut doctor_output = Vec::new();
+    run_with_context(Cli::try_parse_from(["locket", "doctor"])?, &context, &mut doctor_output)?;
+    let doctor_output = String::from_utf8(doctor_output)?;
+    assert!(
+        doctor_output.contains("pass degraded_audit_log_perms"),
+        "doctor must pass on 0600 log: {doctor_output}"
+    );
+    assert!(doctor_output.contains("mode=0o600"));
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn doctor_fails_degraded_audit_log_perms_when_world_readable()
+-> Result<(), Box<dyn std::error::Error>> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    let logger = locket_platform::LockedVaultAuditLogger::new(directory.path());
+    logger.append(&locket_platform::LockedVaultDenialRow::new(
+        "GET",
+        Some("lk_proj_test"),
+        1,
+        "vault_locked",
+        "get",
+    ))?;
+    std::fs::set_permissions(
+        logger.log_path(),
+        std::fs::Permissions::from_mode(0o644),
+    )?;
+
+    let mut doctor_output = Vec::new();
+    run_with_context(Cli::try_parse_from(["locket", "doctor"])?, &context, &mut doctor_output)?;
+    let doctor_output = String::from_utf8(doctor_output)?;
+    assert!(
+        doctor_output.contains("fail degraded_audit_log_perms"),
+        "doctor must fail when log is wider than 0600: {doctor_output}"
+    );
+    assert!(doctor_output.contains("mode=0o644"));
+    Ok(())
+}
+
 #[cfg(unix)]
 #[test]
 fn doctor_fails_when_device_envelope_permissions_too_wide()
