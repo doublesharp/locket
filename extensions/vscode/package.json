@@ -20,17 +20,63 @@
   ],
   "main": "./out/extension.js",
   "activationEvents": [
-    "onStartupFinished",
-    "onCommand:locket.revealSecret"
+    "onStartupFinished"
   ],
   "contributes": {
     "commands": [
       {
+        "command": "locket.unlock",
+        "title": "Unlock",
+        "category": "Locket"
+      },
+      {
+        "command": "locket.lock",
+        "title": "Lock",
+        "category": "Locket"
+      },
+      {
+        "command": "locket.switchProfile",
+        "title": "Switch Profile",
+        "category": "Locket"
+      },
+      {
+        "command": "locket.runPolicy",
+        "title": "Run Policy",
+        "category": "Locket"
+      },
+      {
+        "command": "locket.scanWorkspace",
+        "title": "Scan Workspace",
+        "category": "Locket"
+      },
+      {
         "command": "locket.revealSecret",
         "title": "Reveal Secret",
         "category": "Locket"
+      },
+      {
+        "command": "locket.copySecret",
+        "title": "Copy Secret",
+        "category": "Locket"
+      },
+      {
+        "command": "locket.openAuditView",
+        "title": "Open Audit View",
+        "category": "Locket"
       }
-    ]
+    ],
+    "menus": {
+      "commandPalette": [
+        { "command": "locket.unlock" },
+        { "command": "locket.lock" },
+        { "command": "locket.switchProfile" },
+        { "command": "locket.runPolicy" },
+        { "command": "locket.scanWorkspace" },
+        { "command": "locket.revealSecret" },
+        { "command": "locket.copySecret" },
+        { "command": "locket.openAuditView" }
+      ]
+    }
   },
   "scripts": {
     "build": "tsc -p .",
