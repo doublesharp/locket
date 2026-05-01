@@ -5,6 +5,11 @@ Slices that have merged to `main` and verified. Open work tracked in
 
 ## Full Spec Coverage TODO — Near-Term CLI/Core
 
+- [x] Agent `ExportBundle` creates sealed metadata-only bundles for
+  selected profile scope from unlock audit context, including recipient
+  descriptor validation, encrypted blob/profile-key payloads, export
+  audit metadata, and a focused agent unit test. Audit-chain and command
+  policy export parity remain tracked as smaller follow-ups.
 - [x] `locket init` spec coverage.
 - [x] `locket init` rolls back late resume failures across store rows,
   recovery files, and newly created master-key material.

@@ -1,9 +1,22 @@
 //! Desktop backup/recovery RPC request and response types.
 
-use std::path::PathBuf;
+use std::fs;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 
-use locket_core::bundle::{BundleContainer, verify_age_payload_structure};
+use data_encoding::BASE64URL_NOPAD;
+use locket_core::bundle::{
+    BUNDLE_SCHEMA_V1, BundleContainer, BundleManifest, encrypt_bundle_payload_for_age_recipients,
+    verify_age_payload_structure,
+};
+use locket_crypto::{
+    HkdfWrapInfo, KeyPurpose, KeyWrapAad, KeyWrapPurpose, WrappedKeyMaterial,
+    derive_wrapping_key_v1, key_wrap_aad_v1, unwrap_key_material_v1,
+};
+use locket_store::{AuditWrite, ProfileRecord, SecretBlobRecord, SecretRecord, Store};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
+use sha2::{Digest, Sha256};
 
 use crate::envelope::{ErrorEnvelope, RequestEnvelope, ResponseEnvelope, SuccessEnvelope};
 use crate::server::{AgentSocketState, current_unix_nanos};
@@ -85,8 +98,15 @@ pub enum RecoveryVerification {
 pub struct RecoveryRotateRequest {
     /// Project id whose recovery envelope would be rotated.
     pub project_id: String,
+    /// Optional recovery directory. When omitted, the agent tries
+    /// `<store-path-parent>/recovery`, matching test/local layouts.
+    #[serde(default)]
+    pub recovery_dir: Option<PathBuf>,
     /// Requested fresh verification factor.
     pub verification: RecoveryVerification,
+    /// Current recovery code when `verification = current-code`.
+    #[serde(default)]
+    pub current_recovery_code: Option<String>,
     /// User confirmed one-time display semantics in the UI.
     pub acknowledged_one_time_display: bool,
     /// Whether the UI should clear the visible code after display.
@@ -102,6 +122,122 @@ pub struct BackupActionResponse {
     pub status: String,
     /// User-facing, metadata-only next step.
     pub message: String,
+}
+
+#[derive(Clone, Debug)]
+struct UnlockedProject {
+    store_path: PathBuf,
+    profile_id: Option<String>,
+    master_key: zeroize::Zeroizing<locket_crypto::KeyBytes>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct DeviceDescriptorV1 {
+    v: u8,
+    device_id: String,
+    label: String,
+    signing_public_key_ed25519: String,
+    sealing_public_key_x25519: String,
+    fingerprint_sha256: String,
+    safety_words: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct SealedBundlePayloadV1 {
+    profiles: Vec<SealedBundleProfileV1>,
+    command_policies: Vec<SealedBundleCommandPolicyV1>,
+    secrets: Vec<SealedBundleSecretV1>,
+    secret_versions: Vec<SealedBundleSecretVersionV1>,
+    blobs: Vec<SealedBundleBlobV1>,
+    profile_keys: Vec<SealedBundleProfileKeyV1>,
+    profile_count: usize,
+    command_policy_count: usize,
+    secret_count: usize,
+    secret_version_count: usize,
+    blob_count: usize,
+    profile_key_count: usize,
+    active_secret_count: usize,
+    audit_rows_included: bool,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct SealedBundleProfileV1 {
+    profile_id: String,
+    name: String,
+    dangerous: bool,
+    active_secret_count: usize,
+    created_at: i64,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct SealedBundleCommandPolicyV1 {
+    name: String,
+    command_kind: String,
+    argv: Vec<String>,
+    shell: Option<String>,
+    allowed_secrets: Vec<String>,
+    required_secrets: Vec<String>,
+    optional_secrets: Vec<String>,
+    inherit_env: Vec<String>,
+    env_mode: String,
+    override_mode: String,
+    override_explicit: bool,
+    external_env_sources: Vec<String>,
+    allow_remote_docker: bool,
+    confirm: bool,
+    require_user_verification: bool,
+    ttl_seconds: u64,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct SealedBundleSecretV1 {
+    id: String,
+    profile_id: String,
+    name: String,
+    source: String,
+    origin: String,
+    current_version: u32,
+    state: String,
+    created_at: i64,
+    updated_at: i64,
+    last_rotated_at: Option<i64>,
+    deleted_at: Option<i64>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct SealedBundleSecretVersionV1 {
+    secret_id: String,
+    version: u32,
+    source: String,
+    origin: String,
+    state: String,
+    created_at: i64,
+    deprecated_at: Option<i64>,
+    grace_until: Option<i64>,
+    purged_at: Option<i64>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct SealedBundleBlobV1 {
+    secret_id: String,
+    version: u32,
+    encrypted_dek_b64: String,
+    ciphertext_b64: String,
+    value_nonce_b64: String,
+    aad_schema_version: u16,
+    created_at: i64,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct SealedBundleProfileKeyV1 {
+    profile_id: String,
+    purpose: String,
+    key_material_b64: String,
+}
+
+struct BundleRecipientV1 {
+    fingerprint: String,
+    sealing_public_key: [u8; 32],
 }
 
 /// Non-destructive bundle verification response.
@@ -134,17 +270,24 @@ pub async fn handle_export_bundle(
         Ok(request) => request,
         Err(_) => return error_response(envelope, "ProtocolError", "invalid ExportBundle payload"),
     };
-    if let Some(response) = require_unlocked(envelope, state, &request.project_id).await {
-        return response;
+    let unlocked = match unlocked_project(envelope, state, &request.project_id).await {
+        Ok(unlocked) => unlocked,
+        Err(response) => return response,
+    };
+    if request.include_audit {
+        return error_response(
+            envelope,
+            "PolicyValidationIncomplete",
+            "agent bundle export does not yet embed remote audit rows; retry without include_audit",
+        );
     }
     if request.recipient_descriptor.trim().is_empty() {
         return error_response(envelope, "InvalidReference", "bundle export requires a recipient");
     }
-    not_implemented(
-        envelope,
-        "export-bundle",
-        "Bundle export reached the typed agent path; applying it requires the sealed-bundle core to be shared with the agent.",
-    )
+    match export_bundle(&request, &unlocked) {
+        Ok(response) => success_response(envelope, response),
+        Err((code, message)) => error_response(envelope, code, &message),
+    }
 }
 
 /// Handle desktop bundle import.
@@ -250,6 +393,465 @@ pub async fn handle_recovery_rotate(
     )
 }
 
+type BackupResult<T> = Result<T, (&'static str, String)>;
+
+fn export_bundle(
+    request: &ExportBundleRequest,
+    unlocked: &UnlockedProject,
+) -> BackupResult<BackupActionResponse> {
+    let recipient = bundle_recipient(&request.recipient_descriptor)?;
+    let mut store = Store::open(&unlocked.store_path)
+        .map_err(|error| ("CorruptDb", format!("could not open store: {error}")))?;
+    if store
+        .get_project(&request.project_id)
+        .map_err(|error| ("CorruptDb", format!("could not read project: {error}")))?
+        .is_none()
+    {
+        return Err(("ProjectNotFound", "project not found".to_owned()));
+    }
+    let profiles = selected_profiles(&store, &request.project_id, unlocked, &request.scope)?;
+    let payload = bundle_payload(&store, &request.project_id, &profiles, &unlocked.master_key)?;
+    let plaintext = zeroize::Zeroizing::new(serde_json::to_vec(&payload).map_err(json_error)?);
+    let encrypted_payload =
+        encrypt_bundle_payload_for_age_recipients(&plaintext, &[recipient.sealing_public_key])
+            .map_err(|error| ("MetadataInvalid", format!("bundle encryption failed: {error}")))?;
+    let timestamp = current_unix_nanos_i64();
+    let manifest = BundleManifest {
+        recipient_fingerprints: vec![recipient.fingerprint],
+        project_id: request.project_id.clone(),
+        schema_version: BUNDLE_SCHEMA_V1,
+        created_at: timestamp,
+        profile_count: u32::try_from(payload.profile_count).map_err(|_| {
+            ("MetadataInvalid", "bundle profile count exceeds schema limit".to_owned())
+        })?,
+        payload_digest: bundle_encrypted_payload_digest(&encrypted_payload),
+    };
+    let container = BundleContainer::new(manifest.clone(), encrypted_payload)
+        .map_err(|error| ("BundleVerificationFailed", format!("bundle build failed: {error}")))?;
+    let output_path = request
+        .output_path
+        .clone()
+        .unwrap_or_else(|| default_bundle_output_path(&unlocked.store_path, timestamp));
+    write_bundle_file(&output_path, &container)?;
+    write_export_audit(
+        &mut store,
+        &request.project_id,
+        &unlocked.master_key,
+        &manifest,
+        &payload,
+        output_path_kind(&output_path, &unlocked.store_path),
+        timestamp,
+    )?;
+    Ok(BackupActionResponse {
+        action: "export-bundle".to_owned(),
+        status: "exported".to_owned(),
+        message: format!(
+            "sealed bundle written to {}; profiles={} secrets={} versions={} blobs={}",
+            output_path.display(),
+            payload.profile_count,
+            payload.secret_count,
+            payload.secret_version_count,
+            payload.blob_count,
+        ),
+    })
+}
+
+fn selected_profiles(
+    store: &Store,
+    project_id: &str,
+    unlocked: &UnlockedProject,
+    scope: &BundleExportScope,
+) -> BackupResult<Vec<ProfileRecord>> {
+    let profiles = store
+        .list_profiles(project_id)
+        .map_err(|error| ("CorruptDb", format!("could not list profiles: {error}")))?;
+    match scope {
+        BundleExportScope::AllProfiles => Ok(profiles),
+        BundleExportScope::ActiveProfile => {
+            let Some(profile_id) = unlocked.profile_id.as_deref() else {
+                return Err((
+                    "MetadataInvalid",
+                    "active-profile export requires unlock audit profile context".to_owned(),
+                ));
+            };
+            profiles
+                .into_iter()
+                .find(|profile| profile.id == profile_id || profile.name == profile_id)
+                .map(|profile| vec![profile])
+                .ok_or_else(|| ("ProfileNotFound", "active profile not found".to_owned()))
+        }
+    }
+}
+
+fn bundle_payload(
+    store: &Store,
+    project_id: &str,
+    profiles: &[ProfileRecord],
+    master_key: &locket_crypto::KeyBytes,
+) -> BackupResult<SealedBundlePayloadV1> {
+    let mut profile_payloads = Vec::with_capacity(profiles.len());
+    let mut secrets = Vec::new();
+    let mut secret_versions = Vec::new();
+    let mut blobs = Vec::new();
+    let mut profile_keys = Vec::with_capacity(profiles.len().saturating_mul(2));
+    let mut active_secret_count = 0_usize;
+    for profile in profiles {
+        let active_secrets = store
+            .list_active_secrets_by_profile(project_id, &profile.id)
+            .map_err(|error| ("CorruptDb", format!("could not list active secrets: {error}")))?;
+        active_secret_count = active_secret_count.saturating_add(active_secrets.len());
+        profile_payloads.push(SealedBundleProfileV1 {
+            profile_id: profile.id.clone(),
+            name: profile.name.clone(),
+            dangerous: profile.dangerous,
+            active_secret_count: active_secrets.len(),
+            created_at: profile.created_at,
+        });
+        profile_keys.extend(bundle_profile_keys(store, project_id, &profile.id, master_key)?);
+        for secret in store
+            .list_secrets_by_profile(project_id, &profile.id)
+            .map_err(|error| ("CorruptDb", format!("could not list secrets: {error}")))?
+        {
+            for version in store
+                .list_secret_versions(&secret.id)
+                .map_err(|error| ("CorruptDb", format!("could not list versions: {error}")))?
+            {
+                if let Some(blob) = store
+                    .get_blob(&secret.id, version.version)
+                    .map_err(|error| ("CorruptDb", format!("could not read blob: {error}")))?
+                {
+                    blobs.push(bundle_blob(blob));
+                }
+                secret_versions.push(SealedBundleSecretVersionV1 {
+                    secret_id: version.secret_id,
+                    version: version.version,
+                    source: version.source,
+                    origin: version.origin,
+                    state: version.state,
+                    created_at: version.created_at,
+                    deprecated_at: version.deprecated_at,
+                    grace_until: version.grace_until,
+                    purged_at: version.purged_at,
+                });
+            }
+            secrets.push(bundle_secret(secret));
+        }
+    }
+    Ok(SealedBundlePayloadV1 {
+        profile_count: profile_payloads.len(),
+        command_policy_count: 0,
+        secret_count: secrets.len(),
+        secret_version_count: secret_versions.len(),
+        blob_count: blobs.len(),
+        profile_key_count: profile_keys.len(),
+        active_secret_count,
+        audit_rows_included: false,
+        profiles: profile_payloads,
+        command_policies: Vec::new(),
+        secrets,
+        secret_versions,
+        blobs,
+        profile_keys,
+    })
+}
+
+fn bundle_profile_keys(
+    store: &Store,
+    project_id: &str,
+    profile_id: &str,
+    master_key: &locket_crypto::KeyBytes,
+) -> BackupResult<Vec<SealedBundleProfileKeyV1>> {
+    [KeyPurpose::ProfileSecret, KeyPurpose::ProfileFingerprint]
+        .into_iter()
+        .map(|purpose| {
+            let key =
+                load_profile_key_with_master(store, project_id, profile_id, purpose, master_key)?;
+            Ok(SealedBundleProfileKeyV1 {
+                profile_id: profile_id.to_owned(),
+                purpose: purpose.as_str().to_owned(),
+                key_material_b64: BASE64URL_NOPAD.encode(key.as_ref()),
+            })
+        })
+        .collect()
+}
+
+fn load_profile_key_with_master(
+    store: &Store,
+    project_id: &str,
+    profile_id: &str,
+    purpose: KeyPurpose,
+    master_key: &locket_crypto::KeyBytes,
+) -> BackupResult<zeroize::Zeroizing<locket_crypto::KeyBytes>> {
+    let record = store
+        .get_key_by_scope(project_id, Some(profile_id), purpose.as_str())
+        .map_err(|error| ("CorruptDb", format!("could not read profile key: {error}")))?
+        .ok_or_else(|| {
+            ("AuditIntegrityFailed", format!("profile {} key is missing", purpose.as_str()))
+        })?;
+    let wrapping_key = derive_wrapping_key_v1(
+        master_key,
+        &HkdfWrapInfo::new(project_id, Some(profile_id), purpose),
+    )
+    .map_err(|error| ("MetadataInvalid", format!("profile key derivation failed: {error}")))?;
+    let aad = key_wrap_aad_v1(&KeyWrapAad::new(
+        project_id,
+        &record.id,
+        Some(profile_id),
+        0,
+        KeyWrapPurpose::from(purpose),
+    ))
+    .map_err(|error| ("MetadataInvalid", format!("profile key aad failed: {error}")))?;
+    let wrapped = WrappedKeyMaterial { ciphertext: record.wrapped_material, nonce: record.nonce };
+    unwrap_key_material_v1(&wrapping_key, &wrapped, &aad)
+        .map_err(|error| ("AuditIntegrityFailed", format!("profile key unwrap failed: {error}")))
+}
+
+fn bundle_secret(secret: SecretRecord) -> SealedBundleSecretV1 {
+    SealedBundleSecretV1 {
+        id: secret.id,
+        profile_id: secret.profile_id,
+        name: secret.name,
+        source: secret.source,
+        origin: secret.origin,
+        current_version: secret.current_version,
+        state: secret.state,
+        created_at: secret.created_at,
+        updated_at: secret.updated_at,
+        last_rotated_at: secret.last_rotated_at,
+        deleted_at: secret.deleted_at,
+    }
+}
+
+fn bundle_blob(blob: SecretBlobRecord) -> SealedBundleBlobV1 {
+    SealedBundleBlobV1 {
+        secret_id: blob.secret_id,
+        version: blob.version,
+        encrypted_dek_b64: BASE64URL_NOPAD.encode(&blob.encrypted_dek),
+        ciphertext_b64: BASE64URL_NOPAD.encode(&blob.ciphertext),
+        value_nonce_b64: BASE64URL_NOPAD.encode(&blob.value_nonce),
+        aad_schema_version: blob.aad_schema_version,
+        created_at: blob.created_at,
+    }
+}
+
+fn bundle_recipient(value: &str) -> BackupResult<BundleRecipientV1> {
+    let descriptor = decode_device_descriptor(value)?;
+    let signing_public_key = decode_descriptor_key(&descriptor.signing_public_key_ed25519)?;
+    let sealing_public_key = decode_descriptor_key(&descriptor.sealing_public_key_x25519)?;
+    let fingerprint = device_fingerprint_hex(&signing_public_key, &sealing_public_key);
+    if fingerprint != descriptor.fingerprint_sha256 {
+        return Err((
+            "MetadataInvalid",
+            "recipient device descriptor fingerprint mismatch".to_owned(),
+        ));
+    }
+    Ok(BundleRecipientV1 { fingerprint, sealing_public_key })
+}
+
+fn decode_device_descriptor(value: &str) -> BackupResult<DeviceDescriptorV1> {
+    let Some(encoded) = value.strip_prefix("lkdev1_") else {
+        return Err(("MetadataInvalid", "device descriptor must start with lkdev1_".to_owned()));
+    };
+    let bytes = BASE64URL_NOPAD
+        .decode(encoded.as_bytes())
+        .map_err(|_| ("MetadataInvalid", "device descriptor is not valid base64url".to_owned()))?;
+    serde_json::from_slice(&bytes)
+        .map_err(|error| ("MetadataInvalid", format!("device descriptor is invalid: {error}")))
+}
+
+fn decode_descriptor_key(value: &str) -> BackupResult<[u8; 32]> {
+    let bytes = BASE64URL_NOPAD.decode(value.as_bytes()).map_err(|_| {
+        ("MetadataInvalid", "device descriptor key is not valid base64url".to_owned())
+    })?;
+    bytes
+        .try_into()
+        .map_err(|_| ("MetadataInvalid", "device descriptor key must be 32 bytes".to_owned()))
+}
+
+fn device_fingerprint_hex(signing_public_key: &[u8; 32], sealing_public_key: &[u8; 32]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(signing_public_key);
+    hasher.update(sealing_public_key);
+    format_hex(&hasher.finalize())
+}
+
+fn write_export_audit(
+    store: &mut Store,
+    project_id: &str,
+    master_key: &locket_crypto::KeyBytes,
+    manifest: &BundleManifest,
+    payload: &SealedBundlePayloadV1,
+    path_kind: &'static str,
+    timestamp: i64,
+) -> BackupResult<()> {
+    let audit_key = load_project_key_with_master(store, project_id, KeyPurpose::Audit, master_key)?;
+    let metadata = json!({
+        "schema_version": 1,
+        "action": "BACKUP_EXPORT",
+        "status": "SUCCESS",
+        "command": "agent export-bundle",
+        "project_id": project_id,
+        "profile_count": manifest.profile_count,
+        "recipient_fingerprints": manifest.recipient_fingerprints,
+        "bundle_digest": manifest.payload_digest,
+        "path_kind": path_kind,
+        "active_secret_count": payload.active_secret_count,
+        "command_policy_count": payload.command_policy_count,
+        "secret_count": payload.secret_count,
+        "secret_version_count": payload.secret_version_count,
+        "blob_count": payload.blob_count,
+        "profile_key_count": payload.profile_key_count,
+        "include_audit": false,
+        "metadata_only": true,
+        "client_kind": "agent",
+    });
+    store
+        .append_audit(
+            audit_key.as_ref(),
+            &AuditWrite {
+                project_id,
+                profile_id: None,
+                action: "BACKUP_EXPORT",
+                status: "SUCCESS",
+                secret_name: None,
+                command: Some("agent export-bundle"),
+                metadata_json: &metadata,
+                timestamp,
+            },
+        )
+        .map_err(|error| ("CorruptDb", format!("could not append export audit: {error}")))
+}
+
+fn load_project_key_with_master(
+    store: &Store,
+    project_id: &str,
+    purpose: KeyPurpose,
+    master_key: &locket_crypto::KeyBytes,
+) -> BackupResult<zeroize::Zeroizing<locket_crypto::KeyBytes>> {
+    let record = store
+        .get_key_by_scope(project_id, None, purpose.as_str())
+        .map_err(|error| ("CorruptDb", format!("could not read project key: {error}")))?
+        .ok_or_else(|| {
+            ("AuditIntegrityFailed", format!("project {} key is missing", purpose.as_str()))
+        })?;
+    let wrapping_key =
+        derive_wrapping_key_v1(master_key, &HkdfWrapInfo::new(project_id, None, purpose)).map_err(
+            |error| ("MetadataInvalid", format!("project key derivation failed: {error}")),
+        )?;
+    let aad = key_wrap_aad_v1(&KeyWrapAad::new(
+        project_id,
+        &record.id,
+        None,
+        0,
+        KeyWrapPurpose::from(purpose),
+    ))
+    .map_err(|error| ("MetadataInvalid", format!("project key aad failed: {error}")))?;
+    let wrapped = WrappedKeyMaterial { ciphertext: record.wrapped_material, nonce: record.nonce };
+    unwrap_key_material_v1(&wrapping_key, &wrapped, &aad)
+        .map_err(|error| ("AuditIntegrityFailed", format!("project key unwrap failed: {error}")))
+}
+
+fn write_bundle_file(path: &Path, bundle: &BundleContainer) -> BackupResult<()> {
+    let bytes = bundle.serialize().map_err(|error| {
+        ("BundleVerificationFailed", format!("bundle serialize failed: {error}"))
+    })?;
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    let mut file = options.open(path).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::AlreadyExists {
+            ("InvalidReference", "bundle output already exists".to_owned())
+        } else {
+            ("CorruptDb", format!("could not create bundle output: {error}"))
+        }
+    })?;
+    file.write_all(&bytes)
+        .map_err(|error| ("CorruptDb", format!("could not write bundle output: {error}")))?;
+    set_user_only_file_permissions(path)
+}
+
+#[cfg(unix)]
+fn set_user_only_file_permissions(path: &Path) -> BackupResult<()> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+        .map_err(|error| ("CorruptDb", format!("could not set bundle permissions: {error}")))
+}
+
+#[cfg(not(unix))]
+fn set_user_only_file_permissions(_path: &Path) -> BackupResult<()> {
+    Ok(())
+}
+
+fn default_bundle_output_path(store_path: &Path, timestamp: i64) -> PathBuf {
+    store_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(format!("locket-bundle-{timestamp}.locket-bundle"))
+}
+
+fn output_path_kind(path: &Path, store_path: &Path) -> &'static str {
+    if path
+        .parent()
+        .zip(store_path.parent())
+        .is_some_and(|(path_parent, store_parent)| path_parent == store_parent)
+    {
+        "store_directory"
+    } else if path.is_absolute() {
+        "absolute"
+    } else {
+        "relative"
+    }
+}
+
+fn bundle_encrypted_payload_digest(encrypted_payload: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(encrypted_payload);
+    format_hex(&hasher.finalize())
+}
+
+fn format_hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len().saturating_mul(2));
+    for byte in bytes {
+        out.push(char::from(HEX[usize::from(byte >> 4)]));
+        out.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    out
+}
+
+fn current_unix_nanos_i64() -> i64 {
+    i64::try_from(current_unix_nanos()).unwrap_or(i64::MAX)
+}
+
+fn json_error(error: serde_json::Error) -> (&'static str, String) {
+    ("MetadataInvalid", format!("bundle payload encode failed: {error}"))
+}
+
+async fn unlocked_project(
+    envelope: &RequestEnvelope,
+    state: &AgentSocketState,
+    project_id: &str,
+) -> Result<UnlockedProject, ResponseEnvelope> {
+    let cache = state.unlock_cache.lock().await;
+    let Some(entry) = cache.lookup(project_id, current_unix_nanos()) else {
+        return Err(error_response(envelope, "UnlockRequired", "unlock the vault first"));
+    };
+    let Some(context) = entry.audit_context() else {
+        return Err(error_response(
+            envelope,
+            "MetadataInvalid",
+            "bundle export requires unlock audit context with store_path",
+        ));
+    };
+    let master_key: locket_crypto::KeyBytes = entry.key_bytes().try_into().map_err(|_| {
+        error_response(envelope, "MetadataInvalid", "cached master key has invalid length")
+    })?;
+    Ok(UnlockedProject {
+        store_path: context.store_path.clone(),
+        profile_id: context.profile_id.clone(),
+        master_key: zeroize::Zeroizing::new(master_key),
+    })
+}
+
 async fn require_unlocked(
     envelope: &RequestEnvelope,
     state: &AgentSocketState,
@@ -284,4 +886,134 @@ fn success_response<T: Serialize>(envelope: &RequestEnvelope, payload: T) -> Res
 
 fn error_response(envelope: &RequestEnvelope, error: &str, message: &str) -> ResponseEnvelope {
     ResponseEnvelope::Error(ErrorEnvelope::new(envelope.id.clone(), error, message, false))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use locket_crypto::{
+        HkdfWrapInfo, KeyPurpose, KeyWrapAad, KeyWrapPurpose, generate_key, wrap_key_material_v1,
+    };
+    use locket_store::KeyRecord;
+
+    const PROJECT_ID: &str = "lk_proj_backup_export";
+    const PROFILE_ID: &str = "lk_prof_backup_export";
+
+    #[test]
+    fn export_bundle_writes_sealed_container_and_audit_row()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let tempdir = tempfile::tempdir()?;
+        let store_path = tempdir.path().join("store.sqlite3");
+        let output_path = tempdir.path().join("export.locket-bundle");
+        let mut store = Store::open(&store_path)?;
+        store.initialize_schema()?;
+        store.insert_project_if_absent(PROJECT_ID, "backup export", 100)?;
+        store.insert_profile_if_absent(PROFILE_ID, PROJECT_ID, "dev", false, 100)?;
+
+        let master_key = *generate_key()?;
+        insert_wrapped_key(
+            &store,
+            "lk_key_audit_export",
+            None,
+            KeyPurpose::Audit,
+            &master_key,
+            &*generate_key()?,
+        )?;
+        insert_wrapped_key(
+            &store,
+            "lk_key_profile_secret_export",
+            Some(PROFILE_ID),
+            KeyPurpose::ProfileSecret,
+            &master_key,
+            &*generate_key()?,
+        )?;
+        insert_wrapped_key(
+            &store,
+            "lk_key_profile_fingerprint_export",
+            Some(PROFILE_ID),
+            KeyPurpose::ProfileFingerprint,
+            &master_key,
+            &*generate_key()?,
+        )?;
+        drop(store);
+
+        let request = ExportBundleRequest {
+            project_id: PROJECT_ID.to_owned(),
+            profile_id: Some(PROFILE_ID.to_owned()),
+            recipient_descriptor: test_device_descriptor()?,
+            scope: BundleExportScope::ActiveProfile,
+            include_audit: false,
+            output_path: Some(output_path.clone()),
+        };
+        let unlocked = UnlockedProject {
+            store_path: store_path.clone(),
+            profile_id: Some(PROFILE_ID.to_owned()),
+            master_key: zeroize::Zeroizing::new(master_key),
+        };
+
+        let response = export_bundle(&request, &unlocked).map_err(|(_, message)| message)?;
+        assert_eq!(response.status, "exported");
+        let bytes = fs::read(&output_path)?;
+        let bundle = BundleContainer::deserialize(&bytes)?;
+        assert_eq!(bundle.manifest.project_id, PROJECT_ID);
+        assert_eq!(bundle.manifest.profile_count, 1);
+        assert_eq!(bundle.manifest.recipient_fingerprints.len(), 1);
+
+        let store = Store::open(&store_path)?;
+        let audit_count: u32 = store.connection().query_row(
+            "SELECT COUNT(*) FROM audit_log WHERE action = 'BACKUP_EXPORT'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(audit_count, 1);
+        Ok(())
+    }
+
+    fn insert_wrapped_key(
+        store: &Store,
+        key_id: &str,
+        profile_id: Option<&str>,
+        purpose: KeyPurpose,
+        master_key: &locket_crypto::KeyBytes,
+        key_material: &locket_crypto::KeyBytes,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let wrapping_key = derive_wrapping_key_v1(
+            master_key,
+            &HkdfWrapInfo::new(PROJECT_ID, profile_id, purpose),
+        )?;
+        let aad = key_wrap_aad_v1(&KeyWrapAad::new(
+            PROJECT_ID,
+            key_id,
+            profile_id,
+            0,
+            KeyWrapPurpose::from(purpose),
+        ))?;
+        let wrapped = wrap_key_material_v1(&wrapping_key, key_material, &aad)?;
+        store.insert_key(&KeyRecord {
+            id: key_id.to_owned(),
+            project_id: PROJECT_ID.to_owned(),
+            profile_id: profile_id.map(ToOwned::to_owned),
+            purpose: purpose.as_str().to_owned(),
+            wrapped_material: wrapped.ciphertext,
+            nonce: wrapped.nonce,
+            created_at: 100,
+        })?;
+        Ok(())
+    }
+
+    fn test_device_descriptor() -> Result<String, serde_json::Error> {
+        let signing = [3_u8; 32];
+        let sealing = [4_u8; 32];
+        let descriptor = DeviceDescriptorV1 {
+            v: 1,
+            device_id: "lk_dev_export".to_owned(),
+            label: "export".to_owned(),
+            signing_public_key_ed25519: BASE64URL_NOPAD.encode(&signing),
+            sealing_public_key_x25519: BASE64URL_NOPAD.encode(&sealing),
+            fingerprint_sha256: device_fingerprint_hex(&signing, &sealing),
+            safety_words: Vec::new(),
+        };
+        serde_json::to_vec(&descriptor)
+            .map(|bytes| format!("lkdev1_{}", BASE64URL_NOPAD.encode(&bytes)))
+    }
 }

@@ -92,12 +92,18 @@ ship. Each bullet has spec ref + code ref + suggested touches.
   integration coverage.
 ### D. Desktop / integrations / scan
 
-- [~] (in-flight: feature/desktop-agent-core-final) **agent-export-bundle-core**: `ExportBundle` reaches the typed
-  agent path but does not yet create a sealed bundle. Extract the
-  export implementation from `locket-cli/src/commands/team/bundle.rs`
-  into shared core usable by `locket-agent`, preserving recipient
-  descriptor validation, selected profile scope, audit metadata, and
-  metadata-only responses.
+- [ ] **agent-export-bundle-audit-chain**: agent `ExportBundle`
+  now writes sealed bundles for selected profile scope using unlock
+  audit context, recipient descriptor validation, encrypted blobs,
+  profile keys, export audit metadata, and metadata-only response.
+  Remaining export parity: support `include_audit=true` by extracting
+  CLI sealed audit-chain encryption into shared bundle helpers instead
+  of returning the current typed `PolicyValidationIncomplete` error.
+- [ ] **agent-export-bundle-command-policies**: agent `ExportBundle`
+  currently exports store-backed profiles/secrets/versions/blobs/profile
+  keys only. Add a shared policy-document/snapshot source so command
+  policies are included in the sealed payload without depending on CLI
+  `RuntimeContext`.
 - [~] (in-flight: feature/desktop-agent-core-final) **agent-import-bundle-core**: `ImportBundle` reaches the typed
   agent path, validates unlock state and input path, then returns
   `not-implemented`. Extract/apply the bundle import core in the
