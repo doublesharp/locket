@@ -1,33 +1,57 @@
+<div align="center">
+
+<img src="docs/Locket.png" alt="Locket" width="180" />
+
 # Locket
 
-Locket is a local-first secrets control plane for development environments.
+**A local-first secrets control plane for development environments.**
 
-It replaces plaintext `.env` files as the source of truth with an encrypted local vault, explicit access policy, process-scoped secret injection, audit integrity checks, local team sharing, and scanner/redaction tools for keeping secrets out of code, logs, and AI prompts.
+*Replace plaintext `.env` files with an encrypted vault, explicit policy, and process-scoped delivery — without ever leaving your machine.*
 
-Locket treats secrets as capabilities granted to specific projects, profiles, commands, directories, editors, shells, and runtime sessions.
+</div>
 
-## Features
+```text
+        .--------.
+       / .------. \
+      / /        \ \
+      | |        | |
+     _| |________| |_
+   .' |_|        |_| '.
+   '._____ ____ _____.'
+   |     .'____'.     |
+   |     | .--. |     |     L O C K E T
+   |     | |  | |     |     local-first secrets, sealed shut
+   |     | '--' |     |
+   |     '------'     |
+   '------------------'
+```
 
-- Encrypted local vault for development secrets.
-- Project and profile workflows for separate local environments.
-- Command policies that define which secrets a command may receive.
-- Process-scoped delivery through `locket run`, `locket exec`, Docker, and Docker Compose helpers.
-- Shell, editor, desktop, and tray integrations for local status and approvals.
-- Secret rotation, history, profile diffs, and safe removal workflows.
-- Scanner, pre-commit checks, redaction, and AI-safe context/output tools.
-- Recovery, passkey support, and multi-machine sync.
-- Local-first team onboarding with encrypted invites, roles, and bootstrap checks.
-- Audit and diagnostics designed to report what happened without exposing values.
-- No telemetry or analytics, and no remote calls except opt-in update checks or explicit sealed sync/export/import actions.
+Locket treats secrets as **capabilities** — granted to specific projects, profiles, commands, directories, editors, shells, and runtime sessions. No plaintext on disk. No values in shell history. No telemetry. No remote calls except the ones you explicitly ask for.
+
+---
+
+## Why Locket
+
+- 🔐 **Encrypted local vault** — your secrets, sealed at rest, unlocked only when you ask.
+- 🎯 **Capability-scoped delivery** — `locket run`, `locket exec`, Docker, and Compose helpers inject secrets into one child process and nowhere else.
+- 📋 **Explicit command policies** — declare which secrets a command may receive, and Locket enforces it.
+- 🧭 **Project + profile workflows** — keep `dev`, `staging`, and per-machine secrets cleanly separated.
+- 🛠️ **Shell, editor, desktop, and tray integrations** — local status, approvals, and `lk://` reference resolution.
+- 🔄 **Rotation, history, and diffs** — change values safely; compare profiles without revealing them.
+- 🧹 **Scanner, pre-commit, redaction, AI-safe tools** — keep secrets out of code, logs, and prompts.
+- 🪪 **Recovery and passkey support** — first-class multi-machine sync without a hosted service.
+- 👥 **Local-first team onboarding** — encrypted invites, roles, bootstrap checks; no cloud required.
+- 🧾 **Metadata-only audit and diagnostics** — report what happened, never the values.
+- 🚫 **No telemetry, no analytics** — only opt-in update checks or explicit sealed sync/export/import.
 
 ## Project Files
 
 - `locket.toml` lives in the project and contains shareable configuration, policies, and metadata.
-- Secret values stay in the local encrypted vault, not in Git-tracked project files.
+- Secret values stay in the local encrypted vault, **not** in Git-tracked project files.
 - `.env.example` is maintained as a names-only contract for expected variables.
 - `.gitignore` is updated to keep plaintext local env files out of Git.
 
-Locket is intentionally local-first. CI and production should use their platform-native secret stores; Locket is for local development workflows.
+> Locket is intentionally local-first. CI and production should use their platform-native secret stores; Locket is for local development workflows.
 
 ## Install From Source
 
