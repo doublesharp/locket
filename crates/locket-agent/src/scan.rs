@@ -124,6 +124,7 @@ pub struct ScanResponse {
 /// the original locked/empty shape so shipped UI stubs remain
 /// compatible. Covered scans require a live grant and unlock-cache
 /// entry before any store decryption occurs.
+#[allow(clippy::too_many_lines)]
 pub async fn handle_scan(
     request: &RequestEnvelope,
     state: &crate::server::AgentSocketState,
@@ -144,6 +145,13 @@ pub async fn handle_scan(
         && typed.inputs.is_empty()
     {
         return if typed.require_known {
+            crate::degraded_audit::record_locked_refusal(
+                "SCAN",
+                None,
+                "agent.ScanKnownValues",
+                None,
+                now_unix_nanos,
+            );
             unlock_required(request)
         } else {
             success_response(request, &ScanResponse { findings: Vec::new(), locked: true })
@@ -209,6 +217,13 @@ pub async fn handle_scan(
     };
     let Some(master_key) = master_key else {
         return if typed.require_known {
+            crate::degraded_audit::record_locked_refusal(
+                "SCAN",
+                Some(project_id),
+                "agent.ScanKnownValues",
+                Some(store_path),
+                now_unix_nanos,
+            );
             unlock_required(request)
         } else {
             success_response(request, &ScanResponse { findings: Vec::new(), locked: true })
@@ -740,6 +755,21 @@ mod tests {
 
         let response = handle_scan(&envelope, &state, 1).await;
         assert_eq!(error_code(response)?, "UnlockRequired");
+
+        // The scan refusal must mirror into the degraded-audit log when
+        // a store path was supplied so its parent is the LOCKET_HOME.
+        let degraded_log = fixture
+            .store_path
+            .parent()
+            .expect("store path parent")
+            .join(locket_platform::DEGRADED_AUDIT_LOG_FILENAME);
+        let body = std::fs::read_to_string(&degraded_log)?;
+        let row: serde_json::Value =
+            serde_json::from_str(body.lines().next().expect("at least one row"))?;
+        assert_eq!(row["action"], "SCAN");
+        assert_eq!(row["status"], "DENIED_LOCKED");
+        assert_eq!(row["command"], "agent.ScanKnownValues");
+        assert_eq!(row["project_id"], PROJECT_ID);
         Ok(())
     }
 

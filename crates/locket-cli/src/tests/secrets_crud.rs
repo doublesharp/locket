@@ -670,6 +670,23 @@ fn reveal_verify_user_still_requires_unlocked_vault() -> Result<(), Box<dyn std:
     };
     assert_eq!(error.exit_code(), locket_core::LocketError::UnlockRequired.exit_code());
     assert!(String::from_utf8(reveal_output)?.is_empty());
+
+    // The CLI must mirror the locked-vault refusal into the degraded-audit
+    // log under ${LOCKET_HOME}/audit-degraded.log. Names only - never
+    // values, never secret_name.
+    let degraded_log = directory.path().join("audit-degraded.log");
+    let degraded_body = std::fs::read_to_string(&degraded_log)?;
+    let degraded_lines: Vec<&str> = degraded_body.lines().collect();
+    assert_eq!(degraded_lines.len(), 1, "exactly one degraded-audit row expected");
+    let row: serde_json::Value = serde_json::from_str(degraded_lines[0])?;
+    assert_eq!(row["action"], "REVEAL");
+    assert_eq!(row["status"], "DENIED_LOCKED");
+    assert_eq!(row["failure_reason"], "vault_locked");
+    assert_eq!(row["command"], "get --reveal");
+    assert_eq!(row["project_id"], project_id);
+    assert!(row.get("secret_name").is_none(), "must never include secret_name");
+    assert!(!degraded_body.contains("DATABASE_URL"));
+    assert!(!degraded_body.contains("postgres://"));
     Ok(())
 }
 

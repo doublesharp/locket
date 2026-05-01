@@ -253,6 +253,16 @@ async fn handle_value_access(
         cache.lookup(project_id, now_unix_nanos).map(|entry| entry.key_bytes().to_vec())
     };
     let Some(master_key) = master_key else {
+        crate::degraded_audit::record_locked_refusal(
+            access.action(),
+            Some(project_id),
+            match access {
+                AccessKind::Reveal => "agent.Reveal",
+                AccessKind::Copy => "agent.Copy",
+            },
+            Some(store_path),
+            now_unix_nanos,
+        );
         return typed_error(
             request,
             ERROR_UNLOCK_REQUIRED,
@@ -1139,6 +1149,24 @@ mod tests {
 
         let response = super::handle_reveal(&envelope, &state, 1).await;
         assert_eq!(error_code(response)?, "UnlockRequired");
+
+        // The agent must mirror the locked-vault refusal into the
+        // degraded-audit log under the store-path's parent directory.
+        let degraded_log = fixture
+            .store_path
+            .parent()
+            .expect("store path parent")
+            .join(locket_platform::DEGRADED_AUDIT_LOG_FILENAME);
+        let body = std::fs::read_to_string(&degraded_log)?;
+        let lines: Vec<&str> = body.lines().collect();
+        assert_eq!(lines.len(), 1, "exactly one degraded-audit row expected");
+        let row: serde_json::Value = serde_json::from_str(lines[0])?;
+        assert_eq!(row["action"], "REVEAL");
+        assert_eq!(row["status"], "DENIED_LOCKED");
+        assert_eq!(row["failure_reason"], "vault_locked");
+        assert_eq!(row["command"], "agent.Reveal");
+        assert_eq!(row["project_id"], PROJECT_ID);
+        assert!(row.get("secret_name").is_none(), "must never include secret_name");
         Ok(())
     }
 
