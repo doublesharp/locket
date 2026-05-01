@@ -59,6 +59,10 @@ pub enum AgentMethod {
     SetSecret,
     /// Switch the active project profile.
     SetActiveProfile,
+    /// Register a names-only IDE env-session map for an integrated terminal.
+    RegisterIdeEnvSession,
+    /// Look up a registered IDE env-session by its `LOCKET_IDE_ENV_SESSION` UUID.
+    IdeEnvSession,
 }
 
 impl AgentMethod {
@@ -92,6 +96,8 @@ impl AgentMethod {
             Self::ListVersions => "ListVersions",
             Self::SetSecret => "SetSecret",
             Self::SetActiveProfile => "SetActiveProfile",
+            Self::RegisterIdeEnvSession => "RegisterIdeEnvSession",
+            Self::IdeEnvSession => "IdeEnvSession",
         }
     }
 }
@@ -127,6 +133,8 @@ impl FromStr for AgentMethod {
             "ListVersions" => Ok(Self::ListVersions),
             "SetSecret" => Ok(Self::SetSecret),
             "SetActiveProfile" => Ok(Self::SetActiveProfile),
+            "RegisterIdeEnvSession" => Ok(Self::RegisterIdeEnvSession),
+            "IdeEnvSession" => Ok(Self::IdeEnvSession),
             other => Err(UnknownMethod { method: other.to_owned() }),
         }
     }

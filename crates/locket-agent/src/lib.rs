@@ -12,6 +12,7 @@ mod envelope;
 mod error;
 mod framing;
 mod grant;
+mod ide_env_session;
 mod method;
 #[cfg(unix)]
 mod peer_cred;
@@ -46,6 +47,11 @@ pub use framing::{decode_request_frame, decode_response_frame, encode_frame};
 pub use grant::{
     GrantAction, GrantBinding, GrantIdPayload, GrantRecord, GrantRecordFields, GrantTable,
     GrantValidation, RequestGrantPayload,
+};
+pub use ide_env_session::{
+    DEFAULT_IDE_ENV_SESSION_TTL_SECONDS, IdeEnvSessionEntry, IdeEnvSessionRegistry,
+    IdeEnvSessionRequest, IdeEnvSessionResponse, MAX_IDE_ENV_SESSION_NAMES,
+    MAX_IDE_ENV_SESSION_TTL_SECONDS, RegisterIdeEnvSessionRequest, RegisterIdeEnvSessionResponse,
 };
 pub use method::{AgentMethod, UnknownMethod};
 #[cfg(unix)]
