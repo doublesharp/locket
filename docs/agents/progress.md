@@ -261,7 +261,7 @@ Re-verify file:line references before editing — they drift. Severity:
   adds one bench plus a regression that fails the budget:
   - [~] [90b9f58a] branch agent-90b9f58a/perf-agent-idle-memory, worktree .worktrees/agent-90b9f58a-perf-agent-idle-memory; **subtask** — perf-agent-idle-memory: ≤50 MB RSS after documented warmup.
     Pre-req: agent daemon subtasks.
-- [ ] Property-test harness for new uncovered invariants.
+- [~] [90b9f58a] branch agent-90b9f58a/proptest-update-manifest, worktree .worktrees/agent-90b9f58a-proptest-update-manifest; Property-test harness for signed update manifest invariants.
   All current `proptest-*` subtasks shipped.
   Add new harnesses as uncovered invariants surface
   (`docs/specs/testing.md:14`).
