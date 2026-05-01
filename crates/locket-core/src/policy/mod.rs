@@ -65,6 +65,8 @@ optional_secrets = ["OPENAI_API_KEY"]
     fn parses_valid_shell_policy_with_explicit_options() -> Result<(), Box<dyn Error>> {
         let document = PolicyDocument::from_toml_str(
             r#"
+schema_version = 1
+
 [commands.release]
 shell = "pnpm build && pnpm publish"
 required_secrets = ["NPM_TOKEN"]
@@ -108,28 +110,32 @@ ttl = "30m"
     fn rejects_invalid_schema_cases() {
         let cases = [
             (
-                r#"[commands.dev]
+                r#"schema_version = 1
+[commands.dev]
 argv = ["pnpm"]
 shell = "pnpm dev"
 "#,
                 PolicyParseError::CommandSpecConflict { command: "dev".to_owned() },
             ),
             (
-                r#"[commands.dev]
+                r#"schema_version = 1
+[commands.dev]
 argv = ["pnpm"]
 secrets = ["DATABASE_URL"]
 "#,
                 PolicyParseError::SecretsFieldUnsupported { command: "dev".to_owned() },
             ),
             (
-                r#"[commands.dev]
+                r#"schema_version = 1
+[commands.dev]
 name = "other"
 argv = ["pnpm"]
 "#,
                 PolicyParseError::NameFieldUnsupported { command: "dev".to_owned() },
             ),
             (
-                r#"[commands.dev]
+                r#"schema_version = 1
+[commands.dev]
 argv = ["pnpm"]
 required_secrets = ["DATABASE_URL", "DATABASE_URL"]
 "#,
@@ -140,7 +146,8 @@ required_secrets = ["DATABASE_URL", "DATABASE_URL"]
                 },
             ),
             (
-                r#"[commands.dev]
+                r#"schema_version = 1
+[commands.dev]
 argv = ["pnpm"]
 required_secrets = ["DATABASE_URL"]
 optional_secrets = ["DATABASE_URL"]
@@ -151,7 +158,8 @@ optional_secrets = ["DATABASE_URL"]
                 },
             ),
             (
-                r#"[commands.dev]
+                r#"schema_version = 1
+[commands.dev]
 argv = ["pnpm"]
 optional_secrets = ["database_url"]
 "#,
@@ -162,7 +170,8 @@ optional_secrets = ["database_url"]
                 },
             ),
             (
-                r"[commands.dev]
+                r"schema_version = 1
+[commands.dev]
 argv = []
 ",
                 PolicyParseError::EmptyArgv { command: "dev".to_owned() },
@@ -179,6 +188,8 @@ argv = []
     -> Result<(), Box<dyn Error>> {
         let document = PolicyDocument::from_toml_str(
             r#"
+schema_version = 1
+
 [commands.dev]
 argv = ["pnpm", "dev"]
 inherit_env = ["DATABASE_URL", "API_KEY"]
@@ -206,28 +217,32 @@ allow_remote_docker = true
     fn deny_by_default_rejects_permissive_secret_authorization_variants() {
         let cases = [
             (
-                r#"[commands.dev]
+                r#"schema_version = 1
+[commands.dev]
 argv = ["pnpm"]
 allowed_secrets = ["DATABASE_URL"]
 "#,
                 "allowed_secrets",
             ),
             (
-                r#"[commands.dev]
+                r#"schema_version = 1
+[commands.dev]
 argv = ["pnpm"]
 secret = "DATABASE_URL"
 "#,
                 "secret",
             ),
             (
-                r#"[commands.dev]
+                r#"schema_version = 1
+[commands.dev]
 argv = ["pnpm"]
 all_secrets = true
 "#,
                 "all_secrets",
             ),
             (
-                r#"[commands.dev]
+                r#"schema_version = 1
+[commands.dev]
 argv = ["pnpm"]
 secrets = ["DATABASE_URL"]
 "#,
@@ -251,7 +266,8 @@ secrets = ["DATABASE_URL"]
     #[test]
     fn rejects_ttl_above_builtin_policy_cap() {
         let result = PolicyDocument::from_toml_str(
-            r#"[commands.dev]
+            r#"schema_version = 1
+[commands.dev]
 argv = ["pnpm"]
 ttl = "9h"
 "#,
@@ -271,7 +287,8 @@ ttl = "9h"
     fn rejects_invalid_ttl_duration_grammar() {
         for value in ["0s", "1h30m", "1.5h", "1H", " 1h", "1h "] {
             let result = PolicyDocument::from_toml_str(&format!(
-                r#"[commands.dev]
+                r#"schema_version = 1
+[commands.dev]
 argv = ["pnpm"]
 ttl = "{value}"
 "#
@@ -290,7 +307,8 @@ ttl = "{value}"
     #[test]
     fn rejects_missing_command_spec() {
         let result = PolicyDocument::from_toml_str(
-            r#"[commands.dev]
+            r#"schema_version = 1
+[commands.dev]
 required_secrets = ["DATABASE_URL"]
 "#,
         );
@@ -300,7 +318,8 @@ required_secrets = ["DATABASE_URL"]
     #[test]
     fn rejects_empty_shell_string() {
         let result = PolicyDocument::from_toml_str(
-            r#"[commands.dev]
+            r#"schema_version = 1
+[commands.dev]
 shell = "   "
 "#,
         );
@@ -310,7 +329,8 @@ shell = "   "
     #[test]
     fn rejects_invalid_env_mode() {
         let result = PolicyDocument::from_toml_str(
-            r#"[commands.dev]
+            r#"schema_version = 1
+[commands.dev]
 argv = ["pnpm"]
 env_mode = "garbage"
 "#,
@@ -327,7 +347,8 @@ env_mode = "garbage"
     #[test]
     fn rejects_invalid_override_behavior() {
         let result = PolicyDocument::from_toml_str(
-            r#"[commands.dev]
+            r#"schema_version = 1
+[commands.dev]
 argv = ["pnpm"]
 override = "garbage"
 "#,
@@ -344,7 +365,8 @@ override = "garbage"
     #[test]
     fn rejects_invalid_external_env_source_string() {
         let result = PolicyDocument::from_toml_str(
-            r#"[commands.dev]
+            r#"schema_version = 1
+[commands.dev]
 argv = ["pnpm"]
 external_env_sources = ["ftp"]
 "#,
@@ -361,7 +383,8 @@ external_env_sources = ["ftp"]
     #[test]
     fn rejects_empty_external_env_file_path() {
         let result = PolicyDocument::from_toml_str(
-            r#"[commands.dev]
+            r#"schema_version = 1
+[commands.dev]
 argv = ["pnpm"]
 external_env_sources = [{ file = "" }]
 "#,
@@ -375,7 +398,8 @@ external_env_sources = [{ file = "" }]
     #[test]
     fn allowed_secrets_is_sorted_union_of_required_and_optional() -> Result<(), Box<dyn Error>> {
         let document = PolicyDocument::from_toml_str(
-            r#"[commands.api]
+            r#"schema_version = 1
+[commands.api]
 argv = ["pnpm", "dev"]
 required_secrets = ["ZEBRA_KEY", "API_TOKEN"]
 optional_secrets = ["OPENAI_KEY", "BETA_FLAG"]
@@ -400,7 +424,8 @@ optional_secrets = ["OPENAI_KEY", "BETA_FLAG"]
     #[test]
     fn optional_secrets_absent_from_required_are_still_allowed() -> Result<(), Box<dyn Error>> {
         let document = PolicyDocument::from_toml_str(
-            r#"[commands.api]
+            r#"schema_version = 1
+[commands.api]
 argv = ["server"]
 required_secrets = ["DB_URL"]
 optional_secrets = ["REDIS_URL"]
@@ -419,12 +444,14 @@ optional_secrets = ["REDIS_URL"]
     fn confirm_and_require_user_verification_explicit_false_differ_from_absent()
     -> Result<(), Box<dyn Error>> {
         let document_absent = PolicyDocument::from_toml_str(
-            r#"[commands.api]
+            r#"schema_version = 1
+[commands.api]
 argv = ["server"]
 "#,
         )?;
         let document_explicit = PolicyDocument::from_toml_str(
-            r#"[commands.api]
+            r#"schema_version = 1
+[commands.api]
 argv = ["server"]
 confirm = false
 require_user_verification = false
@@ -442,7 +469,8 @@ require_user_verification = false
     #[test]
     fn confirm_true_with_require_user_verification_true_parses() -> Result<(), Box<dyn Error>> {
         let document = PolicyDocument::from_toml_str(
-            r#"[commands.deploy]
+            r#"schema_version = 1
+[commands.deploy]
 shell = "pnpm deploy"
 required_secrets = ["DEPLOY_TOKEN"]
 confirm = true
@@ -459,7 +487,8 @@ require_user_verification = true
     fn ttl_at_exact_maximum_is_accepted() -> Result<(), Box<dyn Error>> {
         let max_hours = MAX_COMMAND_POLICY_TTL_SECONDS / 3600;
         let document = PolicyDocument::from_toml_str(&format!(
-            r#"[commands.dev]
+            r#"schema_version = 1
+[commands.dev]
 argv = ["pnpm"]
 ttl = "{max_hours}h"
 "#
@@ -485,6 +514,8 @@ name = "empty"
     fn document_with_multiple_commands_parses_all() -> Result<(), Box<dyn Error>> {
         let document = PolicyDocument::from_toml_str(
             r#"
+schema_version = 1
+
 [commands.dev]
 argv = ["pnpm", "dev"]
 required_secrets = ["DATABASE_URL"]
@@ -513,7 +544,8 @@ confirm = true
 
     #[test]
     fn from_str_impl_is_equivalent_to_from_toml_str() -> Result<(), Box<dyn Error>> {
-        let input = r#"[commands.api]
+        let input = r#"schema_version = 1
+[commands.api]
 argv = ["node", "server.js"]
 required_secrets = ["API_KEY"]
 "#;
@@ -531,14 +563,16 @@ required_secrets = ["API_KEY"]
 
     #[test]
     fn rejects_commands_not_a_table() {
-        let result = PolicyDocument::from_toml_str("commands = 42");
+        let result = PolicyDocument::from_toml_str("schema_version = 1\ncommands = 42");
         assert_eq!(result, Err(PolicyParseError::CommandsMustBeTable));
     }
 
     #[test]
     fn rejects_command_body_that_is_not_a_table() {
         let result = PolicyDocument::from_toml_str(
-            r#"[commands]
+            r#"
+schema_version = 1
+[commands]
 dev = 42
 "#,
         );
@@ -551,7 +585,9 @@ dev = 42
     #[test]
     fn rejects_command_with_unknown_field() {
         let result = PolicyDocument::from_toml_str(
-            r#"[commands.dev]
+            r#"
+schema_version = 1
+[commands.dev]
 argv = ["pnpm"]
 unknown_field = "value"
 "#,
@@ -562,7 +598,9 @@ unknown_field = "value"
     #[test]
     fn rejects_command_with_wrong_field_type() {
         let result = PolicyDocument::from_toml_str(
-            r#"[commands.dev]
+            r#"
+schema_version = 1
+[commands.dev]
 argv = "not-a-list"
 "#,
         );
@@ -572,7 +610,9 @@ argv = "not-a-list"
     #[test]
     fn rejects_command_with_non_bool_confirm() {
         let result = PolicyDocument::from_toml_str(
-            r#"[commands.dev]
+            r#"
+schema_version = 1
+[commands.dev]
 argv = ["pnpm"]
 confirm = "yes"
 "#,
@@ -583,7 +623,9 @@ confirm = "yes"
     #[test]
     fn rejects_secrets_with_empty_string_name() {
         let result = PolicyDocument::from_toml_str(
-            r#"[commands.dev]
+            r#"
+schema_version = 1
+[commands.dev]
 argv = ["pnpm"]
 required_secrets = [""]
 "#,
@@ -601,7 +643,9 @@ required_secrets = [""]
     #[test]
     fn rejects_optional_secret_duplicate_within_field() {
         let result = PolicyDocument::from_toml_str(
-            r#"[commands.dev]
+            r#"
+schema_version = 1
+[commands.dev]
 argv = ["pnpm"]
 optional_secrets = ["TOKEN", "TOKEN"]
 "#,
@@ -619,7 +663,9 @@ optional_secrets = ["TOKEN", "TOKEN"]
     #[test]
     fn external_env_sources_file_object_is_kept_as_pathbuf() -> Result<(), Box<dyn Error>> {
         let document = PolicyDocument::from_toml_str(
-            r#"[commands.dev]
+            r#"
+schema_version = 1
+[commands.dev]
 argv = ["pnpm"]
 external_env_sources = [{ file = "/abs/path.env" }]
 "#,
@@ -636,7 +682,9 @@ external_env_sources = [{ file = "/abs/path.env" }]
     fn ttl_zero_seconds_is_rejected_by_invalid_ttl() {
         // "0s" is invalid grammar per existing test; "0m"/"0h" too. Verify "1s" parses.
         let document = PolicyDocument::from_toml_str(
-            r#"[commands.dev]
+            r#"
+schema_version = 1
+[commands.dev]
 argv = ["pnpm"]
 ttl = "1s"
 "#,
@@ -650,7 +698,9 @@ ttl = "1s"
     #[test]
     fn override_explicit_locket_value_is_marked_explicit() -> Result<(), Box<dyn Error>> {
         let document = PolicyDocument::from_toml_str(
-            r#"[commands.dev]
+            r#"
+schema_version = 1
+[commands.dev]
 argv = ["pnpm"]
 override = "locket"
 "#,
@@ -664,7 +714,9 @@ override = "locket"
     #[test]
     fn override_error_value_parses_explicit() -> Result<(), Box<dyn Error>> {
         let document = PolicyDocument::from_toml_str(
-            r#"[commands.dev]
+            r#"
+schema_version = 1
+[commands.dev]
 argv = ["pnpm"]
 override = "error"
 "#,
@@ -721,7 +773,9 @@ override = "error"
     #[test]
     fn policy_document_clone_round_trips() -> Result<(), Box<dyn Error>> {
         let document = PolicyDocument::from_toml_str(
-            r#"[commands.dev]
+            r#"
+schema_version = 1
+[commands.dev]
 argv = ["pnpm"]
 "#,
         )?;
@@ -733,7 +787,9 @@ argv = ["pnpm"]
     #[test]
     fn invalid_ttl_unit_is_rejected() {
         let result = PolicyDocument::from_toml_str(
-            r#"[commands.dev]
+            r#"
+schema_version = 1
+[commands.dev]
 argv = ["pnpm"]
 ttl = "5y"
 "#,
@@ -750,7 +806,9 @@ ttl = "5y"
     #[test]
     fn rejects_external_env_source_object_with_unknown_field() {
         let result = PolicyDocument::from_toml_str(
-            r#"[commands.dev]
+            r#"
+schema_version = 1
+[commands.dev]
 argv = ["pnpm"]
 external_env_sources = [{ file = "x", extra = "y" }]
 "#,
@@ -767,7 +825,9 @@ external_env_sources = [{ file = "x", extra = "y" }]
         // ever relaxes it, this test fails and we'd add an explicit
         // pre-parse key-count check in `from_toml_str`.
         let result = PolicyDocument::from_toml_str(
-            r#"[commands.dev]
+            r#"
+schema_version = 1
+[commands.dev]
 argv = ["pnpm", "dev"]
 
 [commands.dev]
@@ -781,15 +841,61 @@ argv = ["pnpm", "alt"]
     }
 
     #[test]
+    fn rejects_missing_schema_version() {
+        let result = PolicyDocument::from_toml_str(
+            r#"[commands.dev]
+argv = ["pnpm"]
+"#,
+        );
+        assert_eq!(result, Err(PolicyParseError::MissingSchemaVersion));
+    }
+
+    #[test]
+    fn rejects_unsupported_schema_version() {
+        let result = PolicyDocument::from_toml_str(
+            r#"schema_version = 2
+[commands.dev]
+argv = ["pnpm"]
+"#,
+        );
+        assert_eq!(result, Err(PolicyParseError::UnsupportedSchemaVersion { version: 2 }));
+    }
+
+    #[test]
+    fn rejects_unknown_top_level_key() {
+        let result = PolicyDocument::from_toml_str(
+            r#"schema_version = 1
+foo = "bar"
+
+[commands.dev]
+argv = ["pnpm"]
+"#,
+        );
+        assert_eq!(
+            result,
+            Err(PolicyParseError::UnknownTopLevelKey { key: "foo".to_owned() })
+        );
+    }
+
+    #[test]
     fn empty_inherit_env_is_kept() -> Result<(), Box<dyn Error>> {
         let document = PolicyDocument::from_toml_str(
-            r#"[commands.dev]
+            r#"schema_version = 1
+[commands.dev]
 argv = ["pnpm"]
 inherit_env = []
 "#,
         )?;
         let policy = document.commands.get("dev").ok_or("missing dev")?;
         assert!(policy.inherit_env.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn schema_version_one_with_no_commands_parses_empty() -> Result<(), Box<dyn Error>> {
+        let document = PolicyDocument::from_toml_str("schema_version = 1\n")?;
+        assert_eq!(document.schema_version, 1);
+        assert!(document.commands.is_empty());
         Ok(())
     }
 }
@@ -827,7 +933,7 @@ mod proptest_policy {
             cmd_name in valid_command_name_strategy(),
         ) {
             let toml = format!(
-                "[commands.{cmd_name}]\nargv = [\"ls\", \"-la\"]\n"
+                "schema_version = 1\n[commands.{cmd_name}]\nargv = [\"ls\", \"-la\"]\n"
             );
             let doc = PolicyDocument::from_toml_str(&toml);
             prop_assert!(doc.is_ok(), "valid policy should parse: {doc:?}");
@@ -841,7 +947,7 @@ mod proptest_policy {
             secret in valid_secret_name_strategy(),
         ) {
             let toml = format!(
-                "[commands.{cmd_name}]\nargv = [\"run\"]\nrequired_secrets = [\"{secret}\"]\n"
+                "schema_version = 1\n[commands.{cmd_name}]\nargv = [\"run\"]\nrequired_secrets = [\"{secret}\"]\n"
             );
             let result = PolicyDocument::from_toml_str(&toml);
             prop_assert!(result.is_ok(), "valid required_secrets should parse: {result:?}");
@@ -863,7 +969,7 @@ mod proptest_policy {
             secret in valid_secret_name_strategy(),
         ) {
             let toml = format!(
-                "[commands.{cmd_name}]\nargv = [\"run\"]\noptional_secrets = [\"{secret}\"]\n"
+                "schema_version = 1\n[commands.{cmd_name}]\nargv = [\"run\"]\noptional_secrets = [\"{secret}\"]\n"
             );
             let result = PolicyDocument::from_toml_str(&toml);
             prop_assert!(result.is_ok(), "optional_secrets should parse: {result:?}");
@@ -876,20 +982,32 @@ mod proptest_policy {
         }
 
         #[test]
-        fn document_with_no_commands_parses_empty(
+        fn unknown_top_level_keys_are_rejected(
             extra_key in "[a-z]{3,10}",
             extra_val in "[a-z]{3,10}",
         ) {
-            let toml = format!("{extra_key} = \"{extra_val}\"\n");
+            // schema_version is required; "commands" and other recognized v1 keys
+            // pass; everything else must error with UnknownTopLevelKey so future
+            // schema additions cannot be silently ignored.
+            prop_assume!(![
+                "schema_version", "commands", "project_id", "name",
+                "default_profile", "bootstrap", "scan", "example",
+            ].contains(&extra_key.as_str()));
+            let toml = format!("schema_version = 1\n{extra_key} = \"{extra_val}\"\n");
             let result = PolicyDocument::from_toml_str(&toml);
-            prop_assert!(result.is_ok(), "non-commands top-level keys are ignored: {result:?}");
-            prop_assert_eq!(result.unwrap().commands.len(), 0);
+            prop_assert!(
+                matches!(
+                    &result,
+                    Err(PolicyParseError::UnknownTopLevelKey { key }) if key == &extra_key,
+                ),
+                "unknown top-level key must be rejected: {result:?}"
+            );
         }
 
         #[test]
         fn name_field_in_command_is_always_rejected(cmd_name in valid_command_name_strategy()) {
             let toml = format!(
-                "[commands.{cmd_name}]\nargv = [\"run\"]\nname = \"forbidden\"\n"
+                "schema_version = 1\n[commands.{cmd_name}]\nargv = [\"run\"]\nname = \"forbidden\"\n"
             );
             let result = PolicyDocument::from_toml_str(&toml);
             prop_assert!(
@@ -901,7 +1019,7 @@ mod proptest_policy {
         #[test]
         fn secrets_field_in_command_is_always_rejected(cmd_name in valid_command_name_strategy()) {
             let toml = format!(
-                "[commands.{cmd_name}]\nargv = [\"run\"]\nsecrets = [\"DATABASE_URL\"]\n"
+                "schema_version = 1\n[commands.{cmd_name}]\nargv = [\"run\"]\nsecrets = [\"DATABASE_URL\"]\n"
             );
             let result = PolicyDocument::from_toml_str(&toml);
             prop_assert!(
@@ -916,14 +1034,14 @@ mod proptest_policy {
             shell_cmd in "[a-z][a-z ]{4,29}",
         ) {
             let toml =
-                format!("[commands.{cmd_name}]\nshell = \"{shell_cmd}\"\n");
+                format!("schema_version = 1\n[commands.{cmd_name}]\nshell = \"{shell_cmd}\"\n");
             let result = PolicyDocument::from_toml_str(&toml);
             prop_assert!(result.is_ok(), "shell command spec should parse: {result:?}");
         }
 
         #[test]
         fn commands_value_that_is_not_table_always_errors(scalar in 1i64..100) {
-            let toml = format!("commands = {scalar}\n");
+            let toml = format!("schema_version = 1\ncommands = {scalar}\n");
             let result = PolicyDocument::from_toml_str(&toml);
             prop_assert_eq!(result, Err(PolicyParseError::CommandsMustBeTable));
         }
@@ -936,7 +1054,7 @@ mod proptest_policy {
         ) {
             prop_assume!(required != optional);
             let toml = format!(
-                "[commands.{cmd_name}]\nargv = [\"run\"]\nrequired_secrets = [\"{required}\"]\noptional_secrets = [\"{optional}\"]\n"
+                "schema_version = 1\n[commands.{cmd_name}]\nargv = [\"run\"]\nrequired_secrets = [\"{required}\"]\noptional_secrets = [\"{optional}\"]\n"
             );
             let result = PolicyDocument::from_toml_str(&toml);
             prop_assert!(result.is_ok(), "distinct required+optional should parse: {result:?}");
