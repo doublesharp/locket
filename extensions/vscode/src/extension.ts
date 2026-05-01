@@ -98,6 +98,9 @@ function showRevealPanel(secretName: string, response: RevealResponsePayload): v
 
 function revealErrorMessage(error: unknown): string {
   if (error instanceof AgentClientError) {
+    if (error.displayReason !== undefined) {
+      return `${error.displayReason} ${error.nextAction ?? ''}`.trim();
+    }
     if (error.kind === 'agent' && error.code !== undefined) {
       return `Locket agent denied reveal: ${error.code}`;
     }

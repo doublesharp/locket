@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
+import { AgentClientError } from './agentClient';
 import {
   connectingStatusBarPlan,
   statusEventBarPlan,
@@ -50,4 +51,7 @@ test('status bar model renders stream events and unavailable state', () => {
   assert.equal(unavailable.text, '$(warning) Locket');
   assert.equal(unavailable.background, 'warning');
   assert.match(unavailable.tooltip, /socket missing/u);
+
+  const typedUnavailable = unavailableStatusBarPlan(AgentClientError.unavailable('socket missing'));
+  assert.equal(typedUnavailable.tooltip, 'The local agent is unavailable. Run locket agent start, then retry.');
 });

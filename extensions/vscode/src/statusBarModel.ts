@@ -48,6 +48,13 @@ export function statusPayloadBarPlan(status: StatusPayload, detail = 'snapshot')
 
 export function unavailableStatusBarPlan(error: AgentClientError | Error): StatusBarPlan {
   const message = error.message.trim();
+  if (error instanceof AgentClientError && error.displayReason !== undefined) {
+    return {
+      text: '$(warning) Locket',
+      tooltip: `${error.displayReason} ${error.nextAction ?? ''}`.trim(),
+      background: 'warning',
+    };
+  }
   return {
     text: '$(warning) Locket',
     tooltip: `Locket agent unavailable${message.length > 0 ? `: ${message}` : ''}`,

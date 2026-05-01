@@ -53,6 +53,11 @@ export interface AgentProtocolErrorBody {
   readonly retryable: boolean;
 }
 
+export interface ErrorDisplayCopy {
+  readonly reason: string;
+  readonly nextAction: string;
+}
+
 export interface RequestEnvelope {
   readonly v: typeof PROTOCOL_VERSION;
   readonly id: string;
@@ -84,22 +89,27 @@ export class AgentClientError extends Error {
   public readonly kind: 'unavailable' | 'protocol' | 'agent';
   public readonly code?: string;
   public readonly retryable: boolean;
+  public readonly displayReason?: string;
+  public readonly nextAction?: string;
 
   private constructor(
     kind: AgentClientError['kind'],
     message: string,
     retryable: boolean,
     code?: string,
+    displayCopy?: ErrorDisplayCopy,
   ) {
     super(message);
     this.name = 'AgentClientError';
     this.kind = kind;
     this.code = code;
     this.retryable = retryable;
+    this.displayReason = displayCopy?.reason;
+    this.nextAction = displayCopy?.nextAction;
   }
 
   public static unavailable(message: string): AgentClientError {
-    return new AgentClientError('unavailable', message, true);
+    return new AgentClientError('unavailable', message, true, 'AgentUnavailable', displayCopyForAgentCode('AgentUnavailable'));
   }
 
   public static protocol(message: string): AgentClientError {
@@ -107,8 +117,207 @@ export class AgentClientError extends Error {
   }
 
   public static agent(error: AgentProtocolErrorBody): AgentClientError {
-    return new AgentClientError('agent', error.message, error.retryable, error.error);
+    const displayCopy = displayCopyForAgentCode(error.error) ?? {
+      reason: 'The agent rejected the request.',
+      nextAction: 'See the agent logs for details.',
+    };
+    return new AgentClientError('agent', error.message, error.retryable, error.error, displayCopy);
   }
+}
+
+const ERROR_DISPLAY_COPY: Record<string, ErrorDisplayCopy> = {
+  InvalidReference: {
+    reason: 'The Locket reference is invalid.',
+    nextAction: 'Fix the reference syntax, profile, key, source, or version.',
+  },
+  GitWorktreeRequired: {
+    reason: 'This command requires a Git worktree.',
+    nextAction: 'Run the command inside a Git worktree or scan an explicit path.',
+  },
+  InvalidSecretName: {
+    reason: 'The secret name is invalid.',
+    nextAction: 'Use an uppercase environment-style name.',
+  },
+  InvalidProfileName: {
+    reason: 'The profile name is invalid.',
+    nextAction: 'Use a lowercase profile name such as dev or staging.',
+  },
+  PolicyValidationIncomplete: {
+    reason: 'Policy validation could not finish.',
+    nextAction: 'Start or unlock the agent, then rerun policy validation.',
+  },
+  InvalidPolicy: {
+    reason: 'The policy is invalid.',
+    nextAction: 'Fix the policy document and retry.',
+  },
+  PolicyNotFound: {
+    reason: 'The policy was not found.',
+    nextAction: 'Add the policy or choose an existing policy name.',
+  },
+  EnvironmentConflict: {
+    reason: 'Environment variable injection would overwrite a protected name.',
+    nextAction: 'Rename the variable or change the policy override mode.',
+  },
+  MetadataInvalid: {
+    reason: 'Metadata is invalid.',
+    nextAction: 'Remove unsupported characters or values and retry.',
+  },
+  MetadataLooksLikeSecret: {
+    reason: 'Metadata looks like secret material.',
+    nextAction: 'Remove the secret-like metadata or store it as a secret.',
+  },
+  ConfirmationFailed: {
+    reason: 'The confirmation text did not match.',
+    nextAction: 'Retry and type the requested confirmation exactly.',
+  },
+  TtyRequired: {
+    reason: 'An interactive terminal is required.',
+    nextAction: 'Retry from an interactive terminal.',
+  },
+  ScanFindingBlocked: {
+    reason: 'Scan findings blocked the command.',
+    nextAction: 'Review the findings, rotate exposed values, or suppress intentional matches.',
+  },
+  SecretAlreadyExists: {
+    reason: 'The secret already exists.',
+    nextAction: 'Use rotate/update behavior or choose a different source.',
+  },
+  AccessDenied: {
+    reason: 'Policy or trust rules denied the action.',
+    nextAction: 'Request the required grant, policy change, or team role.',
+  },
+  TeamRoleDenied: {
+    reason: 'Your team role does not allow this action.',
+    nextAction: 'Ask an owner or maintainer to perform or authorize the action.',
+  },
+  ProjectRootUntrusted: {
+    reason: 'The project root is not trusted.',
+    nextAction: 'Run locket project trust-root from the intended project path.',
+  },
+  ProjectNotFound: {
+    reason: 'No Locket project was found.',
+    nextAction: 'Run locket init or move into an existing Locket project.',
+  },
+  UnlockRequired: {
+    reason: 'The vault is locked.',
+    nextAction: 'Run locket unlock or approve an agent unlock prompt.',
+  },
+  GrantRequired: {
+    reason: 'No live grant covers this action.',
+    nextAction: 'Run locket allow or refresh the shell or editor grant.',
+  },
+  UserVerificationFailed: {
+    reason: 'Local user verification failed.',
+    nextAction: 'Retry verification or use a configured recovery path.',
+  },
+  SecretVersionExpired: {
+    reason: 'The pinned secret version is expired.',
+    nextAction: 'Update the reference to the current version or rotate with a new grace window.',
+  },
+  SecretDeleted: {
+    reason: 'The selected secret source is deleted.',
+    nextAction: 'Choose another source or restore from a trusted backup.',
+  },
+  SecretNotFound: {
+    reason: 'The secret was not found.',
+    nextAction: 'Check the secret name, profile, and source.',
+  },
+  ProfileNotFound: {
+    reason: 'The profile was not found.',
+    nextAction: 'Choose an existing profile or create one.',
+  },
+  AgentUnavailable: {
+    reason: 'The local agent is unavailable.',
+    nextAction: 'Run locket agent start, then retry.',
+  },
+  AgentSocketInUse: {
+    reason: 'The agent socket is already in use.',
+    nextAction: 'Stop the stale agent or retry in direct CLI mode.',
+  },
+  AutomationClientNotTrusted: {
+    reason: 'The automation client is not trusted.',
+    nextAction: 'Register the client or fix its policy scope.',
+  },
+  AutomationClientReplayDetected: {
+    reason: 'An automation client replay was detected.',
+    nextAction: 'Retry with a fresh nonce and rotate the client key if replay is suspected.',
+  },
+  ExternalSourceUnavailable: {
+    reason: 'An external environment source is unavailable.',
+    nextAction: 'Start or fix the external provider and retry.',
+  },
+  UpdateManifestInvalid: {
+    reason: 'The update manifest is invalid.',
+    nextAction: 'Refresh the manifest source or use a trusted release artifact.',
+  },
+  SecretVersionOverflow: {
+    reason: 'The secret version counter cannot advance.',
+    nextAction: 'Inspect the store metadata before retrying.',
+  },
+  CorruptDb: {
+    reason: 'The local database appears corrupt.',
+    nextAction: 'Run diagnostics and restore from a trusted backup if needed.',
+  },
+  StorageBusy: {
+    reason: 'Another Locket process is writing.',
+    nextAction: 'Wait for the other command to finish, then retry.',
+  },
+  SchemaNewerThanBinary: {
+    reason: 'The store schema is newer than this binary supports.',
+    nextAction: 'Upgrade Locket and retry.',
+  },
+  AuditIntegrityFailed: {
+    reason: 'Audit chain verification failed.',
+    nextAction: 'Investigate store tampering or restore from backup.',
+  },
+  KeychainUnavailable: {
+    reason: 'The keychain is unavailable.',
+    nextAction: 'Unlock with passphrase fallback or run recovery.',
+  },
+  LostRecoveryCode: {
+    reason: 'The recovery code is missing.',
+    nextAction: 'Rotate recovery while the vault is still unlocked.',
+  },
+  LostKeychainEntry: {
+    reason: 'The keychain entry is missing.',
+    nextAction: 'Run locket recover with the recovery code.',
+  },
+  UnrecoverableVault: {
+    reason: 'The vault cannot be recovered on this device.',
+    nextAction: 'Restore from another trusted device or reinitialize the project.',
+  },
+  BundleVerificationFailed: {
+    reason: 'The sealed bundle failed verification.',
+    nextAction: 'Request a fresh bundle or verify it on an addressed device.',
+  },
+  InviteExpired: {
+    reason: 'The invite has expired.',
+    nextAction: 'Ask a maintainer for a fresh invite.',
+  },
+  TeamBundleConflict: {
+    reason: 'The team bundle conflicts with local state.',
+    nextAction: 'Choose a metadata-only conflict resolution path.',
+  },
+  DeviceRevoked: {
+    reason: 'The device has been revoked.',
+    nextAction: 'Add a new trusted device or request a fresh team invite.',
+  },
+  ReplayDetected: {
+    reason: 'A replayed invite or request was detected.',
+    nextAction: 'Request a fresh invite or retry with a new nonce.',
+  },
+  DeviceDescriptorInvalid: {
+    reason: 'The device descriptor is invalid.',
+    nextAction: 'Recreate the descriptor on the trusted device.',
+  },
+  InviteSignatureInvalid: {
+    reason: 'The invite signature is invalid.',
+    nextAction: 'Reject the invite and request a new one from the issuer.',
+  },
+};
+
+export function displayCopyForAgentCode(code: string): ErrorDisplayCopy | undefined {
+  return ERROR_DISPLAY_COPY[code];
 }
 
 export class AgentClient {

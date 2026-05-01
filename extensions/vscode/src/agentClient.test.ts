@@ -5,7 +5,13 @@ import * as path from 'node:path';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { AgentClient, AgentClientError, RequestEnvelope, resolveAgentSocketPath } from './agentClient';
+import {
+  AgentClient,
+  AgentClientError,
+  RequestEnvelope,
+  displayCopyForAgentCode,
+  resolveAgentSocketPath,
+} from './agentClient';
 
 test('status round trips over the agent socket frame protocol', async () => {
   const { socketPath, cleanup } = await temporarySocketPath();
@@ -72,6 +78,8 @@ test('agent error envelopes become typed client errors', async () => {
         assert.equal(error.kind, 'agent');
         assert.equal(error.code, 'UnlockRequired');
         assert.equal(error.message, 'unlock required');
+        assert.equal(error.displayReason, 'The vault is locked.');
+        assert.equal(error.nextAction, 'Run locket unlock or approve an agent unlock prompt.');
         assert.equal(error.retryable, false);
         return true;
       },
@@ -80,6 +88,22 @@ test('agent error envelopes become typed client errors', async () => {
     server.close();
     await cleanup();
   }
+});
+
+test('typed display copy mirrors shared Locket error text', () => {
+  assert.deepEqual(displayCopyForAgentCode('GrantRequired'), {
+    reason: 'No live grant covers this action.',
+    nextAction: 'Run locket allow or refresh the shell or editor grant.',
+  });
+  assert.deepEqual(displayCopyForAgentCode('AgentUnavailable'), {
+    reason: 'The local agent is unavailable.',
+    nextAction: 'Run locket agent start, then retry.',
+  });
+  assert.equal(displayCopyForAgentCode('ProtocolError'), undefined);
+
+  const unavailable = AgentClientError.unavailable('socket missing');
+  assert.equal(unavailable.displayReason, 'The local agent is unavailable.');
+  assert.equal(unavailable.nextAction, 'Run locket agent start, then retry.');
 });
 
 test('status subscription streams status events until disposed', async () => {
