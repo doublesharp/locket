@@ -418,7 +418,7 @@ Shipped: `invite-codec`, `invite-replay-protect`,
 issuer fingerprint confirmation, accept denial rows, and revoke
 flows. 2026-04-30 audit found one remaining gap:
 
-- [ ] **invite-sealed-payload-import** (partial — type lands; encrypt+apply deferred): spec lines 7, 28, and 67
+- [~] **invite-sealed-payload-import** (in-flight: Codex, partial — type lands; encrypt+apply deferred): spec lines 7, 28, and 67
   require invites to carry plaintext profile secret/fingerprint
   keys and command policies inside an age-sealed payload addressed
   to the recipient device sealing key, with `team accept` rewrapping
