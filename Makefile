@@ -3,6 +3,7 @@ SHELL := /bin/bash
 CARGO ?= cargo
 CARGO_DENY ?= cargo deny
 CARGO_AUDIT ?= cargo audit
+CARGO_AUDITABLE ?= cargo auditable
 CARGO_GEIGER ?= cargo geiger
 CARGO_VET ?= cargo vet
 CARGO_MACHETE ?= cargo machete
@@ -34,7 +35,7 @@ else
 CARGO_OFFLINE_FLAG :=
 endif
 
-.PHONY: ci ci-local ci-strict fmt fmt-check clippy test nextest coverage coverage-html coverage-branch mutation supply-chain supply-chain-local audit deny vet unsafe-inventory sbom supply-chain-exceptions dependency-hygiene machete udeps bench-fixtures bench bench-ci bench-report perf-agent-idle-memory perf-passphrase-unlock perf-recovery-envelope-unlock slsa-provenance fuzz-list fuzz-smoke fuzz fuzz-nightly fuzz-minimize leak-canary docs-check app-ui-install app-ui-check app-ui-build vscode-vsix-package clean
+.PHONY: ci ci-local ci-strict fmt fmt-check clippy test nextest coverage coverage-html coverage-branch mutation supply-chain supply-chain-local audit deny vet unsafe-inventory sbom supply-chain-exceptions dependency-hygiene machete udeps bench-fixtures bench bench-ci bench-report perf-agent-idle-memory perf-passphrase-unlock perf-recovery-envelope-unlock slsa-provenance fuzz-list fuzz-smoke fuzz fuzz-nightly fuzz-minimize leak-canary docs-check app-ui-install app-ui-check app-ui-build vscode-vsix-package release-auditable release-auditable-print-deps clean
 
 # Local default gate. It avoids network by default and skips missing optional tools
 # with explicit warnings. Use `make ci-strict OFFLINE=0 STRICT=1` for release-style
@@ -188,6 +189,16 @@ app-ui-build: app-ui-install
 
 vscode-vsix-package:
 	PNPM="$(PNPM)" scripts/package-vscode-extension.sh
+
+# release-auditable builds the shipped binaries with cargo-auditable so that
+# the resolved dependency graph is embedded into each artifact, then verifies
+# the embedded SBOM is readable with `cargo audit bin`. See
+# scripts/release-build.sh and docs/specs/engineering.md:125.
+release-auditable:
+	CARGO="$(CARGO)" CARGO_AUDITABLE="$(CARGO_AUDITABLE)" CARGO_AUDIT="$(CARGO_AUDIT)" scripts/release-build.sh
+
+release-auditable-print-deps:
+	CARGO="$(CARGO)" CARGO_AUDITABLE="$(CARGO_AUDITABLE)" CARGO_AUDIT="$(CARGO_AUDIT)" scripts/release-build.sh --print-deps
 
 clean:
 	$(CARGO) clean
