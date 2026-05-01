@@ -968,6 +968,7 @@ async fn list_policies_filters_project_and_applies_aliases() {
                 allowed_secrets: vec!["DATABASE_URL".to_owned(), "OPENAI_API_KEY".to_owned()],
                 confirm: true,
                 require_user_verification: true,
+                require_agent: true,
                 allow_remote_docker: false,
                 ttl_seconds: 300,
                 env_mode: "minimal".to_owned(),
@@ -984,6 +985,7 @@ async fn list_policies_filters_project_and_applies_aliases() {
                 allowed_secrets: Vec::new(),
                 confirm: false,
                 require_user_verification: false,
+                require_agent: false,
                 allow_remote_docker: false,
                 ttl_seconds: 900,
                 env_mode: "strict".to_owned(),
@@ -1000,6 +1002,7 @@ async fn list_policies_filters_project_and_applies_aliases() {
                 allowed_secrets: vec!["OTHER_SECRET".to_owned()],
                 confirm: false,
                 require_user_verification: false,
+                require_agent: false,
                 allow_remote_docker: false,
                 ttl_seconds: 900,
                 env_mode: "minimal".to_owned(),
@@ -1033,6 +1036,7 @@ async fn list_policies_filters_project_and_applies_aliases() {
     assert_eq!(rows[1]["command_kind"], "argv");
     assert_eq!(rows[1]["ttl_seconds"], 300);
     assert_eq!(rows[1]["confirm"], true);
+    assert_eq!(rows[1]["require_agent"], true);
     assert!(rows[1]["required_secrets"][0].as_str().unwrap().starts_with("secret-"));
 }
 
@@ -1139,6 +1143,7 @@ async fn request_grant_uses_saved_policy_ttl_when_policy_name_is_present() {
             allowed_secrets: vec!["DATABASE_URL".to_owned()],
             confirm: false,
             require_user_verification: false,
+            require_agent: false,
             allow_remote_docker: false,
             ttl_seconds: 300,
             env_mode: "minimal".to_owned(),

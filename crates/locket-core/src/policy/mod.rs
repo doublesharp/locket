@@ -57,6 +57,7 @@ optional_secrets = ["OPENAI_API_KEY"]
         assert!(!policy.allow_remote_docker);
         assert!(!policy.confirm);
         assert!(!policy.require_user_verification);
+        assert!(!policy.require_agent);
         Ok(())
     }
 
@@ -73,6 +74,7 @@ override = "preserve"
 external_env_sources = ["parent", "compose", "ide", { file = ".env.local" }]
 confirm = true
 require_user_verification = true
+require_agent = true
 allow_remote_docker = true
 ttl = "30m"
 "#,
@@ -96,6 +98,7 @@ ttl = "30m"
         );
         assert!(policy.confirm);
         assert!(policy.require_user_verification);
+        assert!(policy.require_agent);
         assert!(policy.allow_remote_docker);
         assert_eq!(policy.ttl.as_secs(), 30 * 60);
         Ok(())

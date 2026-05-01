@@ -31,6 +31,7 @@ pub enum CommandSpec {
 
 /// A normalized command policy from `[commands.<name>]`.
 #[derive(Debug, Clone, Eq, PartialEq)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct CommandPolicy {
     /// Policy name derived from the TOML table key.
     pub name: String,
@@ -58,6 +59,9 @@ pub struct CommandPolicy {
     pub confirm: bool,
     /// Whether execution requires local user verification.
     pub require_user_verification: bool,
+    /// Whether execution must use the local agent path and fail closed
+    /// when the daemon is unavailable.
+    pub require_agent: bool,
     /// Live agent grant duration for this policy.
     pub ttl: Duration,
 }
@@ -161,6 +165,7 @@ impl CommandPolicy {
             allow_remote_docker: raw.allow_remote_docker.unwrap_or(false),
             confirm: raw.confirm.unwrap_or(false),
             require_user_verification: raw.require_user_verification.unwrap_or(false),
+            require_agent: raw.require_agent.unwrap_or(false),
             ttl,
         })
     }
@@ -181,6 +186,7 @@ struct RawCommandPolicy {
     allow_remote_docker: Option<bool>,
     confirm: Option<bool>,
     require_user_verification: Option<bool>,
+    require_agent: Option<bool>,
     ttl: Option<String>,
 }
 

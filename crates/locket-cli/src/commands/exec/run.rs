@@ -3,14 +3,19 @@
 
 use std::collections::BTreeSet;
 use std::fs;
-use std::io::Write;
+use std::io::{self, Write};
 use std::path::Path;
 use std::process::{Command as ProcessCommand, ExitStatus};
 use std::str::FromStr;
 
-use locket_core::{CommandPolicy, CommandSpec, ExternalEnvSource, SecretName, SessionId};
+use locket_core::{
+    CommandPolicy, CommandSpec, ExternalEnvSource, LkReferenceUri, LocketError, SecretName,
+    SessionId,
+};
 use locket_platform::{LocalUserVerificationRequest, PlatformError};
 use locket_store::{ProfileRecord, RuntimeSessionRecord, RuntimeSessionSecretNameRetention, Store};
+use serde::Serialize;
+use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 use crate::commands::agent::ensure_agent_running_for_execution;
@@ -20,15 +25,15 @@ use crate::runtime::RuntimeContext;
 use crate::runtime::error::{
     CliError, child_exit_error, confirmation_failed_error, corrupt_db_error, exec_prepare_error,
     external_source_unavailable_error, invalid_policy_error, metadata_invalid_error,
-    unimplemented_in_build_error, user_verification_failed_error,
+    typed_cli_error, unimplemented_in_build_error, user_verification_failed_error,
 };
-use crate::runtime::key_access::default_profile;
+use crate::runtime::key_access::{MasterKeySource, default_profile, load_master_key};
 use crate::support::secret_helpers::{
     PolicySecretSelection, decrypt_secret_version, policy_secret_selections,
 };
 use crate::{
-    ResolvedProject, RunArgs, ensure_trusted_project_root, load_command_policy, now_unix_nanos,
-    open_store, require_project, write_runtime_policy_audit_if_available,
+    ResolvedProject, RunArgs, agent_socket_path, ensure_trusted_project_root, load_command_policy,
+    now_unix_nanos, open_store, require_project, write_runtime_policy_audit_if_available,
 };
 
 /// Inputs needed to run a prepared command under a runtime session record.
@@ -53,6 +58,16 @@ struct PreparedPolicyExecution {
     selections: Vec<PolicySecretSelection>,
     secret_names: Vec<String>,
     prepared: locket_exec::PreparedExecution,
+}
+
+struct AgentPolicyAccess {
+    resolve_grant_id: Option<String>,
+    binding: locket_agent::GrantBinding,
+}
+
+#[derive(serde::Deserialize)]
+struct AgentGrantResponse {
+    grant_id: String,
 }
 
 pub fn run_command(
@@ -152,7 +167,17 @@ fn prepare_policy_execution(
         )));
     }
 
-    let locket_env = policy_locket_env(context, store, resolved, profile, &selections)?;
+    let agent_required = policy.require_agent || policy_command_has_lk_references(policy);
+    let agent_access = if agent_required {
+        Some(prepare_agent_policy_access(context, resolved, profile, policy, &selections)?)
+    } else {
+        None
+    };
+    let locket_env = if let Some(agent_access) = agent_access.as_ref() {
+        policy_locket_env_via_agent(context, resolved, profile, policy, &selections, agent_access)?
+    } else {
+        policy_locket_env(context, store, resolved, profile, &selections)?
+    };
     warn_implicit_locket_override_conflicts(
         output,
         policy,
@@ -160,8 +185,21 @@ fn prepare_policy_execution(
         &external_env,
         &locket_env,
     )?;
+    let mut reference_secret_names = Vec::new();
+    let argv = if let Some(agent_access) = agent_access.as_ref() {
+        policy_argv_with_resolved_references(
+            context,
+            resolved,
+            profile,
+            policy,
+            agent_access,
+            &mut reference_secret_names,
+        )?
+    } else {
+        policy_argv(policy)
+    };
     let request = locket_exec::ExecutionRequest {
-        argv: policy_argv(policy),
+        argv,
         parent_env,
         inherit_env: policy.inherit_env.clone(),
         external_env: external_env.clone(),
@@ -176,6 +214,12 @@ fn prepare_policy_execution(
             .iter()
             .filter_map(|selection| selection.selected.as_ref().map(|secret| secret.name.as_str()))
             .chain(external_env_names.iter().map(String::as_str)),
+    );
+    let secret_names = unique_secret_names(
+        secret_names
+            .iter()
+            .map(String::as_str)
+            .chain(reference_secret_names.iter().map(String::as_str)),
     );
 
     Ok(PreparedPolicyExecution { selections, secret_names, prepared })
@@ -461,6 +505,296 @@ fn policy_locket_env(
         }
     }
     Ok(locket_env)
+}
+
+fn policy_locket_env_via_agent(
+    context: &RuntimeContext,
+    resolved: &ResolvedProject,
+    profile: &ProfileRecord,
+    policy: &CommandPolicy,
+    selections: &[PolicySecretSelection],
+    agent_access: &AgentPolicyAccess,
+) -> Result<locket_exec::EnvMap, CliError> {
+    let mut locket_env = locket_exec::EnvMap::new();
+    for selection in selections {
+        if selection.selected.is_some() {
+            let reference = format!("lk://{}/{}", profile.name, selection.name);
+            let response = resolve_reference_via_agent(
+                context,
+                resolved,
+                profile,
+                policy,
+                agent_access,
+                &reference,
+            )?;
+            locket_env.insert(selection.name.clone(), locket_exec::env_value(response.value));
+        }
+    }
+    Ok(locket_env)
+}
+
+fn prepare_agent_policy_access(
+    context: &RuntimeContext,
+    resolved: &ResolvedProject,
+    profile: &ProfileRecord,
+    policy: &CommandPolicy,
+    selections: &[PolicySecretSelection],
+) -> Result<AgentPolicyAccess, CliError> {
+    unlock_agent_for_policy(context, resolved, policy)?;
+    let binding = agent_grant_binding()?;
+    request_agent_grant(
+        context,
+        resolved,
+        profile,
+        policy,
+        locket_agent::GrantAction::RunPolicy,
+        &binding,
+    )?;
+    let needs_reference_grant =
+        policy_command_has_lk_references(policy) || selections.iter().any(|s| s.selected.is_some());
+    let resolve_grant_id = if needs_reference_grant {
+        Some(
+            request_agent_grant(
+                context,
+                resolved,
+                profile,
+                policy,
+                locket_agent::GrantAction::ResolveReference,
+                &binding,
+            )?
+            .grant_id,
+        )
+    } else {
+        None
+    };
+    Ok(AgentPolicyAccess { resolve_grant_id, binding })
+}
+
+fn unlock_agent_for_policy(
+    context: &RuntimeContext,
+    resolved: &ResolvedProject,
+    policy: &CommandPolicy,
+) -> Result<(), CliError> {
+    let (master_key, source) = load_master_key(context, resolved.config.project_id.as_str())?;
+    let method = match source {
+        MasterKeySource::OsKeyStore => locket_agent::UnlockMethod::OsKeychain,
+        MasterKeySource::PassphraseFallback => locket_agent::UnlockMethod::Passphrase,
+    };
+    let payload = serde_json::json!({
+        "project_id": resolved.config.project_id.as_str(),
+        "key": master_key.as_ref(),
+        "ttl_seconds": policy.ttl.as_secs(),
+        "method": method,
+    });
+    let _: serde_json::Value = agent_invoke(
+        context,
+        locket_agent::AgentMethod::Unlock,
+        &payload,
+        "unlock agent for policy execution",
+    )?;
+    Ok(())
+}
+
+fn request_agent_grant(
+    context: &RuntimeContext,
+    resolved: &ResolvedProject,
+    profile: &ProfileRecord,
+    policy: &CommandPolicy,
+    action: locket_agent::GrantAction,
+    binding: &locket_agent::GrantBinding,
+) -> Result<AgentGrantResponse, CliError> {
+    let payload = locket_agent::RequestGrantPayload {
+        project_id: resolved.config.project_id.to_string(),
+        profile_id: profile.id.clone(),
+        policy_name: None,
+        action,
+        ttl_seconds: policy.ttl.as_secs(),
+        binding: binding.clone(),
+    };
+    agent_invoke(context, locket_agent::AgentMethod::RequestGrant, &payload, "request agent grant")
+}
+
+fn resolve_reference_via_agent(
+    context: &RuntimeContext,
+    resolved: &ResolvedProject,
+    profile: &ProfileRecord,
+    policy: &CommandPolicy,
+    agent_access: &AgentPolicyAccess,
+    reference: &str,
+) -> Result<locket_agent::ResolveResponse, CliError> {
+    let Some(grant_id) = agent_access.resolve_grant_id.as_deref() else {
+        return Err(typed_cli_error(
+            LocketError::GrantRequired,
+            "GrantRequired: ResolveReference grant was not issued",
+        ));
+    };
+    let request = locket_agent::ResolveRequest {
+        reference: reference.to_owned(),
+        project_id: Some(resolved.config.project_id.to_string()),
+        profile_id: Some(profile.id.clone()),
+        policy_name: Some(policy.name.clone()),
+        store_path: Some(context.store_path.display().to_string()),
+        grant_id: Some(grant_id.to_owned()),
+        binding: Some(agent_access.binding.clone()),
+    };
+    agent_invoke(
+        context,
+        locket_agent::AgentMethod::ResolveReference,
+        &request,
+        "resolve lk reference",
+    )
+}
+
+fn policy_argv_with_resolved_references(
+    context: &RuntimeContext,
+    resolved: &ResolvedProject,
+    profile: &ProfileRecord,
+    policy: &CommandPolicy,
+    agent_access: &AgentPolicyAccess,
+    reference_secret_names: &mut Vec<String>,
+) -> Result<Vec<String>, CliError> {
+    match &policy.command {
+        CommandSpec::Argv(arguments) => arguments
+            .iter()
+            .map(|argument| {
+                resolve_policy_argument_reference(
+                    context,
+                    resolved,
+                    profile,
+                    policy,
+                    agent_access,
+                    argument,
+                    reference_secret_names,
+                )
+            })
+            .collect(),
+        CommandSpec::Shell(script) if script.contains("lk://") => Err(invalid_policy_error(
+            "embedded lk:// references in shell policies are not supported yet",
+        )),
+        CommandSpec::Shell(script) => Ok(shell_argv(script)),
+    }
+}
+
+fn resolve_policy_argument_reference(
+    context: &RuntimeContext,
+    resolved: &ResolvedProject,
+    profile: &ProfileRecord,
+    policy: &CommandPolicy,
+    agent_access: &AgentPolicyAccess,
+    argument: &str,
+    reference_secret_names: &mut Vec<String>,
+) -> Result<String, CliError> {
+    if !argument.contains("lk://") {
+        return Ok(argument.to_owned());
+    }
+    let parsed = LkReferenceUri::parse(argument)
+        .map_err(|_| crate::runtime::error::invalid_reference_error("invalid lk:// reference"))?;
+    reference_secret_names.push(parsed.key().as_str().to_owned());
+    let response =
+        resolve_reference_via_agent(context, resolved, profile, policy, agent_access, argument)?;
+    Ok(response.value)
+}
+
+fn policy_command_has_lk_references(policy: &CommandPolicy) -> bool {
+    match &policy.command {
+        CommandSpec::Argv(arguments) => arguments.iter().any(|argument| argument.contains("lk://")),
+        CommandSpec::Shell(script) => script.contains("lk://"),
+    }
+}
+
+fn agent_grant_binding() -> Result<locket_agent::GrantBinding, CliError> {
+    let binding = locket_platform::current_process_binding()?;
+    Ok(locket_agent::GrantBinding::new(binding.pid, binding.process_start_time))
+}
+
+fn agent_invoke<T, R>(
+    context: &RuntimeContext,
+    method: locket_agent::AgentMethod,
+    payload: &T,
+    operation: &'static str,
+) -> Result<R, CliError>
+where
+    T: Serialize,
+    R: DeserializeOwned,
+{
+    let payload = serde_json::to_value(payload)?;
+    let response = agent_invoke_value(context, method, payload, operation)?;
+    serde_json::from_value(response).map_err(CliError::from)
+}
+
+#[cfg(unix)]
+fn agent_invoke_value(
+    context: &RuntimeContext,
+    method: locket_agent::AgentMethod,
+    payload: serde_json::Value,
+    operation: &'static str,
+) -> Result<serde_json::Value, CliError> {
+    use locket_agent::{
+        DEFAULT_MAX_MESSAGE_SIZE, RequestEnvelope, ResponseEnvelope, decode_response_frame,
+        encode_frame,
+    };
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::UnixStream;
+
+    let socket_path = agent_socket_path(context);
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+    runtime.block_on(async move {
+        let mut stream = UnixStream::connect(&socket_path)
+            .await
+            .map_err(|error| agent_unavailable(operation, &error))?;
+        let request = RequestEnvelope::new(format!("run-{operation}"), method, payload);
+        let frame = encode_frame(&request, DEFAULT_MAX_MESSAGE_SIZE)
+            .map_err(|error| agent_unavailable(operation, &io::Error::other(error.to_string())))?;
+        stream.write_all(&frame).await.map_err(|error| agent_unavailable(operation, &error))?;
+        stream.flush().await.map_err(|error| agent_unavailable(operation, &error))?;
+
+        let mut buffer = Vec::with_capacity(1024);
+        loop {
+            if let Ok((response, _)) = decode_response_frame(&buffer, DEFAULT_MAX_MESSAGE_SIZE) {
+                return match response {
+                    ResponseEnvelope::Success(success) => Ok(success.payload),
+                    ResponseEnvelope::Error(error) => Err(agent_error_to_cli(&error)),
+                };
+            }
+            let mut chunk = [0_u8; 1024];
+            let read = stream
+                .read(&mut chunk)
+                .await
+                .map_err(|error| agent_unavailable(operation, &error))?;
+            if read == 0 {
+                return Err(agent_unavailable(
+                    operation,
+                    &io::Error::new(io::ErrorKind::UnexpectedEof, "agent closed connection"),
+                ));
+            }
+            buffer.extend_from_slice(&chunk[..read]);
+        }
+    })
+}
+
+#[cfg(not(unix))]
+fn agent_invoke_value(
+    _context: &RuntimeContext,
+    _method: locket_agent::AgentMethod,
+    _payload: serde_json::Value,
+    operation: &'static str,
+) -> Result<serde_json::Value, CliError> {
+    Err(typed_cli_error(
+        LocketError::AgentUnavailable,
+        format!("AgentUnavailable: {operation} requires the local agent"),
+    ))
+}
+
+fn agent_unavailable(operation: &'static str, error: &io::Error) -> CliError {
+    typed_cli_error(
+        LocketError::AgentUnavailable,
+        format!("AgentUnavailable: could not {operation}: {error}"),
+    )
+}
+
+fn agent_error_to_cli(error: &locket_agent::ErrorEnvelope) -> CliError {
+    let kind = LocketError::from_code_name(&error.error).unwrap_or(LocketError::AgentUnavailable);
+    typed_cli_error(kind, format!("{}: {}", error.error, error.message))
 }
 
 fn policy_argv(policy: &CommandPolicy) -> Vec<String> {

@@ -586,6 +586,7 @@ fn normalized_policy_json(policy: &CommandPolicy) -> serde_json::Value {
         "allow_remote_docker": policy.allow_remote_docker,
         "confirm": policy.confirm,
         "require_user_verification": policy.require_user_verification,
+        "require_agent": policy.require_agent,
         "ttl_seconds": policy.ttl.as_secs(),
     })
 }

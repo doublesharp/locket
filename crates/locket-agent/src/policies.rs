@@ -23,6 +23,7 @@ pub struct ListPoliciesResponse {
 
 /// Agent-held saved policy metadata. Never contains secret values.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct CommandPolicySnapshot {
     /// Parent project identifier.
     pub project_id: String,
@@ -42,6 +43,8 @@ pub struct CommandPolicySnapshot {
     pub confirm: bool,
     /// Whether execution requires local user verification.
     pub require_user_verification: bool,
+    /// Whether execution must go through the local agent.
+    pub require_agent: bool,
     /// Whether Docker helpers may target remote contexts.
     pub allow_remote_docker: bool,
     /// Grant TTL in seconds.
@@ -72,6 +75,7 @@ impl CommandPolicySnapshot {
             allowed_secrets: policy.allowed_secrets.iter().map(ToString::to_string).collect(),
             confirm: policy.confirm,
             require_user_verification: policy.require_user_verification,
+            require_agent: policy.require_agent,
             allow_remote_docker: policy.allow_remote_docker,
             ttl_seconds: policy.ttl.as_secs(),
             env_mode: policy.env_mode.as_str().to_owned(),
@@ -83,6 +87,7 @@ impl CommandPolicySnapshot {
 
 /// Wire row consumed by desktop policy surfaces.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct CommandPolicyRow {
     /// Stable row identifier. Alias when privacy mode is enabled.
     pub id: String,
@@ -105,6 +110,8 @@ pub struct CommandPolicyRow {
     pub confirm: bool,
     /// Whether execution requires local user verification.
     pub require_user_verification: bool,
+    /// Whether execution must go through the local agent.
+    pub require_agent: bool,
     /// Whether Docker helpers may target remote contexts.
     pub allow_remote_docker: bool,
     /// Grant TTL in seconds.
@@ -152,6 +159,7 @@ fn command_policy_row(
         allowed_secrets: secret_labels(&policy.allowed_secrets, request.privacy_redact_names),
         confirm: policy.confirm,
         require_user_verification: policy.require_user_verification,
+        require_agent: policy.require_agent,
         allow_remote_docker: policy.allow_remote_docker,
         ttl_seconds: policy.ttl_seconds,
         env_mode: policy.env_mode.clone(),

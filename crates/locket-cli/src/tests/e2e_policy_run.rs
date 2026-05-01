@@ -163,6 +163,114 @@ required_secrets = ["MISSING_SECRET"]
     Ok(())
 }
 
+/// Agent-gated path: `require_agent = true` fails closed before spawning
+/// when the local agent is unavailable.
+#[test]
+fn e2e_policy_run_require_agent_exits_agent_unavailable_before_spawn()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(directory.path().join("locket.toml"))?
+        .write_all(
+            br#"
+[commands.agent_only]
+argv = ["/bin/sh", "-c", "touch should-not-spawn"]
+require_agent = true
+"#,
+        )?;
+
+    let result = run_with_context(
+        Cli::try_parse_from(["locket", "run", "agent_only"])?,
+        &context,
+        &mut Vec::new(),
+    );
+    let Err(error) = result else {
+        return Err("agent-gated run without daemon must fail".into());
+    };
+    assert_eq!(error.exit_code(), locket_core::LocketError::AgentUnavailable.exit_code());
+    assert!(error.to_string().contains("AgentUnavailable"));
+    assert!(!directory.path().join("should-not-spawn").exists());
+
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let run_count: i64 =
+        store
+            .connection()
+            .query_row("SELECT COUNT(*) FROM runtime_sessions", [], |row| row.get(0))?;
+    assert_eq!(run_count, 0, "agent-gated failure must not create a runtime session");
+    Ok(())
+}
+
+/// Agent-gated golden path: required policy secrets are resolved through
+/// the local agent before the child process is spawned.
+#[cfg(unix)]
+#[test]
+fn e2e_policy_run_require_agent_resolves_required_secret_via_agent()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+
+    let db_args = test_secret_write_args("DATABASE_URL");
+    crate::set_secret_value(&context, &db_args, "postgres://localhost/app", "manual", 1_000)?;
+    run_with_context(
+        Cli::try_parse_from([
+            "locket",
+            "policy",
+            "add",
+            "deploy",
+            "--",
+            "/bin/sh",
+            "-c",
+            "printf 'DB=%s\\n' \"${DATABASE_URL:+present}\" > agent-run-presence.txt",
+        ])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    run_with_context(
+        Cli::try_parse_from(["locket", "policy", "require", "deploy", "DATABASE_URL"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(directory.path().join("locket.toml"))?
+        .write_all(b"require_agent = true\n")?;
+
+    std::fs::set_permissions(
+        directory.path(),
+        <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o700),
+    )?;
+    let agent = TestAgent::start(&context)?;
+    run_with_context(Cli::try_parse_from(["locket", "run", "deploy"])?, &context, &mut Vec::new())?;
+    agent.stop()?;
+
+    let presence = std::fs::read_to_string(directory.path().join("agent-run-presence.txt"))?;
+    assert_eq!(presence, "DB=present\n");
+    assert!(!presence.contains("postgres://localhost/app"));
+
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let metadata_rows = {
+        let mut statement =
+            store.connection().prepare("SELECT metadata_json FROM audit_log ORDER BY sequence")?;
+        statement.query_map([], |row| row.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()?
+    };
+    assert!(metadata_rows.iter().any(|row| row.contains("DATABASE_URL")));
+    assert!(!metadata_rows.iter().any(|row| row.contains("postgres://localhost/app")));
+    Ok(())
+}
+
 /// Confirm gate: `locket run` with `confirm = true` rejects wrong confirmation.
 #[test]
 fn e2e_policy_run_confirm_gate_rejects_wrong_confirmation() -> Result<(), Box<dyn std::error::Error>>
@@ -273,4 +381,64 @@ require_user_verification = true
         "UserVerificationFailed is exit 74"
     );
     Ok(())
+}
+
+#[cfg(unix)]
+struct TestAgent {
+    shutdown: Arc<tokio::sync::Notify>,
+    handle: std::thread::JoinHandle<Result<(), String>>,
+}
+
+#[cfg(unix)]
+impl TestAgent {
+    fn start(context: &RuntimeContext) -> Result<Self, Box<dyn std::error::Error>> {
+        let socket_path = crate::agent_socket_path(context);
+        let config = locket_agent::AgentSocketConfig::new(socket_path, "test-agent".to_owned());
+        let state = locket_agent::AgentSocketState::locked("test-agent");
+        let shutdown = Arc::new(tokio::sync::Notify::new());
+        let shutdown_signal = shutdown.clone();
+        let (ready_sender, ready_receiver) =
+            std::sync::mpsc::channel::<Result<(), locket_agent::SocketServerError>>();
+        let handle = std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|error| error.to_string())?;
+            runtime.block_on(async move {
+                let listener = match locket_agent::bind_socket_listener(&config) {
+                    Ok(listener) => {
+                        let _ignored = ready_sender.send(Ok(()));
+                        listener
+                    }
+                    Err(error) => {
+                        let _ignored = ready_sender.send(Err(error));
+                        return Ok(());
+                    }
+                };
+                loop {
+                    tokio::select! {
+                        () = shutdown_signal.notified() => return Ok(()),
+                        accepted = listener.accept() => {
+                            let (stream, _addr) = accepted.map_err(|error| error.to_string())?;
+                            let connection_state = state.clone();
+                            tokio::spawn(async move {
+                                let _outcome = locket_agent::handle_connection(
+                                    stream,
+                                    connection_state,
+                                ).await;
+                            });
+                        }
+                    }
+                }
+            })
+        });
+        ready_receiver.recv()??;
+        Ok(Self { shutdown, handle })
+    }
+
+    fn stop(self) -> Result<(), Box<dyn std::error::Error>> {
+        self.shutdown.notify_waiters();
+        self.handle.join().map_err(|_| "agent thread panicked")??;
+        Ok(())
+    }
 }
