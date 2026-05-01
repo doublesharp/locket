@@ -65,3 +65,5 @@ Regression policy:
 - A pull request fails the performance gate when it exceeds a hard budget in this file by more than 10% on the reference runner, or when it regresses a tracked benchmark by more than 20% without an accepted implementation note.
 - Release candidates must run the full fixtures and meet the absolute budgets in this file without the 10% pull-request tolerance.
 - Security invariants override performance. A benchmark improvement that weakens isolation, policy checks, audit coverage, key handling, or plaintext lifetime is invalid even if it meets the numeric target.
+
+See [performance-reference-runner.md](performance-reference-runner.md) for the named pre-release reference runners (Apple Silicon and x86_64 Linux), the CPU-governor / filesystem / power pinning rules they apply, and the placeholder mapping from each spec budget above to the current harness env var.
