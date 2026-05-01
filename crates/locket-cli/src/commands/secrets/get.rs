@@ -172,7 +172,9 @@ fn get_copy_command(
         false,
         "clipboard",
     )?;
-    let value = decrypt_current_secret(context, resolved_secret)?;
+    let value = decrypt_current_secret(context, resolved_secret).inspect_err(|error| {
+        record_locked_vault_refusal_if_applicable(context, error, resolved_secret, "COPY", "get --copy");
+    })?;
     let result = copy_to_clipboard(value.as_str(), ttl_seconds, limit);
     let status = if result.is_ok() { "SUCCESS" } else { "FAILED" };
     let clipboard_clear_supported =
@@ -244,7 +246,9 @@ fn get_reveal_command(
         force,
         "stdout",
     )?;
-    let value = decrypt_current_secret(context, resolved_secret)?;
+    let value = decrypt_current_secret(context, resolved_secret).inspect_err(|error| {
+        record_locked_vault_refusal_if_applicable(context, error, resolved_secret, "REVEAL", "get --reveal");
+    })?;
     write_value_access_audit_if_available(&ValueAccessAudit {
         context,
         resolved: resolved_secret,
@@ -261,6 +265,27 @@ fn get_reveal_command(
     })?;
     writeln!(output, "{}", value.as_str())?;
     Ok(())
+}
+
+/// Mirrors a refused-while-locked value-access into the degraded-audit
+/// log when `error` carries a `PlatformError::MasterKeyNotFound`. Always
+/// best-effort: logging failure must not mask the legitimate
+/// `UnlockRequired` return.
+fn record_locked_vault_refusal_if_applicable(
+    context: &RuntimeContext,
+    error: &CliError,
+    resolved_secret: &ResolvedSecret,
+    action: &'static str,
+    command: &'static str,
+) {
+    if matches!(error, CliError::Platform(locket_platform::PlatformError::MasterKeyNotFound)) {
+        crate::runtime::degraded_audit::record_locked_refusal(
+            context,
+            action,
+            Some(resolved_secret.project.config.project_id.as_str()),
+            command,
+        );
+    }
 }
 
 fn value_access_user_verification_or_audit_denial(

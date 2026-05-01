@@ -387,6 +387,12 @@ fn collect_ai_safe_known_secret_redactions(
 ) -> Result<Vec<KnownSecretRedaction>, CliError> {
     collect_known_secret_redactions(context, project, redact_names, timestamp).map_err(|error| {
         if matches!(error, CliError::Platform(locket_platform::PlatformError::MasterKeyNotFound)) {
+            crate::runtime::degraded_audit::record_locked_refusal(
+                context,
+                "REDACT",
+                Some(project.config.project_id.as_str()),
+                "scan ai-safe",
+            );
             unlock_required_error(
                 "UnlockRequired: ai-safe requires known-value redaction coverage; run locket unlock or pass --pattern-only",
             )

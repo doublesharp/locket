@@ -134,6 +134,17 @@ fn ai_safe_fails_closed_when_locked_unless_pattern_only() -> Result<(), Box<dyn 
     assert_error_contains(default_result, "UnlockRequired");
     assert!(!directory.path().join("spawned-default").exists());
 
+    // The locked-vault refusal must mirror into the degraded-audit log.
+    let degraded_log = directory.path().join("audit-degraded.log");
+    let degraded_body = std::fs::read_to_string(&degraded_log)?;
+    let degraded_lines: Vec<&str> = degraded_body.lines().collect();
+    assert_eq!(degraded_lines.len(), 1, "exactly one degraded-audit row expected");
+    let row: serde_json::Value = serde_json::from_str(degraded_lines[0])?;
+    assert_eq!(row["action"], "REDACT");
+    assert_eq!(row["status"], "DENIED_LOCKED");
+    assert_eq!(row["failure_reason"], "vault_locked");
+    assert_eq!(row["project_id"], project_id);
+
     let mut pattern_output = Vec::new();
     run_with_context(
         Cli::try_parse_from([
