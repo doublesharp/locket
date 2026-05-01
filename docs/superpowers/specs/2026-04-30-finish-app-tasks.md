@@ -94,7 +94,7 @@ ship. Each bullet has spec ref + code ref + suggested touches.
 
 ### C. CLI / runtime / agent
 
-- [~] (in-flight: feature/agent-windows-pipe) **agent-windows-named-pipe-sid-path**: follow-up from shipped
+- [x] **agent-windows-named-pipe-sid-path-partial**: follow-up from shipped
   14c socket placement work. `agent.md:20` requires
   `\\.\pipe\locket-agent-<sid>` with a current-user-only DACL.
   Current production startup now uses `$XDG_RUNTIME_DIR/locket` on
@@ -104,6 +104,14 @@ ship. Each bullet has spec ref + code ref + suggested touches.
   user's SID. Touches: Windows pipe listener/client transport,
   `resolve_default_agent_data_dir`, startup diagnostics, and pipe ACL
   tests.
+- [ ] **agent-windows-named-pipe-transport**: finish the remaining hard
+  transport work after `agent-windows-named-pipe-sid-path-partial`.
+  The partial shipped shared SID-based pipe path helpers, protected
+  current-user DACL SDDL generation, Windows diagnostics, and CLI path
+  resolution behind `cfg(windows)`. Remaining: create the Tokio Windows
+  named-pipe listener/client, pass the generated security descriptor
+  into pipe creation, port graceful start/status/stop over the pipe,
+  and add on-Windows ACL/transport integration coverage.
 ### D. Desktop / integrations / scan
 
 - [~] (in-flight: feature/desktop-backup-actions) **backup-recovery-view-not-wired**: `BackupRecovery.vue`

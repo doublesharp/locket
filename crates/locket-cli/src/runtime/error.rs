@@ -64,6 +64,10 @@ const fn platform_error_exit_code(error: &locket_platform::PlatformError) -> u8 
         locket_platform::PlatformError::ProcessStartTimeUnavailable => {
             LocketError::AgentUnavailable.exit_code()
         }
+        locket_platform::PlatformError::WindowsSidUnavailable(_)
+        | locket_platform::PlatformError::InvalidWindowsSid => {
+            LocketError::AgentUnavailable.exit_code()
+        }
         locket_platform::PlatformError::RecoveryEnvelopeSchemaUnsupported(_)
         | locket_platform::PlatformError::InvalidRecoveryEnvelope(_)
         | locket_platform::PlatformError::InvalidPassphraseFallback

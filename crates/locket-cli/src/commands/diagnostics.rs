@@ -796,8 +796,8 @@ fn check_agent_placeholder(context: &RuntimeContext) -> DiagnosticCheck {
 ///
 /// - Linux: `$XDG_RUNTIME_DIR/locket/agent.sock` (or `~/.locket/agent.sock`).
 /// - macOS: `~/Library/Application Support/locket/agent.sock`.
-/// - Windows: today reported as `skipped` because the named-pipe path
-///   resolution stub does not yet wire `\\.\pipe\locket-agent-<sid>`.
+/// - Windows: `\\.\pipe\locket-agent-<sid>` with a protected
+///   current-user-only DACL SDDL available for startup.
 ///
 /// Tests build a `RuntimeContext` with `agent_data_dir = None` and a
 /// tempdir-local `store_path`; the check is reported as `skipped` in
@@ -805,36 +805,57 @@ fn check_agent_placeholder(context: &RuntimeContext) -> DiagnosticCheck {
 /// test to point at the user's real `XDG_RUNTIME_DIR`.
 fn check_agent_socket_path_matches_spec(context: &RuntimeContext) -> DiagnosticCheck {
     const NAME: &str = "agent_socket_path_spec";
-    let Some(configured) = context.agent_data_dir.as_ref() else {
-        return DiagnosticCheck::skip(
-            NAME,
-            "agent_data_dir override not set (test/runtime context)",
-        );
-    };
-    let configured_socket = configured.join("agent.sock");
-    let actual_socket = agent_socket_path(context);
-    if configured_socket != actual_socket {
-        return DiagnosticCheck::fail(
-            NAME,
-            false,
-            format!(
-                "agent socket path drifted from configured agent_data_dir: actual={} configured={}",
-                actual_socket.display(),
-                configured_socket.display(),
-            ),
-        );
-    }
-
     #[cfg(target_os = "windows")]
     {
-        return DiagnosticCheck::skip(
-            NAME,
-            "windows named-pipe path resolution is a documented follow-up",
-        );
+        let actual_socket = agent_socket_path(context);
+        let pipe_name = match locket_platform::default_agent_pipe_name() {
+            Ok(pipe_name) => pipe_name,
+            Err(error) => return DiagnosticCheck::fail(NAME, false, error.to_string()),
+        };
+        let sid = match locket_platform::current_user_sid_string() {
+            Ok(sid) => sid,
+            Err(error) => return DiagnosticCheck::fail(NAME, false, error.to_string()),
+        };
+        let dacl = match locket_platform::agent_pipe_dacl_sddl_for_sid(&sid) {
+            Ok(dacl) => dacl,
+            Err(error) => return DiagnosticCheck::fail(NAME, false, error.to_string()),
+        };
+        if actual_socket != PathBuf::from(&pipe_name) {
+            return DiagnosticCheck::fail(
+                NAME,
+                false,
+                format!(
+                    "agent pipe path drifted from current-user SID: actual={} expected={}",
+                    actual_socket.display(),
+                    pipe_name,
+                ),
+            );
+        }
+        return DiagnosticCheck::pass(NAME, format!("windows named pipe path ok dacl_sddl={dacl}"));
     }
 
     #[cfg(not(target_os = "windows"))]
     {
+        let Some(configured) = context.agent_data_dir.as_ref() else {
+            return DiagnosticCheck::skip(
+                NAME,
+                "agent_data_dir override not set (test/runtime context)",
+            );
+        };
+        let configured_socket = configured.join("agent.sock");
+        let actual_socket = agent_socket_path(context);
+        if configured_socket != actual_socket {
+            return DiagnosticCheck::fail(
+                NAME,
+                false,
+                format!(
+                    "agent socket path drifted from configured agent_data_dir: actual={} configured={}",
+                    actual_socket.display(),
+                    configured_socket.display(),
+                ),
+            );
+        }
+
         let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
             return DiagnosticCheck::warn(NAME, "HOME unset; cannot validate spec path");
         };

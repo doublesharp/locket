@@ -32,7 +32,9 @@ pub struct RuntimeContext {
     /// store into a tempdir continue to derive a tempdir-local socket.
     /// Production startup populates this with the spec-mandated
     /// platform path (Linux: `$XDG_RUNTIME_DIR/locket`, macOS:
-    /// `~/Library/Application Support/locket`, Windows: stub).
+    /// `~/Library/Application Support/locket`). On Windows this remains
+    /// the pid/log data directory; the agent endpoint itself is the
+    /// SID-scoped named pipe returned by `agent_socket_path`.
     pub agent_data_dir: Option<PathBuf>,
     pub key_store: Arc<dyn MasterKeyStore + Send + Sync>,
     pub automation_client_key_store: Arc<dyn AutomationClientKeyStore + Send + Sync>,
@@ -87,12 +89,8 @@ impl RuntimeContext {
 ///   location because it is per-user, ephemeral, and `0o700` by default
 ///   on systemd installs.
 /// - macOS: `<HOME>/Library/Application Support/locket`.
-/// - Windows: today this returns `<HOME>/.locket` as a documented stub.
-///   The spec calls for `\\.\pipe\locket-agent-<sid>`; resolving the
-///   user's SID requires the `windows`/`windows-sys` crate which the
-///   CLI does not yet depend on. The Windows pipe wiring is a separate
-///   follow-up; until then, callers fall back to a HOME-relative
-///   directory and the existing direct-CLI flows still work.
+/// - Windows: `<HOME>/.locket` for pid/log data. The agent endpoint is
+///   the SID-scoped named pipe path resolved by `agent_socket_path`.
 #[must_use]
 pub fn resolve_default_agent_data_dir(home: &std::path::Path) -> Option<PathBuf> {
     resolve_agent_data_dir_for_platform(home, std::env::var_os("XDG_RUNTIME_DIR"))
@@ -118,9 +116,6 @@ fn resolve_agent_data_dir_for_platform(
     }
     #[cfg(all(not(target_os = "linux"), not(target_os = "macos")))]
     {
-        // Windows and other platforms fall back to a HOME-relative
-        // directory until the named-pipe path resolution lands. See
-        // `docs/specs/agent.md:18-21`.
         Some(home.join(".locket"))
     }
 }

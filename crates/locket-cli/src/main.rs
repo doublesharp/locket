@@ -2119,17 +2119,15 @@ pub(crate) fn ensure_trusted_project_root(
     Err(project_root_untrusted_error())
 }
 
-/// Resolves the on-disk directory the agent uses for its socket, pid
-/// file, and rotated log files.
+/// Resolves the on-disk directory the agent uses for its Unix socket,
+/// pid file, and rotated log files.
 ///
 /// Honors `RuntimeContext::agent_data_dir` when set so production
 /// startup can pin the spec-mandated platform path
-/// (`$XDG_RUNTIME_DIR/locket`, `~/Library/Application Support/locket`,
-/// or the Windows stub described in
-/// [`crate::runtime::context::resolve_default_agent_data_dir`]). Tests
-/// that build a `RuntimeContext` directly leave the field at `None`
-/// and inherit the legacy `store_path.parent()` derivation so each
-/// test's tempdir continues to own its own socket.
+/// (`$XDG_RUNTIME_DIR/locket`, `~/Library/Application Support/locket`).
+/// Tests that build a `RuntimeContext` directly leave the field at
+/// `None` and inherit the legacy `store_path.parent()` derivation so
+/// each test's tempdir continues to own its own socket.
 pub(crate) fn agent_data_dir(context: &RuntimeContext) -> PathBuf {
     if let Some(dir) = context.agent_data_dir.as_ref() {
         return dir.clone();
@@ -2138,6 +2136,12 @@ pub(crate) fn agent_data_dir(context: &RuntimeContext) -> PathBuf {
 }
 
 pub(crate) fn agent_socket_path(context: &RuntimeContext) -> PathBuf {
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(pipe_name) = locket_platform::default_agent_pipe_name() {
+            return PathBuf::from(pipe_name);
+        }
+    }
     agent_data_dir(context).join("agent.sock")
 }
 

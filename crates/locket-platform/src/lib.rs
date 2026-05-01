@@ -4,6 +4,7 @@
 // triggering this lint. Cannot be fixed without upgrading all crates.
 #![allow(clippy::multiple_crate_versions)]
 
+mod agent_pipe;
 mod automation_client_key;
 mod core_dumps;
 mod device_private_key;
@@ -30,6 +31,7 @@ mod windows_local_authentication;
 #[cfg(target_os = "windows")]
 mod windows_user_verifier;
 
+pub use agent_pipe::{AGENT_PIPE_PREFIX, agent_pipe_dacl_sddl_for_sid, agent_pipe_name_for_sid};
 pub use automation_client_key::{
     AutomationClientKeyStore, AutomationClientKeychainRef, KeyringAutomationClientKeyStore,
     MemoryAutomationClientKeyStore,
@@ -82,6 +84,8 @@ pub use macos_local_authentication::{LocalAuthError, evaluate_local_user};
 #[cfg(target_os = "macos")]
 pub use macos_user_verifier::MacosLocalUserVerifier;
 
+#[cfg(target_os = "windows")]
+pub use agent_pipe::{current_user_sid_string, default_agent_pipe_name};
 #[cfg(target_os = "windows")]
 pub use windows_local_authentication::{
     LocalAuthError as WindowsLocalAuthError, evaluate_local_user as windows_evaluate_local_user,

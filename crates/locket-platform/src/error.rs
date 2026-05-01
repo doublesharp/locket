@@ -48,6 +48,12 @@ pub enum PlatformError {
     /// Process start metadata could not be read for grant binding.
     #[error("process start metadata unavailable")]
     ProcessStartTimeUnavailable,
+    /// Windows current-user SID could not be resolved.
+    #[error("windows current-user SID unavailable (os error {0})")]
+    WindowsSidUnavailable(u32),
+    /// Windows SID text is not valid for a local agent pipe name.
+    #[error("invalid windows SID")]
+    InvalidWindowsSid,
     /// Passphrase fallback TOML decoding failed.
     #[error(transparent)]
     TomlDe(#[from] toml::de::Error),
