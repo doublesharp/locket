@@ -53,6 +53,11 @@ zeroize = { workspace = true }
 [target.'cfg(unix)'.dependencies]
 rustix = { workspace = true, features = ["mm", "process"] }
 
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "0.61", features = [
+  "Win32_System_Diagnostics_Debug",
+] }
+
 [target.'cfg(target_os = "macos")'.dependencies]
 block2 = { version = "0.6", default-features = false, features = ["alloc"] }
 objc2 = { version = "0.6", default-features = false, features = ["std"] }

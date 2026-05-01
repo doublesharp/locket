@@ -1952,12 +1952,16 @@ pub(crate) fn collect_known_secret_values(
     Ok(values)
 }
 
+/// Stable display alias per `docs/specs/invariants.md:37`.
+///
+/// Delegates to [`locket_core::privacy_alias`] so the CLI, the agent,
+/// and the desktop UI all hash the same canonical bytes (length-prefixed
+/// `field()` layout from `docs/specs/crypto.md:134`). Earlier revisions
+/// re-implemented the hash here with `format!("kind:{kind};id:{id}")`,
+/// which produced a different digest from the spec; the duplicate has
+/// been removed.
 pub(crate) fn privacy_alias(kind: &str, id: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(b"locket-privacy-alias-v1");
-    hasher.update(format!("kind:{kind};id:{id}").as_bytes());
-    let digest = hasher.finalize();
-    format!("{kind}-{:02x}{:02x}{:02x}{:02x}", digest[0], digest[1], digest[2], digest[3])
+    locket_core::privacy_alias(kind, id)
 }
 
 fn should_scan_known_version(

@@ -17,8 +17,10 @@
 //! codesigning entitlements) are out of scope. On Windows the
 //! supported mitigation is `SetErrorMode(SEM_NOGPFAULTERRORBOX |
 //! SEM_FAILCRITICALERRORS)`, which suppresses Windows Error Reporting
-//! crash dumps; until the `windows` crate is wired in this build ships
-//! a stub returning `Unsupported` so diagnostics surface the gap.
+//! crash dumps and the system "this program has stopped responding"
+//! dialog. The Windows path is implemented through
+//! [`windows-sys`](https://crates.io/crates/windows-sys), gated behind
+//! `cfg(target_os = "windows")`.
 
 use std::fmt::{self, Display};
 
@@ -27,9 +29,14 @@ use std::fmt::{self, Display};
 pub enum CoreDumpHardening {
     /// All available mitigations succeeded on this platform.
     Active,
-    /// The platform has no implementation in this build (currently
-    /// Windows). Diagnostics should surface this so users know the
-    /// fall-back state.
+    /// On Windows, `SetErrorMode` suppressed the Windows Error
+    /// Reporting crash dialog. Reported separately from `Active` so
+    /// `locket doctor` can surface that no `RLIMIT_CORE`-equivalent
+    /// is meaningful on this platform; the suppression is best-effort
+    /// per Windows semantics.
+    Suppressed,
+    /// The platform has no implementation in this build. Diagnostics
+    /// should surface this so users know the fall-back state.
     Unsupported,
     /// At least one mitigation failed; key material may still be
     /// observable. The caller should fail closed where the spec
@@ -41,6 +48,7 @@ impl Display for CoreDumpHardening {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
             Self::Active => "active",
+            Self::Suppressed => "suppressed",
             Self::Unsupported => "unsupported",
             Self::Degraded => "degraded",
         })
@@ -55,8 +63,9 @@ impl Display for CoreDumpHardening {
 ///   `prctl(PR_SET_DUMPABLE, 0)` plus `setrlimit(RLIMIT_CORE, 0, 0)`.
 /// - **macOS / other BSD Unixes:** [`unix::disable_macos_core_dumps`] —
 ///   `setrlimit(RLIMIT_CORE, 0, 0)` only (no `prctl` equivalent).
-/// - **Windows:** [`windows_stub::disable_windows_core_dumps`] — stub
-///   returning `Unsupported` until `SetErrorMode` is wired in.
+/// - **Windows:** [`windows_impl::disable_windows_core_dumps`] —
+///   `SetErrorMode(SEM_NOGPFAULTERRORBOX | SEM_FAILCRITICALERRORS)`
+///   to suppress Windows Error Reporting crash dumps.
 ///
 /// The call is idempotent and safe to invoke from any process.
 #[must_use]
@@ -71,7 +80,7 @@ pub fn disable_core_dumps() -> CoreDumpHardening {
     }
     #[cfg(target_os = "windows")]
     {
-        windows_stub::disable_windows_core_dumps()
+        windows_impl::disable_windows_core_dumps()
     }
     #[cfg(not(any(unix, target_os = "windows")))]
     {
@@ -84,7 +93,10 @@ pub fn disable_core_dumps() -> CoreDumpHardening {
 /// This is what `locket doctor` reports — `disable_core_dumps()` is
 /// already called once at process startup, so this just inspects
 /// `RLIMIT_CORE` (and `PR_GET_DUMPABLE` on Linux) and reports whether
-/// the mitigations stuck. On Windows the stub reports `Unsupported`.
+/// the mitigations stuck. On Windows the call queries the current
+/// process error-mode bits via `GetErrorMode` and returns
+/// `Suppressed` when both `SEM_NOGPFAULTERRORBOX` and
+/// `SEM_FAILCRITICALERRORS` are set.
 #[must_use]
 pub fn core_dump_hardening_state() -> CoreDumpHardening {
     #[cfg(unix)]
@@ -93,7 +105,7 @@ pub fn core_dump_hardening_state() -> CoreDumpHardening {
     }
     #[cfg(target_os = "windows")]
     {
-        windows_stub::core_dump_hardening_state()
+        windows_impl::core_dump_hardening_state()
     }
     #[cfg(not(any(unix, target_os = "windows")))]
     {
@@ -180,24 +192,73 @@ mod unix {
 }
 
 #[cfg(target_os = "windows")]
-mod windows_stub {
+#[allow(unsafe_code)]
+mod windows_impl {
+    // SAFETY-AUDIT: this module is the second `unsafe` concession in
+    // `locket-platform`. It calls `SetErrorMode` and `GetErrorMode`
+    // from `windows-sys`, which are exposed as `unsafe extern "system"`
+    // because they are direct FFI into Win32. Both calls are safe in
+    // practice — the arguments are plain `u32` flag bitmasks and
+    // neither function takes pointers — but Rust's type system cannot
+    // express that, so the calls live in narrowly scoped `unsafe`
+    // blocks. The wider workspace lint is `unsafe_code = "deny"`,
+    // which the parent `Cargo.toml` already downgrades from `forbid`
+    // for the macOS LocalAuthentication backend; this module reuses
+    // that opt-out with a per-module `#![allow(unsafe_code)]`.
+    //
+    // `SetErrorMode(SEM_NOGPFAULTERRORBOX | SEM_FAILCRITICALERRORS)`
+    // suppresses Windows Error Reporting crash dialogs and the
+    // "critical error" dialog the kernel raises on disk faults. It
+    // returns the previous mask, which we deliberately discard:
+    // `disable_core_dumps` is the single startup-time hardening call
+    // and is intentionally one-way for the lifetime of the process.
+    //
+    // Spec ref: `docs/specs/agent.md` (process hardening), and
+    // <https://learn.microsoft.com/en-us/windows/win32/api/errhandlingapi/nf-errhandlingapi-seterrormode>.
+
+    use windows_sys::Win32::System::Diagnostics::Debug::{
+        GetErrorMode, SEM_FAILCRITICALERRORS, SEM_NOGPFAULTERRORBOX, SetErrorMode,
+    };
+
     use super::CoreDumpHardening;
 
-    /// Windows entry point.
-    ///
-    /// TODO(harden-windows-core-dump): wire the `windows` crate and call
-    /// `SetErrorMode(SEM_NOGPFAULTERRORBOX | SEM_FAILCRITICALERRORS)` to
-    /// suppress Windows Error Reporting crash dumps. Adding the dep is
-    /// out of scope for this slice; doctor surfaces `Unsupported` so
-    /// operators know the gap.
+    /// Mask of the bits this module sets / inspects.
+    const SUPPRESSION_MASK: u32 = SEM_NOGPFAULTERRORBOX | SEM_FAILCRITICALERRORS;
+
+    /// Windows entry point: `SetErrorMode(SEM_NOGPFAULTERRORBOX |
+    /// SEM_FAILCRITICALERRORS)`. The previous mode bits are merged in
+    /// to avoid clobbering other suppressions a host process might
+    /// have applied.
     #[must_use]
     pub fn disable_windows_core_dumps() -> CoreDumpHardening {
-        CoreDumpHardening::Unsupported
+        // SAFETY: `GetErrorMode` and `SetErrorMode` take and return a
+        // process-wide `u32` flag mask. They have no pointer arguments
+        // and document no error semantics other than the returned mask.
+        let merged = unsafe {
+            let previous = GetErrorMode();
+            let merged = previous | SUPPRESSION_MASK;
+            // `SetErrorMode` returns the previous mode but cannot fail.
+            let _ = SetErrorMode(merged);
+            merged
+        };
+        if merged & SUPPRESSION_MASK == SUPPRESSION_MASK {
+            CoreDumpHardening::Suppressed
+        } else {
+            CoreDumpHardening::Degraded
+        }
     }
 
+    /// Inspects the live error-mode mask without changing it.
     #[must_use]
     pub fn core_dump_hardening_state() -> CoreDumpHardening {
-        CoreDumpHardening::Unsupported
+        // SAFETY: `GetErrorMode` returns the current process-wide
+        // `u32` mask. No pointers, no error semantics.
+        let current = unsafe { GetErrorMode() };
+        if current & SUPPRESSION_MASK == SUPPRESSION_MASK {
+            CoreDumpHardening::Suppressed
+        } else {
+            CoreDumpHardening::Degraded
+        }
     }
 }
 
@@ -208,6 +269,7 @@ mod tests {
     #[test]
     fn hardening_outcomes_render_as_doctor_labels() {
         assert_eq!(CoreDumpHardening::Active.to_string(), "active");
+        assert_eq!(CoreDumpHardening::Suppressed.to_string(), "suppressed");
         assert_eq!(CoreDumpHardening::Unsupported.to_string(), "unsupported");
         assert_eq!(CoreDumpHardening::Degraded.to_string(), "degraded");
     }
@@ -220,6 +282,7 @@ mod tests {
         assert!(matches!(
             outcome,
             CoreDumpHardening::Active
+                | CoreDumpHardening::Suppressed
                 | CoreDumpHardening::Degraded
                 | CoreDumpHardening::Unsupported
         ));
@@ -276,15 +339,34 @@ mod tests {
         assert_eq!(super::unix::disable_macos_core_dumps(), CoreDumpHardening::Active);
     }
 
-    /// Subtask 2: Windows stub reports `Unsupported` until the real
-    /// `SetErrorMode` wiring lands.
+    /// Windows entry-point compile + behaviour test: `SetErrorMode`
+    /// resolves and the call returns `Suppressed` once both
+    /// `SEM_NOGPFAULTERRORBOX` and `SEM_FAILCRITICALERRORS` are set.
+    /// Compile coverage is the primary value here — most CI runs are
+    /// unix and never observe this assertion.
     #[cfg(target_os = "windows")]
     #[test]
-    fn disable_windows_core_dumps_returns_unsupported() {
+    fn disable_windows_core_dumps_reports_suppressed() {
         assert_eq!(
-            super::windows_stub::disable_windows_core_dumps(),
-            CoreDumpHardening::Unsupported
+            super::windows_impl::disable_windows_core_dumps(),
+            CoreDumpHardening::Suppressed
         );
+        assert_eq!(
+            super::windows_impl::core_dump_hardening_state(),
+            CoreDumpHardening::Suppressed
+        );
+    }
+
+    /// Windows idempotency: a second call must not flip the result
+    /// back to `Degraded` (the merge-with-previous-mode logic must
+    /// preserve the suppression bits).
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn disable_windows_core_dumps_is_idempotent() {
+        let first = super::windows_impl::disable_windows_core_dumps();
+        let second = super::windows_impl::disable_windows_core_dumps();
+        assert_eq!(first, CoreDumpHardening::Suppressed);
+        assert_eq!(second, CoreDumpHardening::Suppressed);
     }
 
     #[cfg(not(any(unix, target_os = "windows")))]

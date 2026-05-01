@@ -2,9 +2,9 @@
 
 use std::path::PathBuf;
 
+use locket_core::privacy_alias;
 use locket_store::{AuditListFilter, Store, StoreError};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 /// Maximum number of audit rows returned by one `ListAudit` call.
 const MAX_LIST_AUDIT_ROWS: u32 = 500;
@@ -143,10 +143,3 @@ fn command_label(value: &str, redact_names: bool) -> String {
     if redact_names { privacy_alias("command", value) } else { value.to_owned() }
 }
 
-fn privacy_alias(kind: &str, id: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(b"locket-privacy-alias-v1");
-    hasher.update(format!("kind:{kind};id:{id}").as_bytes());
-    let digest = hasher.finalize();
-    format!("{kind}-{:02x}{:02x}{:02x}{:02x}", digest[0], digest[1], digest[2], digest[3])
-}

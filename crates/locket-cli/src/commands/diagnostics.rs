@@ -870,7 +870,10 @@ fn check_hardening() -> DiagnosticCheck {
     let core_dumps = locket_platform::core_dump_hardening_state();
     let memory_lock = locket_platform::memory_lock_hardening_state();
     let detail = format!("core_dumps={core_dumps} memory_lock={memory_lock}");
-    let core_active = matches!(core_dumps, locket_platform::CoreDumpHardening::Active);
+    let core_active = matches!(
+        core_dumps,
+        locket_platform::CoreDumpHardening::Active | locket_platform::CoreDumpHardening::Suppressed
+    );
     let memory_active = matches!(memory_lock, locket_platform::MemoryLockHardening::Active);
     if core_active && memory_active {
         DiagnosticCheck::pass("hardening", detail)

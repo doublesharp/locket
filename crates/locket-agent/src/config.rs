@@ -5,7 +5,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
-use locket_core::Duration as LocketDuration;
+use locket_core::{Duration as LocketDuration, privacy_alias};
 use locket_store::{AuditWrite, Store};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -566,14 +566,6 @@ fn split_config_key(key: &str) -> Result<(&str, &str), ConfigRpcError> {
         return Err(ConfigRpcError::Protocol("unsupported config key".to_owned()));
     }
     Ok((section, name))
-}
-
-fn privacy_alias(kind: &str, id: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(b"locket-privacy-alias-v1");
-    hasher.update(format!("kind:{kind};id:{id}").as_bytes());
-    let digest = hasher.finalize();
-    format!("{kind}-{:02x}{:02x}{:02x}{:02x}", digest[0], digest[1], digest[2], digest[3])
 }
 
 #[cfg(test)]
