@@ -96,19 +96,8 @@ ship. Each bullet has spec ref + code ref + suggested touches.
   rotate must rewrap all active managed client private keys "in the
   same atomic replacement as the master and device key wraps". Pair
   with `device-key-recovery-envelope-entries`.
-- [~] (in-flight: agent 14d) **bundle-verify-attempts-decrypt-when-recipient**:
-  `team-sync-recovery.md:213` says verify must attempt decryption
-  when device has a matching recipient key. `team/bundle.rs:1459-1476`
-  + `verify_bundle_file:1913-1929` are structural-only. Hardcoded
-  `decryptable_by_this_device: no` at `:1473` and JSON `false` at
-  `:2055-2063`. Touch: when matching device sealing private key is
-  available, decrypt + validate inner manifest references + report
-  truthful flag.
-- [~] (in-flight: agent 14d) **bundle-import-rotate-uses-import-timestamp**:
-  `team-sync-recovery.md:224` says newer-incoming over active target
-  sets `SecretMeta.last_rotated_at` to the import timestamp.
-  `team/bundle.rs:828-846` writes the bundle's value, not local
-  `now`. Touch + e2e regression in `e2e_bundle_roundtrip.rs`.
+(`bundle-verify-attempts-decrypt-when-recipient` shipped — bundle_verify_command now matches local device fingerprint against recipients, attempts trial decrypt + reports inner counts; fingerprint-match-but-decrypt-fail surfaces as BundleVerificationFailed (exit 110).)
+(`bundle-import-rotate-uses-import-timestamp` shipped — apply_bundle_payload's divergent UPDATE binds local now to last_rotated_at instead of bundle's value; e2e regression added.)
 - [ ] **client-create-writes-to-recovery-envelope**: `crypto.md:172`
   says `locket client create` with `--storage os-keychain` or
   `--storage wrapped-local-file` must add an
