@@ -151,7 +151,7 @@ skill set fits a leaf better.
 - [ ] Agent/process hardening. `harden-peer-cred`,
   `harden-socket-perms`, `harden-memory-lock`, `harden-zeroize`,
   `harden-doctor-degraded` shipped. Remaining:
-  - [ ] **subtask** — harden-session-lock: lock on system sleep,
+  - [~] [52c592db] branch agent-52c592db/harden-session-lock, worktree .worktrees/agent-52c592db-harden-session-lock; **subtask** — harden-session-lock: lock on system sleep,
     screen lock, user-session switch; emit `LOCK` audit row.
 - [ ] `import-bundle` / `team accept` apply rotate-with-no-grace
   when importing a newer version over an active target.
