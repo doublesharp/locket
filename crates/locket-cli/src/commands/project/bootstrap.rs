@@ -1,14 +1,17 @@
+use locket_core::{CommandPolicy, CommandSpec, LocketError};
 use locket_crypto::KeyPurpose;
 use locket_store::{AuditWrite, Store};
 use serde_json::json;
+use std::collections::BTreeSet;
 use std::fs;
 use std::io::Write;
 use std::path::Path;
 
+use crate::runtime::key_access::load_profile_key;
 use crate::{
-    CliError, EXAMPLE_FILE, HOOK_BEGIN, HOOK_END, LOCKET_TOML, ResolvedProject, RuntimeContext,
-    git_dir_for_worktree, load_project_key, metadata_invalid_error, now_unix_nanos, open_store,
-    read_policy_document, require_project, root_hash, yes_no,
+    CliError, EXAMPLE_FILE, HOOK_BEGIN, HOOK_END, LOCKET_TOML, ResolvedProject, RunArgs,
+    RuntimeContext, git_dir_for_worktree, load_project_key, metadata_invalid_error, now_unix_nanos,
+    open_store, read_policy_document, require_project, root_hash, yes_no,
 };
 
 pub fn bootstrap_command(
@@ -17,8 +20,9 @@ pub fn bootstrap_command(
 ) -> Result<(), CliError> {
     let resolved = require_project(context)?;
     let mut store = open_store(context)?;
-    let report = collect_bootstrap_report(&resolved, &store)?;
+    let report = collect_bootstrap_report(context, &resolved, &store)?;
     write_bootstrap_report(output, &report)?;
+    run_smoke_policy_if_configured(context, output, &report)?;
     write_bootstrap_audit_if_available(context, &mut store, &resolved, &report)?;
     Ok(())
 }
@@ -50,16 +54,22 @@ struct BootstrapReport {
     profile_name: String,
     project_in_store: bool,
     profile_ready: bool,
+    profile_unlocked: bool,
     trusted_root: bool,
+    agent_startable: bool,
     example_exists: bool,
     hook_state: HookState,
     policy_count: usize,
     smoke_policy: Option<String>,
     smoke_policy_present: bool,
+    tools_checked: usize,
+    missing_tools: Vec<String>,
+    unchecked_tools: Vec<String>,
     team_status: &'static str,
 }
 
 fn collect_bootstrap_report(
+    context: &RuntimeContext,
     resolved: &ResolvedProject,
     store: &Store,
 ) -> Result<BootstrapReport, CliError> {
@@ -73,11 +83,17 @@ fn collect_bootstrap_report(
     let hook_state = detect_pre_commit_hook_state(&resolved.root);
     let policy_document = read_policy_document(&resolved.root.join(LOCKET_TOML))?;
     let policy_count = policy_document.commands.len();
+    let tool_report = check_policy_tools(&policy_document.commands.values().collect::<Vec<_>>());
     let bootstrap_settings = read_bootstrap_settings(&resolved.root.join(LOCKET_TOML))?;
     let smoke_policy = bootstrap_settings.and_then(|settings| settings.smoke_policy);
     let smoke_policy_present = smoke_policy
         .as_ref()
         .is_some_and(|name| policy_document.commands.contains_key(name.as_str()));
+    let profile_unlocked = profile.as_ref().is_some_and(|profile| {
+        active_profile_keys_are_unlocked(context, store, project_id, &profile.id)
+    });
+    let agent_startable =
+        crate::commands::agent::ensure_agent_running_for_execution(context).is_ok();
 
     Ok(BootstrapReport {
         project_name: resolved.config.name.clone(),
@@ -85,12 +101,17 @@ fn collect_bootstrap_report(
         profile_name: resolved.config.default_profile.to_string(),
         project_in_store: project.is_some(),
         profile_ready: profile.is_some(),
+        profile_unlocked,
         trusted_root,
+        agent_startable,
         example_exists,
         hook_state,
         policy_count,
         smoke_policy,
         smoke_policy_present,
+        tools_checked: tool_report.checked,
+        missing_tools: tool_report.missing,
+        unchecked_tools: tool_report.unchecked,
         team_status: "solo",
     })
 }
@@ -103,12 +124,15 @@ fn write_bootstrap_report(
     writeln!(output, "project_id: {}", report.project_id)?;
     writeln!(output, "profile: {}", report.profile_name)?;
     writeln!(output, "profile_ready: {}", yes_no(report.profile_ready))?;
+    writeln!(output, "profile_unlocked: {}", yes_no(report.profile_unlocked))?;
     writeln!(output, "store_project: {}", yes_no(report.project_in_store))?;
+    writeln!(output, "agent_startable: {}", yes_no(report.agent_startable))?;
     writeln!(output, ".env.example: {}", yes_no(report.example_exists))?;
     writeln!(output, "trusted_root: {}", yes_no(report.trusted_root))?;
     writeln!(output, "pre_commit_hook: {}", report.hook_state.as_str())?;
     writeln!(output, "team: {}", report.team_status)?;
     writeln!(output, "policies: {}", report.policy_count)?;
+    write_tool_report(output, report)?;
     match &report.smoke_policy {
         Some(name) if report.smoke_policy_present => {
             writeln!(output, "smoke_policy: configured ({name})")?;
@@ -134,6 +158,12 @@ fn bootstrap_next_actions(report: &BootstrapReport) -> Vec<String> {
     if !report.project_in_store || !report.profile_ready {
         actions.push("run locket init to resume local metadata setup".to_owned());
     }
+    if report.profile_ready && !report.profile_unlocked {
+        actions.push("run locket unlock for the active profile".to_owned());
+    }
+    if !report.agent_startable {
+        actions.push("run locket agent start".to_owned());
+    }
     if !report.example_exists {
         actions.push("run locket emit-example".to_owned());
     }
@@ -148,7 +178,100 @@ fn bootstrap_next_actions(report: &BootstrapReport) -> Vec<String> {
     {
         actions.push(format!("run locket policy add {name}"));
     }
+    if !report.missing_tools.is_empty() {
+        actions.push(format!("install missing tool(s): {}", report.missing_tools.join(", ")));
+    }
     actions
+}
+
+fn active_profile_keys_are_unlocked(
+    context: &RuntimeContext,
+    store: &Store,
+    project_id: &str,
+    profile_id: &str,
+) -> bool {
+    [KeyPurpose::ProfileSecret, KeyPurpose::ProfileFingerprint]
+        .into_iter()
+        .all(|purpose| load_profile_key(context, store, project_id, profile_id, purpose).is_ok())
+}
+
+#[derive(Debug, Default)]
+struct ToolReport {
+    checked: usize,
+    missing: Vec<String>,
+    unchecked: Vec<String>,
+}
+
+fn check_policy_tools(policies: &[&CommandPolicy]) -> ToolReport {
+    let mut checked = BTreeSet::new();
+    let mut missing = BTreeSet::new();
+    let mut unchecked = BTreeSet::new();
+
+    for policy in policies {
+        match &policy.command {
+            CommandSpec::Argv(argv) => {
+                let Some(program) = argv.first() else {
+                    continue;
+                };
+                checked.insert(program.clone());
+                if !tool_is_present(program) {
+                    missing.insert(program.clone());
+                }
+            }
+            CommandSpec::Shell(script) => {
+                unchecked.insert(format!("shell:{}", first_shell_token(script).unwrap_or("*")));
+            }
+        }
+    }
+
+    ToolReport {
+        checked: checked.len(),
+        missing: missing.into_iter().collect(),
+        unchecked: unchecked.into_iter().collect(),
+    }
+}
+
+fn tool_is_present(program: &str) -> bool {
+    let program_path = Path::new(program);
+    if program_path.components().count() > 1 || program_path.is_absolute() {
+        return program_path.is_file();
+    }
+    let Some(path) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&path).any(|dir| dir.join(program).is_file())
+}
+
+fn first_shell_token(script: &str) -> Option<&str> {
+    script.split_ascii_whitespace().next()
+}
+
+fn write_tool_report(output: &mut impl Write, report: &BootstrapReport) -> Result<(), CliError> {
+    if report.missing_tools.is_empty() {
+        writeln!(output, "tools_present: yes (checked {})", report.tools_checked)?;
+    } else {
+        writeln!(output, "tools_present: missing ({})", report.missing_tools.join(","))?;
+    }
+    if !report.unchecked_tools.is_empty() {
+        writeln!(output, "tools_unchecked: {}", report.unchecked_tools.join(","))?;
+    }
+    Ok(())
+}
+
+fn run_smoke_policy_if_configured(
+    context: &RuntimeContext,
+    output: &mut impl Write,
+    report: &BootstrapReport,
+) -> Result<(), CliError> {
+    let Some(name) = report.smoke_policy.as_ref() else {
+        return Ok(());
+    };
+    if !report.smoke_policy_present {
+        return Ok(());
+    }
+    crate::commands::exec::run::run_command(context, output, &RunArgs { policy: name.clone() })?;
+    writeln!(output, "smoke_policy_run: passed ({name})")?;
+    Ok(())
 }
 
 fn detect_pre_commit_hook_state(root: &Path) -> HookState {
@@ -201,8 +324,18 @@ fn write_bootstrap_audit_if_available(
     if store.get_project(resolved.config.project_id.as_str())?.is_none() {
         return Ok(());
     }
-    let audit_key =
-        load_project_key(context, store, resolved.config.project_id.as_str(), KeyPurpose::Audit)?;
+    let audit_key = match load_project_key(
+        context,
+        store,
+        resolved.config.project_id.as_str(),
+        KeyPurpose::Audit,
+    ) {
+        Ok(key) => key,
+        Err(error) if error.exit_code() == LocketError::UnlockRequired.exit_code() => {
+            return Ok(());
+        }
+        Err(error) => return Err(error),
+    };
     let profile_id = store
         .get_profile_by_name(
             resolved.config.project_id.as_str(),

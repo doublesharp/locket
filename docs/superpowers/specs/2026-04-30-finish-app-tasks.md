@@ -105,14 +105,15 @@ ship. Each bullet has spec ref + code ref + suggested touches.
   creation. `team/client.rs:40-181` + `store_client_private_key:276-347`
   only write to keychain/local file. Result: `recover_command`
   always counts those as `skipped_automation_client_private`.
-- [~] (in-flight: Codex bootstrap worker) **bootstrap-checklist-coverage-incomplete**:
-  `team-sync-recovery.md:31-42` enumerates 9 required `locket
-  bootstrap` checks. `project/bootstrap.rs:62-150` implements only
-  7. Missing: agent running-or-startable check, active-profile-
-  unlock-state probe (only checks profile row exists), referenced-
-  tools presence check, and actually running the configured
-  `smoke_policy` (reports presence but never invokes
-  `locket run <policy>`).
+- [x] **bootstrap-checklist-coverage-incomplete** shipped:
+  `locket bootstrap` now checks agent running/startable state, probes the
+  active profile's local key unlockability, checks argv policy tool
+  presence through local paths/PATH, and executes a configured
+  `smoke_policy` through the existing `locket run <policy>` path.
+- [ ] **bootstrap-shell-tool-presence-follow-up**: bootstrap reports shell
+  policy tool checks as `tools_unchecked: shell:<first-token>` because
+  safely and portably identifying every referenced tool inside arbitrary
+  shell snippets requires shell-aware parsing beyond the local argv check.
 - Shipped: **privacy-alias-canonical-encoding** — moved every
   surface (`locket-core::privacy_alias`, CLI `privacy_alias` shim,
   agent local copies, UI `privacyAlias`) onto the canonical

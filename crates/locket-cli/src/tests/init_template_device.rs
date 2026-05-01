@@ -73,12 +73,15 @@ optional_secrets = ["API_KEY"]
     let bootstrap_output = String::from_utf8(bootstrap_output)?;
     assert!(bootstrap_output.contains("project: web-app"));
     assert!(bootstrap_output.contains("profile: dev"));
+    assert!(bootstrap_output.contains("profile_unlocked: yes"));
+    assert!(bootstrap_output.contains("agent_startable: yes"));
     assert!(bootstrap_output.contains(".env.example: yes"));
     assert!(bootstrap_output.contains("trusted_root: yes"));
     assert!(bootstrap_output.contains("metadata_only: yes"));
     assert!(bootstrap_output.contains("- none"));
     assert!(bootstrap_output.contains("team: solo"));
     assert!(bootstrap_output.contains("policies: 1"));
+    assert!(bootstrap_output.contains("tools_present: yes (checked 1)"));
     assert!(bootstrap_output.contains("smoke_policy: none"));
     assert!(bootstrap_output.contains("pre_commit_hook: not_git_repo"));
     assert!(!bootstrap_output.contains("postgres://"));
@@ -99,7 +102,7 @@ default_profile = "dev"
 profiles = ["dev"]
 
 [commands.smoke]
-argv = ["cargo", "test"]
+argv = ["/bin/sh", "-c", "printf smoke-ok > smoke-ran.txt"]
 "#,
     )?;
     let mut output = Vec::new();
@@ -122,8 +125,10 @@ argv = ["cargo", "test"]
     )?;
     let bootstrap_output = String::from_utf8(bootstrap_output)?;
     assert!(bootstrap_output.contains("smoke_policy: configured (smoke)"));
+    assert!(bootstrap_output.contains("smoke_policy_run: passed (smoke)"));
     assert!(bootstrap_output.contains("policies: 1"));
     assert!(bootstrap_output.contains("- none"));
+    assert_eq!(std::fs::read_to_string(directory.path().join("smoke-ran.txt"))?, "smoke-ok");
 
     let store = locket_store::Store::open(directory.path().join("store.db"))?;
     let bootstrap_audit = store.connection().query_row(
@@ -134,6 +139,58 @@ argv = ["cargo", "test"]
     assert!(bootstrap_audit.contains("\"action\":\"BOOTSTRAP\""));
     assert!(bootstrap_audit.contains("\"smoke_policy_configured\":true"));
     assert!(bootstrap_audit.contains("\"team_status\":\"solo\""));
+    Ok(())
+}
+
+#[test]
+fn bootstrap_reports_missing_policy_tools_and_locked_profile()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    let templates_dir = context.template_dir.clone();
+    std::fs::create_dir_all(&templates_dir)?;
+    std::fs::write(
+        templates_dir.join("tools.toml"),
+        r#"
+name = "tools"
+default_profile = "dev"
+profiles = ["dev"]
+
+[commands.needs_tool]
+argv = ["definitely-missing-locket-bootstrap-tool", "--version"]
+
+[commands.shellish]
+shell = "pnpm test"
+"#,
+    )?;
+    let mut output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "new", "--from-template", "tools"])?,
+        &context,
+        &mut output,
+    )?;
+    let config = crate::read_project_config(&directory.path().join("locket.toml"))?;
+    context.key_store.delete_master_key(config.project_id.as_str())?;
+
+    let mut bootstrap_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "bootstrap"])?,
+        &context,
+        &mut bootstrap_output,
+    )?;
+    let bootstrap_output = String::from_utf8(bootstrap_output)?;
+    assert!(bootstrap_output.contains("profile_ready: yes"));
+    assert!(bootstrap_output.contains("profile_unlocked: no"));
+    assert!(
+        bootstrap_output
+            .contains("tools_present: missing (definitely-missing-locket-bootstrap-tool)")
+    );
+    assert!(bootstrap_output.contains("tools_unchecked: shell:pnpm"));
+    assert!(bootstrap_output.contains("- run locket unlock for the active profile"));
+    assert!(
+        bootstrap_output
+            .contains("- install missing tool(s): definitely-missing-locket-bootstrap-tool")
+    );
     Ok(())
 }
 
