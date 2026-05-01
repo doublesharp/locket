@@ -350,24 +350,34 @@ actions on commit dbf6ab52.)
 - [ ] **desktop-policy-editor-write**: create/edit/delete forms
   backed by `agent-policy-write` RPC. Dangerous-profile requires
   typed confirmation; `POLICY_UPDATE` audit.
-- [~] **desktop-team-invite-view** (in-flight: agent 13d): invite issue/accept/revoke +
-  member/device removal. Pre-req: team sync apply-path subtasks and
-  any ceremony gaps found by the audit above.
 - [ ] **desktop-profile-switcher-view**: switch profile +
   dangerous-profile typed confirmation through a desktop Tauri
   wrapper for shipped `agent-set-active-profile`.
-- [~] **desktop-secret-editor-view** (in-flight: agent 13d): `SecretEditor.vue` set/update
-  with TTL-bound reveal. Pre-req: `desktop-reveal-modal`,
-  `agent-set-secret`.
+
+(`desktop-team-invite-view` shipped — `TeamInviteView.vue` +
+`team/invite.ts` cover issue/accept/revoke with dangerous-profile
+typed confirmation and audit-row reconstruction. Submit handlers
+surface a typed "agent surface missing" notice for the four
+`*TeamInvite` RPCs that the agent doesn't yet expose; tracked as
+follow-on agent-side tasks rather than a desktop gap.)
+(`desktop-secret-editor-view` shipped — `SecretEditorView.vue` +
+`secret/editor.ts` cover set/rotate via the new
+`agent_set_secret` / `agent_rotate_secret` Tauri commands plus
+TTL-bound reveal through `RevealModal`. Delete is staged-but-blocked
+with typed-confirmation validated; unblocks once agent ships
+`DeleteSecret`/`PurgeSecret`.)
 
 ### Search / filter UI
 Spec ref: `docs/specs/desktop.md`. One subtask per surface; never
 exposes values; pre-req is the relevant view's data RPC.
 
-- [~] **desktop-search-filter-enumeration** (in-flight: agent 13d): enumerate the
-  search/filter surfaces from `docs/specs/desktop.md` and produce
-  one subtask per surface (each renders one view; never exposes
-  values; pre-req is the relevant view's data RPC).
+(`desktop-search-filter-enumeration` shipped — `SecretMetadataList.vue`
+got source/required/deprecation filter chips backed by `secret/filter.ts`.
+The other six metadata surfaces (Audit, Policy, DeviceMember, Scan,
+ExecutionMonitor, ProfileSwitcher) already had free-text search; each
+got an inline `// TODO(desktop-search-filter):` comment enumerating the
+structured filters they still need. Per-surface filter-chip subtasks
+should be opened from those TODOs as the data RPCs land.)
 
 ## Integrations (P2 — surface-completeness)
 
