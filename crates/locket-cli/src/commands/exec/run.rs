@@ -890,7 +890,8 @@ fn agent_grant_binding() -> Result<locket_agent::GrantBinding, CliError> {
     Ok(locket_agent::GrantBinding::new(binding.pid, binding.process_start_time))
 }
 
-fn agent_invoke<T, R>(
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) fn agent_invoke<T, R>(
     context: &RuntimeContext,
     method: locket_agent::AgentMethod,
     payload: &T,

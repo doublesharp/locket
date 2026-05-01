@@ -419,6 +419,7 @@ mod leak_canary;
 mod mutation_expired_versions;
 mod parsers;
 mod passphrase_recovery_hooks;
+mod policy_doctor;
 mod policy_profile_project;
 mod proptest_device_descriptor;
 mod proptest_dotenv;

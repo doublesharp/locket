@@ -1,9 +1,13 @@
 use clap::{Args, Subcommand};
-use locket_core::{CommandPolicy, CommandSpec, ExternalEnvSource, PolicyDocument, SecretName};
+use locket_core::{
+    CommandPolicy, CommandSpec, ExternalEnvSource, LkReferenceUri, LocketError, PolicyDocument,
+    SecretName,
+};
 use locket_crypto::KeyPurpose;
 use locket_scan::EntropyRule;
 use locket_store::{AuditContext, AuditWrite};
 use serde_json::json;
+use std::collections::BTreeSet;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -12,12 +16,15 @@ use std::process::Command as ProcessCommand;
 use crate::commands::config::spec::{
     config_get_value, read_user_config, validate_config_key, validate_stored_config_value,
 };
+use crate::commands::exec::run::agent_invoke;
 use crate::commands::scan::scanner::{ScanPolicy, read_scan_policy};
+use crate::runtime::error::typed_cli_error;
 use crate::{
-    CliError, LOCKET_TOML, RuntimeContext, confirmation_failed_error, invalid_policy_error,
-    invalid_reference_error, invalid_secret_name_error, load_project_key, metadata_invalid_error,
-    now_unix_nanos, open_store, policy_not_found_error, require_project,
-    secret_already_exists_error, set_user_only_file_options, set_user_only_file_permissions,
+    CliError, LOCKET_TOML, ResolvedProject, RuntimeContext, confirmation_failed_error,
+    default_profile, invalid_policy_error, invalid_reference_error, invalid_secret_name_error,
+    load_project_key, metadata_invalid_error, now_unix_nanos, open_store, policy_not_found_error,
+    require_project, secret_already_exists_error, set_user_only_file_options,
+    set_user_only_file_permissions,
 };
 
 #[derive(Debug, Subcommand)]
@@ -228,7 +235,20 @@ fn doctor(context: &RuntimeContext, output: &mut impl Write) -> Result<(), CliEr
         .map_err(|error| metadata_invalid_error(error.to_string()))?;
 
     let has_lk_references = policy_text.contains("lk://");
-    writeln!(output, "policy_doctor: {}", if has_lk_references { "incomplete" } else { "ok" })?;
+    let validation = if document.commands.is_empty() {
+        DoctorValidation::default()
+    } else {
+        validate_policies_via_agent(context, &resolved, &document)
+    };
+
+    let header_status = if validation.has_failures()
+        || (validation.fatal_error.is_some() && has_lk_references)
+    {
+        "incomplete"
+    } else {
+        "ok"
+    };
+    writeln!(output, "policy_doctor: {header_status}")?;
     writeln!(output, "policies: {}", document.commands.len())?;
     writeln!(output, "metadata_only: yes")?;
     writeln!(output, "minimal_env_allowlist: {}", locket_exec::DEFAULT_SAFE_ALLOWLIST.join(" "))?;
@@ -259,15 +279,459 @@ fn doctor(context: &RuntimeContext, output: &mut impl Write) -> Result<(), CliEr
             policy.name
         )?;
     }
-    if has_lk_references {
-        writeln!(output, "warning: lk:// validation skipped because agent is unavailable")?;
-        writeln!(output, "unvalidated_lk_references: present")?;
-        return Err(CliError::Typed {
-            kind: locket_core::LocketError::AgentUnavailable,
-            message: "AgentUnavailable: policy doctor could not validate lk:// references"
-                .to_owned(),
-        });
+
+    for report in &validation.reports {
+        write_policy_doctor_report(output, report)?;
     }
+
+    write_doctor_audit_if_available(context, &resolved, &validation)?;
+
+    if matches!(validation.fatal_error.as_ref(), Some(FatalDoctorError::AgentUnavailable)) {
+        if has_lk_references {
+            writeln!(
+                output,
+                "warning: lk:// validation skipped because agent is unavailable"
+            )?;
+            writeln!(output, "unvalidated_lk_references: present")?;
+            return Err(typed_cli_error(
+                LocketError::AgentUnavailable,
+                "AgentUnavailable: policy doctor could not validate lk:// references",
+            ));
+        }
+        // No agent and no lk:// references → keep the legacy "ok"
+        // outcome so projects that have not yet started the agent can
+        // still run `policy doctor` for the scanner checks.
+        return Ok(());
+    }
+
+    if let Some(error) = validation.exit_error {
+        return Err(error);
+    }
+    Ok(())
+}
+
+/// Outcome of an agent-driven validation pass over the project's
+/// command policies.
+#[derive(Default)]
+struct DoctorValidation {
+    reports: Vec<PolicyDoctorReport>,
+    fatal_error: Option<FatalDoctorError>,
+    exit_error: Option<CliError>,
+    pass_count: usize,
+    fail_count: usize,
+}
+
+impl DoctorValidation {
+    const fn has_failures(&self) -> bool {
+        self.fail_count > 0
+    }
+}
+
+/// Sticky errors that suppress per-policy reports because the agent is
+/// not in a shape that can answer further validation calls.
+enum FatalDoctorError {
+    AgentUnavailable,
+    UnlockRequired,
+}
+
+struct PolicyDoctorReport {
+    name: String,
+    status: PolicyDoctorStatus,
+    allowed_env_names_count: usize,
+    ttl_seconds: u32,
+    references_ok_count: usize,
+    references_failed: Vec<String>,
+    env_mode_passthrough: Vec<String>,
+    env_mode_resolve: Vec<String>,
+    env_mode_denied: Vec<String>,
+    error_kind: Option<String>,
+    error_message: Option<String>,
+}
+
+#[derive(Clone, Copy)]
+enum PolicyDoctorStatus {
+    Pass,
+    Fail,
+    Skipped,
+}
+
+fn validate_policies_via_agent(
+    context: &RuntimeContext,
+    resolved: &ResolvedProject,
+    document: &PolicyDocument,
+) -> DoctorValidation {
+    let mut validation = DoctorValidation::default();
+
+    let mut store = match open_store(context) {
+        Ok(store) => store,
+        Err(error) => {
+            validation.exit_error = Some(error);
+            return validation;
+        }
+    };
+    let profile = match default_profile(&store, &resolved.config) {
+        Ok(profile) => profile,
+        Err(error) => {
+            validation.exit_error = Some(error);
+            return validation;
+        }
+    };
+    // The profile lookup also implicitly verifies the store is
+    // reachable; we then drop our exclusive write borrow so the agent
+    // can do its own writes during validation.
+    let _ = &mut store;
+
+    let binding = match locket_platform::current_process_binding() {
+        Ok(binding) => locket_agent::GrantBinding::new(binding.pid, binding.process_start_time),
+        Err(error) => {
+            validation.exit_error = Some(error.into());
+            return validation;
+        }
+    };
+
+    let policies: Vec<&CommandPolicy> = document.commands.values().collect();
+
+    for policy in &policies {
+        let report =
+            validate_one_policy(context, resolved, &profile, policy, &binding, &mut validation);
+        match report.status {
+            PolicyDoctorStatus::Pass => validation.pass_count += 1,
+            PolicyDoctorStatus::Fail => validation.fail_count += 1,
+            PolicyDoctorStatus::Skipped => {}
+        }
+        validation.reports.push(report);
+        if validation.fatal_error.is_some() {
+            break;
+        }
+    }
+
+    if validation.fatal_error.is_none() && validation.fail_count > 0 {
+        validation.exit_error = Some(typed_cli_error(
+            LocketError::PolicyValidationIncomplete,
+            format!(
+                "PolicyValidationIncomplete: {} of {} policies failed validation",
+                validation.fail_count,
+                policies.len()
+            ),
+        ));
+    }
+
+    validation
+}
+
+fn validate_one_policy(
+    context: &RuntimeContext,
+    resolved: &ResolvedProject,
+    profile: &locket_store::ProfileRecord,
+    policy: &CommandPolicy,
+    binding: &locket_agent::GrantBinding,
+    validation: &mut DoctorValidation,
+) -> PolicyDoctorReport {
+    // Step 1: PrepareExec. This double-duties as our reachability
+    // probe for the agent. AgentUnavailable / UnlockRequired escalate
+    // to fatal_error so subsequent policies skip the call.
+    let prepare_request = locket_agent::PrepareExecRequest {
+        policy_name: policy.name.clone(),
+        profile_id: profile.id.clone(),
+        project_id: Some(resolved.config.project_id.to_string()),
+        binding: Some(binding.clone()),
+    };
+    let prepare = match agent_invoke::<_, locket_agent::PrepareExecResponse>(
+        context,
+        locket_agent::AgentMethod::PrepareExec,
+        &prepare_request,
+        "prepare exec for doctor",
+    ) {
+        Ok(response) => response,
+        Err(error) => {
+            return record_fatal_or_failed(validation, policy, &error);
+        }
+    };
+
+    // Step 2: ResolveReference for each lk:// reference embedded in the
+    // policy command. We classify references not on the policy
+    // allow-list as `denied`, references whose value resolves as
+    // `resolve`, and required/optional secret names that are not
+    // referenced as `passthrough`.
+    let allowed_env_names: BTreeSet<String> = prepare.allowed_env_names.iter().cloned().collect();
+    let references = collect_command_lk_references(policy);
+    let mut references_failed = Vec::new();
+    let mut env_mode_resolve = BTreeSet::new();
+    let mut env_mode_denied = BTreeSet::new();
+    let mut references_ok = 0_usize;
+
+    let needs_grant = !references.is_empty();
+    let resolve_grant = if needs_grant {
+        match agent_invoke::<_, locket_agent::GrantIdPayload>(
+            context,
+            locket_agent::AgentMethod::RequestGrant,
+            &locket_agent::RequestGrantPayload {
+                project_id: resolved.config.project_id.to_string(),
+                profile_id: profile.id.clone(),
+                policy_name: Some(policy.name.clone()),
+                action: locket_agent::GrantAction::ResolveReference,
+                ttl_seconds: policy.ttl.as_secs(),
+                binding: binding.clone(),
+            },
+            "request resolve grant for doctor",
+        ) {
+            Ok(response) => Some(response),
+            Err(error) => return record_fatal_or_failed(validation, policy, &error),
+        }
+    } else {
+        None
+    };
+
+    classify_references(
+        context,
+        resolved,
+        profile,
+        policy,
+        binding,
+        &references,
+        &allowed_env_names,
+        resolve_grant.as_ref(),
+        &mut references_ok,
+        &mut references_failed,
+        &mut env_mode_resolve,
+        &mut env_mode_denied,
+    );
+
+    // Required + optional secret names that are not embedded as
+    // lk:// references are pass-through candidates: their value comes
+    // from the parent or external env at run time, but PrepareExec
+    // confirms the policy is willing to authorize them.
+    let referenced_keys: BTreeSet<String> = references
+        .iter()
+        .filter_map(|reference| LkReferenceUri::parse(reference).ok())
+        .map(|parsed| parsed.key().as_str().to_owned())
+        .collect();
+    let mut env_mode_passthrough: Vec<String> = policy
+        .required_secrets
+        .iter()
+        .chain(policy.optional_secrets.iter())
+        .map(|name| name.as_str().to_owned())
+        .filter(|name| {
+            allowed_env_names.contains(name) && !referenced_keys.contains(name)
+        })
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    env_mode_passthrough.sort();
+
+    let status = if references_failed.is_empty() {
+        PolicyDoctorStatus::Pass
+    } else {
+        PolicyDoctorStatus::Fail
+    };
+
+    PolicyDoctorReport {
+        name: policy.name.clone(),
+        status,
+        allowed_env_names_count: prepare.allowed_env_names.len(),
+        ttl_seconds: prepare.ttl_seconds,
+        references_ok_count: references_ok,
+        references_failed,
+        env_mode_passthrough,
+        env_mode_resolve: env_mode_resolve.into_iter().collect(),
+        env_mode_denied: env_mode_denied.into_iter().collect(),
+        error_kind: None,
+        error_message: None,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn classify_references(
+    context: &RuntimeContext,
+    resolved: &ResolvedProject,
+    profile: &locket_store::ProfileRecord,
+    policy: &CommandPolicy,
+    binding: &locket_agent::GrantBinding,
+    references: &[String],
+    allowed_env_names: &BTreeSet<String>,
+    resolve_grant: Option<&locket_agent::GrantIdPayload>,
+    references_ok: &mut usize,
+    references_failed: &mut Vec<String>,
+    env_mode_resolve: &mut BTreeSet<String>,
+    env_mode_denied: &mut BTreeSet<String>,
+) {
+    for reference in references {
+        let Ok(parsed) = LkReferenceUri::parse(reference) else {
+            references_failed.push(reference.clone());
+            continue;
+        };
+        let key_str = parsed.key().as_str().to_owned();
+        if !allowed_env_names.contains(&key_str) {
+            env_mode_denied.insert(key_str.clone());
+            references_failed.push(reference.clone());
+            continue;
+        }
+        let request = locket_agent::ResolveRequest {
+            reference: reference.clone(),
+            project_id: Some(resolved.config.project_id.to_string()),
+            profile_id: Some(profile.id.clone()),
+            policy_name: Some(policy.name.clone()),
+            store_path: Some(context.store_path.display().to_string()),
+            grant_id: resolve_grant.map(|grant| grant.grant_id.clone()),
+            binding: Some(binding.clone()),
+        };
+        if agent_invoke::<_, locket_agent::ResolveResponse>(
+            context,
+            locket_agent::AgentMethod::ResolveReference,
+            &request,
+            "resolve reference for doctor",
+        )
+        .is_ok()
+        {
+            *references_ok += 1;
+            env_mode_resolve.insert(key_str);
+        } else {
+            references_failed.push(reference.clone());
+        }
+    }
+}
+
+fn record_fatal_or_failed(
+    validation: &mut DoctorValidation,
+    policy: &CommandPolicy,
+    error: &CliError,
+) -> PolicyDoctorReport {
+    let kind = match error {
+        CliError::Typed { kind, .. } => Some(*kind),
+        _ => None,
+    };
+    let message = error.to_string();
+    if matches!(kind, Some(LocketError::AgentUnavailable)) {
+        validation.fatal_error = Some(FatalDoctorError::AgentUnavailable);
+    } else if matches!(kind, Some(LocketError::UnlockRequired)) {
+        validation.fatal_error = Some(FatalDoctorError::UnlockRequired);
+        validation.exit_error = Some(typed_cli_error(LocketError::UnlockRequired, message.clone()));
+    }
+    PolicyDoctorReport {
+        name: policy.name.clone(),
+        status: PolicyDoctorStatus::Skipped,
+        allowed_env_names_count: 0,
+        ttl_seconds: 0,
+        references_ok_count: 0,
+        references_failed: Vec::new(),
+        env_mode_passthrough: Vec::new(),
+        env_mode_resolve: Vec::new(),
+        env_mode_denied: Vec::new(),
+        error_kind: kind.map(|kind| format!("{kind:?}")),
+        error_message: Some(message),
+    }
+}
+
+fn collect_command_lk_references(policy: &CommandPolicy) -> Vec<String> {
+    let mut out = Vec::new();
+    let scan = |text: &str, into: &mut Vec<String>| {
+        let mut rest = text;
+        while let Some(idx) = rest.find("lk://") {
+            let after = &rest[idx..];
+            // Capture up to the next whitespace or quote — argv
+            // entries are already separated, but shell scripts can
+            // embed the reference inside a larger token.
+            let end = after
+                .find(|c: char| c.is_whitespace() || c == '"' || c == '\'' || c == '`')
+                .unwrap_or(after.len());
+            let candidate = after[..end].to_owned();
+            if !candidate.is_empty() {
+                into.push(candidate);
+            }
+            rest = &after[end..];
+        }
+    };
+    match &policy.command {
+        CommandSpec::Argv(args) => {
+            for arg in args {
+                if arg.contains("lk://") {
+                    scan(arg, &mut out);
+                }
+            }
+        }
+        CommandSpec::Shell(script) => scan(script, &mut out),
+    }
+    out
+}
+
+fn write_policy_doctor_report(
+    output: &mut impl Write,
+    report: &PolicyDoctorReport,
+) -> Result<(), CliError> {
+    writeln!(output, "policy: {}", report.name)?;
+    if let (Some(kind), Some(message)) = (report.error_kind.as_deref(), report.error_message.as_deref()) {
+        writeln!(output, "  status: skipped ({kind})")?;
+        writeln!(output, "  detail: {message}")?;
+        return Ok(());
+    }
+    writeln!(output, "  allowed_env_names: {}", report.allowed_env_names_count)?;
+    writeln!(output, "  ttl_seconds: {}", report.ttl_seconds)?;
+    writeln!(output, "  references_ok: {}", report.references_ok_count)?;
+    if report.references_failed.is_empty() {
+        writeln!(output, "  references_failed: none")?;
+    } else {
+        writeln!(output, "  references_failed: {}", report.references_failed.join(","))?;
+    }
+    writeln!(
+        output,
+        "  env_mode_expansion: passthrough=[{}] resolve=[{}] denied=[{}]",
+        report.env_mode_passthrough.join(","),
+        report.env_mode_resolve.join(","),
+        report.env_mode_denied.join(","),
+    )?;
+    Ok(())
+}
+
+fn write_doctor_audit_if_available(
+    context: &RuntimeContext,
+    resolved: &ResolvedProject,
+    validation: &DoctorValidation,
+) -> Result<(), CliError> {
+    if validation.reports.is_empty() {
+        return Ok(());
+    }
+    let mut store = open_store(context)?;
+    if store.get_project(resolved.config.project_id.as_str())?.is_none() {
+        return Ok(());
+    }
+    let audit_key = load_project_key(
+        context,
+        &store,
+        resolved.config.project_id.as_str(),
+        KeyPurpose::Audit,
+    )?;
+    let timestamp = now_unix_nanos()?;
+    let check_names: Vec<String> = validation
+        .reports
+        .iter()
+        .map(|report| format!("policy.{}", report.name))
+        .collect();
+    let metadata = json!({
+        "schema_version": 1,
+        "action": "DOCTOR",
+        "status": if validation.fail_count == 0 { "SUCCESS" } else { "FAILED" },
+        "command": "policy doctor",
+        "check_names": check_names,
+        "pass_count": validation.pass_count,
+        "fail_count": validation.fail_count,
+        "skip_count": validation.reports.iter().filter(|report| {
+            matches!(report.status, PolicyDoctorStatus::Skipped)
+        }).count(),
+        "warn_count": 0,
+        "critical_fail_count": validation.fail_count,
+    });
+    let status = if validation.fail_count == 0 { "SUCCESS" } else { "FAILED" };
+    let audit = AuditWrite {
+        project_id: resolved.config.project_id.as_str(),
+        profile_id: None,
+        action: "DOCTOR",
+        status,
+        secret_name: None,
+        command: Some("policy doctor"),
+        metadata_json: &metadata,
+        timestamp,
+    };
+    store.append_audit(audit_key.as_ref(), &audit)?;
     Ok(())
 }
 
