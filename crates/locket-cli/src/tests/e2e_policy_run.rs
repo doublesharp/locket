@@ -113,6 +113,20 @@ fn e2e_policy_run_missing_policy_exits_policy_not_found() -> Result<(), Box<dyn 
             .connection()
             .query_row("SELECT COUNT(*) FROM runtime_sessions", [], |row| row.get(0))?;
     assert_eq!(run_count, 0, "failed policy lookup must not create a runtime session");
+
+    // Even though the policy could not be loaded, a metadata-only DENIED
+    // audit row must be written so the rejection is visible in the chain.
+    let metadata: String = store.connection().query_row(
+        "SELECT metadata_json FROM audit_log WHERE action = 'RUN_POLICY' AND status = 'DENIED'
+         ORDER BY sequence DESC LIMIT 1",
+        [],
+        |row| row.get(0),
+    )?;
+    let metadata_json: serde_json::Value = serde_json::from_str(&metadata)?;
+    assert_eq!(metadata_json["status"], "DENIED");
+    assert_eq!(metadata_json["failure_reason"], "policy_not_found");
+    assert_eq!(metadata_json["policy_id"], "nonexistent-policy");
+    assert_eq!(metadata_json["command"], "run");
     Ok(())
 }
 
@@ -160,6 +174,141 @@ required_secrets = ["MISSING_SECRET"]
             .connection()
             .query_row("SELECT COUNT(*) FROM runtime_sessions", [], |row| row.get(0))?;
     assert_eq!(run_count, 0, "failed required-secret lookup must not create a runtime session");
+
+    let metadata: String = store.connection().query_row(
+        "SELECT metadata_json FROM audit_log WHERE action = 'RUN_POLICY' AND status = 'DENIED'
+         ORDER BY sequence DESC LIMIT 1",
+        [],
+        |row| row.get(0),
+    )?;
+    let metadata_json: serde_json::Value = serde_json::from_str(&metadata)?;
+    assert_eq!(metadata_json["status"], "DENIED");
+    assert_eq!(metadata_json["failure_reason"], "missing_required_secret");
+    assert_eq!(metadata_json["policy_id"], "deploy");
+    assert_eq!(metadata_json["required_secret_names"], json!(["MISSING_SECRET"]));
+    // Audit must never include secret values.
+    assert!(!metadata.contains("postgres"), "audit row must not embed values");
+    Ok(())
+}
+
+/// Deny path: `locket run` whose policy declares an invalid external env file
+/// path emits a metadata-only DENIED `RUN_POLICY` audit row before any spawn.
+#[test]
+fn e2e_policy_run_external_env_source_failure_emits_denial_audit()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+
+    // The path is project-relative but escapes the project root via `..`,
+    // so external env file resolution fails before spawn with MetadataInvalid.
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(directory.path().join("locket.toml"))?
+        .write_all(
+            br#"
+[commands.deploy]
+argv = ["/usr/bin/true"]
+external_env_sources = [{ file = "../escape.env" }]
+env_mode = "strict"
+"#,
+        )?;
+
+    let result = run_with_context(
+        Cli::try_parse_from(["locket", "run", "deploy"])?,
+        &context,
+        &mut Vec::new(),
+    );
+    let Err(error) = result else {
+        return Err("run with bad external env file must fail".into());
+    };
+    assert_eq!(error.exit_code(), locket_core::LocketError::MetadataInvalid.exit_code());
+
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let run_count: i64 =
+        store
+            .connection()
+            .query_row("SELECT COUNT(*) FROM runtime_sessions", [], |row| row.get(0))?;
+    assert_eq!(run_count, 0, "external-source failure must not create a runtime session");
+
+    let metadata: String = store.connection().query_row(
+        "SELECT metadata_json FROM audit_log WHERE action = 'RUN_POLICY' AND status = 'DENIED'
+         ORDER BY sequence DESC LIMIT 1",
+        [],
+        |row| row.get(0),
+    )?;
+    let metadata_json: serde_json::Value = serde_json::from_str(&metadata)?;
+    assert_eq!(metadata_json["status"], "DENIED");
+    assert_eq!(metadata_json["failure_reason"], "external_source_metadata_invalid");
+    assert_eq!(metadata_json["policy_id"], "deploy");
+    Ok(())
+}
+
+/// Deny path: `locket run` whose policy embeds an unparseable `lk://` reference
+/// emits a metadata-only DENIED `RUN_POLICY` audit row before any spawn.
+#[cfg(unix)]
+#[test]
+fn e2e_policy_run_invalid_lk_reference_emits_denial_audit()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+
+    // An argv argument that contains `lk://` triggers reference resolution but
+    // is not a valid URI; reference parsing fails before spawn.
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(directory.path().join("locket.toml"))?
+        .write_all(
+            br#"
+[commands.deploy]
+argv = ["/usr/bin/true", "lk://"]
+env_mode = "strict"
+"#,
+        )?;
+
+    std::fs::set_permissions(
+        directory.path(),
+        <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o700),
+    )?;
+    let agent = TestAgent::start(&context)?;
+    let result = run_with_context(
+        Cli::try_parse_from(["locket", "run", "deploy"])?,
+        &context,
+        &mut Vec::new(),
+    );
+    agent.stop()?;
+
+    let Err(error) = result else {
+        return Err("run with invalid lk:// reference must fail".into());
+    };
+    assert_eq!(error.exit_code(), locket_core::LocketError::InvalidReference.exit_code());
+
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let run_count: i64 =
+        store
+            .connection()
+            .query_row("SELECT COUNT(*) FROM runtime_sessions", [], |row| row.get(0))?;
+    assert_eq!(run_count, 0, "lk reference failure must not create a runtime session");
+
+    let metadata: String = store.connection().query_row(
+        "SELECT metadata_json FROM audit_log WHERE action = 'RUN_POLICY' AND status = 'DENIED'
+         ORDER BY sequence DESC LIMIT 1",
+        [],
+        |row| row.get(0),
+    )?;
+    let metadata_json: serde_json::Value = serde_json::from_str(&metadata)?;
+    assert_eq!(metadata_json["status"], "DENIED");
+    assert_eq!(metadata_json["failure_reason"], "invalid_lk_reference");
+    assert_eq!(metadata_json["policy_id"], "deploy");
     Ok(())
 }
 
@@ -380,6 +529,174 @@ require_user_verification = true
         locket_core::LocketError::UserVerificationFailed.exit_code(),
         "UserVerificationFailed is exit 74"
     );
+    Ok(())
+}
+
+/// External env metadata: a successful `locket run` records the names sourced
+/// from `external_env_sources` in `external_env_names` (metadata-only, never
+/// values).
+#[test]
+fn e2e_policy_run_records_external_env_names_in_audit_metadata()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+
+    // External env file under the project root supplies one allowed name.
+    std::fs::write(
+        directory.path().join(".env.local"),
+        "DATABASE_URL=postgres://external/app\nNOT_ALLOWED=hidden\n",
+    )?;
+
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(directory.path().join("locket.toml"))?
+        .write_all(
+            br#"
+[commands.deploy]
+argv = ["/usr/bin/true"]
+optional_secrets = ["DATABASE_URL"]
+external_env_sources = [{ file = ".env.local" }]
+env_mode = "strict"
+"#,
+        )?;
+
+    run_with_context(
+        Cli::try_parse_from(["locket", "run", "deploy"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let metadata: String = store.connection().query_row(
+        "SELECT metadata_json FROM audit_log WHERE action = 'RUN_POLICY' AND status = 'SUCCESS'
+         ORDER BY sequence DESC LIMIT 1",
+        [],
+        |row| row.get(0),
+    )?;
+    let metadata_json: serde_json::Value = serde_json::from_str(&metadata)?;
+    assert_eq!(metadata_json["status"], "SUCCESS");
+    assert_eq!(metadata_json["external_env_names"], json!(["DATABASE_URL"]));
+    // The unauthorized name must never appear in metadata.
+    assert!(!metadata.contains("NOT_ALLOWED"));
+    // No values may be embedded.
+    assert!(!metadata.contains("postgres://external/app"));
+    Ok(())
+}
+
+/// Merge mode: parent environment is inherited and Locket secrets overlay it.
+/// The audit row records `env_mode = "merge"`.
+#[test]
+fn e2e_policy_run_env_mode_merge_inherits_parent_and_overlays_secrets()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+
+    let db_args = test_secret_write_args("DATABASE_URL");
+    crate::set_secret_value(&context, &db_args, "postgres://localhost/app", "manual", 1_000)?;
+
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(directory.path().join("locket.toml"))?
+        .write_all(
+            br#"
+[commands.merge_check]
+argv = ["/bin/sh", "-c", "printf 'PATH=%s\nDB=%s\n' \"${PATH:+present}\" \"${DATABASE_URL:+present}\" > merge-presence.txt"]
+required_secrets = ["DATABASE_URL"]
+env_mode = "merge"
+"#,
+        )?;
+
+    run_with_context(
+        Cli::try_parse_from(["locket", "run", "merge_check"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+
+    // Parent PATH is inherited because merge starts from parent env, and the
+    // Locket secret is overlaid on the merged child env.
+    let presence = std::fs::read_to_string(directory.path().join("merge-presence.txt"))?;
+    assert_eq!(presence, "PATH=present\nDB=present\n");
+    assert!(!presence.contains("postgres://localhost/app"), "merge run must not leak secret values");
+
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let metadata: String = store.connection().query_row(
+        "SELECT metadata_json FROM audit_log WHERE action = 'RUN_POLICY'
+         ORDER BY sequence DESC LIMIT 1",
+        [],
+        |row| row.get(0),
+    )?;
+    let metadata_json: serde_json::Value = serde_json::from_str(&metadata)?;
+    assert_eq!(metadata_json["env_mode"], "merge");
+    assert_eq!(metadata_json["status"], "SUCCESS");
+    assert_eq!(metadata_json["policy_id"], "merge_check");
+    assert_eq!(metadata_json["secret_names"], json!(["DATABASE_URL"]));
+    Ok(())
+}
+
+/// Passthrough mode: parent environment passes through and Locket secrets
+/// authorized for the policy are still injected. The audit row records
+/// `env_mode = "passthrough"`.
+#[test]
+fn e2e_policy_run_env_mode_passthrough_preserves_parent_environment()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+
+    let api_args = test_secret_write_args("API_KEY");
+    crate::set_secret_value(&context, &api_args, "sk-test-value", "manual", 1_000)?;
+
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(directory.path().join("locket.toml"))?
+        .write_all(
+            br#"
+[commands.passthrough_check]
+argv = ["/bin/sh", "-c", "printf 'PATH=%s\nAPI=%s\n' \"${PATH:+present}\" \"${API_KEY:+present}\" > passthrough-presence.txt"]
+optional_secrets = ["API_KEY"]
+env_mode = "passthrough"
+"#,
+        )?;
+
+    run_with_context(
+        Cli::try_parse_from(["locket", "run", "passthrough_check"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+
+    // Parent PATH is passed through to the child process under passthrough mode.
+    let presence = std::fs::read_to_string(directory.path().join("passthrough-presence.txt"))?;
+    assert_eq!(presence, "PATH=present\nAPI=present\n");
+    assert!(
+        !presence.contains("sk-test-value"),
+        "passthrough run must not leak secret values"
+    );
+
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let metadata: String = store.connection().query_row(
+        "SELECT metadata_json FROM audit_log WHERE action = 'RUN_POLICY'
+         ORDER BY sequence DESC LIMIT 1",
+        [],
+        |row| row.get(0),
+    )?;
+    let metadata_json: serde_json::Value = serde_json::from_str(&metadata)?;
+    assert_eq!(metadata_json["env_mode"], "passthrough");
+    assert_eq!(metadata_json["status"], "SUCCESS");
+    assert_eq!(metadata_json["policy_id"], "passthrough_check");
     Ok(())
 }
 

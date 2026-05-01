@@ -36,6 +36,7 @@ use crate::support::secret_helpers::{
 use crate::{
     ResolvedProject, RunArgs, agent_socket_path, ensure_trusted_project_root, load_command_policy,
     now_unix_nanos, open_store, require_project, write_runtime_policy_audit_if_available,
+    write_runtime_policy_denial_audit_if_available,
 };
 
 /// Inputs needed to run a prepared command under a runtime session record.
@@ -93,6 +94,10 @@ pub struct RuntimeExecutionOutcome {
 struct PreparedPolicyExecution {
     selections: Vec<PolicySecretSelection>,
     secret_names: Vec<String>,
+    /// Names sourced from `policy.external_env_sources` (Parent/File/Compose/Ide).
+    /// Recorded as metadata-only `external_env_names` in the `RUN_POLICY`
+    /// audit row; never includes values.
+    external_env_names: Vec<String>,
     prepared: locket_exec::PreparedExecution,
 }
 
@@ -113,7 +118,7 @@ pub fn run_command(
     run_args: &RunArgs,
 ) -> Result<(), CliError> {
     let resolved = require_project(context)?;
-    let policy = load_command_policy(&resolved, &run_args.policy)?;
+    let policy = load_command_policy_or_audit_denial(context, &resolved, &run_args.policy)?;
 
     let confirmation_source = if policy.confirm {
         let expected = format!("run {}", policy.name);
@@ -148,8 +153,29 @@ pub fn run_command(
     ensure_trusted_project_root(&store, &resolved)?;
     let profile = default_profile(&store, &resolved.config)?;
     ensure_agent_running_for_execution(context)?;
-    let prepared_policy =
-        prepare_policy_execution(context, output, &store, &resolved, &profile, &policy)?;
+    let prepared_policy = match prepare_policy_execution(
+        context,
+        output,
+        &store,
+        &resolved,
+        &profile,
+        &policy,
+    ) {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            let failure_reason = denial_failure_reason(&error);
+            let _ignored = write_runtime_policy_denial_audit_if_available(
+                context,
+                &mut store,
+                &resolved,
+                Some(&profile),
+                Some(&policy),
+                &policy.name,
+                failure_reason,
+            );
+            return Err(error);
+        }
+    };
     let outcome = execute_prepared_with_runtime_session(
         context,
         &RuntimeExecutionRequest {
@@ -173,6 +199,7 @@ pub fn run_command(
         &policy,
         audit_status,
         &prepared_policy.selections,
+        &prepared_policy.external_env_names,
         status.code(),
         confirmation_source,
         user_verification.as_ref(),
@@ -284,8 +311,10 @@ fn prepare_policy_execution(
             .map(String::as_str)
             .chain(reference_secret_names.iter().map(String::as_str)),
     );
+    let external_env_names =
+        unique_secret_names(external_env_names.iter().map(String::as_str));
 
-    Ok(PreparedPolicyExecution { selections, secret_names, prepared })
+    Ok(PreparedPolicyExecution { selections, secret_names, external_env_names, prepared })
 }
 
 pub fn resolve_policy_external_env(
@@ -1190,4 +1219,50 @@ fn runtime_session_retention(
 
 pub fn unique_secret_names<'a>(names: impl Iterator<Item = &'a str>) -> Vec<String> {
     names.map(ToOwned::to_owned).collect::<BTreeSet<_>>().into_iter().collect()
+}
+
+/// Loads the named command policy or, on failure, writes a metadata-only
+/// DENIED `RUN_POLICY` audit row before propagating the typed error. Audit
+/// bookkeeping never masks the original error.
+fn load_command_policy_or_audit_denial(
+    context: &RuntimeContext,
+    resolved: &ResolvedProject,
+    policy_name: &str,
+) -> Result<CommandPolicy, CliError> {
+    match load_command_policy(resolved, policy_name) {
+        Ok(policy) => Ok(policy),
+        Err(error) => {
+            if let Ok(mut store) = open_store(context) {
+                let profile = default_profile(&store, &resolved.config).ok();
+                let _ignored = write_runtime_policy_denial_audit_if_available(
+                    context,
+                    &mut store,
+                    resolved,
+                    profile.as_ref(),
+                    None,
+                    policy_name,
+                    "policy_not_found",
+                );
+            }
+            Err(error)
+        }
+    }
+}
+
+/// Maps a `prepare_policy_execution` failure to the metadata-only
+/// `failure_reason` recorded in the DENIED `RUN_POLICY` audit row. Names are
+/// stable identifiers and never include human-readable messages or values.
+const fn denial_failure_reason(error: &CliError) -> &'static str {
+    match error {
+        CliError::Typed { kind, .. } => match kind {
+            LocketError::InvalidPolicy => "missing_required_secret",
+            LocketError::ExternalSourceUnavailable => "external_source_unavailable",
+            LocketError::MetadataInvalid => "external_source_metadata_invalid",
+            LocketError::InvalidReference => "invalid_lk_reference",
+            LocketError::AgentUnavailable => "agent_unavailable",
+            LocketError::GrantRequired => "grant_required",
+            _ => "policy_rejected",
+        },
+        _ => "policy_rejected",
+    }
 }
