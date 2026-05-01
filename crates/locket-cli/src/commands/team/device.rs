@@ -2,11 +2,12 @@ use data_encoding::BASE64URL_NOPAD;
 use locket_core::{DeviceId, LocketError, ProjectConfig, safety_words_from_fingerprint_hex};
 use locket_crypto::{
     KeyPurpose, derive_recovery_key_v1, generate_key, generate_recovery_code_bytes,
-    generate_recovery_salt,
+    generate_recovery_salt, open_recovery_entry_v1,
 };
 use locket_platform::{
     LocalDevicePrivateKeyStorage, PlatformError, RecoveryEnvelope, RecoveryKdfToml,
-    WrappedLocalFileDevicePrivateKeyStorage, save_recovery_envelope, save_recovery_kdf_toml,
+    WrappedLocalFileDevicePrivateKeyStorage, load_recovery_envelope, load_recovery_kdf_toml,
+    save_recovery_envelope, save_recovery_kdf_toml,
 };
 use locket_store::{AuditContext, AuditWrite, DeviceRecord, Store};
 use serde::{Deserialize, Serialize};
@@ -51,9 +52,9 @@ fn device_init_command(
     let mut store = open_store(context)?;
     let project_id = resolved.config.project_id.as_str();
     let timestamp = now_unix_nanos()?;
-    let bootstrapped =
-        maybe_bootstrap_first_run_on_machine(context, &mut store, &resolved, output, timestamp)?;
-    if !bootstrapped {
+    let bootstrap_recovery =
+        maybe_bootstrap_first_run_on_machine(context, &mut store, &resolved, timestamp)?;
+    if bootstrap_recovery.is_none() {
         ensure_project_exists(&store, project_id)?;
     }
 
@@ -81,7 +82,7 @@ fn device_init_command(
             "register a local device",
         )?
     };
-    let GeneratedLocalDevice { record: device, sealing_private_key } =
+    let GeneratedLocalDevice { record: device, signing_private_key, sealing_private_key } =
         generate_local_device_record(project_id, timestamp)?;
     let storage = build_device_private_key_storage(context, project_id)?;
     if let Some((existing, verification)) = existing_replacement {
@@ -102,6 +103,13 @@ fn device_init_command(
         // stranded old envelope is a soft cleanup issue rather than a
         // correctness failure.
         storage.store(&device.id, &sealing_private_key)?;
+        update_recovery_envelope_for_replacement_device(
+            context,
+            &resolved,
+            &device,
+            &signing_private_key,
+            &sealing_private_key,
+        )?;
         let _ = storage.delete(&existing.id);
     } else {
         store.insert_device(&device)?;
@@ -115,6 +123,23 @@ fn device_init_command(
             user_verification,
         )?;
         storage.store(&device.id, &sealing_private_key)?;
+        if let Some(bootstrap_recovery) = bootstrap_recovery {
+            save_bootstrap_recovery_envelope_with_device(
+                &resolved.root,
+                &resolved.config,
+                &bootstrap_recovery,
+                &device,
+                &signing_private_key,
+                &sealing_private_key,
+                timestamp,
+            )?;
+            display_bootstrap_recovery_code(
+                context,
+                output,
+                &resolved.config,
+                &bootstrap_recovery.code_bytes,
+            )?;
+        }
     }
     let descriptor = encode_device_descriptor(&device)?;
 
@@ -320,6 +345,7 @@ pub(super) fn cleanup_local_device_envelope_if_local(
 
 struct GeneratedLocalDevice {
     record: DeviceRecord,
+    signing_private_key: zeroize::Zeroizing<[u8; 32]>,
     sealing_private_key: zeroize::Zeroizing<[u8; 32]>,
 }
 
@@ -329,6 +355,8 @@ fn generate_local_device_record(
 ) -> Result<GeneratedLocalDevice, CliError> {
     let signing_seed = generate_key()?;
     let signing_public_key = *signing_seed;
+    let mut signing_private_key = zeroize::Zeroizing::new([0_u8; 32]);
+    signing_private_key.copy_from_slice(signing_seed.as_ref());
     let sealing_seed = generate_key()?;
     let sealing_secret = X25519StaticSecret::from(*sealing_seed);
     let sealing_public_key = X25519PublicKey::from(&sealing_secret);
@@ -356,7 +384,7 @@ fn generate_local_device_record(
         last_seen_at: Some(timestamp),
         revoked_at: None,
     };
-    Ok(GeneratedLocalDevice { record, sealing_private_key })
+    Ok(GeneratedLocalDevice { record, signing_private_key, sealing_private_key })
 }
 
 pub fn device_private_key_root(context: &RuntimeContext) -> Result<PathBuf, CliError> {
@@ -559,15 +587,14 @@ fn maybe_bootstrap_first_run_on_machine(
     context: &RuntimeContext,
     store: &mut Store,
     resolved: &ResolvedProject,
-    output: &mut impl Write,
     timestamp: i64,
-) -> Result<bool, CliError> {
+) -> Result<Option<BootstrapRecoveryMaterial>, CliError> {
     let project_id = resolved.config.project_id.as_str();
     match context.key_store.load_master_key(project_id) {
-        Ok(_) => Ok(false),
+        Ok(_) => Ok(None),
         Err(PlatformError::MasterKeyNotFound) => {
             if context.passphrase_store.contains_project(project_id)? {
-                return Ok(false);
+                return Ok(None);
             }
             let envelope_present = recovery_envelope_present(&resolved.root);
             let team_row_present =
@@ -575,8 +602,8 @@ fn maybe_bootstrap_first_run_on_machine(
             if envelope_present || team_row_present {
                 return Err(ambiguous_bootstrap_state_error(envelope_present, team_row_present));
             }
-            bootstrap_first_run_on_machine(context, store, resolved, output, timestamp)?;
-            Ok(true)
+            let material = bootstrap_first_run_on_machine(context, store, resolved, timestamp)?;
+            Ok(Some(material))
         }
         Err(error) => Err(CliError::Platform(error)),
     }
@@ -625,9 +652,8 @@ fn bootstrap_first_run_on_machine(
     context: &RuntimeContext,
     store: &mut Store,
     resolved: &ResolvedProject,
-    output: &mut impl Write,
     timestamp: i64,
-) -> Result<(), CliError> {
+) -> Result<BootstrapRecoveryMaterial, CliError> {
     let config = &resolved.config;
     let project_id = config.project_id.as_str();
 
@@ -666,47 +692,173 @@ fn bootstrap_first_run_on_machine(
         timestamp,
     )?;
 
-    let code_bytes =
-        create_bootstrap_recovery_envelope(&resolved.root, config, &master_key, timestamp)?;
+    let bootstrap_recovery = create_bootstrap_recovery_material(&resolved.root, timestamp)?;
 
     trust_root(store, config, &resolved.root, timestamp)?;
 
-    display_bootstrap_recovery_code(context, output, config, &code_bytes)?;
-
     write_bootstrap_audit(context, store, resolved, &profile.id, timestamp)?;
 
-    Ok(())
+    Ok(BootstrapRecoveryMaterial { master_key, ..bootstrap_recovery })
 }
 
-fn create_bootstrap_recovery_envelope(
+struct BootstrapRecoveryMaterial {
+    code_bytes: [u8; locket_crypto::RECOVERY_CODE_BYTES],
+    kdf: RecoveryKdfToml,
+    recovery_root: locket_crypto::KeyBytes,
+    master_key: zeroize::Zeroizing<locket_crypto::KeyBytes>,
+}
+
+fn create_bootstrap_recovery_material(
     root: &Path,
-    config: &ProjectConfig,
-    master_key: &locket_crypto::KeyBytes,
     timestamp: i64,
-) -> Result<[u8; locket_crypto::RECOVERY_CODE_BYTES], CliError> {
+) -> Result<BootstrapRecoveryMaterial, CliError> {
     let recovery_dir = root.join(".locket").join("recovery");
     let code_bytes = generate_recovery_code_bytes()?;
     let salt = generate_recovery_salt()?;
     let kdf_profile_id = format!("lk_kdf_{}", format_hex(&salt[..16]));
     let kdf = RecoveryKdfToml::new_v1(kdf_profile_id, &salt, timestamp);
     let recovery_root = derive_recovery_key_v1(&code_bytes, &salt, kdf.to_crypto_params())?;
-    let entry = seal_recovery_envelope_entry(
-        &recovery_root,
-        &kdf.kdf_profile_id,
-        "master_key",
-        config.project_id.as_str(),
-        master_key,
-    )?;
-    let envelope = RecoveryEnvelope {
-        kdf_profile_id: kdf.kdf_profile_id.clone(),
-        created_at_unix_nanos: i128::from(timestamp),
-        entries: vec![entry],
-    };
     save_recovery_kdf_toml(&recovery_dir, &kdf)
         .map_err(|error| metadata_invalid_error(format!("save recovery kdf: {error}")))?;
+    Ok(BootstrapRecoveryMaterial {
+        code_bytes,
+        kdf,
+        recovery_root: *recovery_root,
+        master_key: zeroize::Zeroizing::new([0_u8; locket_crypto::KEY_LEN]),
+    })
+}
+
+fn save_bootstrap_recovery_envelope_with_device(
+    root: &Path,
+    config: &ProjectConfig,
+    material: &BootstrapRecoveryMaterial,
+    device: &DeviceRecord,
+    signing_private_key: &locket_crypto::KeyBytes,
+    sealing_private_key: &locket_crypto::KeyBytes,
+    timestamp: i64,
+) -> Result<(), CliError> {
+    let recovery_dir = root.join(".locket").join("recovery");
+    let envelope = RecoveryEnvelope {
+        kdf_profile_id: material.kdf.kdf_profile_id.clone(),
+        created_at_unix_nanos: i128::from(timestamp),
+        entries: recovery_entries_for_device(
+            &material.recovery_root,
+            &material.kdf.kdf_profile_id,
+            config.project_id.as_str(),
+            material.master_key.as_ref(),
+            device,
+            signing_private_key,
+            sealing_private_key,
+        )?,
+    };
     save_recovery_envelope(&recovery_dir, &envelope)
         .map_err(|error| metadata_invalid_error(format!("save recovery envelope: {error}")))?;
-    Ok(code_bytes)
+    Ok(())
+}
+
+fn recovery_entries_for_device(
+    recovery_root: &locket_crypto::KeyBytes,
+    kdf_profile_id: &str,
+    project_id: &str,
+    master_key: &[u8],
+    device: &DeviceRecord,
+    signing_private_key: &locket_crypto::KeyBytes,
+    sealing_private_key: &locket_crypto::KeyBytes,
+) -> Result<Vec<locket_platform::RecoveryEnvelopeEntry>, CliError> {
+    Ok(vec![
+        seal_recovery_envelope_entry(
+            recovery_root,
+            kdf_profile_id,
+            "master_key",
+            project_id,
+            master_key,
+        )?,
+        seal_recovery_envelope_entry(
+            recovery_root,
+            kdf_profile_id,
+            "device_signing_private_key",
+            &device.id,
+            signing_private_key,
+        )?,
+        seal_recovery_envelope_entry(
+            recovery_root,
+            kdf_profile_id,
+            "device_sealing_private_key",
+            &device.id,
+            sealing_private_key,
+        )?,
+    ])
+}
+
+fn update_recovery_envelope_for_replacement_device(
+    context: &RuntimeContext,
+    resolved: &ResolvedProject,
+    device: &DeviceRecord,
+    signing_private_key: &locket_crypto::KeyBytes,
+    sealing_private_key: &locket_crypto::KeyBytes,
+) -> Result<(), CliError> {
+    let recovery_dir = resolved.root.join(".locket").join("recovery");
+    if !recovery_dir.join("envelope.bin").exists() {
+        return Ok(());
+    }
+    let kdf = load_recovery_kdf_toml(&recovery_dir)
+        .map_err(|error| metadata_invalid_error(format!("recovery/kdf.toml: {error}")))?;
+    let old_envelope = load_recovery_envelope(&recovery_dir)
+        .map_err(|error| metadata_invalid_error(format!("recovery/envelope.bin: {error}")))?;
+    let code = context.recovery_code_reader.read_recovery_code("current recovery code")?;
+    let code_bytes = crate::recovery_code_decode(code.trim())?;
+    let salt = kdf
+        .decode_salt()
+        .map_err(|error| metadata_invalid_error(format!("recovery kdf salt: {error}")))?;
+    let recovery_root = derive_recovery_key_v1(&code_bytes, &salt, kdf.to_crypto_params())?;
+    let master_entry = old_envelope
+        .entries
+        .iter()
+        .find(|entry| {
+            entry.entry_kind == "master_key"
+                && entry.entry_id == resolved.config.project_id.as_str()
+        })
+        .ok_or_else(|| metadata_invalid_error("recovery envelope missing master_key entry"))?;
+    let _ = open_recovery_entry_v1(
+        &recovery_root,
+        &kdf.kdf_profile_id,
+        &master_entry.entry_kind,
+        &master_entry.entry_id,
+        &master_entry.nonce,
+        &master_entry.ciphertext,
+    )?;
+    let mut entries = Vec::with_capacity(old_envelope.entries.len() + 2);
+    for entry in &old_envelope.entries {
+        if matches!(
+            entry.entry_kind.as_str(),
+            "device_signing_private_key" | "device_sealing_private_key"
+        ) {
+            continue;
+        }
+        entries.push(entry.clone());
+    }
+    entries.push(seal_recovery_envelope_entry(
+        &recovery_root,
+        &kdf.kdf_profile_id,
+        "device_signing_private_key",
+        &device.id,
+        signing_private_key,
+    )?);
+    entries.push(seal_recovery_envelope_entry(
+        &recovery_root,
+        &kdf.kdf_profile_id,
+        "device_sealing_private_key",
+        &device.id,
+        sealing_private_key,
+    )?);
+    let new_envelope = RecoveryEnvelope {
+        kdf_profile_id: kdf.kdf_profile_id.clone(),
+        created_at_unix_nanos: old_envelope.created_at_unix_nanos,
+        entries,
+    };
+    save_recovery_envelope(&recovery_dir, &new_envelope)
+        .map_err(|error| metadata_invalid_error(format!("save recovery envelope: {error}")))?;
+    Ok(())
 }
 
 fn display_bootstrap_recovery_code(

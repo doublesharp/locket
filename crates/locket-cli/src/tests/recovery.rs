@@ -1,5 +1,6 @@
 #[allow(unused_imports)]
 use super::*;
+use locket_platform::LocalDevicePrivateKeyStorage;
 use sha2::Digest;
 
 #[test]
@@ -222,6 +223,44 @@ fn recovery_restore_recovers_managed_automation_client_keys()
     Ok(())
 }
 
+#[test]
+fn recovery_restore_requires_device_entries_when_local_device_exists()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    run_with_context(
+        Cli::try_parse_from(["locket", "device", "init"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    let resolved = crate::require_project(&context)?;
+    let (project_id, master_key) = test_project_id_and_master_key(&context)?;
+    let (kdf, envelope, code_bytes) = setup_recovery_envelope(&context, &project_id, &master_key)?;
+    context.key_store.delete_master_key(&project_id)?;
+
+    let result = crate::restore_from_recovery_code(
+        &context,
+        &mut Vec::new(),
+        &resolved,
+        &kdf,
+        &envelope,
+        &code_bytes,
+        false,
+    );
+
+    let Err(error) = result else {
+        return Err("recovery without device entries must fail when a local device exists".into());
+    };
+    assert_eq!(error.exit_code(), locket_core::LocketError::UnrecoverableVault.exit_code());
+    assert!(error.to_string().contains("device_signing_private_key"));
+    Ok(())
+}
+
 fn insert_recovery_automation_client(
     store: &mut locket_store::Store,
     project_id: &str,
@@ -371,6 +410,73 @@ fn recovery_rotate_creates_envelope_and_prints_full_code() -> Result<(), Box<dyn
     assert!(metadata.contains("\"kdf_profile_id\""));
     assert!(metadata.contains("\"command\":\"recovery rotate\""));
     assert!(!metadata.contains(code_line));
+    Ok(())
+}
+
+#[test]
+fn recovery_rotate_carries_device_keys_and_recover_restores_device_envelope()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    let mut init_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut init_output,
+    )?;
+    let initial_recovery_code =
+        recovery_code_from_output(&String::from_utf8(init_output)?)?.to_owned();
+    run_with_context(
+        Cli::try_parse_from(["locket", "device", "init"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+
+    let store = crate::open_store(&context)?;
+    let project_id = crate::require_project(&context)?.config.project_id;
+    let device =
+        store.get_active_local_device(project_id.as_str())?.ok_or("missing active local device")?;
+    let storage = crate::commands::team::device::build_device_private_key_storage(
+        &context,
+        project_id.as_str(),
+    )?;
+    let original_device_key = storage.load(&device.id)?;
+
+    let rotate_context =
+        context_with_recovery_code(&context, &format!("{initial_recovery_code}\n"));
+    let mut rotate_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "recovery", "rotate"])?,
+        &rotate_context,
+        &mut rotate_output,
+    )?;
+    let rotate_output = String::from_utf8(rotate_output)?;
+    let new_code = recovery_code_from_output(&rotate_output)?;
+    let new_code_bytes = locket_crypto::recovery_code_decode(new_code)?;
+
+    let recovery_dir = directory.path().join(".locket").join("recovery");
+    let kdf = crate::load_recovery_kdf_toml(&recovery_dir)?;
+    let envelope = crate::load_recovery_envelope(&recovery_dir)?;
+    assert!(envelope.entries.iter().any(|entry| entry.entry_kind == "device_signing_private_key"));
+    assert!(envelope.entries.iter().any(|entry| entry.entry_kind == "device_sealing_private_key"));
+
+    context.key_store.delete_master_key(project_id.as_str())?;
+    storage.delete(&device.id)?;
+    let resolved = crate::require_project(&context)?;
+    let mut recover_output = Vec::new();
+    crate::restore_from_recovery_code(
+        &context,
+        &mut recover_output,
+        &resolved,
+        &kdf,
+        &envelope,
+        &new_code_bytes,
+        false,
+    )?;
+
+    assert_eq!(storage.load(&device.id)?.as_ref(), original_device_key.as_ref());
+    let recover_output = String::from_utf8(recover_output)?;
+    assert!(recover_output.contains("recovered: device_private_keys=1"));
     Ok(())
 }
 

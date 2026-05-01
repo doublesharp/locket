@@ -1,9 +1,10 @@
 use data_encoding::BASE64URL_NOPAD;
+use locket_core::LocketError;
 use locket_crypto::{KeyPurpose, derive_recovery_key_v1, open_recovery_entry_v1, wrap_dek_v1};
 use locket_platform::{
-    RecoveryEnvelope, RecoveryEnvelopeEntry, RecoveryKdfToml, load_recovery_envelope,
-    load_recovery_kdf_toml, save_recovery_envelope, save_recovery_kdf_toml, secure_directory,
-    write_user_only_file,
+    LocalDevicePrivateKeyStorage, RecoveryEnvelope, RecoveryEnvelopeEntry, RecoveryKdfToml,
+    load_recovery_envelope, load_recovery_kdf_toml, save_recovery_envelope, save_recovery_kdf_toml,
+    secure_directory, write_user_only_file,
 };
 use locket_store::AuditWrite;
 use serde_json::json;
@@ -11,6 +12,7 @@ use sha2::{Digest, Sha256};
 use std::io::{self, IsTerminal, Write};
 use std::path::PathBuf;
 
+use crate::runtime::error::typed_cli_error;
 use crate::runtime::user_verification::{UserVerificationAudit, require_user_verification};
 use crate::{
     CliError, RecoverArgs, RecoveryCommand, ResolvedProject, RuntimeContext, format_hex,
@@ -21,6 +23,8 @@ use crate::{
 
 const AUTOMATION_CLIENT_PRIVATE_KEY_ENTRY_KIND: &str = "automation_client_private_key";
 const AUTOMATION_CLIENT_PRIVATE_KEY_PREFIX: &str = "automation_client_private_key:";
+const DEVICE_SIGNING_PRIVATE_KEY_ENTRY_KIND: &str = "device_signing_private_key";
+const DEVICE_SEALING_PRIVATE_KEY_ENTRY_KIND: &str = "device_sealing_private_key";
 
 pub fn recover_command(
     context: &RuntimeContext,
@@ -75,22 +79,26 @@ pub fn recovery_rotate_command(
             .map_err(|error| metadata_invalid_error(format!("recovery kdf salt: {error}")))?;
         let old_root =
             derive_recovery_key_v1(&old_code_bytes, &old_salt, old_kdf.to_crypto_params())?;
-        rewrap_recovery_entries(
+        let mut entries = rewrap_recovery_entries(
             &old_envelope,
             &old_kdf.kdf_profile_id,
             &old_root,
             &new_kdf,
             &new_root,
-        )?
+        )?;
+        replace_device_recovery_entries(context, &resolved, &new_kdf, &new_root, &mut entries)?;
+        entries
     } else {
         let (master_key, _source) = load_master_key(context, project_id)?;
-        vec![seal_recovery_envelope_entry(
+        let mut entries = vec![seal_recovery_envelope_entry(
             &new_root,
             &new_kdf.kdf_profile_id,
             "master_key",
             project_id,
             master_key.as_ref(),
-        )?]
+        )?];
+        replace_device_recovery_entries(context, &resolved, &new_kdf, &new_root, &mut entries)?;
+        entries
     };
 
     let new_envelope = RecoveryEnvelope {
@@ -169,6 +177,7 @@ pub fn restore_from_recovery_code(
         &unwrap_root,
         &mut restored,
     )?;
+    restore_device_private_keys(context, resolved, kdf, envelope, &unwrap_root, &mut restored)?;
     write_recover_audit(
         context,
         resolved,
@@ -186,6 +195,9 @@ pub fn restore_from_recovery_code(
             restored.automation_client_private, restored.skipped_automation_client_private
         )?;
     }
+    if restored.device_sealing_private > 0 {
+        writeln!(output, "recovered: device_private_keys=1")?;
+    }
     writeln!(output, "metadata_only: yes")?;
     Ok(())
 }
@@ -193,8 +205,85 @@ pub fn restore_from_recovery_code(
 #[derive(Default)]
 struct RecoveryRestoreSummary {
     master: usize,
+    device_signing_private: usize,
+    device_sealing_private: usize,
     automation_client_private: usize,
     skipped_automation_client_private: usize,
+}
+
+fn restore_device_private_keys(
+    context: &RuntimeContext,
+    resolved: &ResolvedProject,
+    kdf: &RecoveryKdfToml,
+    envelope: &RecoveryEnvelope,
+    unwrap_root: &locket_crypto::KeyBytes,
+    restored: &mut RecoveryRestoreSummary,
+) -> Result<(), CliError> {
+    let project_id = resolved.config.project_id.as_str();
+    let store = open_store(context)?;
+    let Some(device) = store.get_active_local_device(project_id)? else {
+        return Ok(());
+    };
+    let signing = open_required_device_recovery_entry(
+        envelope,
+        unwrap_root,
+        kdf,
+        DEVICE_SIGNING_PRIVATE_KEY_ENTRY_KIND,
+        &device.id,
+    )?;
+    if signing.len() != locket_crypto::KEY_LEN {
+        return Err(CliError::Crypto(locket_crypto::CryptoError::InvalidWrappedKey));
+    }
+    if signing.as_slice() != device.signing_public_key.as_slice() {
+        return Err(metadata_invalid_error("recovery envelope device signing key mismatch"));
+    }
+    restored.device_signing_private += 1;
+
+    let sealing = open_required_device_recovery_entry(
+        envelope,
+        unwrap_root,
+        kdf,
+        DEVICE_SEALING_PRIVATE_KEY_ENTRY_KIND,
+        &device.id,
+    )?;
+    if sealing.len() != locket_crypto::KEY_LEN {
+        return Err(CliError::Crypto(locket_crypto::CryptoError::InvalidWrappedKey));
+    }
+    let mut sealing_key = zeroize::Zeroizing::new([0_u8; locket_crypto::KEY_LEN]);
+    sealing_key.copy_from_slice(&sealing);
+    let storage =
+        crate::commands::team::device::build_device_private_key_storage(context, project_id)?;
+    storage.store(&device.id, &sealing_key)?;
+    restored.device_sealing_private += 1;
+    Ok(())
+}
+
+fn open_required_device_recovery_entry(
+    envelope: &RecoveryEnvelope,
+    unwrap_root: &locket_crypto::KeyBytes,
+    kdf: &RecoveryKdfToml,
+    entry_kind: &str,
+    entry_id: &str,
+) -> Result<zeroize::Zeroizing<Vec<u8>>, CliError> {
+    let entry = envelope
+        .entries
+        .iter()
+        .find(|entry| entry.entry_kind == entry_kind && entry.entry_id == entry_id)
+        .ok_or_else(|| {
+            typed_cli_error(
+                LocketError::UnrecoverableVault,
+                format!("recovery envelope is missing required {entry_kind} entry"),
+            )
+        })?;
+    open_recovery_entry_v1(
+        unwrap_root,
+        &kdf.kdf_profile_id,
+        &entry.entry_kind,
+        &entry.entry_id,
+        &entry.nonce,
+        &entry.ciphertext,
+    )
+    .map_err(CliError::Crypto)
 }
 
 fn restore_automation_client_private_keys(
@@ -407,6 +496,52 @@ fn rewrap_recovery_entries(
     Ok(entries)
 }
 
+fn replace_device_recovery_entries(
+    context: &RuntimeContext,
+    resolved: &ResolvedProject,
+    new_kdf: &RecoveryKdfToml,
+    new_root: &locket_crypto::KeyBytes,
+    entries: &mut Vec<RecoveryEnvelopeEntry>,
+) -> Result<(), CliError> {
+    entries.retain(|entry| {
+        !matches!(
+            entry.entry_kind.as_str(),
+            DEVICE_SIGNING_PRIVATE_KEY_ENTRY_KIND | DEVICE_SEALING_PRIVATE_KEY_ENTRY_KIND
+        )
+    });
+    let project_id = resolved.config.project_id.as_str();
+    let store = open_store(context)?;
+    let Some(device) = store.get_active_local_device(project_id)? else {
+        return Ok(());
+    };
+    if device.revoked_at.is_some() {
+        return Ok(());
+    }
+    if device.signing_public_key.len() != locket_crypto::KEY_LEN {
+        return Err(metadata_invalid_error("device signing key has unexpected length"));
+    }
+    let mut signing_private_key = zeroize::Zeroizing::new([0_u8; locket_crypto::KEY_LEN]);
+    signing_private_key.copy_from_slice(&device.signing_public_key);
+    let storage =
+        crate::commands::team::device::build_device_private_key_storage(context, project_id)?;
+    let sealing_private_key = storage.load(&device.id)?;
+    entries.push(seal_recovery_envelope_entry(
+        new_root,
+        &new_kdf.kdf_profile_id,
+        DEVICE_SIGNING_PRIVATE_KEY_ENTRY_KIND,
+        &device.id,
+        signing_private_key.as_ref(),
+    )?);
+    entries.push(seal_recovery_envelope_entry(
+        new_root,
+        &new_kdf.kdf_profile_id,
+        DEVICE_SEALING_PRIVATE_KEY_ENTRY_KIND,
+        &device.id,
+        sealing_private_key.as_ref(),
+    )?);
+    Ok(())
+}
+
 pub fn recovery_dir(resolved: &ResolvedProject) -> PathBuf {
     resolved.root.join(".locket").join("recovery")
 }
@@ -477,6 +612,10 @@ fn write_recover_audit(
     let envelope_bytes = envelope.serialize()?;
     let envelope_checksum = format_hex(&Sha256::digest(&envelope_bytes));
     let mut restored_entry_kinds = vec!["master_key"];
+    if restored.device_sealing_private > 0 {
+        restored_entry_kinds.push("device_signing_private_key");
+        restored_entry_kinds.push("device_sealing_private_key");
+    }
     if restored.automation_client_private > 0 {
         restored_entry_kinds.push("automation_client_private_key");
     }
@@ -494,6 +633,8 @@ fn write_recover_audit(
         "restored_entry_kinds": restored_entry_kinds,
         "restored_entry_counts": {
             "master_key": restored.master,
+            "device_signing_private_key": restored.device_signing_private,
+            "device_sealing_private_key": restored.device_sealing_private,
             "automation_client_private_key": restored.automation_client_private,
             "automation_client_private_key_skipped": restored.skipped_automation_client_private,
         },

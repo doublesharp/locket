@@ -1460,6 +1460,8 @@ fn device_init_force_replaces_active_local_device() -> Result<(), Box<dyn std::e
         &context,
         &mut output,
     )?;
+    let project_init_output = String::from_utf8(output.clone())?;
+    let recovery_code = recovery_code_from_output(&project_init_output)?.to_owned();
     output.clear();
 
     run_with_context(Cli::try_parse_from(["locket", "device", "init"])?, &context, &mut output)?;
@@ -1471,9 +1473,10 @@ fn device_init_force_replaces_active_local_device() -> Result<(), Box<dyn std::e
         .to_owned();
 
     output.clear();
+    let force_context = context_with_recovery_code(&context, &format!("{recovery_code}\n"));
     run_with_context(
         Cli::try_parse_from(["locket", "device", "init", "--force"])?,
-        &context,
+        &force_context,
         &mut output,
     )?;
     let forced_init_output = String::from_utf8(output.clone())?;
@@ -3467,11 +3470,14 @@ fn device_init_force_cleans_up_prior_wrapped_envelope() -> Result<(), Box<dyn st
     let directory = tempdir()?;
     let context = test_context(&directory);
 
+    let mut project_init_output = Vec::new();
     run_with_context(
         Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
         &context,
-        &mut Vec::new(),
+        &mut project_init_output,
     )?;
+    let project_init_output = String::from_utf8(project_init_output)?;
+    let recovery_code = recovery_code_from_output(&project_init_output)?.to_owned();
 
     let mut init_output = Vec::new();
     run_with_context(
@@ -3488,10 +3494,11 @@ fn device_init_force_cleans_up_prior_wrapped_envelope() -> Result<(), Box<dyn st
     let original_envelope = device_envelope_path(&directory, &original_id);
     assert!(original_envelope.exists(), "envelope must exist after first device init");
 
+    let force_context = context_with_recovery_code(&context, &format!("{recovery_code}\n"));
     let mut force_output = Vec::new();
     run_with_context(
         Cli::try_parse_from(["locket", "device", "init", "--force"])?,
-        &context,
+        &force_context,
         &mut force_output,
     )?;
     let force_output = String::from_utf8(force_output)?;
@@ -3812,6 +3819,10 @@ fn device_init_bootstraps_when_master_key_and_envelope_are_absent()
         "recovery envelope must exist after bootstrap"
     );
     assert!(directory.path().join(".locket/recovery/kdf.toml").exists());
+    let envelope = crate::load_recovery_envelope(&directory.path().join(".locket/recovery"))?;
+    assert!(envelope.entries.iter().any(|entry| entry.entry_kind == "master_key"));
+    assert!(envelope.entries.iter().any(|entry| entry.entry_kind == "device_signing_private_key"));
+    assert!(envelope.entries.iter().any(|entry| entry.entry_kind == "device_sealing_private_key"));
 
     let master_key = context.key_store.load_master_key(&project_id)?;
     assert_eq!(master_key.len(), locket_crypto::KEY_LEN);
