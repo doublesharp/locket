@@ -357,11 +357,12 @@ mod tests {
     }
 
     #[test]
-    fn unlock_method_serializes_pascal_case() {
-        let s = serde_json::to_string(&UnlockMethod::OsKeychain).unwrap();
+    fn unlock_method_serializes_pascal_case() -> Result<(), serde_json::Error> {
+        let s = serde_json::to_string(&UnlockMethod::OsKeychain)?;
         assert_eq!(s, "\"OsKeychain\"");
-        let parsed: UnlockMethod = serde_json::from_str("\"RecoveryEnvelope\"").unwrap();
+        let parsed: UnlockMethod = serde_json::from_str("\"RecoveryEnvelope\"")?;
         assert_eq!(parsed, UnlockMethod::RecoveryEnvelope);
+        Ok(())
     }
 
     #[test]
@@ -401,9 +402,13 @@ mod tests {
         );
         cache.insert(
             "p".to_owned(),
-            UnlockEntry::new(b"new".to_vec(), 100, Duration::from_secs(60), UnlockMethod::OsKeychain),
+            UnlockEntry::new(
+                b"new".to_vec(),
+                100,
+                Duration::from_secs(60),
+                UnlockMethod::OsKeychain,
+            ),
         );
-        let entry = cache.lookup("p", 200).unwrap();
-        assert_eq!(entry.method(), UnlockMethod::OsKeychain);
+        assert_eq!(cache.lookup("p", 200).map(UnlockEntry::method), Some(UnlockMethod::OsKeychain));
     }
 }

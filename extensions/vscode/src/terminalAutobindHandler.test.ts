@@ -95,6 +95,7 @@ test('handleOpenTerminal injects LOCKET_IDE_ENV_SESSION and fires a RequestGrant
         ttlSeconds: 1800,
       },
       storePath: '/tmp/store.db',
+      sessionIdFactory: () => 'session-uuid',
       notifyDirectoryGrantRejected: (reason) => warnings.push(reason),
       warnOnce: new WarnOnceLatch(),
     };

@@ -185,8 +185,7 @@ async fn handle_value_access(
         );
     }
     let Some(grant_id) = grant_id.as_deref() else {
-        if let (Some(project_id), Some(store_path)) =
-            (project_id.as_deref(), store_path.as_deref())
+        if let (Some(project_id), Some(store_path)) = (project_id.as_deref(), store_path.as_deref())
         {
             let key = {
                 let cache = state.unlock_cache.lock().await;
@@ -1155,7 +1154,7 @@ mod tests {
         let degraded_log = fixture
             .store_path
             .parent()
-            .expect("store path parent")
+            .ok_or("store path should have parent")?
             .join(locket_platform::DEGRADED_AUDIT_LOG_FILENAME);
         let body = std::fs::read_to_string(&degraded_log)?;
         let lines: Vec<&str> = body.lines().collect();

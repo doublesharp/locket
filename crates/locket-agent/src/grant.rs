@@ -607,11 +607,12 @@ mod tests {
     }
 
     #[test]
-    fn grant_action_serializes_pascal_case() {
-        let s = serde_json::to_string(&GrantAction::RunPolicy).unwrap();
+    fn grant_action_serializes_pascal_case() -> Result<(), serde_json::Error> {
+        let s = serde_json::to_string(&GrantAction::RunPolicy)?;
         assert_eq!(s, "\"RunPolicy\"");
-        let parsed: GrantAction = serde_json::from_str("\"SetSecret\"").unwrap();
+        let parsed: GrantAction = serde_json::from_str("\"SetSecret\"")?;
         assert_eq!(parsed, GrantAction::SetSecret);
+        Ok(())
     }
 
     #[test]
@@ -636,11 +637,12 @@ mod tests {
     }
 
     #[test]
-    fn grant_binding_round_trips_through_serde_json() {
+    fn grant_binding_round_trips_through_serde_json() -> Result<(), serde_json::Error> {
         let binding = GrantBinding::new(99, "ts-1");
-        let json = serde_json::to_string(&binding).unwrap();
-        let parsed: GrantBinding = serde_json::from_str(&json).unwrap();
+        let json = serde_json::to_string(&binding)?;
+        let parsed: GrantBinding = serde_json::from_str(&json)?;
         assert_eq!(binding, parsed);
+        Ok(())
     }
 
     #[test]
@@ -668,8 +670,7 @@ mod tests {
         replacement.ttl_seconds = 999;
         table.insert(replacement);
         assert_eq!(table.len(), 1);
-        let g = table.get("grant-1").unwrap();
-        assert_eq!(g.action, GrantAction::Copy);
-        assert_eq!(g.ttl_seconds, 999);
+        assert_eq!(table.get("grant-1").map(|g| g.action), Some(GrantAction::Copy));
+        assert_eq!(table.get("grant-1").map(|g| g.ttl_seconds), Some(999));
     }
 }

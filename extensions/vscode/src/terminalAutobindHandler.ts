@@ -16,6 +16,7 @@ export interface TerminalAutobindHandlerDeps {
   readonly environmentVariableCollection: EnvironmentVariableCollectionLike;
   readonly autobindContext: TerminalAutobindContext;
   readonly storePath: string;
+  readonly sessionIdFactory?: () => string;
   readonly notifyDirectoryGrantRejected: (reason: string) => void;
   readonly warnOnce: WarnOnceLatch;
 }
@@ -47,6 +48,7 @@ export async function handleOpenTerminal(
     agentClient: deps.agentClient,
     project: plan.project,
     storePath: deps.storePath,
+    sessionIdFactory: deps.sessionIdFactory,
   });
   if (session !== undefined) {
     applyIdeEnvSessionToTerminals(deps.environmentVariableCollection, session.sessionId);

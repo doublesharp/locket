@@ -379,4 +379,3 @@ fn check_envelope_permissions(metadata: &fs::Metadata) -> Result<(), PlatformErr
     }
     Ok(())
 }
-

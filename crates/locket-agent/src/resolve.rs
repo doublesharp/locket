@@ -1329,11 +1329,11 @@ mod tests {
         let degraded_log = fixture
             .store_path
             .parent()
-            .expect("store path parent")
+            .ok_or("store path should have parent")?
             .join(locket_platform::DEGRADED_AUDIT_LOG_FILENAME);
         let body = std::fs::read_to_string(&degraded_log)?;
         let row: serde_json::Value =
-            serde_json::from_str(body.lines().next().expect("at least one row"))?;
+            serde_json::from_str(body.lines().next().ok_or("expected degraded audit row")?)?;
         assert_eq!(row["action"], "RESOLVE_REFERENCE");
         assert_eq!(row["status"], "DENIED_LOCKED");
         assert_eq!(row["command"], "agent.ResolveReference");

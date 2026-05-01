@@ -188,11 +188,12 @@ mod tests {
     }
 
     #[test]
-    fn session_lock_source_serializes_snake_case() {
-        let s = serde_json::to_string(&SessionLockSource::IdleTimeout).unwrap();
+    fn session_lock_source_serializes_snake_case() -> Result<(), serde_json::Error> {
+        let s = serde_json::to_string(&SessionLockSource::IdleTimeout)?;
         assert_eq!(s, "\"idle_timeout\"");
-        let parsed: SessionLockSource = serde_json::from_str("\"system_sleep\"").unwrap();
+        let parsed: SessionLockSource = serde_json::from_str("\"system_sleep\"")?;
         assert_eq!(parsed, SessionLockSource::SystemSleep);
+        Ok(())
     }
 
     #[test]

@@ -74,8 +74,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn record_locked_refusal_writes_to_store_path_parent() {
-        let directory = tempdir().expect("tempdir");
+    fn record_locked_refusal_writes_to_store_path_parent()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
         let store_path = directory.path().join("store.db");
         record_locked_refusal(
             "REVEAL",
@@ -85,15 +86,16 @@ mod tests {
             1_700_000_000_000_000_000,
         );
         let log = directory.path().join(DEGRADED_AUDIT_LOG_FILENAME);
-        let body = fs::read_to_string(&log).expect("log file");
-        let value: serde_json::Value =
-            serde_json::from_str(body.lines().next().expect("at least one line"))
-                .expect("valid json");
+        let body = fs::read_to_string(&log)?;
+        let value: serde_json::Value = serde_json::from_str(
+            body.lines().next().ok_or("degraded audit should include one line")?,
+        )?;
         assert_eq!(value["action"], "REVEAL");
         assert_eq!(value["status"], "DENIED_LOCKED");
         assert_eq!(value["project_id"], "lk_proj_x");
         assert_eq!(value["command"], "agent.Reveal");
         assert_eq!(value["failure_reason"], "vault_locked");
+        Ok(())
     }
 
     #[test]

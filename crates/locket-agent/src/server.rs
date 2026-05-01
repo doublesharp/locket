@@ -371,6 +371,11 @@ impl AgentSocketState {
     /// Test-only helper that writes `master_key` into the agent's
     /// master-key store under `project_id`. Lets tests drive the
     /// `Unlock` RPC without ever touching the real OS keychain.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PlatformError`] when the injected master-key store
+    /// cannot persist the test key.
     #[cfg(test)]
     pub fn seed_master_key(
         &self,
@@ -777,8 +782,12 @@ pub async fn dispatch(envelope: &RequestEnvelope, state: &AgentSocketState) -> R
         Ok(AgentMethod::RequestGrant) => handle_request_grant(envelope, state).await,
         Ok(AgentMethod::RevokeGrant) => handle_revoke_grant(envelope, state).await,
         Ok(AgentMethod::ExpireGrant) => handle_expire_grant(envelope, state).await,
-        Ok(AgentMethod::Reveal) => crate::reveal::handle_reveal(envelope, state, current_unix_nanos()).await,
-        Ok(AgentMethod::Copy) => crate::reveal::handle_copy(envelope, state, current_unix_nanos()).await,
+        Ok(AgentMethod::Reveal) => {
+            crate::reveal::handle_reveal(envelope, state, current_unix_nanos()).await
+        }
+        Ok(AgentMethod::Copy) => {
+            crate::reveal::handle_copy(envelope, state, current_unix_nanos()).await
+        }
         Ok(AgentMethod::ScanKnownValues) => {
             crate::scan::handle_scan(envelope, state, current_unix_nanos()).await
         }
@@ -800,7 +809,9 @@ pub async fn dispatch(envelope: &RequestEnvelope, state: &AgentSocketState) -> R
         Ok(AgentMethod::ListAudit) => handle_list_audit(envelope, state).await,
         Ok(AgentMethod::ReadConfig) => crate::config::handle_read_config(envelope),
         Ok(AgentMethod::WriteConfig) => crate::config::handle_write_config(envelope, state).await,
-        Ok(method @ (AgentMethod::RegisterIdeEnvSession | AgentMethod::IdeEnvSession)) => ide_env_session_dispatch(method, envelope, state).await,
+        Ok(method @ (AgentMethod::RegisterIdeEnvSession | AgentMethod::IdeEnvSession)) => {
+            ide_env_session_dispatch(method, envelope, state).await
+        }
         Ok(method) => ResponseEnvelope::Error(ErrorEnvelope::new(
             envelope.id.clone(),
             "ProtocolError",

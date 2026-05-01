@@ -716,14 +716,6 @@ fn prepare_agent_policy_access(
 ) -> Result<AgentPolicyAccess, CliError> {
     unlock_agent_for_policy(context, resolved, policy)?;
     let binding = agent_grant_binding()?;
-    request_agent_grant(
-        context,
-        resolved,
-        profile,
-        policy,
-        locket_agent::GrantAction::RunPolicy,
-        &binding,
-    )?;
     let needs_reference_grant = policy_command_has_lk_references(policy)
         || selections.iter().any(|s| s.selected.is_some())
         || policy_has_ide_source(policy);

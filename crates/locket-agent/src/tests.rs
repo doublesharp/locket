@@ -1061,11 +1061,13 @@ async fn unlock_pulls_master_key_from_keychain_and_caches_it_for_status()
 
     // The cache holds the unwrapped master key; the cached method is
     // `OsKeychain` regardless of what the client hinted.
-    {
-        let cache = state.unlock_cache.lock().await;
-        let entry = cache.lookup("p-keychain", crate::server::current_unix_nanos()).expect("entry");
-        assert_eq!(entry.method(), crate::unlock_cache::UnlockMethod::OsKeychain);
-    }
+    let method = state
+        .unlock_cache
+        .lock()
+        .await
+        .lookup("p-keychain", crate::server::current_unix_nanos())
+        .map(crate::unlock_cache::UnlockEntry::method);
+    assert_eq!(method, Some(crate::unlock_cache::UnlockMethod::OsKeychain));
 
     let snapshot = state.status_snapshot(crate::server::current_unix_nanos()).await;
     assert_eq!(snapshot.lock_state, LockState::Unlocked);
@@ -1212,11 +1214,13 @@ async fn unlock_falls_back_to_passphrase_when_keychain_is_empty()
     );
     let response = crate::server::dispatch(&unlock, &state).await;
     assert!(matches!(response, ResponseEnvelope::Success(_)), "passphrase unlock should succeed: {response:?}");
-    {
-        let cache = state.unlock_cache.lock().await;
-        let entry = cache.lookup("p-passphrase", crate::server::current_unix_nanos()).expect("cache entry");
-        assert_eq!(entry.method(), crate::unlock_cache::UnlockMethod::Passphrase);
-    }
+    let method = state
+        .unlock_cache
+        .lock()
+        .await
+        .lookup("p-passphrase", crate::server::current_unix_nanos())
+        .map(crate::unlock_cache::UnlockEntry::method);
+    assert_eq!(method, Some(crate::unlock_cache::UnlockMethod::Passphrase));
     Ok(())
 }
 

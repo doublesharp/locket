@@ -88,6 +88,30 @@ const fn grant_action_label(action: GrantAction) -> &'static str {
     }
 }
 
+fn unwrap_audit_key(
+    store: &Store,
+    project_id: &str,
+    master_key: &locket_crypto::KeyBytes,
+) -> Result<zeroize::Zeroizing<locket_crypto::KeyBytes>, locket_crypto::CryptoError> {
+    let record = store
+        .get_key_by_scope(project_id, None, KeyPurpose::Audit.as_str())
+        .map_err(|_| locket_crypto::CryptoError::DecryptionFailed)?
+        .ok_or(locket_crypto::CryptoError::DecryptionFailed)?;
+    let wrapping_key = derive_wrapping_key_v1(
+        master_key,
+        &HkdfWrapInfo::new(project_id, None, KeyPurpose::Audit),
+    )?;
+    let aad = key_wrap_aad_v1(&KeyWrapAad::new(
+        project_id,
+        &record.id,
+        None,
+        0,
+        KeyWrapPurpose::from(KeyPurpose::Audit),
+    ))?;
+    let wrapped = WrappedKeyMaterial { ciphertext: record.wrapped_material, nonce: record.nonce };
+    unwrap_key_material_v1(&wrapping_key, &wrapped, &aad)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -132,28 +156,4 @@ mod tests {
         assert_eq!(grant_action_label(GrantAction::RunPolicy), "RunPolicy");
         assert_eq!(grant_action_label(GrantAction::SetSecret), "SetSecret");
     }
-}
-
-fn unwrap_audit_key(
-    store: &Store,
-    project_id: &str,
-    master_key: &locket_crypto::KeyBytes,
-) -> Result<zeroize::Zeroizing<locket_crypto::KeyBytes>, locket_crypto::CryptoError> {
-    let record = store
-        .get_key_by_scope(project_id, None, KeyPurpose::Audit.as_str())
-        .map_err(|_| locket_crypto::CryptoError::DecryptionFailed)?
-        .ok_or(locket_crypto::CryptoError::DecryptionFailed)?;
-    let wrapping_key = derive_wrapping_key_v1(
-        master_key,
-        &HkdfWrapInfo::new(project_id, None, KeyPurpose::Audit),
-    )?;
-    let aad = key_wrap_aad_v1(&KeyWrapAad::new(
-        project_id,
-        &record.id,
-        None,
-        0,
-        KeyWrapPurpose::from(KeyPurpose::Audit),
-    ))?;
-    let wrapped = WrappedKeyMaterial { ciphertext: record.wrapped_material, nonce: record.nonce };
-    unwrap_key_material_v1(&wrapping_key, &wrapped, &aad)
 }

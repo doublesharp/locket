@@ -27,9 +27,18 @@ export function registerLocketTerminalAutobind(
     },
     warnOnce,
   };
-  return vscode.window.onDidOpenTerminal((terminal) => {
-    void handleOpenTerminal(workingDirectoryForTerminal(terminal), deps);
-  });
+  const refreshDefaultSession = (): void => {
+    void handleOpenTerminal(firstWorkspaceFolderPath(), deps);
+  };
+
+  refreshDefaultSession();
+
+  return vscode.Disposable.from(
+    vscode.workspace.onDidChangeWorkspaceFolders(refreshDefaultSession),
+    vscode.window.onDidOpenTerminal((terminal) => {
+      void handleOpenTerminal(workingDirectoryForTerminal(terminal), deps);
+    }),
+  );
 }
 
 function workingDirectoryForTerminal(terminal: vscode.Terminal): string | undefined {

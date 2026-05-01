@@ -521,8 +521,7 @@ mod tests {
         assert!(message.contains("expired"), "message: {message}");
 
         // Lazy eviction removed the entry.
-        let registry = state.ide_env_sessions.lock().await;
-        assert!(registry.is_empty());
+        assert!(state.ide_env_sessions.lock().await.is_empty());
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -560,8 +559,7 @@ mod tests {
         let (error, _) = expect_error(response);
         assert_eq!(error, "UnlockRequired");
 
-        let registry = state.ide_env_sessions.lock().await;
-        assert!(registry.is_empty());
+        assert!(state.ide_env_sessions.lock().await.is_empty());
     }
 
     #[tokio::test(flavor = "current_thread")]
