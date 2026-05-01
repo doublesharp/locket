@@ -78,18 +78,12 @@ ship. Each bullet has spec ref + code ref + suggested touches.
 
 ### C. CLI / runtime / agent
 
-- [~] (in-flight: feature/windows-transport-final) **agent-windows-named-pipe-transport**: finish the remaining hard
-  transport work after `agent-windows-named-pipe-sid-path-partial`.
-  The partial shipped shared SID-based pipe path helpers, protected
-  current-user DACL SDDL generation, Windows diagnostics, and CLI path
-  resolution behind `cfg(windows)`. Progress on
-  `feature/agent-windows-transport`: Tokio named-pipe listener/client
-  skeleton plus Windows CLI endpoint routing for start/status/stop.
-  Remaining: pass the generated current-user SECURITY_ATTRIBUTES into
-  pipe creation, replace the temporary Windows stop `Lock`+terminate
-  behavior with a graceful shutdown request, wire the full agent
-  dispatcher over named pipes, and add on-Windows ACL/transport
-  integration coverage.
+- [ ] **agent-windows-named-pipe-host-integration**: on a Windows host,
+  add an integration test that starts the daemon on the SID-scoped
+  named pipe, verifies the protected current-user-only DACL with
+  Windows security APIs, exercises `Status` plus `Shutdown`, and
+  decides whether `SubscribeStatus` streaming needs named-pipe parity
+  or remains Unix-socket-only by design.
 ### D. Desktop / integrations / scan
 
 - [~] (in-flight: feature/agent-bundle-import-recovery) **agent-export-bundle-audit-chain**: agent `ExportBundle`

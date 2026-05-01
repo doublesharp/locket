@@ -61,3 +61,29 @@ jobs:
             target/quality/**
             supply-chain-exceptions.json
           if-no-files-found: ignore
+
+  windows-transport:
+    name: windows transport check
+    runs-on: windows-2025
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        run: rustup show
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-windows-transport-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: |
+            cargo-windows-transport-${{ runner.os }}-
+
+      - name: Check agent and CLI Windows transport crates
+        run: cargo check -p locket-agent -p locket-cli --all-targets --locked

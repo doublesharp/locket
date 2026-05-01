@@ -13,6 +13,8 @@ pub enum AgentMethod {
     Unlock,
     /// Clear local key material and live grants.
     Lock,
+    /// Gracefully stop the local daemon after clearing key material.
+    Shutdown,
     /// Register an automation client.
     RegisterClient,
     /// Revoke an automation client.
@@ -87,6 +89,7 @@ impl AgentMethod {
             Self::Status => "Status",
             Self::Unlock => "Unlock",
             Self::Lock => "Lock",
+            Self::Shutdown => "Shutdown",
             Self::RegisterClient => "RegisterClient",
             Self::RevokeClient => "RevokeClient",
             Self::RequestGrant => "RequestGrant",
@@ -131,6 +134,7 @@ impl FromStr for AgentMethod {
             "Status" => Ok(Self::Status),
             "Unlock" => Ok(Self::Unlock),
             "Lock" => Ok(Self::Lock),
+            "Shutdown" => Ok(Self::Shutdown),
             "RegisterClient" => Ok(Self::RegisterClient),
             "RevokeClient" => Ok(Self::RevokeClient),
             "RequestGrant" => Ok(Self::RequestGrant),

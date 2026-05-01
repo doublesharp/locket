@@ -1,28 +1,28 @@
-//! Unix-domain-socket server for the Locket agent.
+//! Local agent state, dispatcher, and Unix-domain-socket server.
 //!
-//! This is the foundation slice (`agent-socket-server`) — it binds the
-//! per-user agent socket, accepts connections in a loop, decodes the
-//! v1 length-prefixed framing, and dispatches a stub handler that
-//! answers `Status` and rejects every other RPC with a redacted
-//! `ProtocolError`-shaped error response. Later slices add peer
-//! validation, the unlock cache, the grant table, and
-//! `SubscribeStatus`.
-//!
-//! Windows named-pipe support stays a separate `[ ]` follow-up.
+//! The request dispatcher and shared state are used by every local
+//! transport. Unix additionally owns the per-user socket accept loop
+//! and peer-credential checks in this module; Windows named-pipe
+//! construction lives in `windows_pipe`.
 
 use std::collections::BTreeMap;
 use std::io;
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
-use std::path::{Path, PathBuf};
+#[cfg(unix)]
+use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 #[cfg(not(test))]
 use locket_platform::KeyringMasterKeyStore;
 use locket_platform::{MasterKeyStore, PassphraseFallbackMasterKeyStore, PlatformError};
 use locket_store::{Store, StoreError};
+#[cfg(unix)]
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+#[cfg(unix)]
 use tokio::net::{UnixListener, UnixStream};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
 
 use crate::DEFAULT_MAX_MESSAGE_SIZE;
 use crate::envelope::{ErrorEnvelope, RequestEnvelope, ResponseEnvelope, SuccessEnvelope};
@@ -34,7 +34,7 @@ use crate::session_lock::{
 use crate::status::{LockState, RecentAuditStatus, StatusPayload};
 use crate::status_stream::StatusHub;
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 type PeerCredentialValidator =
     dyn Fn(&UnixStream, u32) -> Result<(), SocketServerError> + Send + Sync;
 
@@ -63,13 +63,26 @@ fn default_master_key_store() -> Arc<dyn MasterKeyStore + Send + Sync> {
     Arc::new(locket_platform::MemoryMasterKeyStore::default())
 }
 
+#[cfg(unix)]
+fn current_daemon_uid() -> u32 {
+    crate::peer_cred::current_process_uid()
+}
+
+#[cfg(not(unix))]
+const fn current_daemon_uid() -> u32 {
+    0
+}
+
 /// Permissions for a freshly bound agent socket — owner-only.
+#[cfg(unix)]
 const SOCKET_PERMISSIONS_MODE: u32 = 0o600;
 /// Permissions for the parent directory that holds the socket — also
 /// owner-only so peers can't list/probe it.
+#[cfg(unix)]
 const SOCKET_PARENT_PERMISSIONS_MODE: u32 = 0o700;
 
 /// Outcome of a single accepted connection's handle loop.
+#[cfg(unix)]
 #[derive(Debug)]
 pub enum ConnectionOutcome {
     /// Client closed the stream cleanly.
@@ -85,6 +98,7 @@ pub enum ConnectionOutcome {
     },
 }
 
+#[cfg(unix)]
 impl PartialEq for ConnectionOutcome {
     fn eq(&self, other: &Self) -> bool {
         matches!(
@@ -96,9 +110,11 @@ impl PartialEq for ConnectionOutcome {
     }
 }
 
+#[cfg(unix)]
 impl Eq for ConnectionOutcome {}
 
 /// Errors returned by the agent socket server.
+#[cfg(unix)]
 #[derive(Debug, thiserror::Error)]
 pub enum SocketServerError {
     /// The configured socket path is already in use by a live owner.
@@ -140,6 +156,7 @@ pub enum SocketServerError {
 }
 
 /// Configuration for [`bind_socket_listener`].
+#[cfg(unix)]
 #[derive(Clone, Debug)]
 pub struct AgentSocketConfig {
     /// Filesystem path the listener should bind. Parent directory is
@@ -149,6 +166,7 @@ pub struct AgentSocketConfig {
     pub agent_version: String,
 }
 
+#[cfg(unix)]
 impl AgentSocketConfig {
     /// Convenience constructor for tests and direct callers.
     #[must_use]
@@ -176,6 +194,7 @@ impl AgentSocketConfig {
 /// Returns [`SocketServerError`] when binding, parent-directory
 /// creation, or permission tightening fails, or when the parent
 /// directory's existing permissions are wider than the agent allows.
+#[cfg(unix)]
 pub fn bind_socket_listener(config: &AgentSocketConfig) -> Result<UnixListener, SocketServerError> {
     if let Some(parent) = config.path.parent()
         && !parent.as_os_str().is_empty()
@@ -212,6 +231,7 @@ pub fn bind_socket_listener(config: &AgentSocketConfig) -> Result<UnixListener, 
 /// rather than silently tightened — that prevents an agent start from
 /// quietly clamping down a user-owned directory whose wider mode might
 /// be intentional (or hostile).
+#[cfg(unix)]
 fn prepare_parent_directory(parent: &Path) -> Result<(), SocketServerError> {
     match std::fs::metadata(parent) {
         Ok(metadata) => {
@@ -275,13 +295,15 @@ pub struct AgentSocketState {
     pub passphrase_store: Arc<PassphraseFallbackMasterKeyStore>,
     /// Server-side fan-out hub for `SubscribeStatus` streams.
     pub status_hub: StatusHub,
+    /// In-band shutdown notification used by daemon transports.
+    pub shutdown: Arc<Notify>,
     /// Test hook overriding the heartbeat cadence so unit tests can run
     /// with millisecond cadence rather than 30-second waits.
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub test_heartbeat_interval: Arc<Mutex<Option<std::time::Duration>>>,
     /// Test hook that lets socket tests inject spoofed peer UIDs
     /// without requiring root or a second local user.
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     peer_credential_validator: Arc<PeerCredentialValidator>,
 }
 
@@ -293,7 +315,7 @@ impl AgentSocketState {
     /// will boot the listener.
     #[must_use]
     pub fn locked(agent_version: impl Into<String>) -> Self {
-        Self::with_daemon_uid(agent_version, crate::peer_cred::current_process_uid())
+        Self::with_daemon_uid(agent_version, current_daemon_uid())
     }
 
     /// Builds an initial state with an explicit daemon UID. Tests use
@@ -335,9 +357,10 @@ impl AgentSocketState {
             master_key_store,
             passphrase_store,
             status_hub,
-            #[cfg(test)]
+            shutdown: Arc::new(Notify::new()),
+            #[cfg(all(test, unix))]
             test_heartbeat_interval: Arc::new(Mutex::new(None)),
-            #[cfg(test)]
+            #[cfg(all(test, unix))]
             peer_credential_validator: Arc::new(crate::peer_cred::validate_peer_stream),
         }
     }
@@ -368,7 +391,10 @@ impl AgentSocketState {
                 default_passphrase_fallback_dir(),
             )),
             status_hub,
+            shutdown: Arc::new(Notify::new()),
+            #[cfg(unix)]
             test_heartbeat_interval: Arc::new(Mutex::new(None)),
+            #[cfg(unix)]
             peer_credential_validator: Arc::new(crate::peer_cred::validate_peer_stream),
         }
     }
@@ -393,7 +419,7 @@ impl AgentSocketState {
     /// Test-only override for peer credential validation. The live
     /// socket is still used, but the peer UID passed into the policy is
     /// supplied by the test so cross-user outcomes are deterministic.
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     #[must_use]
     pub fn with_test_peer_uid(mut self, peer_uid: u32) -> Self {
         self.peer_credential_validator = Arc::new(move |_stream, daemon_uid| {
@@ -405,7 +431,7 @@ impl AgentSocketState {
     /// Test-only override for the heartbeat cadence. Setting this
     /// before a `SubscribeStatus` connection is accepted lets unit
     /// tests run with millisecond cadence rather than 30-second waits.
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub async fn set_test_heartbeat_interval(&self, interval: std::time::Duration) {
         *self.test_heartbeat_interval.lock().await = Some(interval);
     }
@@ -600,6 +626,7 @@ async fn collect_live_summary(
 /// host. Same-user connections are allowed through; the rejection is
 /// surfaced through [`ConnectionOutcome::Rejected`] for tests and
 /// future audit wiring.
+#[cfg(unix)]
 pub async fn handle_connection(
     mut stream: UnixStream,
     state: AgentSocketState,
@@ -625,6 +652,7 @@ pub async fn handle_connection(
     }
 }
 
+#[cfg(unix)]
 fn validate_connection_peer(
     stream: &UnixStream,
     state: &AgentSocketState,
@@ -646,6 +674,7 @@ fn validate_connection_peer(
 /// allowed mid-stream is `CancelSubscription`, which closes the
 /// connection cleanly. Any other framed request is answered with a
 /// redacted `ProtocolError` and then the connection is dropped.
+#[cfg(unix)]
 async fn stream_status(
     mut stream: UnixStream,
     state: AgentSocketState,
@@ -708,6 +737,7 @@ async fn stream_status(
     }
 }
 
+#[cfg(unix)]
 async fn read_one_frame(
     stream: &mut UnixStream,
     buffer: &mut Vec<u8>,
@@ -779,6 +809,8 @@ fn error_response(envelope: &RequestEnvelope, error: &str, message: &str) -> Res
 }
 
 #[allow(clippy::too_many_lines)]
+/// Dispatches one validated agent request envelope against shared
+/// daemon state and returns a framed-response payload.
 pub async fn dispatch(envelope: &RequestEnvelope, state: &AgentSocketState) -> ResponseEnvelope {
     if let Some(response) =
         crate::auth::authenticate_request_if_present(envelope, state, current_unix_nanos()).await
@@ -803,6 +835,23 @@ pub async fn dispatch(envelope: &RequestEnvelope, state: &AgentSocketState) -> R
             if state.lock_for_session_event(payload.source, now).await.is_err() {
                 return error_response(envelope, "CorruptDb", "failed to append LOCK audit row");
             }
+            ResponseEnvelope::Success(SuccessEnvelope::new(
+                envelope.id.clone(),
+                serde_json::Value::Null,
+            ))
+        }
+        Ok(AgentMethod::Shutdown) => {
+            let payload: LockPayload = match serde_json::from_value(envelope.payload.clone()) {
+                Ok(payload) => payload,
+                Err(_) => {
+                    return error_response(envelope, "ProtocolError", "invalid Shutdown payload");
+                }
+            };
+            let now = current_unix_nanos();
+            if state.lock_for_session_event(payload.source, now).await.is_err() {
+                return error_response(envelope, "CorruptDb", "failed to append LOCK audit row");
+            }
+            state.shutdown.notify_waiters();
             ResponseEnvelope::Success(SuccessEnvelope::new(
                 envelope.id.clone(),
                 serde_json::Value::Null,
@@ -1408,6 +1457,7 @@ enum ExpireOutcome {
     StillLive,
 }
 
+#[cfg(unix)]
 async fn write_response(stream: &mut UnixStream, response: &ResponseEnvelope) -> bool {
     let Ok(frame) = encode_frame(response, DEFAULT_MAX_MESSAGE_SIZE) else {
         return false;
@@ -1420,11 +1470,12 @@ async fn write_response(stream: &mut UnixStream, response: &ResponseEnvelope) ->
 /// Returns `None` when the path does not exist or `metadata` fails.
 /// Surfaced as a public helper for tests and `locket doctor`.
 #[must_use]
+#[cfg(unix)]
 pub fn socket_permission_mode(path: &Path) -> Option<u32> {
     std::fs::metadata(path).ok().map(|metadata| metadata.permissions().mode() & 0o777)
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod cache_status_tests {
     use std::sync::Arc;
     use std::time::Duration;

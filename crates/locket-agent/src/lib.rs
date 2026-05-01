@@ -9,7 +9,6 @@ mod audit_deny;
 mod audit_verify;
 mod auth;
 mod backup;
-#[cfg(unix)]
 mod clients;
 mod config;
 mod degraded_audit;
@@ -30,7 +29,7 @@ mod reveal;
 mod runtime_sessions;
 mod scan;
 mod secrets;
-#[cfg(unix)]
+#[cfg(any(unix, target_os = "windows"))]
 mod server;
 mod session_lock;
 mod set_secret;
@@ -49,7 +48,6 @@ pub use backup::{
     ImportBundleRequest, RecoveryRotateRequest, RecoveryVerification, VerifyBundleRequest,
     VerifyBundleResponse,
 };
-#[cfg(unix)]
 pub use clients::{
     RegisterClientRequest, RegisterClientResponse, RevokeClientRequest, RevokeClientResponse,
 };
@@ -92,9 +90,10 @@ pub use scan::{ScanFinding, ScanRequest, ScanResponse};
 pub use secrets::{ListSecretsRequest, ListSecretsResponse, ListSecretsRow};
 #[cfg(unix)]
 pub use server::{
-    AgentSocketConfig, AgentSocketState, ConnectionOutcome, SocketServerError,
-    bind_socket_listener, handle_connection, socket_permission_mode,
+    AgentSocketConfig, ConnectionOutcome, SocketServerError, bind_socket_listener,
+    handle_connection, socket_permission_mode,
 };
+pub use server::{AgentSocketState, dispatch};
 pub use session_lock::{
     SessionLockAudit, SessionLockOutcome, SessionLockSource, append_lock_audit, lock_audit_metadata,
 };
@@ -109,6 +108,7 @@ pub use versions::{ListVersionsRequest, ListVersionsResponse, ListVersionsRow};
 #[cfg(target_os = "windows")]
 pub use windows_pipe::{
     AgentPipeConfig, bind_named_pipe_instance, bind_named_pipe_listener, connect_named_pipe_client,
+    handle_named_pipe_connection,
 };
 
 /// Maximum v1 protocol message size in bytes.

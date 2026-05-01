@@ -267,14 +267,7 @@ fn agent_stop_command(context: &RuntimeContext, output: &mut impl Write) -> Resu
         return Ok(());
     }
 
-    #[cfg(target_os = "windows")]
-    let _ = request_agent_endpoint(
-        &socket_path,
-        locket_agent::AgentMethod::Lock,
-        serde_json::json!({ "source": "process_exit" }),
-    );
-
-    send_sigterm(pid)?;
+    request_agent_shutdown_or_signal(&socket_path, pid)?;
 
     let deadline = Instant::now() + AGENT_STOP_WAIT;
     while Instant::now() < deadline {
@@ -463,13 +456,28 @@ fn send_sigterm(pid: u32) -> Result<(), CliError> {
 }
 
 #[cfg(target_os = "windows")]
-fn send_sigterm(pid: u32) -> Result<(), CliError> {
+fn request_agent_shutdown_or_signal(socket_path: &Path, pid: u32) -> Result<(), CliError> {
+    request_agent_endpoint(
+        socket_path,
+        locket_agent::AgentMethod::Shutdown,
+        serde_json::json!({ "source": "process_exit" }),
+    )
+    .map(|_| ())
+    .or_else(|_| terminate_windows_agent(pid))
+}
+
+#[cfg(unix)]
+fn request_agent_shutdown_or_signal(_socket_path: &Path, pid: u32) -> Result<(), CliError> {
+    send_sigterm(pid)
+}
+
+#[cfg(target_os = "windows")]
+fn terminate_windows_agent(pid: u32) -> Result<(), CliError> {
     use windows_sys::Win32::Foundation::CloseHandle;
     use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_TERMINATE, TerminateProcess};
 
-    // Temporary Windows stop behavior for the named-pipe skeleton:
-    // callers send a Lock RPC before this point, then terminate the
-    // daemon process until a dedicated Shutdown RPC lands.
+    // Compatibility fallback for older daemons that predate the
+    // in-band Shutdown RPC.
     let handle = unsafe { OpenProcess(PROCESS_TERMINATE, 0, pid) };
     if handle.is_null() {
         return Err(io::Error::last_os_error().into());
@@ -492,6 +500,11 @@ fn send_sigterm(_pid: u32) -> Result<(), CliError> {
         locket_core::LocketError::AgentUnavailable,
         "agent daemon is only supported on Unix targets",
     ))
+}
+
+#[cfg(not(any(unix, target_os = "windows")))]
+fn request_agent_shutdown_or_signal(_socket_path: &Path, pid: u32) -> Result<(), CliError> {
+    send_sigterm(pid)
 }
 
 /// Connects to the local endpoint, sends a `Status` request, and parses the
@@ -712,64 +725,31 @@ fn agent_signal_unix_nanos() -> i128 {
 pub fn run_internal_agent_serve(args: &InternalAgentServeArgs) -> Result<(), CliError> {
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
     let result = runtime.block_on(async {
-        let config = locket_agent::AgentPipeConfig::new(args.socket.clone());
+        let config = locket_agent::AgentPipeConfig::current_user(args.socket.clone())
+            .map_err(|error| io::Error::other(error.to_string()))?;
         let mut listener = locket_agent::bind_named_pipe_listener(&config)?;
+        let state = locket_agent::AgentSocketState::locked(env!("CARGO_PKG_VERSION"));
         write_pid_file(&args.pid_file)?;
         loop {
-            listener.connect().await?;
-            let mut stream = listener;
-            handle_windows_pipe_connection(&mut stream).await?;
-            listener = locket_agent::bind_named_pipe_instance(&config)?;
+            tokio::select! {
+                connected = listener.connect() => {
+                    connected?;
+                    let stream = listener;
+                    listener = locket_agent::bind_named_pipe_instance(&config)?;
+                    let connection_state = state.clone();
+                    tokio::spawn(async move {
+                        let _ignored =
+                            locket_agent::handle_named_pipe_connection(stream, connection_state)
+                                .await;
+                    });
+                }
+                () = state.shutdown.notified() => break,
+            }
         }
+        Ok::<(), io::Error>(())
     });
     let _ignored = fs::remove_file(&args.pid_file);
     result.map_err(CliError::Io)
-}
-
-#[cfg(target_os = "windows")]
-async fn handle_windows_pipe_connection(
-    stream: &mut tokio::net::windows::named_pipe::NamedPipeServer,
-) -> io::Result<()> {
-    use locket_agent::{
-        AgentMethod, DEFAULT_MAX_MESSAGE_SIZE, ResponseEnvelope, StatusPayload, SuccessEnvelope,
-        decode_request_frame, encode_frame,
-    };
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-    let mut buffer = Vec::with_capacity(1024);
-    loop {
-        if let Ok((request, _)) = decode_request_frame(&buffer, DEFAULT_MAX_MESSAGE_SIZE) {
-            let response = match request.method() {
-                Ok(AgentMethod::Status) => {
-                    let payload =
-                        serde_json::to_value(StatusPayload::locked(env!("CARGO_PKG_VERSION")))
-                            .unwrap_or(serde_json::Value::Null);
-                    ResponseEnvelope::Success(SuccessEnvelope::new(request.id, payload))
-                }
-                Ok(AgentMethod::Lock) => ResponseEnvelope::Success(SuccessEnvelope::new(
-                    request.id,
-                    serde_json::Value::Null,
-                )),
-                _ => ResponseEnvelope::Error(locket_agent::ErrorEnvelope::new(
-                    request.id,
-                    "ProtocolError",
-                    "method is not implemented in the Windows pipe skeleton",
-                    false,
-                )),
-            };
-            let frame = encode_frame(&response, DEFAULT_MAX_MESSAGE_SIZE)
-                .map_err(|error| io::Error::other(error.to_string()))?;
-            stream.write_all(&frame).await?;
-            stream.flush().await?;
-            return Ok(());
-        }
-        let mut chunk = [0_u8; 1024];
-        let read = stream.read(&mut chunk).await?;
-        if read == 0 {
-            return Ok(());
-        }
-        buffer.extend_from_slice(&chunk[..read]);
-    }
 }
 
 #[cfg(not(any(unix, target_os = "windows")))]

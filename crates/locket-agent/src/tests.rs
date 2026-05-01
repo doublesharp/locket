@@ -31,6 +31,7 @@ fn agent_methods_round_trip_through_wire_names() -> Result<(), UnknownMethod> {
         AgentMethod::Status,
         AgentMethod::Unlock,
         AgentMethod::Lock,
+        AgentMethod::Shutdown,
         AgentMethod::RegisterClient,
         AgentMethod::RevokeClient,
         AgentMethod::RequestGrant,
@@ -791,6 +792,38 @@ async fn unlock_then_lock_round_trip() {
     let cleared = state.unlock_cache.lock().await.is_empty();
     assert!(cleared, "Lock must clear every cache entry");
     assert!(state.grants.lock().await.is_empty(), "Lock must clear live grants");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn shutdown_locks_and_notifies_daemon_loop() {
+    use crate::envelope::{RequestEnvelope, ResponseEnvelope};
+    use crate::method::AgentMethod;
+    use crate::server::{AgentSocketState, dispatch};
+    use serde_json::json;
+
+    let state = AgentSocketState::locked("test-version");
+    state.seed_master_key("p-1", &[7; 32]).expect("seed master key");
+    state.grants.lock().await.insert(test_grant_record("g-live", i128::MAX));
+
+    let unlock = RequestEnvelope::new(
+        "req-1",
+        AgentMethod::Unlock,
+        json!({
+            "project_id": "p-1",
+            "ttl_seconds": 30,
+            "method": "OsKeychain"
+        }),
+    );
+    assert!(matches!(dispatch(&unlock, &state).await, ResponseEnvelope::Success(_)));
+
+    let shutdown_notified = state.shutdown.notified();
+    let shutdown =
+        RequestEnvelope::new("req-2", AgentMethod::Shutdown, json!({ "source": "process_exit" }));
+    assert!(matches!(dispatch(&shutdown, &state).await, ResponseEnvelope::Success(_)));
+    shutdown_notified.await;
+
+    assert!(state.unlock_cache.lock().await.is_empty(), "Shutdown must clear cache entries");
+    assert!(state.grants.lock().await.is_empty(), "Shutdown must clear live grants");
 }
 
 #[tokio::test(flavor = "current_thread")]
