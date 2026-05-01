@@ -264,6 +264,42 @@ export async function listSecrets(
   return callTyped<ListSecretsResponse>('agent_list_secrets', { request });
 }
 
+/**
+ * Wire shape for the `agent_set_secret` and `agent_rotate_secret`
+ * Tauri commands. The desktop forwards a plaintext value through a
+ * single Tauri invoke; the agent's `SetSecret` handler validates the
+ * live grant, encrypts the value, and never echoes it back.
+ */
+export interface SetSecretRequest {
+  project_id: string;
+  profile_id: string;
+  secret_name: string;
+  value: string;
+  source?: string;
+  grace_until?: number;
+  grant_id?: string;
+  store_path?: string;
+}
+
+export interface SetSecretResponse {
+  action: string;
+  secret_id: string;
+  version: number;
+  source: string;
+}
+
+export async function setSecret(
+  request: SetSecretRequest,
+): Promise<AgentResult<SetSecretResponse>> {
+  return callTyped<SetSecretResponse>('agent_set_secret', { request });
+}
+
+export async function rotateSecret(
+  request: SetSecretRequest,
+): Promise<AgentResult<SetSecretResponse>> {
+  return callTyped<SetSecretResponse>('agent_rotate_secret', { request });
+}
+
 export async function readConfig(
   request: ReadConfigRequest,
 ): Promise<AgentResult<AgentConfigSettings>> {

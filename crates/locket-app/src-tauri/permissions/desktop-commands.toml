@@ -19,6 +19,8 @@ commands.allow = [
   "agent_register_command_policies",
   "agent_list_device_members",
   "agent_list_secrets",
+  "agent_set_secret",
+  "agent_rotate_secret",
   "agent_read_config",
   "agent_write_config",
   "agent_list_audit",

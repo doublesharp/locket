@@ -19,11 +19,14 @@ import {
   readConfig,
   registerCommandPolicies,
   reveal as revealAgent,
+  rotateSecret,
   scan as scanKnownValues,
   setActiveProfile,
+  setSecret,
   writeConfig,
   verifyAudit,
 } from './agent/client';
+import type { SetSecretRequest, SetSecretResponse } from './agent/client';
 import {
   applyPolicyMutation,
   type PolicyFormMode,
@@ -47,6 +50,7 @@ import ExecutionMonitor from './views/ExecutionMonitor.vue';
 import PolicyEditor from './views/PolicyEditor.vue';
 import ProjectDashboard from './views/ProjectDashboard.vue';
 import ScanResults from './views/ScanResults.vue';
+import SecretEditorView from './views/SecretEditorView.vue';
 import SecretMetadataList from './views/SecretMetadataList.vue';
 import SecretVersionHistory from './views/SecretVersionHistory.vue';
 import Settings from './views/Settings.vue';
@@ -80,6 +84,7 @@ import { privacyAlias, privacyLabel } from './utils/privacy';
 type ViewKey =
   | 'dashboard'
   | 'secrets'
+  | 'secret-editor'
   | 'versions'
   | 'execution'
   | 'devices'
@@ -141,6 +146,7 @@ type TrayMenuAction =
 const navItems: ReadonlyArray<{ key: ViewKey; label: string }> = [
   { key: 'dashboard', label: 'Dashboard' },
   { key: 'secrets', label: 'Secrets' },
+  { key: 'secret-editor', label: 'Secret editor' },
   { key: 'versions', label: 'Versions' },
   { key: 'execution', label: 'Execution' },
   { key: 'devices', label: 'Devices' },
@@ -1205,6 +1211,32 @@ function triggerBackupAction(): void {
   void refresh();
 }
 
+async function handleSetSecret(
+  payload: SetSecretRequest,
+): Promise<{ ok: true; value: SetSecretResponse } | { ok: false; error: AgentClientError }> {
+  const result = await setSecret(payload);
+  if (result.ok) {
+    await refreshSecrets();
+  }
+  return result;
+}
+
+async function handleRotateSecret(
+  payload: SetSecretRequest,
+): Promise<{ ok: true; value: SetSecretResponse } | { ok: false; error: AgentClientError }> {
+  const result = await rotateSecret(payload);
+  if (result.ok) {
+    await refreshSecrets();
+    await refreshVersions();
+  }
+  return result;
+}
+
+async function handleEditorReveal(row: SecretRowMeta): Promise<void> {
+  selectedSecret.value = row;
+  await handleRevealSelectedSecret();
+}
+
 const TEAM_INVITE_RPC_MISSING =
   'Agent does not yet expose ListTeamInvites/CreateTeamInvite/AcceptTeamInvite/RevokeTeamInvite. ' +
   'Form input validated; submit blocked until the agent ships those RPCs.';
@@ -1322,6 +1354,21 @@ onUnmounted(() => {
         :last-refreshed-at="secretsLastRefreshed"
         @select="selectSecret"
         @refresh="refreshSecrets"
+      />
+
+      <SecretEditorView
+        v-else-if="currentView === 'secret-editor'"
+        :rows="secrets"
+        :privacy-mode="settings.privacyRedactNames"
+        :loading="secretsLoading"
+        :error-message="secretsError"
+        :last-refreshed-at="secretsLastRefreshed"
+        :project-id="status?.project_id"
+        :profile-id="status?.profile_name"
+        :on-set-secret="handleSetSecret"
+        :on-rotate-secret="handleRotateSecret"
+        @refresh="refreshSecrets"
+        @reveal="handleEditorReveal"
       />
 
       <SecretVersionHistory

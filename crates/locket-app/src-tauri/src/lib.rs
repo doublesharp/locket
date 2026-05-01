@@ -553,6 +553,84 @@ async fn agent_list_secrets(
     agent_client::invoke_method(&path, locket_agent::AgentMethod::ListSecrets, &request).await
 }
 
+/// Desktop wrapper for `SetSecret`. Wraps `locket_agent::SetSecretRequest`
+/// with a webview-friendly default for `store_path` and the
+/// metadata-only `rotate` flag forced to `false`. The desktop never
+/// holds the unwrapped key; the agent enforces the live grant + unlock
+/// cache on its side.
+#[derive(Debug, Deserialize)]
+struct DesktopSetSecretRequest {
+    store_path: Option<PathBuf>,
+    project_id: String,
+    profile_id: String,
+    secret_name: String,
+    #[serde(default)]
+    source: Option<String>,
+    value: String,
+    #[serde(default)]
+    grace_until: Option<i64>,
+    #[serde(default)]
+    grant_id: Option<String>,
+}
+
+/// Tauri command bridging the desktop secret editor to the agent's
+/// `SetSecret` RPC for the create-new path. The webview accepts a
+/// plaintext value through a password-masked input and forwards it
+/// inside a single Tauri invoke; the agent's
+/// `set_secret::handle_set_secret` validates the live grant, encrypts
+/// the value, and appends a metadata-only audit row server-side.
+#[tauri::command]
+async fn agent_set_secret(
+    request: DesktopSetSecretRequest,
+) -> Result<locket_agent::SetSecretResponse, AgentClientError> {
+    let store_path = match request.store_path {
+        Some(path) => path,
+        None => default_store_path()?,
+    };
+    let agent_request = locket_agent::SetSecretRequest {
+        store_path: store_path.display().to_string(),
+        project_id: request.project_id,
+        profile_id: request.profile_id,
+        secret_name: request.secret_name,
+        source: request.source,
+        value: request.value,
+        rotate: false,
+        grace_until: request.grace_until,
+        grant_id: request.grant_id,
+        binding: None,
+    };
+    let path = agent_client::resolve_socket_path();
+    agent_client::invoke_method(&path, locket_agent::AgentMethod::SetSecret, &agent_request).await
+}
+
+/// Tauri command bridging the desktop secret editor to the agent's
+/// `SetSecret` RPC for the rotation path. Identical to `agent_set_secret`
+/// but pins `rotate=true` server-side so the agent creates a new
+/// version + deprecates the prior one with the supplied grace window.
+#[tauri::command]
+async fn agent_rotate_secret(
+    request: DesktopSetSecretRequest,
+) -> Result<locket_agent::SetSecretResponse, AgentClientError> {
+    let store_path = match request.store_path {
+        Some(path) => path,
+        None => default_store_path()?,
+    };
+    let agent_request = locket_agent::SetSecretRequest {
+        store_path: store_path.display().to_string(),
+        project_id: request.project_id,
+        profile_id: request.profile_id,
+        secret_name: request.secret_name,
+        source: request.source,
+        value: request.value,
+        rotate: true,
+        grace_until: request.grace_until,
+        grant_id: request.grant_id,
+        binding: None,
+    };
+    let path = agent_client::resolve_socket_path();
+    agent_client::invoke_method(&path, locket_agent::AgentMethod::SetSecret, &agent_request).await
+}
+
 /// Tauri command exposing metadata-only desktop settings.
 #[tauri::command]
 async fn agent_read_config(
@@ -755,6 +833,8 @@ pub fn run() -> tauri::Result<()> {
             agent_register_command_policies,
             agent_list_device_members,
             agent_list_secrets,
+            agent_set_secret,
+            agent_rotate_secret,
             agent_read_config,
             agent_write_config,
             agent_list_audit,
