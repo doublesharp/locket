@@ -1,41 +1,40 @@
-//! Linux LocalUserVerifier backend (placeholder).
+//! Linux LocalUserVerifier backend.
 //!
-//! Mirrors the structure of [`crate::macos_local_authentication`] but
-//! ships as a stub until the platform binding crate is selected. The
-//! intended path is:
+//! Mirrors the structure of [`crate::macos_local_authentication`] and
+//! keeps the platform-facing implementation behind a single safe entry
+//! point. The current backend is:
 //!
-//!   1. Try a Secret Service (`libsecret` / D-Bus) presence challenge,
-//!      e.g. via the `secret-service` crate, so a logged-in desktop
-//!      session can satisfy the gate without dedicated hardware.
-//!   2. Fall back to a hardware FIDO2 / `libfido2-sys` user-presence
-//!      touch challenge so headless sessions with a security key can
-//!      still verify locally.
-//!
-//! Neither `secret-service` nor `libfido2-sys` is currently in the
-//! workspace dependency graph (`Cargo.toml`). Per the parent spec the
-//! production wrapper must not be in the position of pulling heavy new
-//! deps without clear justification, so until that decision is made
-//! [`evaluate_local_user`] returns [`LocalAuthError::Unavailable`] on
-//! Linux. The [`LinuxLocalUserVerifier`](crate::linux_user_verifier::LinuxLocalUserVerifier)
-//! built on top of this wrapper consequently surfaces
-//! [`crate::error::PlatformError::LocalUserVerificationUnavailable`] to
-//! callers, which is the documented "no platform backend" behavior used
-//! by the rest of `locket-platform`.
+//!   1. Try a Secret Service (`libsecret` / D-Bus) presence challenge
+//!      through the workspace's `keyring` dependency with the Linux
+//!      Secret Service feature enabled. A locked keyring should trigger
+//!      the desktop unlock prompt; a headless or missing D-Bus service
+//!      reports [`LocalAuthError::Unavailable`].
+//!   2. FIDO2 / `libfido2-sys` user-presence remains a targeted follow-up
+//!      because no FIDO2 binding is present in the workspace dependency
+//!      graph today.
 //!
 //! This file contains no `unsafe`. The `unsafe_code = "deny"` lint at
-//! the crate level is therefore upheld here without any local
-//! exception. Once a binding crate is picked, the FFI surface should
-//! follow the macOS pattern (`#![allow(unsafe_code)]` with a SAFETY
-//! audit comment, single safe `evaluate_local_user` entry point, no
-//! `unsafe` outside this module).
+//! the crate level is therefore upheld here without any local exception.
 //!
 //! Tests honor the `LOCKET_TEST_LOCAL_AUTH=allow|deny|unavailable`
 //! environment variable so callers can drive the wrapper
-//! deterministically once a real implementation lands; today the
-//! override is the only way [`evaluate_local_user`] can return `Ok(_)`
-//! at all.
+//! deterministically without invoking Secret Service.
 
+use std::sync::mpsc;
+use std::time::Duration;
+
+use data_encoding::BASE64URL_NOPAD;
+use keyring::{Entry, Error as KeyringError};
+use locket_crypto::random_bytes;
 use thiserror::Error;
+
+/// Maximum time we will block waiting for the Secret Service/keyring
+/// backend. The keyring crate documents that Secret Service calls can
+/// wedge if driven on the wrong thread; this guard prevents callers from
+/// blocking indefinitely.
+const EVALUATE_TIMEOUT: Duration = Duration::from_secs(120);
+const SERVICE: &str = "dev.0xdoublesharp.locket.local-auth";
+const ACCOUNT_PREFIX: &str = "presence:";
 
 /// Environment variable consulted by tests so they can drive the wrapper
 /// deterministically without invoking a real Linux backend.
@@ -48,8 +47,8 @@ const TEST_OVERRIDE_ENV: &str = "LOCKET_TEST_LOCAL_AUTH";
 /// implementation can treat both backends interchangeably.
 #[derive(Debug, Error)]
 pub enum LocalAuthError {
-    /// No platform backend is wired on this build (current default
-    /// state) or the desktop reported the policy as unsupported.
+    /// Secret Service is unavailable on this host, the desktop session
+    /// cannot expose it to this process, or no FIDO2 fallback is built.
     #[error("Linux local authentication unavailable: {0}")]
     Unavailable(String),
     /// The user dismissed, cancelled, or otherwise refused the prompt.
@@ -84,16 +83,16 @@ fn test_override() -> Option<Result<bool, LocalAuthError>> {
 
 /// Evaluate a local user-verification ceremony on Linux.
 ///
-/// Until a Secret Service / FIDO2 binding crate is wired in, this
-/// returns [`LocalAuthError::Unavailable`] for every real call and only
-/// honors the `LOCKET_TEST_LOCAL_AUTH` test override.
+/// This performs a Secret Service challenge through the platform
+/// keyring. It creates a short-lived random credential, reads it back,
+/// and deletes it. If Secret Service is locked, the desktop environment
+/// may prompt the user to unlock it before the read/write completes.
 ///
 /// # Errors
 ///
 /// Returns [`LocalAuthError::EmptyReason`] when `reason` is blank, and
-/// [`LocalAuthError::Unavailable`] when no platform backend is wired
-/// (the current default) or the test override selected
-/// `unavailable`.
+/// [`LocalAuthError::Unavailable`] when Secret Service is not available
+/// to this process or the test override selected `unavailable`.
 pub fn evaluate_local_user(reason: &str) -> Result<bool, LocalAuthError> {
     if reason.trim().is_empty() {
         return Err(LocalAuthError::EmptyReason);
@@ -103,9 +102,82 @@ pub fn evaluate_local_user(reason: &str) -> Result<bool, LocalAuthError> {
         return outcome;
     }
 
-    Err(LocalAuthError::Unavailable(
-        "no Linux local-auth backend wired (Secret Service / FIDO2 placeholder)".to_owned(),
-    ))
+    evaluate_local_user_via_secret_service()
+}
+
+fn evaluate_local_user_via_secret_service() -> Result<bool, LocalAuthError> {
+    let (tx, rx) = mpsc::channel();
+    let _join = std::thread::Builder::new()
+        .name("locket-linux-local-auth".to_owned())
+        .spawn(move || {
+            let _ = tx.send(run_secret_service_challenge());
+        })
+        .map_err(|error| {
+            LocalAuthError::Framework(format!("failed to spawn Secret Service worker: {error}"))
+        })?;
+
+    match rx.recv_timeout(EVALUATE_TIMEOUT) {
+        Ok(result) => result,
+        Err(mpsc::RecvTimeoutError::Timeout) => Err(LocalAuthError::Timeout),
+        Err(mpsc::RecvTimeoutError::Disconnected) => Err(LocalAuthError::Framework(
+            "Secret Service worker exited without a result".to_owned(),
+        )),
+    }
+}
+
+fn run_secret_service_challenge() -> Result<bool, LocalAuthError> {
+    let nonce = random_bytes::<32>()
+        .map_err(|error| LocalAuthError::Framework(format!("challenge entropy failed: {error}")))?;
+    let challenge = BASE64URL_NOPAD.encode(&nonce);
+    let account = format!("{ACCOUNT_PREFIX}{challenge}");
+    let entry = Entry::new(SERVICE, &account).map_err(map_keyring_entry_error)?;
+
+    entry.set_password(&challenge).map_err(map_keyring_write_error)?;
+    let read_back = entry.get_password().map_err(map_keyring_read_error)?;
+    let delete_result = entry.delete_credential();
+    if let Err(error) = delete_result {
+        return Err(map_keyring_delete_error(error));
+    }
+
+    Ok(read_back == challenge)
+}
+
+fn map_keyring_entry_error(error: KeyringError) -> LocalAuthError {
+    match error {
+        KeyringError::NoStorageAccess(inner) => LocalAuthError::Rejected(inner.to_string()),
+        KeyringError::PlatformFailure(inner) => LocalAuthError::Unavailable(inner.to_string()),
+        other => LocalAuthError::Framework(other.to_string()),
+    }
+}
+
+fn map_keyring_write_error(error: KeyringError) -> LocalAuthError {
+    match error {
+        KeyringError::NoStorageAccess(inner) => LocalAuthError::Rejected(inner.to_string()),
+        KeyringError::PlatformFailure(inner) => LocalAuthError::Unavailable(inner.to_string()),
+        other => LocalAuthError::Framework(other.to_string()),
+    }
+}
+
+fn map_keyring_read_error(error: KeyringError) -> LocalAuthError {
+    match error {
+        KeyringError::NoEntry => LocalAuthError::Framework(
+            "Secret Service challenge disappeared before verification".to_owned(),
+        ),
+        KeyringError::NoStorageAccess(inner) => LocalAuthError::Rejected(inner.to_string()),
+        KeyringError::PlatformFailure(inner) => LocalAuthError::Unavailable(inner.to_string()),
+        other => LocalAuthError::Framework(other.to_string()),
+    }
+}
+
+fn map_keyring_delete_error(error: KeyringError) -> LocalAuthError {
+    match error {
+        KeyringError::NoEntry => LocalAuthError::Framework(
+            "Secret Service challenge disappeared before cleanup".to_owned(),
+        ),
+        KeyringError::NoStorageAccess(inner) => LocalAuthError::Rejected(inner.to_string()),
+        KeyringError::PlatformFailure(inner) => LocalAuthError::Unavailable(inner.to_string()),
+        other => LocalAuthError::Framework(other.to_string()),
+    }
 }
 
 /// Serializes tests that mutate the shared `LOCKET_TEST_LOCAL_AUTH`
@@ -171,6 +243,13 @@ mod tests {
                 evaluate_local_user("Unlock vault"),
                 Err(LocalAuthError::Unavailable(_))
             ));
+        });
+    }
+
+    #[test]
+    fn blank_reason_is_rejected_before_backend() {
+        with_test_override(None, || {
+            assert!(matches!(evaluate_local_user("   "), Err(LocalAuthError::EmptyReason)));
         });
     }
 }

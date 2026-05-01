@@ -77,15 +77,13 @@ pub fn default_agent_pipe_name() -> Result<String, PlatformError> {
 mod windows_impl {
     #![allow(unsafe_code)]
 
-    use std::ptr::{null, null_mut};
+    use std::ptr::null_mut;
 
-    use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, HANDLE, HLOCAL};
-    use windows_sys::Win32::Security::{
-        ConvertSidToStringSidW, GetTokenInformation, OpenProcessToken, TOKEN_QUERY, TOKEN_USER,
-        TokenUser,
-    };
-    use windows_sys::Win32::System::Memory::LocalFree;
-    use windows_sys::Win32::System::Threading::GetCurrentProcess;
+    use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, HANDLE, HLOCAL, LocalFree};
+    use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
+    use windows_sys::Win32::Security::{GetTokenInformation, TOKEN_QUERY, TOKEN_USER, TokenUser};
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+    use windows_sys::core::PWSTR;
 
     use crate::PlatformError;
 
@@ -135,7 +133,7 @@ mod windows_impl {
         // SAFETY: `buffer` contains a TOKEN_USER structure written by
         // `GetTokenInformation(TokenUser, ...)`.
         let token_user = unsafe { &*(buffer.as_ptr().cast::<TOKEN_USER>()) };
-        let mut sid_text = null_mut();
+        let mut sid_text: PWSTR = null_mut();
         // SAFETY: `token_user.User.Sid` is owned by the token-info
         // buffer and valid for this call; Windows allocates `sid_text`.
         let converted = unsafe { ConvertSidToStringSidW(token_user.User.Sid, &mut sid_text) };

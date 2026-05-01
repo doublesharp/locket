@@ -1,10 +1,9 @@
 //! Linux implementation of [`LocalUserVerifier`] backed by the
-//! placeholder wrapper in [`crate::linux_local_authentication`].
+//! Secret Service wrapper in [`crate::linux_local_authentication`].
 //!
 //! This file contains zero `unsafe`. All platform interaction is
-//! confined to `linux_local_authentication.rs`, which today ships as a
-//! stub until a Secret Service / FIDO2 binding crate is selected. See
-//! that module's header comment for the rollout plan.
+//! confined to `linux_local_authentication.rs`. See that module's
+//! header comment for backend details and the FIDO2 follow-up.
 
 use crate::error::PlatformError;
 use crate::linux_local_authentication::{LocalAuthError, evaluate_local_user};
@@ -14,13 +13,7 @@ use crate::user_verification::{
     LocalUserVerifier,
 };
 
-/// Linux [`LocalUserVerifier`] backed by the future Secret Service /
-/// FIDO2 wrapper.
-///
-/// Until the binding crate is wired, the verifier always reports
-/// [`PlatformError::LocalUserVerificationUnavailable`] for real calls
-/// and is only useful through the `LOCKET_TEST_LOCAL_AUTH` test
-/// override.
+/// Linux [`LocalUserVerifier`] backed by Secret Service.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct LinuxLocalUserVerifier;
 

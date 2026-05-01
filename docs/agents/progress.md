@@ -202,9 +202,26 @@ skill set fits a leaf better.
   `LOCKET_TEST_LOCAL_AUTH=allow|deny|unavailable|timeout` without
   invoking the framework; documented in
   `docs/specs/engineering.md` under the `unsafe` inventory list.
-- [ ] LocalUserVerifier Windows Hello backend.
-- [ ] LocalUserVerifier Linux Secret Service / hardware-key-presence
-  backend.
+- [x] LocalUserVerifier Windows Hello backend. Implemented:
+  `crates/locket-platform/src/windows_local_authentication.rs`
+  calls the `windows` crate's
+  `Security::Credentials::UI::UserConsentVerifier` APIs behind
+  `cfg(windows)`, maps unavailable Hello states to
+  `LocalUserVerificationUnavailable`, and keeps deterministic tests on
+  the `LOCKET_TEST_LOCAL_AUTH` override.
+- [x] LocalUserVerifier Linux Secret Service backend. Implemented:
+  `crates/locket-platform/src/linux_local_authentication.rs`
+  performs a bounded Secret Service challenge through the `keyring`
+  crate with Linux Secret Service features enabled, maps missing D-Bus
+  or platform storage to unavailable, and keeps deterministic tests on
+  the `LOCKET_TEST_LOCAL_AUTH` override.
+- [ ] LocalUserVerifier Linux FIDO2 hardware-key fallback: add
+  `libfido2-sys` and validate user-presence touch on a Linux host with
+  a physical security key.
+- [ ] LocalUserVerifier real-host validation: exercise the Linux Secret
+  Service backend on locked/unlocked desktop sessions and the Windows
+  Hello backend on an enrolled Windows host; this cannot be completed on
+  the macOS development host.
 
 ### App/UI
 

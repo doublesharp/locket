@@ -107,13 +107,12 @@ pub const fn platform_name() -> &'static str {
 ///
 /// On macOS this returns [`MacosLocalUserVerifier`], which delegates to
 /// `LocalAuthentication.framework` (`docs/specs/crypto.md:192-218`).
-/// On Linux this returns [`LinuxLocalUserVerifier`], which currently
-/// reports unavailable until a Secret Service / FIDO2 binding crate is
-/// wired (see `linux_local_authentication.rs`).
-/// On Windows this returns [`WindowsLocalUserVerifier`], which
-/// currently reports unavailable until the
-/// `Security::Credentials::UI::UserConsentVerifier` binding is wired
-/// (see `windows_local_authentication.rs`).
+/// On Linux this returns [`LinuxLocalUserVerifier`], which delegates to
+/// Secret Service through the platform keyring
+/// (`linux_local_authentication.rs`).
+/// On Windows this returns [`WindowsLocalUserVerifier`], which delegates
+/// to Windows Hello `UserConsentVerifier`
+/// (`windows_local_authentication.rs`).
 /// On every other target this returns [`UnavailableLocalUserVerifier`]
 /// so callers fail closed until a platform backend ships.
 #[must_use]

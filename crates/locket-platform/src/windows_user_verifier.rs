@@ -1,11 +1,8 @@
 //! Windows implementation of [`LocalUserVerifier`] backed by the
-//! placeholder wrapper in [`crate::windows_local_authentication`].
+//! Windows Hello wrapper in [`crate::windows_local_authentication`].
 //!
 //! This file contains zero `unsafe`. All platform interaction is
-//! confined to `windows_local_authentication.rs`, which today ships as
-//! a stub until the `windows` crate's
-//! `Security::Credentials::UI::UserConsentVerifier` binding is wired.
-//! See that module's header comment for the rollout plan.
+//! confined to `windows_local_authentication.rs`.
 
 use crate::error::PlatformError;
 use crate::platform_name;
@@ -15,13 +12,8 @@ use crate::user_verification::{
 };
 use crate::windows_local_authentication::{LocalAuthError, evaluate_local_user};
 
-/// Windows [`LocalUserVerifier`] backed by the future Windows Hello
-/// `UserConsentVerifier` wrapper.
-///
-/// Until the binding is wired, the verifier always reports
-/// [`PlatformError::LocalUserVerificationUnavailable`] for real calls
-/// and is only useful through the `LOCKET_TEST_LOCAL_AUTH` test
-/// override.
+/// Windows [`LocalUserVerifier`] backed by Windows Hello
+/// `UserConsentVerifier`.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct WindowsLocalUserVerifier;
 

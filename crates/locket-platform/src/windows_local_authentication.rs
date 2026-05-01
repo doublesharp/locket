@@ -1,9 +1,8 @@
-//! Windows Hello LocalUserVerifier backend (placeholder).
+//! Windows Hello LocalUserVerifier backend.
 //!
 //! Mirrors the structure of [`crate::macos_local_authentication`] but
-//! ships as a stub until the
-//! `Windows::Security::Credentials::UI::UserConsentVerifier` binding is
-//! wired through the `windows` crate. The intended path is:
+//! uses the `Windows::Security::Credentials::UI::UserConsentVerifier`
+//! binding from the `windows` crate. The implementation:
 //!
 //!   1. Construct a `UserConsentVerifier` request with the localized
 //!      reason via `UserConsentVerifier::RequestVerificationAsync`.
@@ -14,21 +13,6 @@
 //!      rejected), `DeviceNotPresent`/`NotConfiguredForUser`/
 //!      `DisabledByPolicy` to [`LocalAuthError::Unavailable`].
 //!
-//! The `windows` crate is currently transitive in the workspace
-//! lock-graph but is not a direct dependency of `locket-platform`, and
-//! adding a new direct dep with the `Security_Credentials_UI` feature
-//! flag without on-host Windows verification risks pulling in a
-//! mis-configured feature surface. Per the parent spec's "If a
-//! platform's binding crate is unavailable, ship a stub that returns
-//! [`LocalAuthError::Unavailable`] and document why," this module
-//! returns [`LocalAuthError::Unavailable`] for every real call until
-//! the dep is picked. The
-//! [`WindowsLocalUserVerifier`](crate::windows_user_verifier::WindowsLocalUserVerifier)
-//! built on top of this wrapper consequently surfaces
-//! [`crate::error::PlatformError::LocalUserVerificationUnavailable`] on
-//! Windows hosts, which is the documented "no platform backend"
-//! behavior.
-//!
 //! This file contains no `unsafe`. Once a real implementation lands,
 //! follow the macOS pattern: a single safe `evaluate_local_user` entry
 //! point, all `unsafe` confined here behind a SAFETY audit comment,
@@ -37,9 +21,7 @@
 //!
 //! Tests honor the `LOCKET_TEST_LOCAL_AUTH=allow|deny|unavailable`
 //! environment variable so callers can drive the wrapper
-//! deterministically once a real implementation lands; today the
-//! override is the only way [`evaluate_local_user`] can return `Ok(_)`
-//! at all.
+//! deterministically without invoking Windows Hello.
 
 use thiserror::Error;
 
@@ -54,9 +36,8 @@ const TEST_OVERRIDE_ENV: &str = "LOCKET_TEST_LOCAL_AUTH";
 /// implementation can treat both backends interchangeably.
 #[derive(Debug, Error)]
 pub enum LocalAuthError {
-    /// No platform backend is wired on this build (current default
-    /// state) or `UserConsentVerifier` reported the policy as
-    /// unavailable (no Hello enrollment, hardware missing, etc.).
+    /// `UserConsentVerifier` reported the policy as unavailable (no
+    /// Hello enrollment, hardware missing, disabled by policy, etc.).
     #[error("Windows Hello unavailable: {0}")]
     Unavailable(String),
     /// The user dismissed, cancelled, or otherwise refused the prompt.
@@ -91,17 +72,14 @@ fn test_override() -> Option<Result<bool, LocalAuthError>> {
 
 /// Evaluate a local user-verification ceremony on Windows via Hello.
 ///
-/// Until the `windows` crate's
-/// `Security::Credentials::UI::UserConsentVerifier` binding is wired,
-/// this returns [`LocalAuthError::Unavailable`] for every real call
-/// and only honors the `LOCKET_TEST_LOCAL_AUTH` test override.
+/// This blocks the calling thread until Windows resolves the
+/// `UserConsentVerifier` availability and verification operations.
 ///
 /// # Errors
 ///
 /// Returns [`LocalAuthError::EmptyReason`] when `reason` is blank, and
-/// [`LocalAuthError::Unavailable`] when no platform backend is wired
-/// (the current default) or the test override selected
-/// `unavailable`.
+/// [`LocalAuthError::Unavailable`] when Windows Hello is unavailable or
+/// the test override selected `unavailable`.
 pub fn evaluate_local_user(reason: &str) -> Result<bool, LocalAuthError> {
     if reason.trim().is_empty() {
         return Err(LocalAuthError::EmptyReason);
@@ -111,9 +89,90 @@ pub fn evaluate_local_user(reason: &str) -> Result<bool, LocalAuthError> {
         return outcome;
     }
 
-    Err(LocalAuthError::Unavailable(
-        "no Windows Hello backend wired (UserConsentVerifier placeholder)".to_owned(),
-    ))
+    evaluate_local_user_via_windows_hello(reason)
+}
+
+#[cfg(target_os = "windows")]
+fn evaluate_local_user_via_windows_hello(reason: &str) -> Result<bool, LocalAuthError> {
+    use windows::Security::Credentials::UI::UserConsentVerifier;
+    use windows::core::HSTRING;
+
+    let availability = UserConsentVerifier::CheckAvailabilityAsync()
+        .map_err(map_windows_error)?
+        .get()
+        .map_err(map_windows_error)?;
+    map_availability(availability)?;
+
+    let message = HSTRING::from(reason);
+    let result = UserConsentVerifier::RequestVerificationAsync(&message)
+        .map_err(map_windows_error)?
+        .get()
+        .map_err(map_windows_error)?;
+    map_verification_result(result)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn evaluate_local_user_via_windows_hello(_reason: &str) -> Result<bool, LocalAuthError> {
+    Err(LocalAuthError::Unavailable("Windows Hello is only available on Windows".to_owned()))
+}
+
+#[cfg(target_os = "windows")]
+fn map_availability(
+    availability: windows::Security::Credentials::UI::UserConsentVerifierAvailability,
+) -> Result<(), LocalAuthError> {
+    use windows::Security::Credentials::UI::UserConsentVerifierAvailability;
+
+    match availability {
+        UserConsentVerifierAvailability::Available => Ok(()),
+        UserConsentVerifierAvailability::DeviceBusy => {
+            Err(LocalAuthError::Rejected("Windows Hello device is busy".to_owned()))
+        }
+        UserConsentVerifierAvailability::DeviceNotPresent => {
+            Err(LocalAuthError::Unavailable("Windows Hello device is not present".to_owned()))
+        }
+        UserConsentVerifierAvailability::NotConfiguredForUser => Err(LocalAuthError::Unavailable(
+            "Windows Hello is not configured for this user".to_owned(),
+        )),
+        UserConsentVerifierAvailability::DisabledByPolicy => {
+            Err(LocalAuthError::Unavailable("Windows Hello is disabled by policy".to_owned()))
+        }
+        other => Err(LocalAuthError::Framework(format!(
+            "unrecognized Windows Hello availability result: {}",
+            other.0
+        ))),
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn map_verification_result(
+    result: windows::Security::Credentials::UI::UserConsentVerificationResult,
+) -> Result<bool, LocalAuthError> {
+    use windows::Security::Credentials::UI::UserConsentVerificationResult;
+
+    match result {
+        UserConsentVerificationResult::Verified => Ok(true),
+        UserConsentVerificationResult::DeviceBusy
+        | UserConsentVerificationResult::RetriesExhausted
+        | UserConsentVerificationResult::Canceled => Ok(false),
+        UserConsentVerificationResult::DeviceNotPresent => {
+            Err(LocalAuthError::Unavailable("Windows Hello device is not present".to_owned()))
+        }
+        UserConsentVerificationResult::NotConfiguredForUser => Err(LocalAuthError::Unavailable(
+            "Windows Hello is not configured for this user".to_owned(),
+        )),
+        UserConsentVerificationResult::DisabledByPolicy => {
+            Err(LocalAuthError::Unavailable("Windows Hello is disabled by policy".to_owned()))
+        }
+        other => Err(LocalAuthError::Framework(format!(
+            "unrecognized Windows Hello verification result: {}",
+            other.0
+        ))),
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn map_windows_error(error: windows::core::Error) -> LocalAuthError {
+    LocalAuthError::Framework(error.to_string())
 }
 
 /// Serializes tests that mutate the shared `LOCKET_TEST_LOCAL_AUTH`
@@ -180,5 +239,41 @@ mod tests {
                 Err(LocalAuthError::Unavailable(_))
             ));
         });
+    }
+
+    #[test]
+    fn blank_reason_is_rejected_before_backend() {
+        with_test_override(None, || {
+            assert!(matches!(evaluate_local_user("   "), Err(LocalAuthError::EmptyReason)));
+        });
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_result_mapping_covers_user_rejection_and_unavailable() {
+        use windows::Security::Credentials::UI::{
+            UserConsentVerificationResult, UserConsentVerifierAvailability,
+        };
+
+        assert!(matches!(
+            super::map_availability(UserConsentVerifierAvailability::Available),
+            Ok(())
+        ));
+        assert!(matches!(
+            super::map_availability(UserConsentVerifierAvailability::DisabledByPolicy),
+            Err(LocalAuthError::Unavailable(_))
+        ));
+        assert!(matches!(
+            super::map_verification_result(UserConsentVerificationResult::Verified),
+            Ok(true)
+        ));
+        assert!(matches!(
+            super::map_verification_result(UserConsentVerificationResult::Canceled),
+            Ok(false)
+        ));
+        assert!(matches!(
+            super::map_verification_result(UserConsentVerificationResult::DeviceNotPresent),
+            Err(LocalAuthError::Unavailable(_))
+        ));
     }
 }

@@ -234,16 +234,17 @@ shipped. Core-dump suppression also shipped on all three platforms:
 ### LocalUserVerifier platform backends
 Spec ref: `docs/specs/crypto.md:192-218`,
 `docs/specs/engineering.md:144`. macOS backend with single-unsafe
-`LAContext` wrapper shipped. Linux + Windows backends shipped as
-stubs returning `Unavailable` (with documented rollout plans).
+`LAContext` wrapper shipped. Linux Secret Service and Windows Hello
+backends are wired behind target cfgs.
 
-- [~] (in-flight: feature/local-auth-real-backends) **lauthn-linux-real**: replace the Linux stub with a real
-  Secret Service / FIDO2 (`libfido2-sys`) backend. Documented
-  rollout plan is at the top of `linux_local_authentication.rs`.
-- [~] (in-flight: feature/local-auth-real-backends) **lauthn-windows-hello-real**: replace the Windows stub with
-  a real Windows Hello backend via the `windows` crate's
-  `Security::Credentials::UI::UserConsentVerifier`. Documented
-  rollout plan is at the top of `windows_local_authentication.rs`.
+- [ ] **lauthn-linux-fido2-fallback**: add and validate the
+  `libfido2-sys` hardware-key user-presence fallback on a Linux host
+  with a physical security key. The Secret Service backend is wired;
+  this remains the headless/security-key fallback path.
+- [ ] **lauthn-real-host-validation**: exercise Linux Secret Service on
+  locked/unlocked desktop sessions and Windows Hello
+  `UserConsentVerifier` on an enrolled Windows host. macOS cannot
+  locally execute those OS prompt APIs.
 
 ## App / UI
 
