@@ -1,11 +1,13 @@
 use locket_crypto::{KEY_LEN, NONCE_LEN};
 
 use super::{
-    LocalUserVerificationMethod, LocalUserVerificationRequest, LocalUserVerifier, MasterKeyStore,
-    MemoryLocalUserVerifier, MemoryMasterKeyStore, MockMasterKeyStore, MockMasterKeyStoreFailure,
+    LocalDevicePrivateKeyStorage, LocalUserVerificationMethod, LocalUserVerificationRequest,
+    LocalUserVerifier, MasterKeyStore, MemoryDevicePrivateKeyStorage, MemoryLocalUserVerifier,
+    MemoryMasterKeyStore, MockMasterKeyStore, MockMasterKeyStoreFailure,
     PassphraseFallbackMasterKeyStore, PlatformError, ProcessBinding, RecoveryEnvelope,
-    RecoveryEnvelopeEntry, RecoveryKdfToml, UnavailableLocalUserVerifier, current_process_binding,
-    decode_key, encode_key, load_recovery_envelope, load_recovery_kdf_toml, master_key_account,
+    RecoveryEnvelopeEntry, RecoveryKdfToml, UnavailableLocalUserVerifier,
+    WrappedLocalFileDevicePrivateKeyStorage, current_process_binding, decode_key, encode_key,
+    load_recovery_envelope, load_recovery_kdf_toml, master_key_account,
     process_binding_matches_live_process, save_recovery_envelope, save_recovery_kdf_toml,
 };
 
@@ -381,5 +383,186 @@ fn recovery_files_use_user_only_permissions() -> Result<(), PlatformError> {
     assert_eq!(dir_mode, 0o700);
     assert_eq!(kdf_mode, 0o600);
     assert_eq!(envelope_mode, 0o600);
+    Ok(())
+}
+
+const DEVICE_ID_A: &str = "lk_dev_aaa";
+const DEVICE_ID_B: &str = "lk_dev_bbb";
+const PRIVATE_KEY_A: [u8; KEY_LEN] = [7; KEY_LEN];
+const PRIVATE_KEY_B: [u8; KEY_LEN] = [8; KEY_LEN];
+
+fn populated_master_key_store(
+    master_key: [u8; KEY_LEN],
+) -> Result<std::sync::Arc<MemoryMasterKeyStore>, PlatformError> {
+    let store = std::sync::Arc::new(MemoryMasterKeyStore::default());
+    store.store_master_key(PROJECT_ID, &master_key)?;
+    Ok(store)
+}
+
+#[test]
+fn wrapped_device_private_key_round_trips_and_writes_user_only_files()
+-> Result<(), PlatformError> {
+    let directory = tempfile::tempdir()?;
+    let store = populated_master_key_store(MASTER_KEY)?;
+    let storage = WrappedLocalFileDevicePrivateKeyStorage::new(
+        directory.path(),
+        PROJECT_ID,
+        store as std::sync::Arc<dyn MasterKeyStore + Send + Sync>,
+    );
+    storage.store(DEVICE_ID_A, &PRIVATE_KEY_A)?;
+    let loaded = storage.load(DEVICE_ID_A)?;
+    assert_eq!(&*loaded, &PRIVATE_KEY_A);
+
+    let envelope_path = storage.envelope_path(DEVICE_ID_A)?;
+    assert!(envelope_path.exists());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&envelope_path)?.permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        let parent = envelope_path
+            .parent()
+            .ok_or_else(|| PlatformError::InvalidProjectId)?;
+        let dir_mode = std::fs::metadata(parent)?.permissions().mode() & 0o777;
+        assert_eq!(dir_mode, 0o700);
+    }
+    let serialized = std::fs::read_to_string(&envelope_path)?;
+    assert!(!serialized.contains(&data_encoding::BASE64URL_NOPAD.encode(&PRIVATE_KEY_A)));
+    Ok(())
+}
+
+#[test]
+fn wrapped_device_private_key_load_returns_not_found_when_missing()
+-> Result<(), PlatformError> {
+    let directory = tempfile::tempdir()?;
+    let store = populated_master_key_store(MASTER_KEY)?;
+    let storage = WrappedLocalFileDevicePrivateKeyStorage::new(
+        directory.path(),
+        PROJECT_ID,
+        store as std::sync::Arc<dyn MasterKeyStore + Send + Sync>,
+    );
+    assert!(matches!(
+        storage.load(DEVICE_ID_A),
+        Err(PlatformError::DevicePrivateKeyNotFound)
+    ));
+    Ok(())
+}
+
+#[test]
+fn wrapped_device_private_key_rejects_load_with_wrong_master_key()
+-> Result<(), PlatformError> {
+    let directory = tempfile::tempdir()?;
+    let store_a = populated_master_key_store(MASTER_KEY)?;
+    let storage_a = WrappedLocalFileDevicePrivateKeyStorage::new(
+        directory.path(),
+        PROJECT_ID,
+        store_a as std::sync::Arc<dyn MasterKeyStore + Send + Sync>,
+    );
+    storage_a.store(DEVICE_ID_A, &PRIVATE_KEY_A)?;
+
+    let store_b = populated_master_key_store([99; KEY_LEN])?;
+    let storage_b = WrappedLocalFileDevicePrivateKeyStorage::new(
+        directory.path(),
+        PROJECT_ID,
+        store_b as std::sync::Arc<dyn MasterKeyStore + Send + Sync>,
+    );
+    let Err(err) = storage_b.load(DEVICE_ID_A) else {
+        return Err(PlatformError::InvalidMasterKey);
+    };
+    assert!(
+        matches!(err, PlatformError::DevicePrivateKeyIntegrityFailure(_)),
+        "expected integrity failure, got {err:?}"
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn wrapped_device_private_key_rejects_world_readable_envelope() -> Result<(), PlatformError> {
+    use std::os::unix::fs::PermissionsExt;
+    let directory = tempfile::tempdir()?;
+    let store = populated_master_key_store(MASTER_KEY)?;
+    let storage = WrappedLocalFileDevicePrivateKeyStorage::new(
+        directory.path(),
+        PROJECT_ID,
+        store as std::sync::Arc<dyn MasterKeyStore + Send + Sync>,
+    );
+    storage.store(DEVICE_ID_A, &PRIVATE_KEY_A)?;
+    let envelope_path = storage.envelope_path(DEVICE_ID_A)?;
+    std::fs::set_permissions(&envelope_path, std::fs::Permissions::from_mode(0o644))?;
+    let Err(err) = storage.load(DEVICE_ID_A) else {
+        return Err(PlatformError::InvalidMasterKey);
+    };
+    assert!(
+        matches!(err, PlatformError::DevicePrivateKeyPermissionsTooWide(0o644)),
+        "expected permissions-too-wide error, got {err:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn wrapped_device_private_key_list_returns_sorted_device_ids() -> Result<(), PlatformError> {
+    let directory = tempfile::tempdir()?;
+    let store = populated_master_key_store(MASTER_KEY)?;
+    let storage = WrappedLocalFileDevicePrivateKeyStorage::new(
+        directory.path(),
+        PROJECT_ID,
+        store as std::sync::Arc<dyn MasterKeyStore + Send + Sync>,
+    );
+    storage.store(DEVICE_ID_B, &PRIVATE_KEY_B)?;
+    storage.store(DEVICE_ID_A, &PRIVATE_KEY_A)?;
+    let listed = storage.list()?;
+    assert_eq!(listed, vec![DEVICE_ID_A.to_owned(), DEVICE_ID_B.to_owned()]);
+    Ok(())
+}
+
+#[test]
+fn wrapped_device_private_key_list_is_empty_when_directory_missing()
+-> Result<(), PlatformError> {
+    let directory = tempfile::tempdir()?;
+    let store = populated_master_key_store(MASTER_KEY)?;
+    let storage = WrappedLocalFileDevicePrivateKeyStorage::new(
+        directory.path(),
+        PROJECT_ID,
+        store as std::sync::Arc<dyn MasterKeyStore + Send + Sync>,
+    );
+    let listed = storage.list()?;
+    assert!(listed.is_empty());
+    Ok(())
+}
+
+#[test]
+fn wrapped_device_private_key_delete_is_idempotent() -> Result<(), PlatformError> {
+    let directory = tempfile::tempdir()?;
+    let store = populated_master_key_store(MASTER_KEY)?;
+    let storage = WrappedLocalFileDevicePrivateKeyStorage::new(
+        directory.path(),
+        PROJECT_ID,
+        store as std::sync::Arc<dyn MasterKeyStore + Send + Sync>,
+    );
+    storage.store(DEVICE_ID_A, &PRIVATE_KEY_A)?;
+    storage.delete(DEVICE_ID_A)?;
+    assert!(matches!(
+        storage.load(DEVICE_ID_A),
+        Err(PlatformError::DevicePrivateKeyNotFound)
+    ));
+    storage.delete(DEVICE_ID_A)?;
+    Ok(())
+}
+
+#[test]
+fn memory_device_private_key_round_trips() -> Result<(), PlatformError> {
+    let storage = MemoryDevicePrivateKeyStorage::default();
+    storage.store(DEVICE_ID_A, &PRIVATE_KEY_A)?;
+    storage.store(DEVICE_ID_B, &PRIVATE_KEY_B)?;
+    let loaded = storage.load(DEVICE_ID_A)?;
+    assert_eq!(&*loaded, &PRIVATE_KEY_A);
+    let listed = storage.list()?;
+    assert_eq!(listed, vec![DEVICE_ID_A.to_owned(), DEVICE_ID_B.to_owned()]);
+    storage.delete(DEVICE_ID_A)?;
+    assert!(matches!(
+        storage.load(DEVICE_ID_A),
+        Err(PlatformError::DevicePrivateKeyNotFound)
+    ));
     Ok(())
 }

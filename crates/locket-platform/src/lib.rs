@@ -6,6 +6,7 @@
 
 mod automation_client_key;
 mod core_dumps;
+mod device_private_key;
 mod error;
 mod fs_helpers;
 mod master_key;
@@ -20,6 +21,10 @@ pub use automation_client_key::{
     MemoryAutomationClientKeyStore,
 };
 pub use core_dumps::{CoreDumpHardening, core_dump_hardening_state, disable_core_dumps};
+pub use device_private_key::{
+    DEVICE_PRIVATE_KEY_SCHEMA_VERSION, LocalDevicePrivateKeyStorage, MemoryDevicePrivateKeyStorage,
+    PrivateKeyBytes, WrappedLocalFileDevicePrivateKeyStorage,
+};
 pub use error::PlatformError;
 pub use fs_helpers::{secure_directory, write_user_only_file};
 pub use master_key::{

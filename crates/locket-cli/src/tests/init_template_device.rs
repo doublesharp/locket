@@ -529,7 +529,9 @@ fn device_commands_initialize_describe_add_list_and_revoke_metadata_only()
     run_with_context(Cli::try_parse_from(["locket", "device", "pubkey"])?, &context, &mut output)?;
     let pubkey_output = String::from_utf8(output.clone())?;
     assert!(pubkey_output.contains(&descriptor));
-    assert!(!pubkey_output.contains("private"));
+    assert!(pubkey_output.contains("private_key_storage: wrapped-local-file"));
+    assert!(!pubkey_output.contains("private_key:"));
+    assert!(!pubkey_output.contains("private_key_material"));
 
     let remote_device = crate::DeviceRecord {
         id: "lk_dev_remote".to_owned(),

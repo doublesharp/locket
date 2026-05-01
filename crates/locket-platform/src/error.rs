@@ -54,4 +54,13 @@ pub enum PlatformError {
     /// Recovery envelope uses a schema version newer than this binary supports.
     #[error("recovery envelope schema version {0} is not supported; upgrade locket")]
     RecoveryEnvelopeSchemaUnsupported(u16),
+    /// No device private-key envelope exists for the requested device id.
+    #[error("device private key not found")]
+    DevicePrivateKeyNotFound,
+    /// Device private-key envelope failed integrity checks (corrupt, wrong master key, or schema mismatch).
+    #[error("device private key envelope integrity check failed: {0}")]
+    DevicePrivateKeyIntegrityFailure(String),
+    /// Device private-key envelope on-disk permissions are wider than 0600.
+    #[error("device private key envelope permissions are too wide: {0:#o} (must be 0600)")]
+    DevicePrivateKeyPermissionsTooWide(u32),
 }

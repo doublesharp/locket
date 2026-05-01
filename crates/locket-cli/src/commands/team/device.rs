@@ -1,11 +1,14 @@
 use data_encoding::BASE64URL_NOPAD;
 use locket_core::DeviceId;
 use locket_crypto::{KeyPurpose, generate_key};
+use locket_platform::{LocalDevicePrivateKeyStorage, WrappedLocalFileDevicePrivateKeyStorage};
 use locket_store::{AuditContext, AuditWrite, DeviceRecord, Store};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::io::Write;
+use std::path::PathBuf;
+use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret as X25519StaticSecret};
 
 use crate::runtime::error::corrupt_db_error;
 use crate::runtime::user_verification::{
@@ -67,7 +70,8 @@ fn device_init_command(
             "register a local device",
         )?
     };
-    let device = generate_local_device_record(project_id, timestamp)?;
+    let GeneratedLocalDevice { record: device, sealing_private_key } =
+        generate_local_device_record(project_id, timestamp)?;
     if let Some((existing, verification)) = existing_replacement {
         replace_local_device_with_audit(
             context,
@@ -78,6 +82,8 @@ fn device_init_command(
             verification,
             timestamp,
         )?;
+        let storage = build_device_private_key_storage(context, project_id)?;
+        let _ = storage.delete(&existing.id);
     } else {
         store.insert_device(&device)?;
         write_device_audit_if_available(
@@ -90,6 +96,8 @@ fn device_init_command(
             user_verification,
         )?;
     }
+    let storage = build_device_private_key_storage(context, project_id)?;
+    storage.store(&device.id, &sealing_private_key)?;
     let descriptor = encode_device_descriptor(&device)?;
 
     writeln!(output, "device: initialized")?;
@@ -97,7 +105,7 @@ fn device_init_command(
     writeln!(output, "fingerprint: {}", device.fingerprint)?;
     writeln!(output, "safety_words: {}", device.safety_words.join(" "))?;
     writeln!(output, "descriptor: {descriptor}")?;
-    writeln!(output, "private_key_storage: unavailable")?;
+    writeln!(output, "private_key_storage: wrapped-local-file")?;
     writeln!(output, "metadata_only: yes")?;
     Ok(())
 }
@@ -114,11 +122,27 @@ fn device_pubkey_command(
         .get_active_local_device(project_id)?
         .ok_or_else(|| invalid_reference_error("local device is not initialized"))?;
     let descriptor = encode_device_descriptor(&device)?;
+    let storage = build_device_private_key_storage(context, project_id)?;
+    let private_key = storage.load(&device.id)?;
+    let secret = X25519StaticSecret::from(*private_key);
+    let derived_public = X25519PublicKey::from(&secret).to_bytes();
+    let stored_public: [u8; 32] = device
+        .sealing_public_key
+        .as_slice()
+        .try_into()
+        .map_err(|_| corrupt_db_error("device sealing public key has unexpected length"))?;
+    if derived_public != stored_public {
+        return Err(corrupt_db_error(
+            "device private key does not match stored public key",
+        ));
+    }
 
     writeln!(output, "device_id: {}", device.id)?;
     writeln!(output, "fingerprint: {}", device.fingerprint)?;
     writeln!(output, "safety_words: {}", device.safety_words.join(" "))?;
+    writeln!(output, "sealing_public_key_x25519: {}", BASE64URL_NOPAD.encode(&derived_public))?;
     writeln!(output, "descriptor: {descriptor}")?;
+    writeln!(output, "private_key_storage: wrapped-local-file")?;
     writeln!(output, "metadata_only: yes")?;
     Ok(())
 }
@@ -244,30 +268,59 @@ fn device_remove_command(
     Ok(())
 }
 
+struct GeneratedLocalDevice {
+    record: DeviceRecord,
+    sealing_private_key: zeroize::Zeroizing<[u8; 32]>,
+}
+
 fn generate_local_device_record(
     project_id: &str,
     timestamp: i64,
-) -> Result<DeviceRecord, CliError> {
+) -> Result<GeneratedLocalDevice, CliError> {
     let signing_seed = generate_key()?;
-    let sealing_seed = generate_key()?;
     let signing_public_key = *signing_seed;
-    let sealing_public_key = *sealing_seed;
-    let fingerprint = device_fingerprint_hex(&signing_public_key, &sealing_public_key);
-    Ok(DeviceRecord {
+    let sealing_seed = generate_key()?;
+    let sealing_secret = X25519StaticSecret::from(*sealing_seed);
+    let sealing_public_key = X25519PublicKey::from(&sealing_secret);
+    let mut sealing_private_key = zeroize::Zeroizing::new([0_u8; 32]);
+    sealing_private_key.copy_from_slice(sealing_secret.as_bytes());
+    let sealing_public_bytes = sealing_public_key.to_bytes();
+    let fingerprint = device_fingerprint_hex(&signing_public_key, &sealing_public_bytes);
+    let record = DeviceRecord {
         id: DeviceId::generate()
             .map_err(|_| corrupt_db_error("device id generation failed"))?
             .into_string(),
         project_id: project_id.to_owned(),
         name: default_device_name(),
         signing_public_key: signing_public_key.to_vec(),
-        sealing_public_key: sealing_public_key.to_vec(),
+        sealing_public_key: sealing_public_bytes.to_vec(),
         safety_words: safety_words_from_fingerprint(&fingerprint),
         fingerprint,
         local: true,
         created_at: timestamp,
         last_seen_at: Some(timestamp),
         revoked_at: None,
-    })
+    };
+    Ok(GeneratedLocalDevice { record, sealing_private_key })
+}
+
+fn device_private_key_root(context: &RuntimeContext) -> Result<PathBuf, CliError> {
+    context
+        .store_path
+        .parent()
+        .map(std::path::Path::to_path_buf)
+        .ok_or_else(|| corrupt_db_error("could not resolve device private key root"))
+}
+
+fn build_device_private_key_storage(
+    context: &RuntimeContext,
+    project_id: &str,
+) -> Result<WrappedLocalFileDevicePrivateKeyStorage, CliError> {
+    Ok(WrappedLocalFileDevicePrivateKeyStorage::new(
+        device_private_key_root(context)?,
+        project_id.to_owned(),
+        std::sync::Arc::clone(&context.key_store),
+    ))
 }
 
 pub fn encode_device_descriptor(device: &DeviceRecord) -> Result<String, CliError> {
