@@ -186,7 +186,6 @@ Slices 1+2 shipped (agent client, tray binding, 6 view scaffolds,
   shipped. Remaining: real data sources per view, tray menu actions,
   SubscribeStatus stream consumer.
 - [ ] Tray/status panel (`docs/specs/desktop.md:65-108`):
-  - [~] [4ab55ee9] branch agent-4ab55ee9/tray-status-binding, worktree .worktrees/agent-4ab55ee9-tray-status-binding; tray status uses SubscribeStatus instead of polling.
   - [~] [4ab55ee9] branch agent-4ab55ee9/tray-recent-activity, worktree .worktrees/agent-4ab55ee9-tray-recent-activity; tray recent activity shows bounded safe statuses.
 - [ ] Desktop UI campaign — remaining slices:
   - [ ] **subtask** — desktop-subscribe-status: replace `useAgent`

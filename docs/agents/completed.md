@@ -338,6 +338,8 @@ Slices that have merged to `main` and verified. Open work tracked in
   verification results.
 - [x] agent-config-read-write: settings RPCs cover privacy, unlock TTL,
   verification policy, and dangerous-profile configuration.
+- [x] tray-status-binding: Tray status now follows the agent
+  SubscribeStatus stream; unavailable streams leave the tray stopped.
 - [x] desktop-backup-recovery-view: BackupRecovery view covers
   export, import, verify, and recovery-rotate surfaces.
 - [x] search-devices-members: desktop device/member metadata can be
