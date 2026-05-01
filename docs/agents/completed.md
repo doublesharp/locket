@@ -196,6 +196,8 @@ Slices that have merged to `main` and verified. Open work tracked in
 - [x] proptest-update-manifest: Signed update manifests now have generated coverage for
   valid payloads and tamper rejection. The property harness checks metadata changes stay
   bound to the release signature.
+- [x] run-ttl-grant: Policy runs now issue TTL-bound live grants for the spawned
+  process. Run audit metadata records the grant TTL and process binding without values.
 
 ## Full Spec Coverage TODO — Security/Recovery/Team
 

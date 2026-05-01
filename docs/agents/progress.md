@@ -85,7 +85,6 @@ skill set fits a leaf better.
     allowed-env-name set + policy-declared `ttl_seconds`.
 - [~] `locket run` spec coverage. Argv policy execution exists.
   Remaining (`docs/specs/runtime.md:5-122`, `docs/specs/policy.md`):
-  - [~] [4ab55ee9] branch agent-4ab55ee9/run-ttl-grant, worktree .worktrees/agent-4ab55ee9-run-ttl-grant; enforce policy ttl grants with process binding for run.
 - [~] External env source resolution
   (`docs/specs/runtime.md:117-118`). `::Parent`, `::File`, `::Compose`
   shipped. Remaining:
