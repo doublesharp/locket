@@ -2330,6 +2330,7 @@ fn team_accept_verifies_invite_displays_trust_summary_and_records_audit()
         profiles: vec!["dev".to_owned()],
         expires_at,
         nonce: data_encoding::BASE64URL_NOPAD.encode(&[7; 24]),
+        sealed_payload: None,
     };
     let signed = locket_core::SignedInvite::sign(&issuer_signing, payload)?;
     let invite_path = directory.path().join("accept.locket-invite");
@@ -2679,6 +2680,7 @@ fn team_accept_invite_fixture(
         profiles: vec!["dev".to_owned()],
         expires_at,
         nonce: data_encoding::BASE64URL_NOPAD.encode(&[7; 24]),
+        sealed_payload: None,
     };
     let mut signed = locket_core::SignedInvite::sign(&issuer_signing, payload)?;
     if let Some(signature) = signature_override {
