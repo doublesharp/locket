@@ -215,13 +215,17 @@ skill set fits a leaf better.
   crate with Linux Secret Service features enabled, maps missing D-Bus
   or platform storage to unavailable, and keeps deterministic tests on
   the `LOCKET_TEST_LOCAL_AUTH` override.
-- [ ] LocalUserVerifier Linux FIDO2 hardware-key fallback: add
-  `libfido2-sys` and validate user-presence touch on a Linux host with
-  a physical security key.
-- [ ] LocalUserVerifier real-host validation: exercise the Linux Secret
-  Service backend on locked/unlocked desktop sessions and the Windows
-  Hello backend on an enrolled Windows host; this cannot be completed on
-  the macOS development host.
+- [ ] LocalUserVerifier Linux FIDO2 hardware-key fallback: repo-side
+  validation harness exists in
+  `scripts/validate-local-user-auth-real-host.sh`; remaining
+  manual/hardware work is to wire the production `libfido2-sys`
+  user-presence ceremony and rerun the harness with `--require-fido2` on
+  a Linux host with a physical security key.
+- [ ] LocalUserVerifier real-host validation: repo-side harness and CI
+  dry-run probe exist. Remaining manual work is to run the harness on
+  locked/unlocked Linux Secret Service sessions and on an enrolled
+  Windows Hello host; this cannot be completed on the macOS development
+  host.
 
 ### App/UI
 

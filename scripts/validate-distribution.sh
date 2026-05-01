@@ -24,6 +24,8 @@ check bash -n scripts/package-vscode-extension.sh
 check bash -n scripts/package-native-installers.sh
 check bash -n scripts/render-homebrew-formula.sh
 check bash -n scripts/release-operator-runbook.sh
+check bash -n scripts/validate-local-user-auth-real-host.sh
+check bash -n scripts/validate-packaged-os-canaries.sh
 check bash -n tools/vsix-sign.sh
 
 check node -e '

@@ -44,6 +44,11 @@ jobs:
       - name: Validate distribution package definitions
         run: make distribution-check
 
+      - name: Probe OS-host validation harnesses
+        run: |
+          scripts/validate-local-user-auth-real-host.sh --dry-run
+          scripts/validate-packaged-os-canaries.sh --dry-run
+
       - name: Cargo check workspace
         run: cargo check --workspace --all-targets --all-features --locked
 

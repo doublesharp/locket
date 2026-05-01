@@ -120,10 +120,11 @@ ship. Each bullet has spec ref + code ref + suggested touches.
   reference surface, and count only; no secret values or command text.
 ### E. Quality / ops / build
 
-- [~] (in-flight: feature/os-validation-final) **canary-packaged-os-follow-up**: remaining canary surfaces that
-  genuinely require OS/manual packaging jobs: signed desktop webview
-  smoke, OS clipboard/tray integration on each target, packaged VSIX
-  execution, and full recovery restore e2e with artifact scanning.
+- [x] **canary-packaged-os-follow-up**: repo-side harnesses now cover
+  packaged artifact canary scanning, host installer/VSIX smoke command
+  shape, CI dry-run probes, and operator docs. Remaining credential/OS
+  release-host work is tracked in
+  `docs/operations/os-host-validation.md`.
 ## P0 — Correctness / Security Drift (audit findings)
 
 These are spec contracts the code currently violates or silently
@@ -242,14 +243,17 @@ Spec ref: `docs/specs/crypto.md:192-218`,
 `LAContext` wrapper shipped. Linux Secret Service and Windows Hello
 backends are wired behind target cfgs.
 
-- [~] (in-flight: feature/os-validation-final) **lauthn-linux-fido2-fallback**: add and validate the
-  `libfido2-sys` hardware-key user-presence fallback on a Linux host
-  with a physical security key. The Secret Service backend is wired;
-  this remains the headless/security-key fallback path.
-- [~] (in-flight: feature/os-validation-final) **lauthn-real-host-validation**: exercise Linux Secret Service on
-  locked/unlocked desktop sessions and Windows Hello
-  `UserConsentVerifier` on an enrolled Windows host. macOS cannot
-  locally execute those OS prompt APIs.
+- [ ] **lauthn-linux-fido2-fallback**: exact remaining manual/hardware
+  follow-up is to wire the production `libfido2-sys` user-presence
+  ceremony, then run
+  `scripts/validate-local-user-auth-real-host.sh --target linux-secret-service --require-fido2`
+  on a Linux host with a physical security key.
+- [ ] **lauthn-real-host-validation**: repo-side harness and CI dry-run
+  probe exist. Remaining manual validation is to run
+  `scripts/validate-local-user-auth-real-host.sh --target linux-secret-service`
+  on locked/unlocked Linux desktop sessions and
+  `scripts/validate-local-user-auth-real-host.sh --target windows-hello`
+  on an enrolled Windows host.
 
 ## App / UI
 

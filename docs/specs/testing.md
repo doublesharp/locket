@@ -49,6 +49,9 @@ Coverage tooling:
 - Use `cargo nextest` for fast integration and workspace test execution.
 - Use platform mocks/fakes instead of real keychain, biometric, Docker, desktop, or network dependencies in normal CI.
 - Slow end-to-end tests may be split into a scheduled or release-blocking job, but security-critical unit and integration tests must run on every pull request.
+- Real OS prompt and packaged-artifact checks are driven by
+  `docs/operations/os-host-validation.md`; CI must at least dry-run those
+  harnesses so command drift is caught before release-host execution.
 
 ## Required Test Coverage
 
