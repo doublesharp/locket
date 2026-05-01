@@ -8,12 +8,12 @@
 //!
 //! The handler enforces unlock + policy lookup, derives the allowed
 //! env-name set from the policy's normalized `allowed_secrets` union,
-//! picks the `command_kind` from the policy's command spec, and issues
-//! a live [`GrantAction::PrepareExec`] grant in the in-memory grant
-//! table. The grant id is recorded internally only; today's wire shape
-//! does not surface it because the runtime crate has not been wired
-//! through to consume it yet — see the `TODO(prepare-exec-grant-return)`
-//! comment in [`handle_prepare_exec`] for the follow-up.
+//! picks the `command_kind` from the policy's command spec, issues a
+//! live [`GrantAction::PrepareExec`] grant in the in-memory grant
+//! table, and surfaces the grant id on the response so callers
+//! (`policy doctor`, the CLI execution path) can reuse it for the
+//! follow-up `ResolveReference` calls without issuing a second
+//! `RequestGrant` round-trip.
 //!
 //! No audit row is emitted at the prepare-exec stage. The data-model
 //! spec (`docs/specs/data-model.md:296-300`) classifies `PrepareExec`
@@ -89,6 +89,13 @@ pub struct PrepareExecResponse {
     pub command_kind: String,
     /// Time-to-live hint, in seconds, for the prepared invocation.
     pub ttl_seconds: u32,
+    /// Opaque id of the live [`GrantAction::PrepareExec`] grant the
+    /// agent issued for this prepare. Empty when the response is
+    /// produced by an older agent build that did not surface the grant
+    /// id; clients must treat empty as "fall back to the legacy
+    /// `RequestGrant` path".
+    #[serde(default)]
+    pub grant_id: String,
 }
 
 /// Handler for `PrepareExec`.
@@ -153,12 +160,10 @@ pub async fn handle_prepare_exec(
     let command_kind = command_kind(&policy);
     let allowed_env_names = policy.allowed_secrets.clone();
 
-    // Issue a live PrepareExec grant. The id is internal-only for now;
-    // when the runtime crate is taught to consume it, surface it via a
-    // new optional response field.
-    // TODO(prepare-exec-grant-return): expose `grant_id` on
-    // PrepareExecResponse once the runtime CLI execution path is wired
-    // to consume it.
+    // Issue a live PrepareExec grant and surface its id on the
+    // response so the trusted CLI execution path (and policy doctor)
+    // can reuse it for the subsequent `ResolveReference` call without
+    // a second `RequestGrant` round-trip.
     let binding = typed
         .binding
         .clone()
@@ -180,19 +185,23 @@ pub async fn handle_prepare_exec(
             now_unix_nanos.saturating_add(ttl_nanos),
         )
     };
-    if issued.is_err() {
-        return typed_error(
-            request,
-            ERROR_PROTOCOL,
-            "failed to allocate grant id",
-            LocketError::CorruptDb,
-        );
-    }
+    let grant_id = match issued {
+        Ok(record) => record.grant_id,
+        Err(_) => {
+            return typed_error(
+                request,
+                ERROR_PROTOCOL,
+                "failed to allocate grant id",
+                LocketError::CorruptDb,
+            );
+        }
+    };
 
     let response = PrepareExecResponse {
         allowed_env_names,
         command_kind: command_kind.to_owned(),
         ttl_seconds: u32::try_from(ttl_seconds).unwrap_or(u32::MAX),
+        grant_id,
     };
     serde_json::to_value(&response).map_or_else(
         |_| protocol_error(request, "failed to serialize PrepareExec response"),
@@ -345,6 +354,7 @@ mod tests {
             allowed_env_names: vec!["DATABASE_URL".to_owned(), "API_TOKEN".to_owned()],
             command_kind: "argv".to_owned(),
             ttl_seconds: 60,
+            grant_id: "lk_grant_0123456789abcdef0123456789abcdef".to_owned(),
         };
 
         let value = serde_json::to_value(&response)?;
@@ -353,6 +363,25 @@ mod tests {
         assert_eq!(decoded, response);
         assert_eq!(value["command_kind"], "argv");
         assert_eq!(value["ttl_seconds"], 60);
+        assert_eq!(value["grant_id"], "lk_grant_0123456789abcdef0123456789abcdef");
+        Ok(())
+    }
+
+    #[test]
+    fn prepare_exec_response_defaults_grant_id_when_field_missing()
+    -> Result<(), serde_json::Error> {
+        // A response from an older agent that does not yet surface the
+        // grant id must still decode cleanly. The CLI relies on the
+        // empty-string default to fall through to the legacy
+        // `RequestGrant(ResolveReference)` path.
+        let value = json!({
+            "allowed_env_names": ["DATABASE_URL"],
+            "command_kind": "argv",
+            "ttl_seconds": 30,
+        });
+        let decoded: PrepareExecResponse = serde_json::from_value(value)?;
+        assert_eq!(decoded.grant_id, "");
+        assert_eq!(decoded.allowed_env_names, vec!["DATABASE_URL"]);
         Ok(())
     }
 
@@ -377,9 +406,25 @@ mod tests {
         assert_eq!(decoded.command_kind, DEFAULT_COMMAND_KIND);
         assert_eq!(decoded.ttl_seconds, 900);
 
-        // Issuing a grant must record exactly one record in the table.
-        let grant_count = state.grants.lock().await.len();
-        assert_eq!(grant_count, 1);
+        // The response surfaces the live grant id so callers can
+        // resolve `lk://` references without a second RequestGrant
+        // round-trip. The id must match the typed `lk_grant_<32 hex>`
+        // shape minted by `locket_core::id::GrantId::generate`.
+        assert!(
+            decoded.grant_id.starts_with("lk_grant_"),
+            "grant_id must be lk_grant_ prefixed: {}",
+            decoded.grant_id
+        );
+        let suffix = decoded.grant_id.strip_prefix("lk_grant_").unwrap();
+        assert_eq!(suffix.len(), 32, "lk_grant_ suffix must be 32 hex chars");
+        assert!(suffix.chars().all(|c| c.is_ascii_hexdigit()));
+
+        // Issuing a grant must record exactly one record in the table,
+        // and the live record must have the PrepareExec action.
+        let grants = state.grants.lock().await;
+        assert_eq!(grants.len(), 1);
+        let record = grants.get(&decoded.grant_id).expect("grant record present");
+        assert_eq!(record.action, crate::grant::GrantAction::PrepareExec);
         Ok(())
     }
 
