@@ -1012,6 +1012,12 @@ fn build_signed_invite(
         profiles: profiles.to_vec(),
         expires_at: expires_at / NANOS_PER_SECOND,
         nonce: BASE64URL_NOPAD.encode(&nonce),
+        // TODO(invite-sealed-payload-apply): populate when the issuer
+        // CLI grows a `--seal-payload` flag and an age-encrypted inner
+        // payload helper. Until then every invite goes out as
+        // metadata-only, matching the current `team accept` SPEC
+        // contract.
+        sealed_payload: None,
     };
     let signed_invite = SignedInvite::sign(&signing_key, payload)
         .map_err(|error| metadata_invalid_error(format!("invite signing failed: {error}")))?;

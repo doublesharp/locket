@@ -699,6 +699,7 @@ const KNOWN_AUDIT_METADATA_FIELDS: &[&str] = &[
     "hook_command",
     "hook_path_hash",
     "hook_path_kind",
+    "imported_audit_chain_count",
     "include_audit",
     "include_audit_requested",
     "input_kind",

@@ -20,8 +20,8 @@ use locket_platform::{
     LocalDevicePrivateKeyStorage, PlatformError, WrappedLocalFileDevicePrivateKeyStorage,
 };
 use locket_store::{
-    AuditWrite, ExportableAuditRow, KeyRecord, ProfileRecord, SecretBlobRecord, SecretRecord,
-    Store,
+    AuditWrite, ExportableAuditRow, ImportedAuditChainRow, KeyRecord, ProfileRecord,
+    SecretBlobRecord, SecretRecord, Store, verify_imported_audit_chain_structure,
 };
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
@@ -256,6 +256,11 @@ struct AppliedBundleCounts {
     blob_count: usize,
     command_policy_count: usize,
     profile_key_count: usize,
+    /// Number of audit-chain rows decrypted, structurally verified, and
+    /// inserted into `imported_audit_chains`. Zero when the bundle did
+    /// not include an audit chain or when `--include-audit` was not set
+    /// on the import command.
+    imported_audit_chain_count: usize,
 }
 
 /// Aggregated conflict-matrix counters across all bundle row families.
@@ -538,6 +543,7 @@ pub fn import_bundle_command(
     writeln!(output, "applied_blob_count: {}", applied.blob_count)?;
     writeln!(output, "applied_command_policy_count: {}", applied.command_policy_count)?;
     writeln!(output, "applied_profile_key_count: {}", applied.profile_key_count)?;
+    writeln!(output, "imported_audit_chain_count: {}", applied.imported_audit_chain_count)?;
     writeln!(output, "conflict_identical: {}", conflicts.identical)?;
     writeln!(output, "conflict_newer_incoming: {}", conflicts.newer_incoming)?;
     writeln!(output, "conflict_divergent: {}", conflicts.divergent)?;
@@ -1004,7 +1010,7 @@ fn apply_bundle_payload(
     }
 
     if include_audit && let Some(audit_chain) = payload.audit_chain.as_ref() {
-        insert_imported_audit_chain(
+        let row_count = insert_imported_audit_chain(
             &transaction,
             project_id,
             &bundle_digest_bytes,
@@ -1012,6 +1018,8 @@ fn apply_bundle_payload(
             audit_chain,
             now,
         )?;
+        applied.imported_audit_chain_count =
+            applied.imported_audit_chain_count.saturating_add(row_count);
     }
 
     transaction.commit().map_err(|error| {
@@ -1314,6 +1322,14 @@ fn bundle_hex_nibble(byte: u8) -> Result<u8, CliError> {
 
 /// Inserts the bundle's encrypted audit-chain payload as one
 /// `imported_audit_chains` row.
+///
+/// Steps performed in order, all under the caller's transaction so a
+/// failure rolls back any rows already applied by `apply_bundle_payload`:
+///
+/// 1. Decode the base64url checkpoint hmac, ciphertext, and nonce from the [`SealedAuditChainPayloadV1`] (length-checked).
+/// 2. Decrypt the chain via [`decrypt_audit_chain`] using the inner `encryption_key_b64` + AAD bound to the bundle schema version.
+/// 3. Map the decrypted rows into [`ImportedAuditChainRow`] and run [`verify_imported_audit_chain_structure`] against the checkpoint. Any failure rolls back the outer apply transaction and surfaces as `BundleVerificationFailed` (exit code 110).
+/// 4. Insert the encrypted blob into `imported_audit_chains` keyed by the bundle digest. The row count is returned for audit metadata.
 fn insert_imported_audit_chain(
     transaction: &rusqlite::Transaction<'_>,
     project_id: &str,
@@ -1321,19 +1337,21 @@ fn insert_imported_audit_chain(
     manifest: &BundleManifest,
     audit_chain: &SealedAuditChainPayloadV1,
     now: i64,
-) -> Result<(), CliError> {
+) -> Result<usize, CliError> {
     let chain_id = generate_imported_audit_chain_id()?;
     let source_device_fingerprint = manifest
         .recipient_fingerprints
         .first()
         .cloned()
         .unwrap_or_else(|| format_hex(bundle_digest));
-    let checkpoint_hmac = BASE64URL_NOPAD
+    let checkpoint_hmac_bytes = BASE64URL_NOPAD
         .decode(audit_chain.checkpoint_hmac_b64.as_bytes())
         .map_err(|_| bundle_verification_error("audit chain checkpoint hmac is not base64url"))?;
-    if checkpoint_hmac.len() != AUDIT_HMAC_LEN {
+    if checkpoint_hmac_bytes.len() != AUDIT_HMAC_LEN {
         return Err(bundle_verification_error("audit chain checkpoint hmac must be 32 bytes"));
     }
+    let mut checkpoint_hmac = [0_u8; AUDIT_HMAC_LEN];
+    checkpoint_hmac.copy_from_slice(&checkpoint_hmac_bytes);
     let encrypted_rows = BASE64URL_NOPAD
         .decode(audit_chain.encrypted_rows_b64.as_bytes())
         .map_err(|_| bundle_verification_error("audit chain ciphertext is not base64url"))?;
@@ -1343,6 +1361,25 @@ fn insert_imported_audit_chain(
     if nonce.len() != 24 {
         return Err(bundle_verification_error("audit chain nonce must be 24 bytes"));
     }
+
+    // Decrypt + structurally verify the imported chain BEFORE inserting
+    // any row. If verification fails we surface BundleVerificationFailed
+    // so the outer transaction rolls back.
+    let decoded_rows = decrypt_audit_chain(audit_chain, BUNDLE_SCHEMA_V1)?;
+    let imported_rows = decoded_rows
+        .iter()
+        .map(decoded_row_to_imported_row)
+        .collect::<Result<Vec<_>, _>>()?;
+    verify_imported_audit_chain_structure(
+        &imported_rows,
+        audit_chain.checkpoint_sequence,
+        &checkpoint_hmac,
+    )
+    .map_err(|_| {
+        bundle_verification_error("imported audit chain integrity broken")
+    })?;
+    let row_count = imported_rows.len();
+
     transaction
         .execute(
             "INSERT INTO imported_audit_chains(
@@ -1356,7 +1393,7 @@ fn insert_imported_audit_chain(
                 source_device_fingerprint,
                 bundle_digest.as_slice(),
                 audit_chain.checkpoint_sequence,
-                checkpoint_hmac,
+                checkpoint_hmac_bytes,
                 encrypted_rows,
                 nonce,
                 audit_chain.aad_schema_version,
@@ -1364,7 +1401,33 @@ fn insert_imported_audit_chain(
             ],
         )
         .map_err(map_apply_sqlite_error)?;
-    Ok(())
+    Ok(row_count)
+}
+
+/// Decode a deserialized [`SealedAuditChainRowV1`] back into the
+/// store-side [`ImportedAuditChainRow`] used by
+/// [`verify_imported_audit_chain_structure`]. Returns
+/// `BundleVerificationFailed` on malformed `previous_hmac/hmac` material.
+fn decoded_row_to_imported_row(
+    row: &SealedAuditChainRowV1,
+) -> Result<ImportedAuditChainRow, CliError> {
+    let previous_hmac_bytes = BASE64URL_NOPAD
+        .decode(row.previous_hmac_b64.as_bytes())
+        .map_err(|_| bundle_verification_error("audit chain previous_hmac is not base64url"))?;
+    let hmac_bytes = BASE64URL_NOPAD
+        .decode(row.hmac_b64.as_bytes())
+        .map_err(|_| bundle_verification_error("audit chain hmac is not base64url"))?;
+    if previous_hmac_bytes.len() != AUDIT_HMAC_LEN {
+        return Err(bundle_verification_error("audit chain previous_hmac must be 32 bytes"));
+    }
+    if hmac_bytes.len() != AUDIT_HMAC_LEN {
+        return Err(bundle_verification_error("audit chain hmac must be 32 bytes"));
+    }
+    let mut previous_hmac = [0_u8; AUDIT_HMAC_LEN];
+    previous_hmac.copy_from_slice(&previous_hmac_bytes);
+    let mut hmac = [0_u8; AUDIT_HMAC_LEN];
+    hmac.copy_from_slice(&hmac_bytes);
+    Ok(ImportedAuditChainRow { sequence: row.sequence, previous_hmac, hmac })
 }
 
 fn generate_imported_audit_chain_id() -> Result<String, CliError> {
@@ -1774,8 +1837,6 @@ fn encrypt_audit_chain(
 /// Used by the bundle import path and by round-trip tests. Returns the
 /// decoded rows on success. Tag, key, nonce, or AAD mismatches return a
 /// bundle-verification error so callers can map to exit code 110.
-// Bundle import lands in a follow-up slice; tests below exercise it.
-#[allow(dead_code)]
 fn decrypt_audit_chain(
     payload: &SealedAuditChainPayloadV1,
     bundle_schema_version: u16,
@@ -2092,6 +2153,10 @@ fn write_bundle_audit_if_available(
         metadata.insert(
             "applied_profile_key_count".to_owned(),
             Value::from(applied_counts.profile_key_count),
+        );
+        metadata.insert(
+            "imported_audit_chain_count".to_owned(),
+            Value::from(applied_counts.imported_audit_chain_count),
         );
     }
     if let Some(conflict_counts) = request.conflict_counts {

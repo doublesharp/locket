@@ -45,7 +45,8 @@ pub use id::{
 };
 pub use invite::{
     INVITE_PREFIX, InviteDecodeError, InviteEncodeError, InvitePayload, InviteVerifyError,
-    SignedInvite, TeamRole, device_fingerprint_v1, fingerprint_hex,
+    SealedInvitePayloadV1, SealedInvitePlaintextCounts, SignedInvite, TeamRole,
+    device_fingerprint_v1, fingerprint_hex,
 };
 pub use metadata::{MetadataPrivacyFinding, MetadataValidationError, validate_metadata_field};
 pub use pgp_word_list::{
