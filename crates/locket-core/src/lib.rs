@@ -5,22 +5,16 @@
 // the sealed-bundle crypto boundary and cannot be resolved locally.
 #![allow(clippy::multiple_crate_versions)]
 
-pub mod audit;
-pub mod bundle;
-pub mod env;
+mod configuration;
+mod formats;
+mod identity;
+
 pub mod error;
-pub mod id;
-pub mod invite;
-pub mod metadata;
-pub mod pgp_word_list;
 pub mod policy;
-pub mod privacy;
-pub mod profile_name;
-pub mod project;
-pub mod reference_uri;
-pub mod secret_name;
-pub mod time;
-pub mod update_manifest;
+
+pub use configuration::{env, metadata, privacy, project, time};
+pub use formats::{audit, bundle, invite, pgp_word_list, update_manifest};
+pub use identity::{id, profile_name, reference_uri, secret_name};
 
 pub use audit::{
     AUDIT_HMAC_LEN, AuditCanonicalizationError, AuditHmacInput, audit_hmac_v1_bytes, bytes,

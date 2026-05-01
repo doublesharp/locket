@@ -4,32 +4,25 @@
 // triggering this lint. Cannot be fixed without upgrading all crates.
 #![allow(clippy::multiple_crate_versions)]
 
-mod agent_pipe;
-mod automation_client_key;
-mod core_dumps;
-mod device_private_key;
 mod error;
-mod fs_helpers;
+mod hardening;
+mod ipc;
+mod storage;
+mod verification;
+
+pub(crate) use hardening::{core_dumps, memory_lock};
+pub(crate) use ipc::{agent_pipe, process};
+pub(crate) use storage::{
+    automation_client_key, device_private_key, fs_helpers, locked_vault_audit, master_key,
+    passphrase, recovery,
+};
 #[cfg(target_os = "linux")]
-mod linux_local_authentication;
-#[cfg(target_os = "linux")]
-mod linux_user_verifier;
-mod locked_vault_audit;
+pub(crate) use verification::{linux_local_authentication, linux_user_verifier};
 #[cfg(target_os = "macos")]
-mod macos_local_authentication;
-#[cfg(target_os = "macos")]
-mod macos_user_verifier;
-mod master_key;
-mod memory_lock;
-mod passkey;
-mod passphrase;
-mod process;
-mod recovery;
-mod user_verification;
+pub(crate) use verification::{macos_local_authentication, macos_user_verifier};
+pub(crate) use verification::{passkey, user_verification};
 #[cfg(target_os = "windows")]
-mod windows_local_authentication;
-#[cfg(target_os = "windows")]
-mod windows_user_verifier;
+pub(crate) use verification::{windows_local_authentication, windows_user_verifier};
 
 pub use agent_pipe::{AGENT_PIPE_PREFIX, agent_pipe_dacl_sddl_for_sid, agent_pipe_name_for_sid};
 pub use automation_client_key::{

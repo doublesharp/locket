@@ -4,41 +4,27 @@
 // alongside workspace versions. The sealed-bundle dependency owns that skew.
 #![allow(clippy::multiple_crate_versions)]
 
-mod audit;
-mod audit_deny;
-mod audit_verify;
-mod auth;
-mod backup;
-mod clients;
-mod config;
-mod degraded_audit;
-mod device_members;
-mod envelope;
-mod error;
-mod framing;
-mod grant;
-mod ide_env_session;
-mod method;
+mod auditing;
+mod handlers;
+mod protocol;
+mod state;
+mod transport;
+
+pub(crate) use auditing::{audit, audit_deny, audit_verify, degraded_audit};
+pub(crate) use handlers::{
+    auth, backup, clients, config, device_members, policies, prepare_exec, profile, resolve,
+    reveal, scan, secrets, set_secret, versions,
+};
+pub(crate) use protocol::{envelope, error, framing, method};
+pub(crate) use state::{
+    grant, ide_env_session, runtime_sessions, session_lock, status, status_stream, unlock_cache,
+};
 #[cfg(unix)]
-mod peer_cred;
-mod policies;
-mod prepare_exec;
-mod profile;
-mod resolve;
-mod reveal;
-mod runtime_sessions;
-mod scan;
-mod secrets;
+pub(crate) use transport::peer_cred;
 #[cfg(any(unix, target_os = "windows"))]
-mod server;
-mod session_lock;
-mod set_secret;
-mod status;
-mod status_stream;
-mod unlock_cache;
-mod versions;
+pub(crate) use transport::server;
 #[cfg(target_os = "windows")]
-mod windows_pipe;
+pub(crate) use transport::windows_pipe;
 
 pub use audit::{AuditChainStatus, ListAuditRequest, ListAuditResponse, ListAuditRow};
 pub use audit_verify::{VerifyAuditRequest, VerifyAuditResponse};

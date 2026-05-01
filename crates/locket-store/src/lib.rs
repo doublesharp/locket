@@ -8,21 +8,17 @@ use std::path::Path;
 
 use rusqlite::Connection;
 
-mod audit;
-mod command_policy;
-mod device;
+mod access;
+mod auditing;
+mod database;
 mod error;
-mod grants;
-mod keys;
-mod passkey;
-mod profile;
-mod project;
-mod roots;
-mod row;
-mod runtime_session;
-mod schema;
+mod records;
 mod secret;
-mod team;
+
+pub(crate) use access::{grants, runtime_session};
+pub(crate) use auditing::audit;
+pub(crate) use database::{row, schema};
+pub(crate) use records::{command_policy, device, keys, passkey, profile, project, roots, team};
 
 pub use audit::{
     AUDIT_METADATA_JSON_LIMIT, AuditChainVerification, AuditContext, AuditListFilter,

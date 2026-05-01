@@ -1,0 +1,14 @@
+#[cfg(target_os = "linux")]
+pub(crate) mod linux_local_authentication;
+#[cfg(target_os = "linux")]
+pub(crate) mod linux_user_verifier;
+#[cfg(target_os = "macos")]
+pub(crate) mod macos_local_authentication;
+#[cfg(target_os = "macos")]
+pub(crate) mod macos_user_verifier;
+pub(crate) mod passkey;
+pub(crate) mod user_verification;
+#[cfg(target_os = "windows")]
+pub(crate) mod windows_local_authentication;
+#[cfg(target_os = "windows")]
+pub(crate) mod windows_user_verifier;
