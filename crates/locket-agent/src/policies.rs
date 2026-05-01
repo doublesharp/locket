@@ -304,6 +304,7 @@ pub async fn handle_register_command_policies(
         "status": "SUCCESS",
         "command": "policy",
         "operation": "snapshot",
+        "change_kind": "snapshot",
         "policy": "*",
         "policy_name": "*",
         "command_policy_count": policy_count,
