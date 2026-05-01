@@ -207,6 +207,28 @@ CREATE TABLE IF NOT EXISTS secrets (
 CREATE INDEX IF NOT EXISTS secrets_project_profile_name_idx
   ON secrets(project_id, profile_id, name);
 
+-- Bundle/import conflict lookup support per docs/specs/storage.md line 149.
+--
+-- `apply_bundle_payload` (crates/locket-cli/src/commands/team/bundle.rs)
+-- detects secret conflicts via `read_local_secret(secret_id)` (covered
+-- by the `secrets` PRIMARY KEY) and, when an incoming row references a
+-- name/profile pair instead of an existing local id, callers fall back
+-- to `get_active_secret(project_id, profile_id, name, source)` and
+-- `get_secret_by_source(project_id, profile_id, name, source)`. This
+-- index covers the (project_id, profile_id, name, source, state)
+-- predicate used by those callers and keeps `current_version` available
+-- as an index column so conflict resolution can compare incoming
+-- bundle-version against the local current_version without an extra
+-- table fetch.
+CREATE INDEX IF NOT EXISTS secrets_bundle_conflict_idx
+  ON secrets(project_id, profile_id, name, source, state, current_version);
+
+-- `secret_versions` already has a `PRIMARY KEY (secret_id, version)` that
+-- supports `read_local_secret_version(secret_id, version)` lookups; no
+-- additional index is required for the version side of bundle conflict
+-- detection. Documented here so future readers don't add a redundant
+-- composite index.
+
 CREATE TABLE IF NOT EXISTS secret_versions (
   secret_id TEXT NOT NULL REFERENCES secrets(id) ON DELETE CASCADE,
   version INTEGER NOT NULL CHECK (version >= 1 AND version <= 4294967295),

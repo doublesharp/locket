@@ -522,6 +522,71 @@ fn devices_table_persists_member_id_and_label_columns() -> Result<(), Box<dyn Er
 }
 
 #[test]
+fn secrets_bundle_conflict_index_exists_and_supports_apply_path()
+-> Result<(), Box<dyn Error>> {
+    // docs/specs/storage.md line 149 requires "bundle/import conflict
+    // lookup by profile/name/version" indexes. The composite index on
+    // secrets supports get_active_secret / get_secret_by_source filters
+    // used by team-bundle apply for name/source-keyed conflict matching;
+    // the secret_versions PRIMARY KEY (secret_id, version) covers the
+    // version side of the same workflow.
+    let test_store = open_initialized_store()?;
+    let connection = test_store.store.connection();
+
+    let bundle_index_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master
+         WHERE type = 'index' AND name = 'secrets_bundle_conflict_idx'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(bundle_index_count, 1, "secrets_bundle_conflict_idx must exist");
+
+    // Confirm the SQLite planner actually picks this index for the
+    // bundle-conflict predicate. We seed at least one matching row so
+    // the planner has up-to-date stats and intentionally do not run
+    // ANALYZE — the partial-on-equality predicate plan is index-driven
+    // regardless.
+    insert_project_profile(&test_store.store)?;
+    connection.execute(
+        "INSERT INTO secrets(
+           id, project_id, profile_id, name, source, origin, required, current_version, state,
+           created_at, updated_at
+         ) VALUES (
+           'lk_secret_idx', 'lk_proj_test', 'lk_prof_test', 'DATABASE_URL', 'team-managed',
+           'manual', 0, 1, 'active', 1, 1
+         )",
+        [],
+    )?;
+
+    let plan_rows = collect_query_plan(
+        connection,
+        "SELECT id FROM secrets
+         WHERE project_id = ? AND profile_id = ? AND name = ? AND source = ? AND state = 'active'",
+    )?;
+    let plan_uses_index = plan_rows.iter().any(|line| line.contains("secrets_bundle_conflict_idx"));
+    assert!(
+        plan_uses_index,
+        "EXPLAIN QUERY PLAN must reference secrets_bundle_conflict_idx; got {plan_rows:?}"
+    );
+
+    Ok(())
+}
+
+fn collect_query_plan(
+    connection: &rusqlite::Connection,
+    sql: &str,
+) -> Result<Vec<String>, Box<dyn Error>> {
+    let plan_sql = format!("EXPLAIN QUERY PLAN {sql}");
+    let mut statement = connection.prepare(&plan_sql)?;
+    let rows = statement
+        .query_map(["lk_proj_test", "lk_prof_test", "DATABASE_URL", "team-managed"], |row| {
+            row.get::<_, String>(3)
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+#[test]
 fn directory_grants_table_persists_granted_by_and_revoked_at_columns()
 -> Result<(), Box<dyn Error>> {
     let test_store = open_initialized_store()?;
