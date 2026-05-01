@@ -2,13 +2,16 @@
 set -euo pipefail
 
 mode="${1:-ci}"
+repo_root="$(pwd)"
 cargo_bin="${CARGO:-cargo}"
 jobs="${CARGO_JOBS:-12}"
 offline="${OFFLINE:-1}"
-quality_dir="target/quality"
+quality_dir="${repo_root}/target/quality"
 jsonl="${quality_dir}/bench-smoke.jsonl"
 summary="${quality_dir}/bench-summary.json"
 report="${quality_dir}/bench-report.md"
+bench_fixture_out="${BENCH_FIXTURE_OUT:-${repo_root}/target/bench-fixtures}"
+staged_scan_repo="${bench_fixture_out}/staged-scan/repo"
 min_warmups="${BENCH_WARMUPS:-5}"
 min_samples="${BENCH_SAMPLES:-50}"
 build_profile="${BENCH_BUILD_PROFILE:-debug}"
@@ -29,10 +32,10 @@ if [[ -z "${policy_mode}" ]]; then
 fi
 
 cargo_profile_args=()
-binary="target/debug/locket"
+binary="${repo_root}/target/debug/locket"
 if [[ "${build_profile}" == "release" ]]; then
   cargo_profile_args=(--release)
-  binary="target/release/locket"
+  binary="${repo_root}/target/release/locket"
 fi
 
 offline_args=()
@@ -152,11 +155,40 @@ run_sample() {
   printf '{"name":"%s","elapsed_ms":%s}\n' "${name}" "${elapsed}" >> "${jsonl}"
 }
 
+run_sample_in_dir() {
+  local name="$1"
+  local directory="$2"
+  shift 2
+  (
+    cd "${directory}"
+    run_sample "${name}" "$@"
+  )
+}
+
+sample_count() {
+  local name="$1"
+  wc -l < "${quality_dir}/${name}.samples" | tr -d ' '
+}
+
+prepare_staged_scan_fixture() {
+  if [[ ! -d "${staged_scan_repo}" ]]; then
+    echo "staged scan fixture missing at ${staged_scan_repo}; run make bench-fixtures first" >&2
+    exit 2
+  fi
+  git -C "${staged_scan_repo}" init -q
+  git -C "${staged_scan_repo}" add -A
+}
+
 write_report() {
-  local cli_p95 sample_count p95_index processed_bytes elapsed_seconds throughput
+  local cli_p95 agent_p95 scan_p95 cli_samples agent_samples scan_samples p95_index
+  local processed_bytes elapsed_seconds throughput
   cli_p95="$(percentile_95 < "${quality_dir}/cli_help.samples")"
-  sample_count="$(wc -l < "${quality_dir}/cli_help.samples" | tr -d ' ')"
-  p95_index="$(awk -v n="${sample_count}" 'BEGIN { idx = int(0.95 * n); if (0.95 * n > idx) idx++; if (idx < 1) idx = 1; print idx }')"
+  agent_p95="$(percentile_95 < "${quality_dir}/agent_status.samples")"
+  scan_p95="$(percentile_95 < "${quality_dir}/scan_staged.samples")"
+  cli_samples="$(sample_count cli_help)"
+  agent_samples="$(sample_count agent_status)"
+  scan_samples="$(sample_count scan_staged)"
+  p95_index="$(awk -v n="${min_samples}" 'BEGIN { idx = int(0.95 * n); if (0.95 * n > idx) idx++; if (idx < 1) idx = 1; print idx }')"
   processed_bytes="0"
   elapsed_seconds="0"
   throughput="not-measured"
@@ -179,20 +211,27 @@ write_report() {
     echo "- cargo_jobs: ${jobs}"
     echo "- offline: ${offline}"
     echo "- warmup_iterations: ${min_warmups}"
-    echo "- cli_help_samples: ${sample_count}"
+    echo "- cli_help_samples: ${cli_samples}"
     echo "- cli_help_p95_ms: ${cli_p95}"
     echo "- cli_help_budget_ms: 100"
-    echo "- p95_index_formula: ceil(0.95 * n) - 1 zero-based / report index ${p95_index} one-based"
+    echo "- agent_status_samples: ${agent_samples}"
+    echo "- agent_status_p95_ms: ${agent_p95}"
+    echo "- agent_status_budget_ms: 100"
+    echo "- scan_staged_samples: ${scan_samples}"
+    echo "- scan_staged_p95_ms: ${scan_p95}"
+    echo "- scan_staged_budget_ms: 500"
+    echo "- p95_index_formula: ceil(0.95 * n) - 1 zero-based / report index ${p95_index} one-based for ${min_samples} samples"
     echo "- throughput_processed_bytes: ${processed_bytes}"
     echo "- throughput_elapsed_seconds: ${elapsed_seconds}"
     echo "- throughput_bytes_per_second: ${throughput}"
     echo
     echo "This report records the reference-runner fields and sampling rules required"
-    echo "by docs/specs/performance.md. Expanded fixtures remain tracked by the"
-    echo "broader performance-gates item."
+    echo "by docs/specs/performance.md and includes the PR smoke surfaces for"
+    echo "metadata commands and staged scans."
   } > "${report}"
   perl -MJSON::PP -e '
-    my ($path, $mode, $policy_mode, $profile, $samples, $p95) = @ARGV;
+    my ($path, $mode, $policy_mode, $profile, $cli_samples, $cli_p95,
+        $agent_samples, $agent_p95, $scan_samples, $scan_p95) = @ARGV;
     open my $fh, ">", $path or die "open $path: $!";
     print {$fh} JSON::PP->new->canonical->pretty->encode({
       mode => $mode,
@@ -203,12 +242,29 @@ write_report() {
           name => "cli_help",
           kind => "latency_ms",
           budget_ms => 100,
-          samples => 0 + $samples,
-          p95_ms => 0 + $p95,
+          samples => 0 + $cli_samples,
+          p95_ms => 0 + $cli_p95,
+        },
+        {
+          name => "agent_status",
+          kind => "latency_ms",
+          budget_ms => 100,
+          samples => 0 + $agent_samples,
+          p95_ms => 0 + $agent_p95,
+        },
+        {
+          name => "scan_staged",
+          kind => "latency_ms",
+          budget_ms => 500,
+          samples => 0 + $scan_samples,
+          p95_ms => 0 + $scan_p95,
         },
       ],
     });
-  ' "${summary}" "${mode}" "${policy_mode}" "${build_profile}" "${sample_count}" "${cli_p95}"
+  ' "${summary}" "${mode}" "${policy_mode}" "${build_profile}" \
+    "${cli_samples}" "${cli_p95}" \
+    "${agent_samples}" "${agent_p95}" \
+    "${scan_samples}" "${scan_p95}"
 }
 
 if [[ "${mode}" == "report" ]]; then
@@ -226,15 +282,22 @@ fi
 
 : > "${jsonl}"
 : > "${quality_dir}/cli_help.samples"
+: > "${quality_dir}/agent_status.samples"
+: > "${quality_dir}/scan_staged.samples"
 
 "${cargo_bin}" build -p locket-cli "${offline_args[@]}" "${cargo_profile_args[@]}" -j "${jobs}" >/dev/null
+prepare_staged_scan_fixture
 
 for _ in $(seq 1 "${min_warmups}"); do
   "${binary}" --help >/dev/null
+  "${binary}" agent status >/dev/null
+  (cd "${staged_scan_repo}" && "${binary}" scan --staged >/dev/null)
 done
 
 for _ in $(seq 1 "${min_samples}"); do
   run_sample cli_help "${binary}" --help
+  run_sample agent_status "${binary}" agent status
+  run_sample_in_dir scan_staged "${staged_scan_repo}" "${binary}" scan --staged
 done
 
 write_report
