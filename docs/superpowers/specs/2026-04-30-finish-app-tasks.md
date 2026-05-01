@@ -74,7 +74,7 @@ ship. Each bullet has spec ref + code ref + suggested touches.
 
 ### A. Crypto / recovery / bundle correctness
 
-- [ ] **bootstrap-shell-tool-presence-follow-up**: bootstrap reports shell
+- [~] (in-flight: feature/quality-e2e-final) **bootstrap-shell-tool-presence-follow-up**: bootstrap reports shell
   policy tool checks as `tools_unchecked: shell:<first-token>` because
   safely and portably identifying every referenced tool inside arbitrary
   shell snippets requires shell-aware parsing beyond the local argv check.
@@ -82,7 +82,7 @@ ship. Each bullet has spec ref + code ref + suggested touches.
 
 ### C. CLI / runtime / agent
 
-- [ ] **agent-windows-named-pipe-transport**: finish the remaining hard
+- [~] (in-flight: feature/agent-windows-transport) **agent-windows-named-pipe-transport**: finish the remaining hard
   transport work after `agent-windows-named-pipe-sid-path-partial`.
   The partial shipped shared SID-based pipe path helpers, protected
   current-user DACL SDDL generation, Windows diagnostics, and CLI path
@@ -92,44 +92,30 @@ ship. Each bullet has spec ref + code ref + suggested touches.
   and add on-Windows ACL/transport integration coverage.
 ### D. Desktop / integrations / scan
 
-- Shipped: **backup-recovery-view-wired** — `BackupRecovery.vue`
-  now emits typed export/import/verify/recovery-rotate requests,
-  `App.vue` calls scoped Tauri commands, and the agent method
-  registry/dispatch includes `ExportBundle`, `ImportBundle`,
-  `VerifyBundle`, and `RecoveryRotate`. `VerifyBundle` performs
-  structural container + age-payload validation; the other
-  destructive/material-writing paths fail closed with typed
-  metadata-only `not-implemented` responses until the CLI bundle and
-  recovery core is shared with the agent.
-- [ ] **agent-export-bundle-core**: `ExportBundle` reaches the typed
+- [~] (in-flight: feature/desktop-agent-core-final) **agent-export-bundle-core**: `ExportBundle` reaches the typed
   agent path but does not yet create a sealed bundle. Extract the
   export implementation from `locket-cli/src/commands/team/bundle.rs`
   into shared core usable by `locket-agent`, preserving recipient
   descriptor validation, selected profile scope, audit metadata, and
   metadata-only responses.
-- [ ] **agent-import-bundle-core**: `ImportBundle` reaches the typed
+- [~] (in-flight: feature/desktop-agent-core-final) **agent-import-bundle-core**: `ImportBundle` reaches the typed
   agent path, validates unlock state and input path, then returns
   `not-implemented`. Extract/apply the bundle import core in the
   agent with conflict policies (`review`, `accept-incoming`,
   `accept-local`) and local audit writes.
-- [ ] **agent-recovery-rotate-core**: `RecoveryRotate` reaches the
+- [~] (in-flight: feature/desktop-agent-core-final) **agent-recovery-rotate-core**: `RecoveryRotate` reaches the
   typed agent path and enforces one-time-display acknowledgement, but
   still lacks fresh platform/current-code verification and recovery
   envelope rewrite from `vault/recovery.rs`.
-- [ ] **secret-row-cross-reference-deprecation**: `desktop.md:34`
+- [~] (in-flight: feature/desktop-agent-core-final) **secret-row-cross-reference-deprecation**: `desktop.md:34`
   requires secret rows to surface version-level deprecation warnings
   when current policy/command-preview/`lk://...@vN` reference
   depends on a deprecated version with active or expired grace.
   `SecretMetadataList.vue` only shows per-row `hasDeprecatedGrace`
   badge from row's own state.
-- Shipped: **tray-privacy-aliases** — the webview now pushes
-  redaction-aware tray privacy context, and Rust tray tooltip/status
-  rendering aliases active project/profile labels with the canonical
-  `locket_core::privacy_alias` when `privacy.redact_names = true`.
-
 ### E. Quality / ops / build
 
-- [ ] **canary-harness-os-e2e-residual**: lightweight canary coverage
+- [~] (in-flight: feature/quality-e2e-final) **canary-harness-os-e2e-residual**: lightweight canary coverage
   now includes CLI, scan/redaction, agent reveal/copy audit surfaces,
   Docker/Compose argv metadata, tray notifications, and VS Code audit
   webview rendering. Remaining heavier surfaces need OS/e2e jobs:
@@ -254,10 +240,10 @@ Spec ref: `docs/specs/crypto.md:192-218`,
 `LAContext` wrapper shipped. Linux + Windows backends shipped as
 stubs returning `Unavailable` (with documented rollout plans).
 
-- [ ] **lauthn-linux-real**: replace the Linux stub with a real
+- [~] (in-flight: feature/local-auth-real-backends) **lauthn-linux-real**: replace the Linux stub with a real
   Secret Service / FIDO2 (`libfido2-sys`) backend. Documented
   rollout plan is at the top of `linux_local_authentication.rs`.
-- [ ] **lauthn-windows-hello-real**: replace the Windows stub with
+- [~] (in-flight: feature/local-auth-real-backends) **lauthn-windows-hello-real**: replace the Windows stub with
   a real Windows Hello backend via the `windows` crate's
   `Security::Credentials::UI::UserConsentVerifier`. Documented
   rollout plan is at the top of `windows_local_authentication.rs`.
@@ -280,7 +266,7 @@ flows.
 ### Tray / status panel
 Spec ref: `docs/specs/desktop.md:65-108`.
 
-- [ ] **tray-panel-spec-deep-audit**: re-read
+- [~] (in-flight: feature/desktop-agent-core-final) **tray-panel-spec-deep-audit**: re-read
   `docs/specs/desktop.md:65-108` against `crates/locket-app/`
   and enumerate any unmet tray-panel requirements as concrete
   subtasks. The lighter sweep on 2026-04-30 returned clean; a deep
@@ -324,7 +310,7 @@ Spec ref: `docs/specs/testing.md:38`.
 `e2e-greenfield-init`, `e2e-dotenv-migration`, `e2e-policy-run`,
 `e2e-docker-compose`, `e2e-recovery-roundtrip` shipped.
 
-- [ ] **e2e-ui-editor-smoke**: smoke flows in the desktop app and
+- [~] (in-flight: feature/quality-e2e-final) **e2e-ui-editor-smoke**: smoke flows in the desktop app and
   the VS Code extension. Pre-req: desktop-* and vscode-* items.
 
 ### Distribution supply-chain gates
@@ -335,18 +321,18 @@ exist. Remaining: auditable builds and signing.
 ### Package builders and signing
 Spec ref: `docs/specs/operations.md:27-53`.
 
-- [ ] **homebrew-formula-publish**: publish the shipped
+- [~] (in-flight: feature/distribution-package-final) **homebrew-formula-publish**: publish the shipped
   `dist/homebrew/locket.rb` formula to a tap (e.g.
   `doublesharp/homebrew-locket`); verify binary against release
   manifest signature.
-- [ ] **cargo-install-publish**: `crates.io` publish run for
+- [~] (in-flight: feature/distribution-package-final) **cargo-install-publish**: `crates.io` publish run for
   `locket-cli`. Manifest is now publishable (`dist/cargo-install.md`
   has the dry-run notes); run with the signed-tag flow.
-- [ ] **macos-pkg-signed**: signed `.pkg` with notarization.
-- [ ] **windows-msi-signed**: signed `.msi` with EV cert.
-- [ ] **linux-deb-rpm**: signed `.deb` and `.rpm` where toolchain
+- [~] (in-flight: feature/distribution-package-final) **macos-pkg-signed**: signed `.pkg` with notarization.
+- [~] (in-flight: feature/distribution-package-final) **windows-msi-signed**: signed `.msi` with EV cert.
+- [~] (in-flight: feature/distribution-package-final) **linux-deb-rpm**: signed `.deb` and `.rpm` where toolchain
   is practical.
-- [ ] **vsix-signed**: signed VS Code VSIX direct download path.
+- [~] (in-flight: feature/distribution-package-final) **vsix-signed**: signed VS Code VSIX direct download path.
 
 ### Cold-start budgets
 Spec ref: `docs/specs/performance.md`. Each subtask adds one
