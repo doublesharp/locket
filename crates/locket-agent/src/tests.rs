@@ -1541,7 +1541,9 @@ async fn list_device_members_returns_metadata_only_directory_rows()
     store.insert_device(&DeviceRecord {
         id: "device-local".to_owned(),
         project_id: "project-main".to_owned(),
+        member_id: None,
         name: "Justin Laptop".to_owned(),
+        label: "Justin Laptop".to_owned(),
         signing_public_key: vec![1; 32],
         sealing_public_key: vec![2; 32],
         fingerprint: "abcdef123456".to_owned(),
@@ -1554,7 +1556,9 @@ async fn list_device_members_returns_metadata_only_directory_rows()
     store.insert_device(&DeviceRecord {
         id: "device-revoked".to_owned(),
         project_id: "project-main".to_owned(),
+        member_id: None,
         name: "Old Laptop".to_owned(),
+        label: "Old Laptop".to_owned(),
         signing_public_key: vec![3; 32],
         sealing_public_key: vec![4; 32],
         fingerprint: "deadbeef".to_owned(),

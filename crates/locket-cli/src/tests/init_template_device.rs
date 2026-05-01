@@ -536,7 +536,9 @@ fn device_commands_initialize_describe_add_list_and_revoke_metadata_only()
     let remote_device = crate::DeviceRecord {
         id: "lk_dev_remote".to_owned(),
         project_id: "lk_proj_external".to_owned(),
+        member_id: None,
         name: "remote".to_owned(),
+        label: "remote".to_owned(),
         signing_public_key: vec![7; 32],
         sealing_public_key: vec![8; 32],
         fingerprint: crate::device_fingerprint_hex(&[7; 32], &[8; 32]),
@@ -663,7 +665,9 @@ fn device_registration_honors_configured_user_verification()
     let remote_device = crate::DeviceRecord {
         id: "lk_dev_remote_verified".to_owned(),
         project_id: "lk_proj_external".to_owned(),
+        member_id: None,
         name: "remote".to_owned(),
+        label: "remote".to_owned(),
         signing_public_key: vec![7; 32],
         sealing_public_key: vec![8; 32],
         fingerprint: crate::device_fingerprint_hex(&[7; 32], &[8; 32]),
@@ -1207,7 +1211,9 @@ fn team_revoke_device_already_revoked_is_idempotent() -> Result<(), Box<dyn std:
     store.insert_device(&crate::DeviceRecord {
         id: "lk_dev_revoked_remote".to_owned(),
         project_id,
+        member_id: None,
         name: "revoked remote".to_owned(),
+        label: "revoked remote".to_owned(),
         signing_public_key: vec![11; 32],
         sealing_public_key: vec![12; 32],
         fingerprint: crate::device_fingerprint_hex(&[11; 32], &[12; 32]),
@@ -1878,7 +1884,9 @@ fn seed_team_members_fixture(
     let device = crate::DeviceRecord {
         id: "lk_dev_team_owner".to_owned(),
         project_id: project_id.clone(),
+        member_id: None,
         name: "owner laptop".to_owned(),
+        label: "owner laptop".to_owned(),
         signing_public_key: vec![3; 32],
         sealing_public_key: vec![4; 32],
         fingerprint: crate::device_fingerprint_hex(&[3; 32], &[4; 32]),
@@ -2018,7 +2026,9 @@ fn team_invite_creates_signed_file_pending_row_and_audit() -> Result<(), Box<dyn
     let recipient = crate::DeviceRecord {
         id: "lk_dev_recipient".to_owned(),
         project_id: config.project_id.to_string(),
+        member_id: None,
         name: "recipient laptop".to_owned(),
+        label: "recipient laptop".to_owned(),
         signing_public_key: vec![11; 32],
         sealing_public_key: vec![12; 32],
         fingerprint: recipient_fingerprint.clone(),
@@ -2229,7 +2239,9 @@ fn team_invite_locked_vault_fails_before_writing_output() -> Result<(), Box<dyn 
     let recipient = crate::DeviceRecord {
         id: "lk_dev_recipient".to_owned(),
         project_id: config.project_id.to_string(),
+        member_id: None,
         name: "recipient laptop".to_owned(),
+        label: "recipient laptop".to_owned(),
         signing_public_key: vec![21; 32],
         sealing_public_key: vec![22; 32],
         fingerprint: crate::device_fingerprint_hex(&[21; 32], &[22; 32]),
@@ -3091,7 +3103,9 @@ fn e2e_recipient_device(
     Ok(crate::DeviceRecord {
         id: "lk_dev_e2e_recipient".to_owned(),
         project_id: config.project_id.to_string(),
+        member_id: None,
         name: "recipient laptop".to_owned(),
+        label: "recipient laptop".to_owned(),
         signing_public_key: vec![41; 32],
         sealing_public_key: vec![42; 32],
         fingerprint: crate::device_fingerprint_hex(&[41; 32], &[42; 32]),

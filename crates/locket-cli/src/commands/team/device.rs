@@ -189,7 +189,12 @@ fn device_add_command(
     let device = DeviceRecord {
         id: descriptor.device_id,
         project_id: project_id.to_owned(),
+        member_id: None,
         name: args.name.clone(),
+        // v1 device add does not collect a separate display label;
+        // mirror `name` so existing CLI/UI surfaces have a non-empty
+        // label until label-on-add is wired in a follow-up.
+        label: args.name.clone(),
         signing_public_key: signing_public_key.to_vec(),
         sealing_public_key: sealing_public_key.to_vec(),
         fingerprint,
@@ -331,12 +336,17 @@ fn generate_local_device_record(
     sealing_private_key.copy_from_slice(sealing_secret.as_bytes());
     let sealing_public_bytes = sealing_public_key.to_bytes();
     let fingerprint = device_fingerprint_hex(&signing_public_key, &sealing_public_bytes);
+    let device_name = default_device_name();
     let record = DeviceRecord {
         id: DeviceId::generate()
             .map_err(|_| corrupt_db_error("device id generation failed"))?
             .into_string(),
         project_id: project_id.to_owned(),
-        name: default_device_name(),
+        member_id: None,
+        // Local device records mirror `name` into `label` until a
+        // dedicated label flow exists. See data-model.md lines 254-265.
+        label: device_name.clone(),
+        name: device_name,
         signing_public_key: signing_public_key.to_vec(),
         sealing_public_key: sealing_public_bytes.to_vec(),
         safety_words: safety_words_from_fingerprint(&fingerprint),

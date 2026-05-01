@@ -284,10 +284,23 @@ CREATE UNIQUE INDEX IF NOT EXISTS keys_profile_scope_unique
   ON keys(project_id, profile_id, purpose)
   WHERE profile_id IS NOT NULL;
 
+-- `devices.member_id` and `devices.label`:
+--   `docs/specs/data-model.md` (lines 254-265) declares
+--   `Device.member_id: Option<MemberId>` and `Device.label: String`
+--   alongside `Device.name`. v1 stores both: `name` keeps acting as the
+--   stable, unique identifier across active rows (used by the
+--   `devices_active_name_unique_idx` partial index and CLI selectors that
+--   match by id/name/fingerprint), and `label` is a separate display
+--   string. Existing rows migrate cleanly because `label` defaults to ''
+--   and `member_id` defaults to NULL. The forward `devices.member_id ->
+--   team_members(id)` link complements the inverse `team_members.device_id`
+--   so device cards can render the bound member without join gymnastics.
 CREATE TABLE IF NOT EXISTS devices (
   id TEXT PRIMARY KEY,
   project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  member_id TEXT REFERENCES team_members(id) ON DELETE SET NULL,
   name TEXT NOT NULL,
+  label TEXT NOT NULL DEFAULT '',
   signing_public_key BLOB NOT NULL CHECK (length(signing_public_key) = 32),
   sealing_public_key BLOB NOT NULL CHECK (length(sealing_public_key) = 32),
   fingerprint TEXT NOT NULL,
@@ -297,6 +310,10 @@ CREATE TABLE IF NOT EXISTS devices (
   last_seen_at INTEGER,
   revoked_at INTEGER
 );
+
+CREATE INDEX IF NOT EXISTS devices_member_idx
+  ON devices(project_id, member_id)
+  WHERE member_id IS NOT NULL AND revoked_at IS NULL;
 
 CREATE UNIQUE INDEX IF NOT EXISTS devices_active_name_unique_idx
   ON devices(project_id, name)

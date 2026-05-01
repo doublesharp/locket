@@ -496,6 +496,63 @@ fn schema_version_constant_is_one() {
 }
 
 #[test]
+fn devices_table_persists_member_id_and_label_columns() -> Result<(), Box<dyn Error>> {
+    let test_store = open_initialized_store()?;
+    let connection = test_store.store.connection();
+
+    // `Device.member_id: Option<MemberId>` and `Device.label: String` from
+    // docs/specs/data-model.md lines 254-265 must be present.
+    let member_id_column: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('devices')
+         WHERE name = 'member_id' AND type = 'TEXT'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(member_id_column, 1, "devices.member_id must exist");
+
+    let label_column: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('devices')
+         WHERE name = 'label' AND type = 'TEXT' AND \"notnull\" = 1",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(label_column, 1, "devices.label must exist as NOT NULL TEXT");
+
+    Ok(())
+}
+
+#[test]
+fn directory_grants_table_persists_granted_by_and_revoked_at_columns()
+-> Result<(), Box<dyn Error>> {
+    let test_store = open_initialized_store()?;
+    let connection = test_store.store.connection();
+
+    // `DirectoryGrant.granted_by: Option<MemberId>` and
+    // `DirectoryGrant.revoked_at: Option<Timestamp>` from data-model.md
+    // lines 221-228.
+    let granted_by_column: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('directory_grants')
+         WHERE name = 'granted_by' AND type = 'TEXT' AND \"notnull\" = 0",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(granted_by_column, 1, "directory_grants.granted_by must exist as nullable TEXT");
+
+    let revoked_at_column: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('directory_grants')
+         WHERE name = 'revoked_at' AND type = 'INTEGER' AND \"notnull\" = 0",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(
+        revoked_at_column, 1,
+        "directory_grants.revoked_at must exist as nullable INTEGER"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn newer_schema_version_blocks_initialization_before_any_tables_are_created()
 -> Result<(), Box<dyn Error>> {
     let directory = tempdir()?;

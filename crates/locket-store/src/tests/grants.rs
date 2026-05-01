@@ -5,6 +5,7 @@ use crate::DirectoryGrantRecord;
 use super::open_initialized_store;
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn directory_grants_are_profile_scoped_and_revocable() -> Result<(), Box<dyn Error>> {
     let test_store = open_initialized_store()?;
     test_store.store.insert_project_if_absent("lk_proj_test", "test", 100)?;

@@ -61,6 +61,8 @@ fn device_record_strategy() -> impl Strategy<Value = DeviceRecord> {
             DeviceRecord {
                 id,
                 project_id,
+                member_id: None,
+                label: name.clone(),
                 name,
                 signing_public_key: signing,
                 sealing_public_key: sealing,
