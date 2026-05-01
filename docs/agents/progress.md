@@ -143,8 +143,7 @@ skill set fits a leaf better.
 - [ ] Invite issuer/recipient trust ceremony
   (`docs/specs/team-sync-recovery.md:56-69`). `invite-codec`,
   `invite-replay-protect`, `invite-clock-skew` shipped. Remaining:
-  - [ ] **subtask** — invite-accept-display: issuer fingerprint +
-    PGP safety words, typed confirmation before applying.
+  - [~] [acda32e4] branch agent-acda32e4/invite-accept-display, worktree .worktrees/agent-acda32e4-invite-accept-display; **subtask** — invite-accept-display: issuer fingerprint + safety words with fail-closed confirmation.
 - [ ] Audit coverage for denials. Reveal/copy denial rows shipped.
   Remaining sweep: dangerous-profile reads, locked-vault refusals
   (needs degraded-audit mechanism), role denials, grant denials.
