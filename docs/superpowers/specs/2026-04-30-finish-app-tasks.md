@@ -53,13 +53,12 @@ Every shipped slice satisfies these:
 
 ## Critical Path
 
-Updated 2026-04-30 after wave 7 integration. Two remaining items
-unblock the most fan-out.
+Updated 2026-05-01. Bundle apply/conflict handling shipped; team
+sync parity and imported-audit-chain work are now unblocked.
 
 | # | Task | Unblocks |
 | - | --- | --- |
-| 1 | bundle-apply-and-conflicts | bundle roundtrip e2e, full team sync, parity test with `team accept` |
-| 2 | LocalUserVerifier Windows + Linux backends | `--verify-user` works without a memory-only stub on Windows / Linux hosts (macOS shipped) |
+| 1 | LocalUserVerifier Windows + Linux backends | `--verify-user` works without a memory-only stub on Windows / Linux hosts (macOS shipped) |
 
 ## P0 — Correctness / Security Drift (audit findings)
 
@@ -150,32 +149,20 @@ attempt found three structural blockers that need separate slices
 before the apply chain can ship cleanly:
 
 All three preconditions shipped — see "Recently shipped" above.
-The apply chain below is the one remaining slice in this section
-(round-trip same-store test requires identical-arm conflict
-resolution in the same commit, so apply + conflicts + rotate are
-inseparable):
+Bundle apply/conflict handling shipped 2026-05-01: decrypted profile
+keys, command policies, secret metadata, secret versions, and blobs
+are inserted in one transaction; identical/newer-incoming/divergent/
+deleted-vs-active conflict arms are covered; newer incoming active
+versions rotate local active versions with no grace; `BACKUP_IMPORT`
+metadata includes applied counts and conflict counts.
 
-- [ ] **bundle-apply-and-conflicts**: insert decrypted profile keys
-  (via `bundle-profile-key-rewrap-helper`), command policies,
-  secret metadata, secret_versions, and blobs in one SQLite tx,
-  including the full conflict matrix in the same commit (identical
-  / newer-incoming / divergent / deleted-vs-active with
-  `--accept-incoming` / `--accept-local` / `interactive-required`)
-  and the rotate-with-no-grace lifecycle for the newer-incoming
-  arm against active local versions. Round-trip same-store tests
-  require identical-arm resolution at apply time, which is why
-  these three originally-separate tasks have to ship together.
-  Audit: extend the existing `BACKUP_IMPORT` row's `metadata_json`
-  with applied counts and `conflict_counts`.
-  Pre-req: `bundle-profile-key-rewrap-helper`.
 - [ ] **bundle-include-audit-import**: append imported audit rows
   to `imported_audit_chains` with HMAC structural verification.
-  Pre-req: `bundle-payload-include-audit-rows`,
-  `bundle-apply-and-conflicts`.
+  Pre-req: `bundle-payload-include-audit-rows`.
 - [ ] **bundle-team-accept-parity-test**: integration test
   asserting `team accept` and `import-bundle` produce identical
   store state for newer-incoming. Pre-req:
-  `team-accept-row-apply-path`, `bundle-apply-and-conflicts`.
+  `team-accept-row-apply-path`.
 
 ### Team command surfaces
 Spec ref: `docs/specs/team-sync-recovery.md:5-110`.
@@ -418,9 +405,9 @@ inventory, SBOM, exception ledger, and provenance policy verifier
 exist. Remaining: auditable builds and signing.
 
 (`auditable-builds` shipped — see "Recently shipped" above.)
-- [ ] **release-key-offline**: offline release key infrastructure
-  for `update-manifest` signing — air-gapped key holder, ceremony
-  doc, key-rotation plan. Pre-req for every signed-package item.
+(`release-key-offline` shipped 2026-05-01: minisign + YubiKey 5
+offline signing decision, 3-of-5 quorum, public verification anchors,
+and ceremony log live under `dist/keys/` and `dist/ceremonies/`.)
 - [ ] **release-ci-isolated-runners**: public release artifacts
   built on isolated runners. Spec: `docs/specs/operations.md:39`.
 
@@ -430,19 +417,15 @@ Spec ref: `docs/specs/operations.md:27-53`.
 - [ ] **homebrew-formula-publish**: publish the shipped
   `dist/homebrew/locket.rb` formula to a tap (e.g.
   `doublesharp/homebrew-locket`); verify binary against release
-  manifest signature once `release-key-offline` lands.
+  manifest signature.
 - [ ] **cargo-install-publish**: `crates.io` publish run for
   `locket-cli`. Manifest is now publishable (`dist/cargo-install.md`
-  has the dry-run notes); blocked on `release-key-offline` for
-  the signed-tag flow.
+  has the dry-run notes); use the offline signed-tag flow.
 - [ ] **macos-pkg-signed**: signed `.pkg` with notarization.
-  Pre-req: `release-key-offline`.
 - [ ] **windows-msi-signed**: signed `.msi` with EV cert.
-  Pre-req: `release-key-offline`.
 - [ ] **linux-deb-rpm**: signed `.deb` and `.rpm` where toolchain
-  is practical. Pre-req: `release-key-offline`.
+  is practical.
 - [ ] **vsix-signed**: signed VS Code VSIX direct download path.
-  Pre-req: `release-key-offline`.
 
 ### Cold-start budgets
 Spec ref: `docs/specs/performance.md`. Each subtask adds one

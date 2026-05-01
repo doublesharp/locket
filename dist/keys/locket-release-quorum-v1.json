@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "ceremony_id": "locket-release-key-2026-05-01",
+  "created_at": "2026-05-01",
+  "scheme": "3-of-5 offline release signing quorum",
+  "technology_decision": "minisign Ed25519 release signatures on YubiKey 5 OpenPGP signature subkeys",
+  "quorum_threshold": 3,
+  "quorum_size": 5,
+  "key_holders": [
+    "security-lead",
+    "release-engineer",
+    "maintainer-at-large",
+    "recovery-custodian-a",
+    "recovery-custodian-b"
+  ],
+  "routine_release_quorum": [
+    "security-lead",
+    "release-engineer",
+    "maintainer-at-large"
+  ],
+  "keys": [
+    {
+      "key_id": "locket-release-fead5310eac7e032",
+      "algorithm": "Ed25519",
+      "encoding": "minisign-public-key",
+      "quorum_role": "security-lead",
+      "minisign_public_key": "RWTUGuaVJTA21BaPQLWNBIW/X2t3eGLh/vDfXktxlXH/92DhYgEFvUo8"
+    },
+    {
+      "key_id": "locket-release-1d250fd1e1f3fa89",
+      "algorithm": "Ed25519",
+      "encoding": "minisign-public-key",
+      "quorum_role": "release-engineer",
+      "minisign_public_key": "RWT+MpfpWdFjyk75kqo3kuEsn0u+s2EPsd3KRByjOgcm8VgzRkJwpKQH"
+    },
+    {
+      "key_id": "locket-release-daf6787f8550d166",
+      "algorithm": "Ed25519",
+      "encoding": "minisign-public-key",
+      "quorum_role": "maintainer-at-large",
+      "minisign_public_key": "RWSqrOz6Et7h8QSCQQ+4m915VysDYG4F4ONwrEkXnU1+ifZrK4Og0S+Q"
+    },
+    {
+      "key_id": "locket-release-52c71cf1735ddda5",
+      "algorithm": "Ed25519",
+      "encoding": "minisign-public-key",
+      "quorum_role": "recovery-custodian-a",
+      "minisign_public_key": "RWTY5NXidxcDugAxdZNMTDUtq2I7hlCNd+1wBuMM/tF1cXF4Fo78uCcl"
+    },
+    {
+      "key_id": "locket-release-4cda88aef68c01c8",
+      "algorithm": "Ed25519",
+      "encoding": "minisign-public-key",
+      "quorum_role": "recovery-custodian-b",
+      "minisign_public_key": "RWT1HNsBjby/ZYovhODgivtG2wzjhTeitC7fPeG+2odswSdWeI2+c0Eg"
+    }
+  ]
+}

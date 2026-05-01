@@ -1,9 +1,6 @@
-//! End-to-end coverage for the sealed-bundle export -> verify ->
-//! decrypt-import roundtrip. The decrypt step ships today
-//! (`bundle-import-decrypt`); the apply step
-//! (`bundle-import-apply-rows` / `bundle-apply-and-conflicts`) does
-//! not, so these tests assert the four payload counts the import
-//! command emits and leave a TODO breadcrumb for the conflict matrix.
+//! End-to-end coverage for sealed-bundle export -> verify -> import.
+//! The suite covers decrypt-only metadata counts plus apply-time row
+//! persistence and conflict arms from `bundle-apply-and-conflicts`.
 //!
 //! Spec: `docs/specs/testing.md` -- e2e bundle-roundtrip target.
 //! Existing siblings: `cli_basics::sealed_bundle_export_verify_and_import_are_metadata_only`,
@@ -601,7 +598,7 @@ fn deleted_vs_active_arm() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 // Historical TODO(bundle-apply-and-conflicts) summary retained for
-// reference; these tests now live above and are no longer scaffolds.
+// reference; tests 1-4 now live above and are no longer scaffolds.
 //
 // 1. `applied_rows_persist_across_reopen`: after a successful
 //    `--accept-incoming` apply, reopen the store and assert the
@@ -627,5 +624,5 @@ fn deleted_vs_active_arm() -> Result<(), Box<dyn std::error::Error>> {
 // 5. `imported_audit_chain_appends_to_imported_audit_chains`: when
 //    `--include-audit` is set on both export and import, the imported
 //    audit rows must land in `imported_audit_chains` with structural
-//    verification. Today the import command only emits
-//    `bundle_include_audit: yes/no` and does not persist rows.
+//    verification. Apply-time persistence now lands above; the full
+//    structural verification slice remains tracked separately.
