@@ -256,6 +256,8 @@ Slices that have merged to `main` and verified. Open work tracked in
   invites and records denial audit rows.
 - [x] team-dangerous-user-verification: dangerous team/device actions
   now require fresh local user verification.
+- [x] device-force-rekey-atomic: Forced local device rekey now records the replacement
+  lifecycle in one transaction.
 
 ## Full Spec Coverage TODO — App/UI
 
