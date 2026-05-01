@@ -113,7 +113,7 @@ skill set fits a leaf better.
 
 - [ ] Sealed bundle. `bundle-container-format` shipped
   (`docs/specs/team-sync-recovery.md:111-224`).
-  - [~] [acda32e4] blocked: bundle import apply needs encrypted payload rows and local device private-key storage; main currently exports only profile summaries and reports private_key_storage unavailable.
+  - [ ] blocked: bundle import apply needs encrypted payload rows and local device private-key storage; main currently exports only profile summaries and reports private_key_storage unavailable.
   - [ ] **subtask** — bundle-import-conflicts: identical /
     newer-incoming / divergent / deleted-vs-active matrix with
     `--accept-incoming` / `--accept-local` and interactive resolve.
@@ -151,7 +151,7 @@ skill set fits a leaf better.
 - [ ] `device init` first-run-on-machine bootstrap: master key,
   recovery envelope, and recovery code on a teammate clone
   (`docs/specs/team-sync-recovery.md`).
-- [~] [52c592db] blocked: LocalUserVerifier macOS LocalAuthentication backend requires a safe LocalAuthentication wrapper; available objc2 binding exposes unsafe calls while locket-platform forbids unsafe_code.
+- [ ] blocked: LocalUserVerifier macOS LocalAuthentication backend requires a safe LocalAuthentication wrapper; available objc2 binding exposes unsafe calls while locket-platform forbids unsafe_code.
 - [ ] LocalUserVerifier Windows Hello backend.
 - [ ] LocalUserVerifier Linux Secret Service / hardware-key-presence
   backend.
@@ -212,7 +212,7 @@ Re-verify file:line references before editing — they drift. Severity:
   crates. Per-surface subtasks (policy/env/crypto/store/typed/
   source-precedence/scanner/audit-hmac/runtime-sessions) shipped
   (`docs/specs/testing.md:8-72`):
-  - [~] [acda32e4] blocked: current branch coverage measures 70.86% overall and 77.19% for security-critical crates, below the existing nominal 90% branch gate; add branch tests before ratcheting `make coverage-branch`.
+  - [ ] blocked: current branch coverage measures 70.86% overall and 77.19% for security-critical crates, below the existing nominal 90% branch gate; add branch tests before ratcheting `make coverage-branch`.
 - [ ] End-to-end coverage. `e2e-greenfield-init`,
   `e2e-dotenv-migration`, `e2e-policy-run`, `e2e-docker-compose`,
   `e2e-recovery-roundtrip` shipped. Remaining
