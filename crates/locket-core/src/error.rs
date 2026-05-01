@@ -98,6 +98,11 @@ pub enum LocketError {
     /// External environment source could not be resolved.
     #[error("external source unavailable")]
     ExternalSourceUnavailable,
+    /// IDE-published env-session is not available because the agent-side handler
+    /// or the VS Code-side producer has not delivered a session map for this
+    /// project, profile, or terminal session.
+    #[error("ide env session unavailable")]
+    IdeEnvSessionUnavailable,
     /// Update manifest signature, schema, or metadata validation failed.
     #[error("update manifest invalid")]
     UpdateManifestInvalid,
@@ -195,6 +200,7 @@ impl LocketError {
             b"AutomationClientNotTrusted" => Some(Self::AutomationClientNotTrusted),
             b"AutomationClientReplayDetected" => Some(Self::AutomationClientReplayDetected),
             b"ExternalSourceUnavailable" => Some(Self::ExternalSourceUnavailable),
+            b"IdeEnvSessionUnavailable" => Some(Self::IdeEnvSessionUnavailable),
             b"UpdateManifestInvalid" => Some(Self::UpdateManifestInvalid),
             b"SecretVersionOverflow" => Some(Self::SecretVersionOverflow),
             b"CorruptDb" => Some(Self::CorruptDb),
@@ -356,6 +362,10 @@ impl LocketError {
                 reason: "An external environment source is unavailable.",
                 next_action: "Start or fix the external provider and retry.",
             }),
+            Self::IdeEnvSessionUnavailable => Some(ErrorDisplayCopy {
+                reason: "The IDE env-session is not available.",
+                next_action: "Open the project in the Locket VS Code extension or retry once the agent IDE handler is running.",
+            }),
             Self::UpdateManifestInvalid => Some(ErrorDisplayCopy {
                 reason: "The update manifest is invalid.",
                 next_action: "Refresh the manifest source or use a trusted release artifact.",
@@ -462,7 +472,7 @@ impl LocketError {
             Self::SecretDeleted => 76,
             Self::SecretNotFound => 77,
             Self::ProfileNotFound => 78,
-            Self::AgentUnavailable => 80,
+            Self::AgentUnavailable | Self::IdeEnvSessionUnavailable => 80,
             Self::AgentSocketInUse => 81,
             Self::AutomationClientNotTrusted => 82,
             Self::AutomationClientReplayDetected => 83,
@@ -525,6 +535,7 @@ mod tests {
         LocketError::AutomationClientNotTrusted,
         LocketError::AutomationClientReplayDetected,
         LocketError::ExternalSourceUnavailable,
+        LocketError::IdeEnvSessionUnavailable,
         LocketError::UpdateManifestInvalid,
         LocketError::SecretVersionOverflow,
         LocketError::CorruptDb,
@@ -585,6 +596,7 @@ mod tests {
             (LocketError::AutomationClientNotTrusted, 82),
             (LocketError::AutomationClientReplayDetected, 83),
             (LocketError::ExternalSourceUnavailable, 89),
+            (LocketError::IdeEnvSessionUnavailable, 80),
             (LocketError::UpdateManifestInvalid, 89),
             (LocketError::SecretVersionOverflow, 90),
             (LocketError::CorruptDb, 90),
@@ -626,6 +638,22 @@ mod tests {
             assert!(!rendered.contains("DATABASE_URL"));
             assert!(!rendered.contains("postgres://"));
         }
+    }
+
+    #[test]
+    fn ide_env_session_unavailable_uses_agent_unavailable_band() {
+        // errors.md row 32 ("Agent unavailable | ... fail closed | 80") covers
+        // the IDE env-session failure: the agent cannot serve the session map.
+        assert_eq!(LocketError::IdeEnvSessionUnavailable.exit_code(), 80);
+        assert_eq!(
+            LocketError::IdeEnvSessionUnavailable.exit_code(),
+            LocketError::AgentUnavailable.exit_code(),
+        );
+        assert_eq!(
+            LocketError::from_code_name("IdeEnvSessionUnavailable"),
+            Some(LocketError::IdeEnvSessionUnavailable),
+        );
+        assert_eq!(LocketError::IdeEnvSessionUnavailable.to_string(), "ide env session unavailable");
     }
 
     #[test]

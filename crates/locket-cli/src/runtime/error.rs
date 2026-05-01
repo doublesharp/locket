@@ -165,6 +165,13 @@ pub fn external_source_unavailable_error(message: impl Into<String>) -> CliError
     typed_cli_error(LocketError::ExternalSourceUnavailable, message)
 }
 
+pub fn ide_env_session_unavailable_error(reason: impl Into<String>) -> CliError {
+    typed_cli_error(
+        LocketError::IdeEnvSessionUnavailable,
+        format!("IdeEnvSessionUnavailable: {}", reason.into()),
+    )
+}
+
 pub fn metadata_invalid_error(message: impl Into<String>) -> CliError {
     typed_cli_error(LocketError::MetadataInvalid, message)
 }
