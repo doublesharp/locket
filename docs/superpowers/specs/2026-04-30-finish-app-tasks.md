@@ -466,11 +466,17 @@ bench plus a regression that fails the budget.
   `docs/superpowers/specs/2026-04-30-perf-budget-tasks.md` (commit
   23fb58b1). Track open per-budget benches in that file rather than
   re-listing here.
-- [~] **bench-scripts-chmod-x** (in-flight: agent 13a): `scripts/bench-regression.sh`
-  and `scripts/perf-cli-cold-start.sh` were committed at 0644
-  due to a sandbox limitation. Either `chmod +x` the on-disk
-  files or `git update-index --chmod=+x` the index entries
-  to match the rest of `scripts/`.
+(`bench-scripts-chmod-x` shipped — both scripts are now 100755 in
+git index and on disk.)
+(`doctor_warns_when_degraded_audit_log_is_non_empty` test fix
+shipped — 13a corrected the test seed perms to 0600 so the new
+perms doctor check doesn't escalate warn → fail.)
+- [ ] **fixture-schema-version-drift**: pre-existing test
+  `ide_external_env_source_without_agent_context_returns_typed_error`
+  fails with `MissingSchemaVersion` because its fixture predates
+  the 10b schema_version enforcement. Update the fixture to include
+  `schema_version = 1`. Touches:
+  `crates/locket-cli/src/tests/exec.rs`.
 
 ## Spec-by-Spec Completion Gates
 
