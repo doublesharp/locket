@@ -3181,7 +3181,13 @@ async fn register_command_policies_replaces_project_snapshot_and_runs_prepare_ex
             }],
         }),
     );
-    assert!(matches!(dispatch(&request, &state).await, ResponseEnvelope::Success(_)));
+    let response = dispatch(&request, &state).await;
+    match response {
+        ResponseEnvelope::Success(_) => {}
+        ResponseEnvelope::Error(ref err) => {
+            unreachable!("dispatch returned error: code={} message={}", err.error, err.message);
+        }
+    }
 
     let snapshot = state.command_policies.lock().await;
     let entry =
