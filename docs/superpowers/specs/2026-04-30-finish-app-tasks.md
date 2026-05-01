@@ -133,22 +133,27 @@ ship. Each bullet has spec ref + code ref + suggested touches.
   Touches: schema migration + `PasskeyCredentialRecord` updates in
   `locket-store/src/passkey.rs` + registrar plumbing in
   `locket-platform`.
-- [~] (in-flight: agent 14b) **directory-grants-missing-revoked-and-granted-by**:
-  `directory_grants` (`schema.rs:156-167`) missing `granted_by` +
-  `revoked_at` per `data-model.md:221-228`. `grants.rs:133-156`
-  hard-deletes on deny instead of setting `revoked_at`, losing the
-  audit-correlation breadcrumb.
-(`imported-audit-chain-optionality` shipped — spec was wrong; updated data-model.md:421-432 to drop Option from encrypted-rows fields (schema is canonical).)
-- [~] (in-flight: agent 14b) **bundle-conflict-index-by-profile-name-version**:
-  `storage.md:149` requires composite index for bundle-apply
-  conflict lookup by profile/name/version. Today `secrets` has
-  `(project_id, profile_id, name)` (no version) and `secret_versions`
-  is keyed by `(secret_id, version)`. No covering index for the
-  apply path. Add a covering index + doctor check.
-- [~] (in-flight: agent 14b) **devices-missing-member-id-and-label**: `Device`
-  (`data-model.md:254-265`) declares `member_id: Option<MemberId>`
-  + separate `label: String`. `devices` schema (`:272-284`) has only
-  `name`, no `member_id`. Reconcile spec vs schema.
+(`directory-grants-missing-revoked-and-granted-by` shipped —
+directory_grants gained granted_by + revoked_at; deny_directory_grant*
+paths now soft-revoke (UPDATE) instead of DELETE; allow path revives
+prior row keeping grant_id stable. Active-grant queries filter
+revoked rows. DENY_DIRECTORY audit now records both columns.)
+(`devices-missing-member-id-and-label` shipped — devices gained
+`member_id` + `label` columns plus a partial `devices_member_idx`;
+`name` kept as the stable id, `label` is the separate display
+string (mirrored from `name` until a label-on-add flow lands).)
+(`bundle-conflict-index-by-profile-name-version` shipped — added
+secrets_bundle_conflict_idx covering (project_id, profile_id, name,
+source, state, current_version); EXPLAIN-QUERY-PLAN test confirms
+SQLite picks the index for the apply-path predicate. secret_versions
+PK already covers the version side.)
+- [ ] **store-schema-migration-framework**: 14b's three column
+  additions land via `CREATE TABLE IF NOT EXISTS`, which only
+  applies to brand-new stores. Pre-v1 ship is fine, but before
+  shipping publicly we need an ALTER-based migration framework
+  keyed on `SCHEMA_VERSION` so existing stores get the new columns
+  + indexes. Touches: `crates/locket-store/src/schema.rs` and the
+  `SchemaMigrationOutcome` machinery.
 
 ### C. CLI / runtime / agent
 
