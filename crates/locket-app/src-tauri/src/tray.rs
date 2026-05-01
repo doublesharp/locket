@@ -409,6 +409,7 @@ mod tests {
     };
     use locket_agent::{LockState, StatusEvent, StatusPayload};
     use locket_app::{TrayIconState, tray_icon_states};
+    use std::collections::BTreeSet;
 
     #[test]
     fn icon_bytes_are_non_empty_for_every_state() {
@@ -436,6 +437,35 @@ mod tests {
                 dark_bytes(*state),
                 "{state:?} must have distinct light and dark variants",
             );
+        }
+    }
+
+    #[test]
+    fn macos_icon_variants_are_template_alpha_masks() {
+        for state in tray_icon_states() {
+            let pixels = decode_stored_rgba_png(macos_bytes(*state));
+            assert!(
+                pixels.visible_rgbs().all(|rgb| rgb == [0, 0, 0]),
+                "{state:?} macOS tray asset must be black-only for template rendering",
+            );
+        }
+    }
+
+    #[test]
+    fn windows_linux_icon_variants_are_full_color() {
+        for state in tray_icon_states() {
+            for (variant, bytes) in [("light", light_bytes(*state)), ("dark", dark_bytes(*state))] {
+                let pixels = decode_stored_rgba_png(bytes);
+                let colors = pixels.visible_rgb_set();
+                assert!(
+                    colors.iter().any(|rgb| rgb[0] != rgb[1] || rgb[1] != rgb[2]),
+                    "{state:?} {variant} tray asset must include full-color pixels",
+                );
+                assert!(
+                    colors.len() >= 2,
+                    "{state:?} {variant} tray asset must include multiple visible colors",
+                );
+            }
         }
     }
 
@@ -514,6 +544,17 @@ mod tests {
     impl DecodedPng {
         fn visible_alpha_pixels(&self) -> usize {
             self.pixels.chunks_exact(4).filter(|rgba| rgba[3] > 0).count()
+        }
+
+        fn visible_rgbs(&self) -> impl Iterator<Item = [u8; 3]> + '_ {
+            self.pixels
+                .chunks_exact(4)
+                .filter(|rgba| rgba[3] > 0)
+                .map(|rgba| [rgba[0], rgba[1], rgba[2]])
+        }
+
+        fn visible_rgb_set(&self) -> BTreeSet<[u8; 3]> {
+            self.visible_rgbs().collect()
         }
     }
 
