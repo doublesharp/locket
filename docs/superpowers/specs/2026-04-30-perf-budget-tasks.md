@@ -105,27 +105,23 @@ spec line and is **not** invented.
 
 ## Cross-cutting follow-ups
 
-- [ ] **bench-regression-harness-skeleton**: introduce
-  `scripts/bench-regression.sh` and a `bench-regression` Make target that
-  reads each `LOCKET_*` budget env var listed above, runs the corresponding
-  criterion bench under `--release`, and emits a pass/fail JSON line per
-  budget. The doc `docs/specs/performance-reference-runner.md` already
-  references this script; the script itself is added with the first
-  criterion bench that lands.
-- [ ] **bench-regression-cli-cold-start-skeleton**: introduce
-  `scripts/perf-cli-cold-start.sh` (referenced by the reference-runner doc)
-  to record cold-process p95 for each metadata CLI command from a fresh
-  process invocation, with the agent already running and unlocked. This
-  complements the warm-process numbers in `bench-smoke.sh` and is required
-  before the metadata-CLI budget can be considered fully validated for
-  release.
-- [ ] **bench-criterion-key-derivation-template**: add the workspace's first
-  criterion bench at `crates/locket-crypto/benches/key_derivation.rs` to
-  serve as the template referenced by all the bench tasks above (criterion
-  setup, `[[bench]]` block in the crate `Cargo.toml`, `--bench` target name,
-  budget-gating pattern). This is a setup task, not a budget task; once it
-  lands, every per-budget task above can be expanded into a real bench
-  without re-deciding harness conventions.
+(All three cross-cutting setup items are shipped; per-budget tasks above
+remain open and now have the harness/template they expand against.)
+
+- Shipped: **bench-criterion-key-derivation-template** —
+  `crates/locket-crypto/benches/key_derivation.rs` is the workspace's first
+  criterion bench (key-derivation cold-start). New per-budget benches model
+  their criterion setup, `[[bench]]` block, and `--bench` target name on it.
+- Shipped: **bench-regression-harness-skeleton** —
+  `scripts/bench-regression.sh` plus the `bench-regression` Make target read
+  per-budget `LOCKET_*` env vars, run criterion benches under `--release`,
+  and emit pass/fail per budget. Per-budget tasks above wire into this
+  harness.
+- Shipped: **bench-regression-cli-cold-start-skeleton** —
+  `scripts/perf-cli-cold-start.sh` (hyperfine-driven) records cold-process
+  p95 for metadata CLI commands from a fresh process invocation against a
+  warm agent. Complements the warm-process numbers in
+  `scripts/bench-smoke.sh`.
 
 ## Summary
 

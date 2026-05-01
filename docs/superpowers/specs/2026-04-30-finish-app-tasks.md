@@ -53,33 +53,42 @@ Every shipped slice satisfies these:
 
 ## Critical Path
 
-Updated 2026-04-30 after wave 7 integration. Two remaining items
-unblock the most fan-out.
+Updated 2026-04-30. One remaining critical-path item.
 
 | # | Task | Unblocks |
 | - | --- | --- |
-| 1 | bundle-apply-and-conflicts | bundle roundtrip e2e, full team sync, parity test with `team accept` |
-| 2 | LocalUserVerifier Windows + Linux backends | `--verify-user` works without a memory-only stub on Windows / Linux hosts (macOS shipped) |
+| 1 | bundle-apply-and-conflicts | bundle roundtrip e2e, full team sync, parity test with `team accept` (shipped on a worktree branch awaiting integration) |
+
+## Deferred integrations (worktree branches preserved)
+
+Three worktrees ship completed work but couldn't be cleanly merged
+to `main` in this round due to stale-base destructive diffs. Their
+content is preserved in worktree branches; integration is a careful
+manual surgical task for a future session.
+
+- **`worktree-agent-a99ced59da21af66c` (passkey suite):** `PlatformPasskeyRegistrar`
+  trait, `MemoryPlatformPasskeyRegistrar`, PRF-wrap master-key
+  helper, `passkey register` + `passkey unlock` CLI commands. Touches
+  platform/store/cli/crypto crates.
+- **`worktree-agent-a89ec54e30f394cc3` (SCHEMA_MIGRATE + passkey-register-emission):**
+  `Store::initialize_schema` returns `SchemaMigrationOutcome` and a
+  helper appends a `SCHEMA_MIGRATE` audit row when a real version
+  bump occurs. Adds `passkey register` audit emission scaffold.
+- **`worktree-agent-a5470fd22c9d6a3fc` (bundle-apply-and-conflicts):**
+  the full bundle-import apply chain in one transaction with the
+  conflict matrix (identical / newer-incoming / divergent /
+  deleted-vs-active), rotate-with-no-grace lifecycle, and 6 e2e
+  tests. Touches `crates/locket-cli/src/commands/team/bundle.rs` +
+  audit.rs known-fields + new e2e tests.
 
 ## P0 — Correctness / Security Drift (audit findings)
 
 These are spec contracts the code currently violates or silently
 ignores. Ship before any "v1 ready" claim.
 
-### `PrepareExec` should return the issued grant id
-`crates/locket-agent/src/prepare_exec.rs` issues a
-`GrantAction::PrepareExec` grant on success but does not return the
-grant id on the wire. The doctor and runtime paths today issue a
-separate `RequestGrant(ResolveReference)` instead of reusing the
-prepare-exec grant.
-
-- [ ] **prepare-exec-grant-return**: extend `PrepareExecResponse`
-  with `grant_id: String` and rewire the CLI doctor + runtime paths
-  to consume it, removing the redundant `RequestGrant` call. There
-  is already a `// TODO(prepare-exec-grant-return):` marker in
-  `prepare_exec.rs`. Note: a previous attempt was reverted because
-  it was branched off pre-prepare-exec-impl; redo against the
-  current handler.
+(`prepare-exec-grant-return` shipped: `PrepareExecResponse.grant_id`
+populated, `policy doctor` reuses the returned id instead of issuing
+a separate `RequestGrant(ResolveReference)`.)
 
 ## Runtime / DX
 
@@ -99,19 +108,9 @@ exists with full env-mode parsing, env precedence, secret
 precedence, and zeroize-on-drop. A 2026-04-30 deep audit found
 three remaining gaps:
 
-- [ ] **runtime-merge-passthrough-e2e**: Add e2e test coverage for
-  `env_mode = "merge"` and `env_mode = "passthrough"` policy
-  execution paths. Spec: `docs/specs/runtime.md:23-24`. Touches:
-  `crates/locket-cli/src/tests/e2e_policy_run.rs`.
-- [ ] **runtime-audit-policy-rejection**: Emit metadata-only audit
-  rows when policy execution is rejected before spawn (missing
-  required secrets, policy resolution failure, etc.). Spec:
-  `docs/specs/runtime.md:28-29`. Touches:
-  `crates/locket-cli/src/commands/exec/run.rs`.
-- [ ] **runtime-audit-external-source-names**: Include external
-  environment source names in `RUN_POLICY` audit metadata. Spec:
-  `docs/specs/runtime.md:119`. Touches:
-  `crates/locket-cli/src/main.rs:2418`.
+(All three runtime gaps shipped: env_mode merge/passthrough e2e tests,
+DENIED audit rows for policy rejections before spawn,
+external_env_names in RUN_POLICY metadata.)
 
 ### Policy command surface
 Spec ref: `docs/specs/policy.md:5-35`. `policy add`, `policy allow`,
@@ -135,9 +134,9 @@ Spec ref: `docs/specs/policy.md`. Remaining bullets — re-read the
 spec and enumerate specific TOML keys/shapes that aren't yet
 parsed by `crates/locket-core/src/policy/`.
 
-- [ ] Audit `docs/specs/policy.md` against
-  `crates/locket-core/src/policy/` and enumerate unmet TOML
-  features as nested subtasks here.
+(Policy TOML deep enumeration completed 2026-04-30. All keys parse;
+the only structural gap was `schema_version` enforcement, now
+shipped via worktree `worktree-agent-af6e0d966527edd4f`.)
 
 ## Security / Recovery / Team
 
@@ -179,45 +178,52 @@ inseparable):
 
 ### Team command surfaces
 Spec ref: `docs/specs/team-sync-recovery.md:5-110`.
+All team commands shipped per 2026-04-30 audit:
 `team-store-schema`, `team-init-command`, `team-members-list`,
 `team-invite-create`, `team-invite-accept`, invite revoke, member
-remove, and device revoke are implemented. Re-read the spec and
-enumerate remaining bullets here.
-
-- [ ] Audit team-sync-recovery.md:5-110 and enumerate other unmet
-  team commands here.
+remove, device revoke. (No remaining team-command gaps.)
 
 ### Passkey support
 Spec ref: `docs/specs/crypto.md:192-218`.
+`PlatformPasskeyRegistrar` trait + `MemoryPlatformPasskeyRegistrar` +
+PRF-wrap master key helpers + `passkey register` / `passkey unlock`
+CLI commands shipped (against in-flight integration). Real platform
+authenticator backends remain.
 
-- [ ] **passkey-platform-register**: platform-authenticator
-  registration flow.
-- [ ] **passkey-prf-wrap**: PRF-based optional key wrapping.
+- [ ] **passkey-macos-platform-backend**: real platform authenticator
+  registration on macOS via WebAuthn / TouchID.
+- [ ] **passkey-windows-platform-backend**: same for Windows Hello.
+- [ ] **passkey-linux-platform-backend**: same for libfido2.
 
 ### Device descriptors
-Spec ref: `docs/specs/team-sync-recovery.md:50-58`.
-`lkdev1_` descriptor encode/decode and v1 fingerprint hashing are
-implemented. Safety words currently use a small local word list, not a
-license-vetted PGP word list.
-
-- [ ] **device-safety-words**: PGP-word-list safety-word
-  derivation replacing the temporary 16-word local mapping. Note:
-  previously blocked on a license-compatible PGP word list source —
-  resolve before reclaiming.
-(Device-key lifecycle now complete: `device init --force`,
-`device remove`, and `team revoke-device` clean up wrapped
-envelopes; `device_private_key_storage` doctor check reports
-storage health.)
+Spec ref: `docs/specs/team-sync-recovery.md:50-58`. `lkdev1_`
+descriptor encode/decode, v1 fingerprint hashing, canonical PGP
+word-list safety words (256+256 entries), and full device-key
+lifecycle (`device init --force`, `device remove`, `team
+revoke-device` envelope cleanup, `device_private_key_storage`
+doctor check) all shipped. (No remaining device-descriptor work.)
 
 ### Invite issuer/recipient trust ceremony
 Spec ref: `docs/specs/team-sync-recovery.md:56-69`.
-`invite-codec`, `invite-replay-protect`, `invite-clock-skew`,
-signed invite creation, trust-summary display, issuer fingerprint
-confirmation, accept denial rows, and revoke flows are implemented.
-Re-read spec and enumerate remaining ceremony steps here.
+Shipped: `invite-codec`, `invite-replay-protect`,
+`invite-clock-skew`, signed invite creation, trust-summary display,
+issuer fingerprint confirmation, accept denial rows, and revoke
+flows. 2026-04-30 audit found one remaining gap:
 
-- [ ] Audit team-sync-recovery.md:56-69 and enumerate unmet
-  ceremony steps.
+- [ ] **invite-sealed-payload-import**: spec lines 7, 28, and 67
+  require invites to carry plaintext profile secret/fingerprint
+  keys and command policies inside an age-sealed payload addressed
+  to the recipient device sealing key, with `team accept` rewrapping
+  those keys into the receiver's local `keys` table on import. The
+  current `SignedInvite` envelope is signed but not encrypted and
+  carries no payload section; `team accept` is metadata-only and
+  defers row application to a follow-up `import-bundle`. See the
+  SPEC-CLARIFICATION block in
+  `crates/locket-cli/src/commands/team/members.rs` for the agreed
+  scope. Touches: `crates/locket-core/src/invite.rs` (envelope
+  format), `team invite` issuer side (encrypt-to-recipient), and
+  `team accept` apply path (rewrap + insert profile/key/policy
+  rows). Pre-req: `bundle-profile-key-rewrap-helper` (shipped).
 
 ### Audit coverage
 Reveal/copy denial rows, role denials, grant denials, dangerous-
@@ -225,6 +231,17 @@ profile read refusals (`--use-dangerous` flag), the degraded-audit
 logger + `degraded_audit_log` doctor + perms doctor all shipped.
 Remaining audit-action emission gaps:
 
+- [ ] **resolve-reference-emission-validator**: `RESOLVE_REFERENCE`
+  audit action is emitted by `crates/locket-agent/src/resolve.rs`
+  but has no entry in `required_fields_for_action`. Spec:
+  `docs/specs/data-model.md:485`. Add the family arm to
+  `crates/locket-store/src/audit.rs:550` requiring `secret_name`,
+  `profile_id`, `source` (or whichever spec line dictates).
+- [ ] **schema-team-members-device-fk**: verify the
+  `team_members.device_id` FK on `devices(id)` with
+  `ON DELETE SET NULL` matches spec. Spec:
+  `docs/specs/storage.md:26-51`. Touches:
+  `crates/locket-store/src/schema.rs:280-288`.
 - [ ] **passkey-register-emission**: `PASSKEY_REGISTER` is in the
   `required_fields_for_action` validator (`audit.rs:572`) but no
   code site emits it. Spec: `docs/specs/audit.md:53`. Touches:
@@ -234,64 +251,66 @@ Remaining audit-action emission gaps:
   Spec: `docs/specs/audit.md:55`. Touches: store migration code.
 
 ### Local user verification gates
-`LocalUserVerifier` + `require_user_verification` shipped;
-`get --reveal/--copy --verify-user` enforces.
+`LocalUserVerifier` + `require_user_verification` shipped.
+2026-04-30 audit pass against `docs/specs/crypto.md:192-218`
+protected use cases:
 
-- [ ] Audit remaining commands in
-  `docs/specs/crypto.md:192-218` for verification-gate coverage
-  and add subtasks per command that lacks a gate.
+- `get --reveal/--copy --verify-user` enforces gate (shipped).
+- Recovery (`vault/recovery.rs`) gates via
+  `require_user_verification` (shipped).
+- Dangerous-profile switch (`trust/profile.rs`) gates via
+  `configured_user_verification` (shipped).
+- Device registration (`team/device.rs` init/add) gates via
+  `configured_user_verification` (shipped).
+
+Remaining gates with no enforcement (subtasks):
+
+- [ ] **vault-unlock-verify-user**: `locket vault unlock
+  --verify-user` currently returns `unimplemented_in_build_error`
+  (`crates/locket-cli/src/commands/vault/lock.rs:90-93`). Spec line
+  205 ("Unlocking the vault with local user verification") requires
+  the gate to call `LocalUserVerifier` before unlocking and emit a
+  satisfied `user_verification` block in the `UNLOCK` audit row.
+- [ ] **team-accept-verify-user**: `team_accept_command`
+  (`crates/locket-cli/src/commands/team/members.rs:299`) does not
+  call any user-verification helper. Spec line 206 ("Requiring
+  presence/verification before … team invite acceptance") requires
+  a `require_user_verification` (or `configured_user_verification`
+  via the `team_invite_accept` policy key) call after the
+  fingerprint confirmation prompt, with the resulting
+  `UserVerificationAudit` propagated into the `TEAM_ACCEPT` audit
+  metadata.
 
 ### Agent / process hardening
 `harden-peer-cred`, `harden-socket-perms`, `harden-memory-lock`,
 `harden-zeroize`, `harden-doctor-degraded`, `harden-session-lock`
-shipped.
+shipped. Core-dump suppression also shipped on all three platforms:
 
-- [ ] **harden-prctl-set-dumpable**: Linux agent must call
-  `prctl(PR_SET_DUMPABLE, 0)` and set `RLIMIT_CORE = 0`. Spec:
-  `docs/specs/agent.md:53`.
-- [ ] **harden-macos-windows-core-dump**: macOS / Windows core-dump
-  suppression equivalents (closest platform-supported APIs). Spec:
-  `docs/specs/agent.md:54`.
-
-### Import-bundle rotate-on-newer
-Already covered above as `bundle-rotate-on-newer`. Cross-link:
-`team accept` should trigger the same path once team sync applies
-bundle contents.
-
-- [ ] Verify `team accept` shares the same rotate-with-no-grace
-  code path as `import-bundle` and add an integration test.
-  Pre-req: `bundle-rotate-on-newer`, `team-invite-accept`.
+- Shipped: **harden-prctl-set-dumpable** — Linux core-dump
+  suppression via `prctl(PR_SET_DUMPABLE, 0)` + `RLIMIT_CORE=0`
+  (commit 97058f69).
+- Shipped: **harden-macos-windows-core-dump** — macOS core-dump
+  suppression via `RLIMIT_CORE=0`, Windows via `SetErrorMode`
+  (commit 9923b7f0).
 
 ### `device init` first-run-on-machine bootstrap
-Spec ref: `docs/specs/team-sync-recovery.md`.
-
-- [ ] **device-init-bootstrap**: master key, recovery envelope,
-  recovery code on a teammate clone.
+(`device-init-bootstrap` shipped: first-run-on-machine generates
+master key, recovery envelope, displays recovery code, writes
+`BOOTSTRAP` audit row.)
 
 ### LocalUserVerifier platform backends
 Spec ref: `docs/specs/crypto.md:192-218`,
-`docs/specs/engineering.md:144`. Current
-`crates/locket-platform/src/user_verification.rs` ships only
-`Unavailable` and `Memory` impls.
+`docs/specs/engineering.md:144`. macOS backend with single-unsafe
+`LAContext` wrapper shipped. Linux + Windows backends shipped as
+stubs returning `Unavailable` (with documented rollout plans).
 
-- [ ] **lauthn-macos**: macOS LocalAuthentication backend per the
-  detailed plan in this section. Single-file
-  `crates/locket-platform/src/macos_local_authentication.rs`
-  marked `#[allow(unsafe_code)]` (the only exception in the
-  crate; document why in a `// SAFETY-AUDIT:` comment block at
-  the top citing the spec). Inside, expose ONE safe Rust
-  function `evaluate_local_user(reason: &str) -> Result<bool,
-  LocalAuthError>` wrapping objc2 `LAContext`
-  `evaluatePolicy:localizedReason:reply:`. Implement the outer
-  `LocalUserVerifier` impl in
-  `macos_user_verifier.rs` with no `unsafe`. Update
-  `unsafe-inventory`. Tests: `cfg(target_os = "macos")` round-trips
-  a deterministic mock when
-  `LOCKET_TEST_LOCAL_AUTH=allow|deny`.
-- [ ] **lauthn-windows-hello**: Windows Hello backend (same
-  structure as macOS plan).
-- [ ] **lauthn-linux**: Linux Secret Service / hardware-key-presence
-  backend (same structure).
+- [ ] **lauthn-linux-real**: replace the Linux stub with a real
+  Secret Service / FIDO2 (`libfido2-sys`) backend. Documented
+  rollout plan is at the top of `linux_local_authentication.rs`.
+- [ ] **lauthn-windows-hello-real**: replace the Windows stub with
+  a real Windows Hello backend via the `windows` crate's
+  `Security::Credentials::UI::UserConsentVerifier`. Documented
+  rollout plan is at the top of `windows_local_authentication.rs`.
 
 ## App / UI
 
@@ -314,19 +333,26 @@ desktop write/action flows.
 ### Tray / status panel
 Spec ref: `docs/specs/desktop.md:65-108`.
 
-- [ ] Audit desktop.md:65-108 and enumerate unmet tray-panel
-  items here.
+- [ ] **tray-panel-spec-deep-audit**: re-read
+  `docs/specs/desktop.md:65-108` against `crates/locket-app/`
+  and enumerate any unmet tray-panel requirements as concrete
+  subtasks. The lighter sweep on 2026-04-30 returned clean except
+  for the tracked `tray-menu-actions` item; a deep pass can
+  surface anything else.
 
 ### Desktop UI campaign — remaining slices
-- [ ] **desktop-reveal-modal**: short-lived modal with TTL
-  countdown, accessibility scrub on expiry, dismiss-on-blur.
-  Pre-req shipped: `agent-reveal-copy-impl`. (Slice 7.)
-- [ ] **desktop-clipboard-copy**: copy + scheduled clear after
-  TTL with re-check; Wayland degraded path emits
-  `unsupported_reason`. Pre-req shipped: `agent-reveal-copy-impl`.
+(Reveal modal + clipboard copy shipped together with tray menu
+actions on commit dbf6ab52.)
+
+- Shipped: **desktop-reveal-modal** — short-lived modal with TTL
+  countdown, accessibility scrub on expiry, dismiss-on-blur (Slice 7).
+- Shipped: **desktop-clipboard-copy** — copy + scheduled clear
+  after TTL with re-check; Wayland degraded path emits
+  `unsupported_reason`.
 - [ ] **desktop-tray-reveal-copy**: tray context menu actions for
   the selected secret. Pre-req: `tray-menu-actions`,
-  `desktop-reveal-modal`, `desktop-clipboard-copy`. (Slice 8.)
+  `desktop-reveal-modal` (shipped), `desktop-clipboard-copy`
+  (shipped). (Slice 8.)
 - [ ] **agent-policy-doctor-rpc**: RPC exercising `lk://`
   resolution + env-mode expansion. Pre-req:
   `agent-prepare-exec-impl`.
@@ -347,8 +373,10 @@ Spec ref: `docs/specs/desktop.md:65-108`.
 Spec ref: `docs/specs/desktop.md`. One subtask per surface; never
 exposes values; pre-req is the relevant view's data RPC.
 
-- [ ] Enumerate the search/filter surfaces from `desktop.md` here
-  before opening branches.
+- [ ] **desktop-search-filter-enumeration**: enumerate the
+  search/filter surfaces from `docs/specs/desktop.md` and produce
+  one subtask per surface (each renders one view; never exposes
+  values; pre-req is the relevant view's data RPC).
 
 ## Integrations (P2 — surface-completeness)
 
@@ -373,32 +401,21 @@ live alongside the existing palette commands.)
 ### Coverage
 Spec ref: `docs/specs/testing.md:8-72`. Per-surface subtasks
 shipped (policy/env/crypto/store/typed/source-precedence/scanner/
-audit-hmac/runtime-sessions).
+audit-hmac/runtime-sessions). Per-crate ≥90% slices and the
+temporary baseline ratchet have all landed; only the final
+ratchet-back to 90/90 remains:
 
-- [ ] **coverage-gate-baseline**: lower the floor in
-  `scripts/coverage.sh` from `--fail-under-lines 90
-  --fail-under-branches 90` to `--fail-under-lines 70
-  --fail-under-branches 75` so CI is green at today's measured
-  levels (70.86% / 77.19%). Add a
-  `# TODO(coverage-90): ratchet back to 90 once the per-crate
-  subtasks below ship` comment.
-- [ ] **coverage-policy-90**: raise
-  `crates/locket-core/src/policy/` line+branch coverage to ≥90%.
-- [ ] **coverage-bundle-90**: same for
-  `crates/locket-core/src/bundle.rs` (manifest parser error
-  paths, encrypted payload boundary cases).
-- [ ] **coverage-store-90**: same for
-  `crates/locket-store/src/{audit,device,team,secrets,
-  runtime_session}.rs` (rollback paths, FK violations, schema
-  edge cases).
-- [ ] **coverage-agent-90**: same for
-  `crates/locket-agent/src/{auth,grant,unlock_cache,
-  session_lock}.rs`.
+- Shipped: **coverage-gate-baseline** (commit 65803c4a) —
+  temporary 70/75 floor with `TODO(coverage-90)` comment.
+- Shipped: **coverage-policy-90** (commit 4da332aa).
+- Shipped: **coverage-bundle-90** (commit 2632f8c7).
+- Shipped: **coverage-store-90** (commit bffddecd).
+- Shipped: **coverage-agent-90** (commit f1de2092).
 - [ ] **coverage-gate-ratchet**: re-run `make coverage-branch`,
   ratchet `scripts/coverage.sh` back to
   `--fail-under-lines 90 --fail-under-branches 90`, remove the
   `TODO(coverage-90)` comment. Pre-req: all four
-  `coverage-<crate>-90` subtasks.
+  `coverage-<crate>-90` subtasks (shipped).
 
 ### End-to-end coverage
 Spec ref: `docs/specs/testing.md:38`.
@@ -450,13 +467,14 @@ bench plus a regression that fails the budget.
 
 (Foundations shipped — see "Recently shipped". Remaining:)
 
-- [ ] **named-reference-runner**: pick and document a named
-  reference runner (HW class, OS, CPU governor) before any
-  pre-release perf claim. Spec: `docs/specs/performance.md:41`.
-- [ ] Audit `docs/specs/performance.md` budget table and add
-  one bench-plus-regression subtask per budget. The harness
-  exists; we just need to populate it with the rest of the
-  budgets.
+- Shipped: **named-reference-runner** — reference runner spec
+  documented at `docs/specs/performance-reference-runner.md` with
+  hardware class, OS, CPU governor, and FS pinning (commit
+  dfd0c040).
+- Per-budget bench tasks enumerated in
+  `docs/superpowers/specs/2026-04-30-perf-budget-tasks.md` (commit
+  23fb58b1). Track open per-budget benches in that file rather than
+  re-listing here.
 - [ ] **bench-scripts-chmod-x**: `scripts/bench-regression.sh`
   and `scripts/perf-cli-cold-start.sh` were committed at 0644
   due to a sandbox limitation. Either `chmod +x` the on-disk
@@ -470,27 +488,43 @@ line means implementation, tests, docs, diagnostics, and failure
 modes have all been checked against that spec file. Reopen as new
 TODOs above for any gaps found.
 
-- [ ] `product.md` (positioning; no implementation gate)
-- [ ] `invariants.md`
-- [ ] `architecture.md`
-- [ ] `data-model.md`
-- [ ] `storage.md`
-- [ ] `crypto.md`
-- [ ] `project-cli.md`
-- [ ] `policy.md`
-- [ ] `runtime.md`
-- [ ] `agent.md`
-- [ ] `integrations.md`
-- [ ] `scan-redaction.md`
-- [ ] `desktop.md`
-- [ ] `audit.md`
-- [ ] `team-sync-recovery.md`
-- [ ] `operations.md`
-- [ ] `performance.md`
-- [ ] `errors.md`
-- [ ] `engineering.md`
-- [ ] `testing.md`
-- [ ] `fuzzing.md`
+Marked `(audit clean)` when a 2026-04-30 read-only audit returned
+no untracked gaps; marked `(open)` when items above still reference
+the spec.
+
+- `product.md` — positioning; no implementation gate.
+- `invariants.md` — (audit clean 2026-04-30).
+- `architecture.md` — (audit clean 2026-04-30).
+- `data-model.md` — (audit clean 2026-04-30 except `RESOLVE_REFERENCE`
+  validator entry, tracked above).
+- `storage.md` — (audit clean 2026-04-30 except `team_members.device_id`
+  FK verification, tracked above).
+- `crypto.md` — (open: `vault-unlock-verify-user`,
+  `team-accept-verify-user`, passkey real-platform backends).
+- `project-cli.md` — pending.
+- `policy.md` — (open: `schema_version` enforcement landed; TOML deep
+  audit pass otherwise clean).
+- `runtime.md` — (audit clean 2026-04-30).
+- `agent.md` — (open: `harden-prctl-set-dumpable`,
+  `harden-macos-windows-core-dump`).
+- `integrations.md` — (audit clean 2026-04-30).
+- `scan-redaction.md` — (audit clean 2026-04-30; inline-suppression
+  syntax shipped).
+- `desktop.md` — (open: tray menu actions, policy editor write,
+  search/filter UI; tray-panel deep audit pending).
+- `audit.md` — (open: `passkey-register-emission`,
+  `schema-migrate-emission`).
+- `team-sync-recovery.md` — (open: `bundle-apply-and-conflicts`,
+  `invite-sealed-payload-import`).
+- `operations.md` — (open: signing items pre-req on
+  `release-key-offline`).
+- `performance.md` — (open: per-budget benches in sibling task list).
+- `errors.md` — (audit clean 2026-04-30).
+- `engineering.md` — (audit clean 2026-04-30).
+- `testing.md` — (audit clean 2026-04-30; only `coverage-gate-ratchet`
+  remains).
+- `fuzzing.md` — (audit clean 2026-04-30; all 12 required targets
+  shipped).
 
 ## Reference
 
