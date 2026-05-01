@@ -67,6 +67,7 @@ const fn platform_error_exit_code(error: &locket_platform::PlatformError) -> u8 
         | locket_platform::PlatformError::TomlDe(_)
         | locket_platform::PlatformError::TomlSer(_)
         | locket_platform::PlatformError::Crypto(_)
+        | locket_platform::PlatformError::DegradedAuditEncoding(_)
         | locket_platform::PlatformError::MemoryPoisoned => {
             LocketError::KeychainUnavailable.exit_code()
         }

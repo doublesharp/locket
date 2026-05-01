@@ -54,4 +54,7 @@ pub enum PlatformError {
     /// Recovery envelope uses a schema version newer than this binary supports.
     #[error("recovery envelope schema version {0} is not supported; upgrade locket")]
     RecoveryEnvelopeSchemaUnsupported(u16),
+    /// Degraded-audit log JSON serialization failed.
+    #[error("degraded audit log encoding failed: {0}")]
+    DegradedAuditEncoding(serde_json::Error),
 }
