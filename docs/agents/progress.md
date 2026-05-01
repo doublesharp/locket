@@ -155,9 +155,7 @@ skill set fits a leaf better.
     screen lock, user-session switch; emit `LOCK` audit row.
 - [ ] `import-bundle` / `team accept` apply rotate-with-no-grace
   when importing a newer version over an active target.
-- [ ] `locket device init --force` rekey: atomic
-  `DEVICE_REVOKE`+`DEVICE_ADD` with recovery-envelope update and
-  rollback on envelope failure.
+- [~] [acda32e4] branch agent-acda32e4/device-force-rekey-atomic, worktree .worktrees/agent-acda32e4-device-force-rekey-atomic; `locket device init --force` rekey records replacement lifecycle atomically.
 - [ ] `device init` first-run-on-machine bootstrap: master key,
   recovery envelope, and recovery code on a teammate clone
   (`docs/specs/team-sync-recovery.md`).
