@@ -393,6 +393,11 @@ fn collect_diagnostics(
                             }
                         },
                     );
+                    checks.push(check_device_private_key_storage(
+                        context,
+                        &store,
+                        project.config.project_id.as_str(),
+                    ));
                 }
                 Err(error) => checks.push(DiagnosticCheck::fail(
                     "store_open_schema_bootstrap",
@@ -746,6 +751,84 @@ fn check_agent_placeholder(context: &RuntimeContext) -> DiagnosticCheck {
         "unavailable last_known_pid=no"
     };
     DiagnosticCheck::pass("agent_placeholder", status)
+}
+
+fn check_device_private_key_storage(
+    context: &RuntimeContext,
+    store: &locket_store::Store,
+    project_id: &str,
+) -> DiagnosticCheck {
+    use crate::commands::team::device::build_device_private_key_storage;
+    use locket_platform::LocalDevicePrivateKeyStorage;
+
+    const NAME: &str = "device_private_key_storage";
+
+    let device = match store.get_active_local_device(project_id) {
+        Ok(Some(device)) => device,
+        Ok(None) => {
+            return DiagnosticCheck::pass(NAME, "no active local device");
+        }
+        Err(error) => {
+            return DiagnosticCheck::fail(NAME, false, error.to_string());
+        }
+    };
+
+    let storage = match build_device_private_key_storage(context, project_id) {
+        Ok(storage) => storage,
+        Err(error) => {
+            return DiagnosticCheck::fail(NAME, false, error.to_string());
+        }
+    };
+    let envelope_path = match storage.envelope_path(&device.id) {
+        Ok(path) => path,
+        Err(error) => {
+            return DiagnosticCheck::fail(NAME, false, error.to_string());
+        }
+    };
+
+    let metadata = match fs::metadata(&envelope_path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return DiagnosticCheck::warn(
+                NAME,
+                format!("envelope_missing device_id={}", device.id),
+            );
+        }
+        Err(error) => {
+            return DiagnosticCheck::fail(NAME, false, error.to_string());
+        }
+    };
+
+    #[cfg(unix)]
+    {
+        let mode = metadata.permissions().mode() & 0o777;
+        if mode & 0o077 != 0 {
+            return DiagnosticCheck::fail(
+                NAME,
+                false,
+                format!("envelope_permissions_too_wide mode={mode:#o} device_id={}", device.id),
+            );
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = &metadata;
+    }
+
+    // Integrity probe: load+unwrap. Surfaces master-key mismatch and corrupt
+    // envelopes as fail without leaking key material (the unwrapped key is
+    // dropped immediately).
+    match storage.load(&device.id) {
+        Ok(_key) => DiagnosticCheck::pass(
+            NAME,
+            format!("storage=wrapped-local-file device_id={}", device.id),
+        ),
+        Err(error) => DiagnosticCheck::fail(
+            NAME,
+            false,
+            format!("envelope_integrity_failure device_id={} error={error}", device.id),
+        ),
+    }
 }
 
 fn check_hardening() -> DiagnosticCheck {

@@ -3194,3 +3194,216 @@ fn solo_project_can_init_team_and_becomes_team_project() -> Result<(), Box<dyn s
 
     Ok(())
 }
+
+fn device_envelope_path(directory: &tempfile::TempDir, device_id: &str) -> std::path::PathBuf {
+    directory.path().join("devices").join(format!("{device_id}.priv"))
+}
+
+#[test]
+fn device_init_force_cleans_up_prior_wrapped_envelope()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+
+    let mut init_output = Vec::new();
+    run_with_context(Cli::try_parse_from(["locket", "device", "init"])?, &context, &mut init_output)?;
+    let init_output = String::from_utf8(init_output)?;
+    let original_id = init_output
+        .lines()
+        .find_map(|line| line.strip_prefix("device_id: "))
+        .ok_or("missing device id")?
+        .to_owned();
+    let original_envelope = device_envelope_path(&directory, &original_id);
+    assert!(original_envelope.exists(), "envelope must exist after first device init");
+
+    let mut force_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "device", "init", "--force"])?,
+        &context,
+        &mut force_output,
+    )?;
+    let force_output = String::from_utf8(force_output)?;
+    assert!(force_output.contains("private_key_storage: wrapped-local-file"));
+    let replacement_id = force_output
+        .lines()
+        .find_map(|line| line.strip_prefix("device_id: "))
+        .ok_or("missing replacement device id")?
+        .to_owned();
+    assert_ne!(replacement_id, original_id);
+
+    assert!(
+        !original_envelope.exists(),
+        "prior wrapped envelope must be deleted after device init --force"
+    );
+    assert!(
+        device_envelope_path(&directory, &replacement_id).exists(),
+        "replacement envelope must exist after device init --force"
+    );
+    Ok(())
+}
+
+#[test]
+fn device_remove_force_local_drops_wrapped_envelope()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    let mut init_output = Vec::new();
+    run_with_context(Cli::try_parse_from(["locket", "device", "init"])?, &context, &mut init_output)?;
+    let init_output = String::from_utf8(init_output)?;
+    let device_id = init_output
+        .lines()
+        .find_map(|line| line.strip_prefix("device_id: "))
+        .ok_or("missing device id")?
+        .to_owned();
+    let envelope_path = device_envelope_path(&directory, &device_id);
+    assert!(envelope_path.exists());
+
+    run_with_context(
+        Cli::try_parse_from(["locket", "device", "remove", &device_id, "--force"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    assert!(
+        !envelope_path.exists(),
+        "wrapped envelope for revoked local device must be deleted"
+    );
+    Ok(())
+}
+
+#[test]
+fn doctor_reports_pass_for_healthy_device_private_key_storage()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    run_with_context(Cli::try_parse_from(["locket", "device", "init"])?, &context, &mut Vec::new())?;
+
+    let mut doctor_output = Vec::new();
+    run_with_context(Cli::try_parse_from(["locket", "doctor"])?, &context, &mut doctor_output)?;
+    let doctor_output = String::from_utf8(doctor_output)?;
+    assert!(
+        doctor_output.contains("pass device_private_key_storage"),
+        "doctor must pass: {doctor_output}"
+    );
+    assert!(doctor_output.contains("storage=wrapped-local-file"));
+    Ok(())
+}
+
+#[test]
+fn doctor_warns_when_device_envelope_missing() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    let mut init_output = Vec::new();
+    run_with_context(Cli::try_parse_from(["locket", "device", "init"])?, &context, &mut init_output)?;
+    let init_output = String::from_utf8(init_output)?;
+    let device_id = init_output
+        .lines()
+        .find_map(|line| line.strip_prefix("device_id: "))
+        .ok_or("missing device id")?
+        .to_owned();
+    let envelope = device_envelope_path(&directory, &device_id);
+    std::fs::remove_file(&envelope)?;
+
+    let mut doctor_output = Vec::new();
+    run_with_context(Cli::try_parse_from(["locket", "doctor"])?, &context, &mut doctor_output)?;
+    let doctor_output = String::from_utf8(doctor_output)?;
+    assert!(
+        doctor_output.contains("warn device_private_key_storage"),
+        "doctor must warn when envelope is missing: {doctor_output}"
+    );
+    assert!(doctor_output.contains("envelope_missing"));
+    Ok(())
+}
+
+#[test]
+fn team_revoke_device_local_drops_wrapped_envelope()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    let mut init_output = Vec::new();
+    run_with_context(Cli::try_parse_from(["locket", "device", "init"])?, &context, &mut init_output)?;
+    let init_output = String::from_utf8(init_output)?;
+    let device_id = init_output
+        .lines()
+        .find_map(|line| line.strip_prefix("device_id: "))
+        .ok_or("missing device id")?
+        .to_owned();
+    run_with_context(
+        Cli::try_parse_from(["locket", "team", "init", "core"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    let envelope = device_envelope_path(&directory, &device_id);
+    assert!(envelope.exists());
+
+    run_with_context(
+        Cli::try_parse_from(["locket", "team", "revoke-device", &device_id])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    assert!(
+        !envelope.exists(),
+        "team revoke-device must drop the wrapped envelope when the device is the local device"
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn doctor_fails_when_device_envelope_permissions_too_wide()
+-> Result<(), Box<dyn std::error::Error>> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    let mut init_output = Vec::new();
+    run_with_context(Cli::try_parse_from(["locket", "device", "init"])?, &context, &mut init_output)?;
+    let init_output = String::from_utf8(init_output)?;
+    let device_id = init_output
+        .lines()
+        .find_map(|line| line.strip_prefix("device_id: "))
+        .ok_or("missing device id")?
+        .to_owned();
+    let envelope = device_envelope_path(&directory, &device_id);
+    std::fs::set_permissions(&envelope, std::fs::Permissions::from_mode(0o644))?;
+
+    let mut doctor_output = Vec::new();
+    run_with_context(Cli::try_parse_from(["locket", "doctor"])?, &context, &mut doctor_output)?;
+    let doctor_output = String::from_utf8(doctor_output)?;
+    assert!(
+        doctor_output.contains("fail device_private_key_storage"),
+        "doctor must fail when envelope perms are too wide: {doctor_output}"
+    );
+    assert!(doctor_output.contains("envelope_permissions_too_wide"));
+    Ok(())
+}

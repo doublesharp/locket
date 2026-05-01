@@ -798,6 +798,11 @@ fn team_revoke_device_command(
     };
     store.append_audit(audit_key.as_ref(), &audit)?;
 
+    // Drop the wrapped private-key envelope if the revoked device is the
+    // active local device. Remote teammate device records never had an
+    // envelope on this host, so the helper is a no-op for them.
+    device::cleanup_local_device_envelope_if_local(context, project_id, &device)?;
+
     writeln!(output, "device: revoked")?;
     writeln!(output, "device_id: {}", device.id)?;
     writeln!(output, "fingerprint: {}", device.fingerprint)?;
