@@ -219,9 +219,12 @@ pub struct RequestGrantPayload {
     pub project_id: String,
     /// Profile identifier the grant is scoped to.
     pub profile_id: String,
+    /// Saved command policy whose TTL should govern this grant.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy_name: Option<String>,
     /// Action set authorized by this grant.
     pub action: GrantAction,
-    /// TTL in seconds.
+    /// Requested TTL in seconds. Overridden by `policy_name` when present.
     pub ttl_seconds: u64,
     /// Caller's process binding.
     pub binding: GrantBinding,
@@ -348,6 +351,7 @@ mod tests {
             RequestGrantPayload {
                 project_id: "p-1".to_owned(),
                 profile_id: "prof-1".to_owned(),
+                policy_name: None,
                 action: GrantAction::ScanKnownValues,
                 ttl_seconds: 45,
                 binding: GrantBinding::new(4242, "start-a"),

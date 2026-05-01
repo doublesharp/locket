@@ -790,13 +790,28 @@ async fn handle_request_grant(
     envelope: &RequestEnvelope,
     state: &AgentSocketState,
 ) -> ResponseEnvelope {
-    let payload: crate::grant::RequestGrantPayload =
+    let mut payload: crate::grant::RequestGrantPayload =
         match serde_json::from_value(envelope.payload.clone()) {
             Ok(payload) => payload,
             Err(_) => {
                 return error_response(envelope, "ProtocolError", "invalid RequestGrant payload");
             }
         };
+    if let Some(policy_name) = payload.policy_name.clone() {
+        let policy_ttl_seconds = {
+            let policies = state.command_policies.lock().await;
+            policies
+                .iter()
+                .find(|policy| {
+                    policy.project_id == payload.project_id && policy.name == policy_name
+                })
+                .map(|policy| policy.ttl_seconds)
+        };
+        let Some(policy_ttl_seconds) = policy_ttl_seconds else {
+            return error_response(envelope, "PolicyNotFound", "command policy not found");
+        };
+        payload.ttl_seconds = policy_ttl_seconds;
+    }
     let now = current_unix_nanos();
     let ttl_nanos = i128::from(payload.ttl_seconds).saturating_mul(1_000_000_000);
     let record = {

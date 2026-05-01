@@ -1120,6 +1120,93 @@ async fn request_grant_returns_id_bound_to_caller_process() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn request_grant_uses_saved_policy_ttl_when_policy_name_is_present() {
+    use crate::CommandPolicySnapshot;
+    use crate::envelope::{RequestEnvelope, ResponseEnvelope};
+    use crate::method::AgentMethod;
+    use crate::server::{AgentSocketState, dispatch};
+    use serde_json::json;
+
+    let state = AgentSocketState::locked("test-version");
+    state
+        .set_command_policies_for_tests(vec![CommandPolicySnapshot {
+            project_id: "p-1".to_owned(),
+            name: "deploy".to_owned(),
+            command_kind: "argv".to_owned(),
+            command_preview: "pnpm deploy".to_owned(),
+            required_secrets: vec!["DATABASE_URL".to_owned()],
+            optional_secrets: Vec::new(),
+            allowed_secrets: vec!["DATABASE_URL".to_owned()],
+            confirm: false,
+            require_user_verification: false,
+            allow_remote_docker: false,
+            ttl_seconds: 300,
+            env_mode: "minimal".to_owned(),
+            override_mode: "locket".to_owned(),
+            updated_at_unix_nanos: 1,
+        }])
+        .await;
+    let request = RequestEnvelope::new(
+        "req-policy-ttl",
+        AgentMethod::RequestGrant,
+        json!({
+            "project_id": "p-1",
+            "profile_id": "prof-1",
+            "policy_name": "deploy",
+            "action": "RunPolicy",
+            "ttl_seconds": 1,
+            "binding": {
+                "pid": std::process::id(),
+                "process_start_time": "0"
+            }
+        }),
+    );
+    let ResponseEnvelope::Success(success) = dispatch(&request, &state).await else {
+        unreachable!("policy-backed grant should succeed");
+    };
+    let grant_id = success.payload.get("grant_id").and_then(|v| v.as_str()).unwrap_or_default();
+    let record = {
+        let grants = state.grants.lock().await;
+        grants.get(grant_id).cloned().unwrap_or_else(|| unreachable!("issued grant is stored"))
+    };
+    assert_eq!(record.ttl_seconds, 300);
+    assert_eq!(
+        record.expires_at_unix_nanos.saturating_sub(record.issued_at_unix_nanos),
+        300_000_000_000
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn request_grant_fails_closed_when_policy_name_is_missing() {
+    use crate::envelope::{RequestEnvelope, ResponseEnvelope};
+    use crate::method::AgentMethod;
+    use crate::server::{AgentSocketState, dispatch};
+    use serde_json::json;
+
+    let state = AgentSocketState::locked("test-version");
+    let request = RequestEnvelope::new(
+        "req-policy-missing",
+        AgentMethod::RequestGrant,
+        json!({
+            "project_id": "p-1",
+            "profile_id": "prof-1",
+            "policy_name": "deploy",
+            "action": "RunPolicy",
+            "ttl_seconds": 30,
+            "binding": {
+                "pid": std::process::id(),
+                "process_start_time": "0"
+            }
+        }),
+    );
+    let ResponseEnvelope::Error(error) = dispatch(&request, &state).await else {
+        unreachable!("missing policy must fail");
+    };
+    assert_eq!(error.error, "PolicyNotFound");
+    assert!(state.grants.lock().await.is_empty());
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn revoke_grant_drops_record_and_unknown_returns_grant_required() {
     use crate::envelope::{RequestEnvelope, ResponseEnvelope};
     use crate::method::AgentMethod;
