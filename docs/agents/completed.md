@@ -164,6 +164,8 @@ Slices that have merged to `main` and verified. Open work tracked in
   SQLite command-policy index before returning.
 - [x] policy-edit-command: editor-backed policy edits validate saved
   TOML before replacing the active policy row.
+- [x] policy-ttls: Agent grant requests now use the saved policy TTL
+  when a policy is named.
 - [x] lk-resolve-rpc: `ResolveReference` parses `lk://` references,
   validates grants, and returns typed resolution errors.
 - [x] lk-resolve-audit: Agent reference resolution now records
