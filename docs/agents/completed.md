@@ -363,6 +363,8 @@ Slices that have merged to `main` and verified. Open work tracked in
   activity.
 - [x] agent-set-secret: Agent SetSecret RPC creates and rotates webview-submitted values
   through grant and unlock gates.
+- [x] cross-surface-error-parity: VS Code agent errors now show the shared typed reason
+  and next action copy.
 
 ## Full Spec Coverage TODO — Code Health and Bug Fixes
 

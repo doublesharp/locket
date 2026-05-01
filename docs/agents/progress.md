@@ -214,7 +214,6 @@ Slices 1+2 shipped (agent client, tray binding, 6 view scaffolds,
 - [ ] Search/filter UI (`docs/specs/desktop.md`). Each subtask
   renders one surface; never exposes values; pre-req is the
   relevant view's data RPC.
-- [~] [4ab55ee9] branch agent-4ab55ee9/cross-surface-error-parity, worktree .worktrees/agent-4ab55ee9-cross-surface-error-parity; Cross-surface error-text parity for VS Code typed agent errors.
 
 ### Code Health and Bug Fixes
 
