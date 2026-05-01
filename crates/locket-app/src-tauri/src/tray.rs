@@ -407,20 +407,33 @@ fn show_main_window<R: Runtime>(app: &AppHandle<R>) {
 fn start_tray_status_subscription<R: Runtime>(app: AppHandle<R>) {
     tauri::async_runtime::spawn(async move {
         let path = crate::agent_client::resolve_socket_path();
-        let (sender, mut receiver) = tokio::sync::mpsc::channel(16);
-        let updater_app = app.clone();
-        let updater = tauri::async_runtime::spawn(async move {
-            while let Some(event) = receiver.recv().await {
-                let Some(state) = tray_state_for_status_event(&event) else {
-                    continue;
-                };
-                let _ = update_tray_state(&updater_app, state);
+        let cancel = crate::agent_client::CancelToken::new();
+        let mut last_delay: Option<std::time::Duration> = None;
+        loop {
+            let (sender, mut receiver) = tokio::sync::mpsc::channel(16);
+            let updater_app = app.clone();
+            let updater = tauri::async_runtime::spawn(async move {
+                while let Some(event) = receiver.recv().await {
+                    let Some(state) = tray_state_for_status_event(&event) else {
+                        continue;
+                    };
+                    let _ = update_tray_state(&updater_app, state);
+                }
+            });
+            let result =
+                crate::agent_client::stream_status_events_with_cancel(&path, sender, &cancel).await;
+            let _ = updater.await;
+            if cancel.is_cancelled() {
+                break;
             }
-        });
-        let result = crate::agent_client::stream_status_events(&path, sender).await;
-        let _ = updater.await;
-        if result.is_err() {
-            let _ = update_tray_state(&app, TrayIconState::AgentStopped);
+            if result.is_err() {
+                let _ = update_tray_state(&app, TrayIconState::AgentStopped);
+            }
+            // Reconnect with the shared exponential backoff so the tray
+            // recovers automatically once the agent restarts.
+            let delay = crate::agent_client::next_reconnect_delay(last_delay);
+            last_delay = Some(delay);
+            tokio::time::sleep(delay).await;
         }
     });
 }

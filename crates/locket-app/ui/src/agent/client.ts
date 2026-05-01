@@ -47,6 +47,7 @@ export type AgentResult<T> = { ok: true; value: T } | { ok: false; error: AgentC
 
 const AGENT_STATUS_EVENT = 'agent-status';
 const AGENT_STATUS_ERROR_EVENT = 'agent-status-error';
+const AGENT_STATUS_DISCONNECTED_EVENT = 'agent-status-disconnected';
 
 function tauriUnavailableError(): AgentClientError {
   return {
@@ -81,9 +82,27 @@ export async function fetchStatus(): Promise<AgentStatusResult> {
   }
 }
 
+/**
+ * Optional handlers passed to {@link subscribeStatus}.
+ *
+ * - `onStatus`: receives only `kind === 'status'` events. Heartbeats
+ *   are filtered out so callers do not re-render on idle keepalives.
+ * - `onHeartbeat`: receives every event (status or heartbeat). Used by
+ *   the connection-health badge to update the "last seen" timestamp
+ *   without spamming the rest of the UI.
+ * - `onDisconnected`: fires once whenever the underlying socket closes.
+ *   The Tauri loop reconnects automatically so callers should treat
+ *   this as a hint to mark the connection as stale.
+ */
+export interface SubscribeStatusOptions {
+  onHeartbeat?: (event: AgentStatusEvent) => void;
+  onDisconnected?: () => void;
+}
+
 export async function subscribeStatus(
   onStatus: (event: AgentStatusEvent) => void,
   onError: (error: AgentClientError) => void,
+  options: SubscribeStatusOptions = {},
 ): Promise<AgentResult<UnlistenFn>> {
   if (!isTauri()) {
     return {
@@ -93,10 +112,13 @@ export async function subscribeStatus(
   }
 
   const unlistenStatus = await listen<AgentStatusEvent>(AGENT_STATUS_EVENT, (event) => {
-    onStatus(event.payload);
+    handleStatusEvent(event.payload, onStatus, options.onHeartbeat);
   });
   const unlistenError = await listen<AgentClientError>(AGENT_STATUS_ERROR_EVENT, (event) => {
     onError(event.payload);
+  });
+  const unlistenDisconnected = await listen<unknown>(AGENT_STATUS_DISCONNECTED_EVENT, () => {
+    options.onDisconnected?.();
   });
 
   try {
@@ -104,6 +126,7 @@ export async function subscribeStatus(
   } catch (raw) {
     unlistenStatus();
     unlistenError();
+    unlistenDisconnected();
     return { ok: false, error: normalizeError(raw) };
   }
 
@@ -112,8 +135,28 @@ export async function subscribeStatus(
     value: () => {
       unlistenStatus();
       unlistenError();
+      unlistenDisconnected();
     },
   };
+}
+
+/**
+ * Pure dispatcher that splits a raw status frame into the live state
+ * callback and the heartbeat keepalive callback. Heartbeats never reach
+ * `onStatus` so the Vue store doesn't re-render on idle frames.
+ *
+ * Exported for unit tests so the heartbeat-filter behavior is pinned
+ * without spinning up a Tauri listener.
+ */
+export function handleStatusEvent(
+  event: AgentStatusEvent,
+  onStatus: (event: AgentStatusEvent) => void,
+  onHeartbeat?: (event: AgentStatusEvent) => void,
+): void {
+  onHeartbeat?.(event);
+  if (event.kind !== 'heartbeat') {
+    onStatus(event);
+  }
 }
 
 function normalizeError(raw: unknown): AgentClientError {

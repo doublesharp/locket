@@ -5,6 +5,7 @@
 //! stream used by the system tray.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use locket_agent::{
@@ -15,7 +16,7 @@ use locket_core::{ErrorDisplayCopy, LocketError};
 use serde::{Serialize, de::DeserializeOwned};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
-use tokio::sync::mpsc;
+use tokio::sync::{Notify, mpsc};
 
 /// Default subdirectory under the user's data dir for agent sockets.
 const DEFAULT_DATA_DIR: &str = ".locket";
@@ -31,6 +32,75 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Round-trip request timeout once a connection is established.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// Initial reconnect backoff after the status stream drops.
+pub const RECONNECT_INITIAL_BACKOFF: Duration = Duration::from_secs(1);
+
+/// Maximum reconnect backoff between attempts. The desktop spec caps
+/// the wait at 30 seconds so a long-stopped agent still surfaces a
+/// reconnect within a UX-acceptable window once it comes back.
+pub const RECONNECT_MAX_BACKOFF: Duration = Duration::from_secs(30);
+
+/// Pure mapping from a previous attempt delay to the next delay. The
+/// schedule doubles starting at [`RECONNECT_INITIAL_BACKOFF`] until it
+/// hits [`RECONNECT_MAX_BACKOFF`]. Exposed as a `pub` helper so tests
+/// and the Tauri reconnect loop share the same source of truth.
+#[must_use]
+pub fn next_reconnect_delay(previous: Option<Duration>) -> Duration {
+    let Some(previous) = previous else {
+        return RECONNECT_INITIAL_BACKOFF;
+    };
+    let doubled = previous.saturating_mul(2);
+    if doubled >= RECONNECT_MAX_BACKOFF {
+        RECONNECT_MAX_BACKOFF
+    } else {
+        doubled
+    }
+}
+
+/// Cancellation token shared between the desktop shell and the
+/// streaming client task.
+///
+/// The Tauri layer flips this on app shutdown so the long-lived
+/// `SubscribeStatus` reader exits cleanly without leaving a half-open
+/// socket behind.
+#[derive(Clone, Debug, Default)]
+pub struct CancelToken {
+    notify: Arc<Notify>,
+    flag: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl CancelToken {
+    /// Creates a fresh, unflagged cancel token.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Marks the token as cancelled and wakes every waiter.
+    pub fn cancel(&self) {
+        self.flag.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.notify.notify_waiters();
+    }
+
+    /// Reports whether the token has been cancelled.
+    #[must_use]
+    pub fn is_cancelled(&self) -> bool {
+        self.flag.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Future resolves the moment [`CancelToken::cancel`] is called.
+    pub async fn cancelled(&self) {
+        if self.is_cancelled() {
+            return;
+        }
+        let notified = self.notify.notified();
+        if self.is_cancelled() {
+            return;
+        }
+        notified.await;
+    }
+}
 
 /// Typed errors surfaced by the desktop agent client.
 ///
@@ -169,9 +239,29 @@ pub async fn stream_status_events(
     socket_path: &Path,
     sender: mpsc::Sender<StatusEvent>,
 ) -> Result<(), AgentClientError> {
+    stream_status_events_with_cancel(socket_path, sender, &CancelToken::new()).await
+}
+
+/// Cancellable variant of [`stream_status_events`].
+///
+/// The reader stops as soon as `cancel` is flipped, sending one final
+/// `CancelSubscription` envelope upstream so the agent can release the
+/// subscriber slot cleanly. Used by the long-lived Tauri command so app
+/// shutdown can join the reader without dangling tasks.
+///
+/// # Errors
+///
+/// Returns [`AgentClientError`] for unreachable sockets, write/flush
+/// failures, framing/JSON faults, and agent-side error envelopes.
+pub async fn stream_status_events_with_cancel(
+    socket_path: &Path,
+    sender: mpsc::Sender<StatusEvent>,
+    cancel: &CancelToken,
+) -> Result<(), AgentClientError> {
     let mut stream = connect(socket_path).await?;
+    let subscribe_id = new_request_id();
     let request = RequestEnvelope::new(
-        new_request_id(),
+        subscribe_id.clone(),
         AgentMethod::SubscribeStatus,
         serde_json::Value::Null,
     );
@@ -184,7 +274,24 @@ pub async fn stream_status_events(
         .flush()
         .await
         .map_err(|error| AgentClientError::Protocol { reason: format!("flush failed: {error}") })?;
-    read_status_stream(&mut stream, sender).await
+    let result = read_status_stream(&mut stream, sender, cancel).await;
+    if cancel.is_cancelled() {
+        // Best-effort `CancelSubscription` so the agent doesn't have to
+        // observe the close to free the subscriber. The cancellation
+        // path returns `Ok(())` regardless of whether the agent saw the
+        // envelope before the socket closed.
+        let cancel_request = RequestEnvelope::new(
+            new_request_id(),
+            AgentMethod::CancelSubscription,
+            serde_json::json!({ "subscription_id": subscribe_id }),
+        );
+        if let Ok(frame) = encode_frame(&cancel_request, DEFAULT_MAX_MESSAGE_SIZE) {
+            let _ = stream.write_all(&frame).await;
+            let _ = stream.flush().await;
+        }
+        return Ok(());
+    }
+    result
 }
 
 async fn connect(socket_path: &Path) -> Result<UnixStream, AgentClientError> {
@@ -255,6 +362,7 @@ async fn read_response_frame(
 async fn read_status_stream(
     stream: &mut UnixStream,
     sender: mpsc::Sender<StatusEvent>,
+    cancel: &CancelToken,
 ) -> Result<(), AgentClientError> {
     let mut buffer: Vec<u8> = Vec::with_capacity(4096);
     let mut chunk = [0_u8; 4096];
@@ -271,9 +379,16 @@ async fn read_status_stream(
             Err(ProtocolError::IncompleteFrame) => {}
             Err(error) => return Err(error.into()),
         }
-        let read = stream.read(&mut chunk).await.map_err(|error| AgentClientError::Protocol {
-            reason: format!("read failed: {error}"),
-        })?;
+        if cancel.is_cancelled() {
+            return Ok(());
+        }
+        let read = tokio::select! {
+            biased;
+            () = cancel.cancelled() => return Ok(()),
+            result = stream.read(&mut chunk) => result.map_err(|error| AgentClientError::Protocol {
+                reason: format!("read failed: {error}"),
+            })?,
+        };
         if read == 0 {
             return Err(AgentClientError::Protocol {
                 reason: "agent closed status stream".to_owned(),
@@ -327,7 +442,11 @@ fn new_request_id() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::display_copy_for_agent_code;
+    use super::{
+        CancelToken, RECONNECT_INITIAL_BACKOFF, RECONNECT_MAX_BACKOFF, display_copy_for_agent_code,
+        next_reconnect_delay,
+    };
+    use std::time::Duration;
 
     #[test]
     fn agent_error_codes_use_shared_locket_error_copy() -> Result<(), Box<dyn std::error::Error>> {
@@ -336,5 +455,47 @@ mod tests {
         assert_eq!(copy.next_action, "Run locket unlock or approve an agent unlock prompt.");
         assert!(display_copy_for_agent_code("ProtocolError").is_none());
         Ok(())
+    }
+
+    #[test]
+    fn reconnect_schedule_doubles_until_capped_at_30_seconds() {
+        // Spec: start at 1 second, double on each failure, cap at 30
+        // seconds. The schedule must always start from
+        // `RECONNECT_INITIAL_BACKOFF` and never exceed
+        // `RECONNECT_MAX_BACKOFF`.
+        let mut delays = Vec::new();
+        let mut current: Option<Duration> = None;
+        for _ in 0..10 {
+            let next = next_reconnect_delay(current);
+            delays.push(next);
+            current = Some(next);
+        }
+
+        assert_eq!(delays[0], RECONNECT_INITIAL_BACKOFF);
+        assert_eq!(delays[0], Duration::from_secs(1));
+        assert_eq!(delays[1], Duration::from_secs(2));
+        assert_eq!(delays[2], Duration::from_secs(4));
+        assert_eq!(delays[3], Duration::from_secs(8));
+        assert_eq!(delays[4], Duration::from_secs(16));
+        for delay in &delays[5..] {
+            assert_eq!(*delay, RECONNECT_MAX_BACKOFF);
+            assert_eq!(*delay, Duration::from_secs(30));
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[allow(clippy::expect_used)]
+    async fn cancel_token_wakes_waiters_once_cancelled() {
+        let token = CancelToken::new();
+        assert!(!token.is_cancelled());
+        let waiter = {
+            let token = token.clone();
+            tokio::spawn(async move { token.cancelled().await })
+        };
+        token.cancel();
+        waiter.await.expect("waiter must complete");
+        assert!(token.is_cancelled());
+        // Subsequent waits resolve immediately.
+        token.cancelled().await;
     }
 }
