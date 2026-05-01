@@ -37,6 +37,8 @@ pub enum GrantAction {
     Reveal,
     /// Copy one secret value through a gated path.
     Copy,
+    /// Create or rotate one secret value through a gated path.
+    SetSecret,
 }
 
 /// Metadata-only live grant record.

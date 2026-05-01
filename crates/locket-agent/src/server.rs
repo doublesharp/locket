@@ -615,6 +615,9 @@ pub async fn dispatch(envelope: &RequestEnvelope, state: &AgentSocketState) -> R
         Ok(AgentMethod::PrepareExec) => crate::prepare_exec::handle_prepare_exec(envelope),
         Ok(AgentMethod::ListSecrets) => handle_list_secrets(envelope),
         Ok(AgentMethod::ListVersions) => handle_list_versions(envelope),
+        Ok(AgentMethod::SetSecret) => {
+            crate::set_secret::handle_set_secret(envelope, state, current_unix_nanos()).await
+        }
         Ok(AgentMethod::VerifyAudit) => handle_verify_audit(envelope, state).await,
         Ok(AgentMethod::ListAudit) => handle_list_audit(envelope, state).await,
         Ok(AgentMethod::ReadConfig) => crate::config::handle_read_config(envelope),

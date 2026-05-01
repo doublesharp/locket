@@ -23,6 +23,7 @@ mod scan;
 mod secrets;
 #[cfg(unix)]
 mod server;
+mod set_secret;
 mod status;
 mod status_stream;
 mod unlock_cache;
@@ -62,6 +63,7 @@ pub use server::{
     AgentSocketConfig, AgentSocketState, ConnectionOutcome, SocketServerError,
     bind_socket_listener, handle_connection, socket_permission_mode,
 };
+pub use set_secret::{SetSecretRequest, SetSecretResponse};
 pub use status::{
     LockState, STATUS_HEARTBEAT_INTERVAL_SECS, StatusEvent, StatusEventKind, StatusEventSequence,
     StatusPayload,

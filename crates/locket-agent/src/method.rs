@@ -55,6 +55,8 @@ pub enum AgentMethod {
     ListSecrets,
     /// Return metadata-only secret version rows.
     ListVersions,
+    /// Create or rotate one secret value through a gated path.
+    SetSecret,
 }
 
 impl AgentMethod {
@@ -86,6 +88,7 @@ impl AgentMethod {
             Self::ClientHello => "ClientHello",
             Self::ListSecrets => "ListSecrets",
             Self::ListVersions => "ListVersions",
+            Self::SetSecret => "SetSecret",
         }
     }
 }
@@ -119,6 +122,7 @@ impl FromStr for AgentMethod {
             "ClientHello" => Ok(Self::ClientHello),
             "ListSecrets" => Ok(Self::ListSecrets),
             "ListVersions" => Ok(Self::ListVersions),
+            "SetSecret" => Ok(Self::SetSecret),
             other => Err(UnknownMethod { method: other.to_owned() }),
         }
     }
