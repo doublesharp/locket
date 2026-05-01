@@ -9,6 +9,10 @@ mod core_dumps;
 mod device_private_key;
 mod error;
 mod fs_helpers;
+#[cfg(target_os = "linux")]
+mod linux_local_authentication;
+#[cfg(target_os = "linux")]
+mod linux_user_verifier;
 mod locked_vault_audit;
 #[cfg(target_os = "macos")]
 mod macos_local_authentication;
@@ -56,6 +60,13 @@ pub use user_verification::{
     LocalUserVerifier, MemoryLocalUserVerifier, UnavailableLocalUserVerifier,
 };
 
+#[cfg(target_os = "linux")]
+pub use linux_local_authentication::{
+    LocalAuthError as LinuxLocalAuthError, evaluate_local_user as linux_evaluate_local_user,
+};
+#[cfg(target_os = "linux")]
+pub use linux_user_verifier::LinuxLocalUserVerifier;
+
 #[cfg(target_os = "macos")]
 pub use macos_local_authentication::{LocalAuthError, evaluate_local_user};
 #[cfg(target_os = "macos")]
@@ -75,6 +86,9 @@ pub const fn platform_name() -> &'static str {
 ///
 /// On macOS this returns [`MacosLocalUserVerifier`], which delegates to
 /// `LocalAuthentication.framework` (`docs/specs/crypto.md:192-218`).
+/// On Linux this returns [`LinuxLocalUserVerifier`], which currently
+/// reports unavailable until a Secret Service / FIDO2 binding crate is
+/// wired (see `linux_local_authentication.rs`).
 /// On every other target this returns [`UnavailableLocalUserVerifier`]
 /// so callers fail closed until a platform backend ships.
 #[must_use]
@@ -83,7 +97,11 @@ pub fn default_local_user_verifier() -> std::sync::Arc<dyn LocalUserVerifier + S
     {
         std::sync::Arc::new(MacosLocalUserVerifier::new())
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
+    {
+        std::sync::Arc::new(LinuxLocalUserVerifier::new())
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
         std::sync::Arc::new(UnavailableLocalUserVerifier)
     }
