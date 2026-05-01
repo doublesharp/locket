@@ -12,7 +12,7 @@ use chacha20poly1305::{
 use data_encoding::BASE64URL_NOPAD;
 use locket_core::{
     AUDIT_HMAC_LEN, BUNDLE_SCHEMA_V1, BundleContainer, BundleContainerError, BundleManifest,
-    CommandPolicy, CommandSpec, decrypt_bundle_payload_with_x25519_secret,
+    CommandPolicy, CommandSpec, KeyId, decrypt_bundle_payload_with_x25519_secret,
     encrypt_bundle_payload_for_age_recipients, verify_age_payload_structure,
 };
 use locket_crypto::{AAD_SCHEMA_V1, KeyPurpose};
@@ -20,14 +20,15 @@ use locket_platform::{
     LocalDevicePrivateKeyStorage, PlatformError, WrappedLocalFileDevicePrivateKeyStorage,
 };
 use locket_store::{
-    AuditWrite, ExportableAuditRow, ProfileRecord, SecretBlobRecord, SecretRecord, Store,
+    AuditWrite, ExportableAuditRow, KeyRecord, ProfileRecord, SecretBlobRecord, SecretRecord, Store,
 };
+use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
 use super::device;
-use crate::runtime::key_access::load_profile_key;
+use crate::runtime::key_access::{load_master_key, load_profile_key, rewrap_imported_profile_key};
 use crate::runtime::user_verification::{UserVerificationAudit, configured_user_verification};
 use crate::{
     BundleCommand, BundleVerifyArgs, CliError, ExportArgs, ImportBundleArgs, LOCKET_TOML,
@@ -244,6 +245,68 @@ struct ImportedBundleCounts {
     command_policy_count: usize,
 }
 
+/// Per-row-family count of rows newly written by the apply phase.
+///
+/// "Applied" here covers both fresh inserts (no local row existed) and
+/// resolved conflicts where the incoming row replaced or rotated over
+/// the local row.
+#[derive(Debug, Default, Clone, Copy)]
+#[allow(clippy::struct_field_names)]
+struct AppliedBundleCounts {
+    profile_count: usize,
+    secret_count: usize,
+    secret_version_count: usize,
+    blob_count: usize,
+    command_policy_count: usize,
+    profile_key_count: usize,
+}
+
+/// Aggregated conflict-matrix counters across all bundle row families.
+#[derive(Debug, Default, Clone, Copy)]
+struct BundleConflictCounts {
+    identical: usize,
+    newer_incoming: usize,
+    divergent: usize,
+    deleted_vs_active: usize,
+    applied: usize,
+    rejected: usize,
+}
+
+/// Conflict resolution flags carried from `ImportBundleArgs`.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum ConflictResolution {
+    AcceptIncoming,
+    AcceptLocal,
+    InteractiveRequired,
+}
+
+impl ConflictResolution {
+    const fn from_args(args: &ImportBundleArgs) -> Self {
+        if args.accept_incoming {
+            Self::AcceptIncoming
+        } else if args.accept_local {
+            Self::AcceptLocal
+        } else {
+            Self::InteractiveRequired
+        }
+    }
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::AcceptIncoming => "accept-incoming",
+            Self::AcceptLocal => "accept-local",
+            Self::InteractiveRequired => "interactive-required",
+        }
+    }
+}
+
+/// Outcome of `apply_bundle_payload`.
+#[derive(Debug)]
+enum ApplyOutcome {
+    Applied { applied: AppliedBundleCounts, conflicts: BundleConflictCounts },
+    InteractiveRequired { divergent: Vec<String> },
+}
+
 pub fn bundle_command(
     context: &RuntimeContext,
     output: &mut impl Write,
@@ -322,6 +385,9 @@ pub fn export_bundle_command(
             include_audit_requested: None,
             user_verification,
             decrypted_counts: None,
+            applied_counts: None,
+            conflict_counts: None,
+            applied: None,
         },
     )?;
 
@@ -342,6 +408,7 @@ pub fn export_bundle_command(
     Ok(())
 }
 
+#[allow(clippy::too_many_lines)]
 pub fn import_bundle_command(
     context: &RuntimeContext,
     output: &mut impl Write,
@@ -356,13 +423,7 @@ pub fn import_bundle_command(
     if bundle.manifest.project_id != project_id {
         return Err(bundle_verification_error("bundle project id does not match current project"));
     }
-    let conflict_policy = if args.accept_incoming {
-        "accept-incoming"
-    } else if args.accept_local {
-        "accept-local"
-    } else {
-        "interactive-required"
-    };
+    let resolution = ConflictResolution::from_args(args);
 
     let device = store
         .get_active_local_device(project_id)?
@@ -383,6 +444,55 @@ pub fn import_bundle_command(
         command_policy_count: payload.command_policy_count,
     };
 
+    let now = now_unix_nanos()?;
+    let (master_key, _master_key_source) = load_master_key(context, project_id)?;
+    let outcome = apply_bundle_payload(
+        &mut store,
+        project_id,
+        &payload,
+        resolution,
+        args.include_audit,
+        &bundle.manifest,
+        &master_key,
+        now,
+    )?;
+
+    if let ApplyOutcome::InteractiveRequired { divergent } = &outcome {
+        writeln!(output, "bundle: verified")?;
+        writeln!(output, "import: decrypted")?;
+        writeln!(output, "profiles: {}", counts.profile_count)?;
+        writeln!(output, "secrets: {}", counts.secret_count)?;
+        writeln!(output, "blobs: {}", counts.blob_count)?;
+        writeln!(output, "command_policies: {}", counts.command_policy_count)?;
+        writeln!(output, "active_secret_count: {}", payload.active_secret_count)?;
+        writeln!(
+            output,
+            "include_audit_requested: {}",
+            if args.include_audit { "yes" } else { "no" }
+        )?;
+        writeln!(
+            output,
+            "bundle_include_audit: {}",
+            if payload.audit_rows_included { "yes" } else { "no" }
+        )?;
+        writeln!(output, "conflict_policy: {}", resolution.label())?;
+        writeln!(output, "metadata_only: yes")?;
+        for entry in divergent {
+            writeln!(output, "conflict: {entry}")?;
+        }
+        writeln!(
+            output,
+            "import: conflicts require resolution; pass --accept-incoming or --accept-local"
+        )?;
+        return Err(invalid_reference_error(
+            "import: conflicts require resolution; pass --accept-incoming or --accept-local",
+        ));
+    }
+
+    let ApplyOutcome::Applied { applied, conflicts } = outcome else {
+        unreachable!("ApplyOutcome must be Applied after InteractiveRequired branch");
+    };
+
     write_bundle_audit_if_available(
         context,
         &mut store,
@@ -392,10 +502,13 @@ pub fn import_bundle_command(
             command: "import-bundle",
             bundle: &bundle,
             path_kind: "input",
-            timestamp: now_unix_nanos()?,
+            timestamp: now,
             include_audit_requested: Some(args.include_audit),
             user_verification: UserVerificationAudit::not_required(),
             decrypted_counts: Some(&counts),
+            applied_counts: Some(&applied),
+            conflict_counts: Some(&conflicts),
+            applied: Some(true),
         },
     )?;
 
@@ -407,12 +520,870 @@ pub fn import_bundle_command(
     writeln!(output, "command_policies: {}", counts.command_policy_count)?;
     writeln!(output, "active_secret_count: {}", payload.active_secret_count)?;
     writeln!(output, "include_audit_requested: {}", if args.include_audit { "yes" } else { "no" })?;
-    writeln!(output, "bundle_include_audit: {}", if payload.audit_rows_included { "yes" } else { "no" })?;
-    writeln!(output, "conflict_policy: {conflict_policy}")?;
+    writeln!(
+        output,
+        "bundle_include_audit: {}",
+        if payload.audit_rows_included { "yes" } else { "no" }
+    )?;
+    writeln!(output, "conflict_policy: {}", resolution.label())?;
     writeln!(output, "metadata_only: yes")?;
-    // TODO(bundle-import-apply-rows): apply decrypted profiles/secrets/blobs/command_policies
-    // to the local store using `payload`, honoring `conflict_policy` and `args.include_audit`.
+    writeln!(output, "import: applied")?;
+    writeln!(output, "applied_profile_count: {}", applied.profile_count)?;
+    writeln!(output, "applied_secret_count: {}", applied.secret_count)?;
+    writeln!(output, "applied_secret_version_count: {}", applied.secret_version_count)?;
+    writeln!(output, "applied_blob_count: {}", applied.blob_count)?;
+    writeln!(output, "applied_command_policy_count: {}", applied.command_policy_count)?;
+    writeln!(output, "applied_profile_key_count: {}", applied.profile_key_count)?;
+    writeln!(output, "conflict_identical: {}", conflicts.identical)?;
+    writeln!(output, "conflict_newer_incoming: {}", conflicts.newer_incoming)?;
+    writeln!(output, "conflict_divergent: {}", conflicts.divergent)?;
+    writeln!(output, "conflict_deleted_vs_active: {}", conflicts.deleted_vs_active)?;
+    writeln!(output, "conflict_applied: {}", conflicts.applied)?;
+    writeln!(output, "conflict_rejected: {}", conflicts.rejected)?;
     Ok(())
+}
+
+/// Applies a decrypted sealed-bundle payload to the local store under one
+/// `SQLite` transaction.
+///
+/// Behaviour by row family is documented under "Bundle import conflict
+/// policy" in `docs/specs/team-sync-recovery.md`. Identical rows are
+/// counted but never re-written. Newer-incoming and divergent rows are
+/// resolved by [`ConflictResolution`]; under
+/// [`ConflictResolution::InteractiveRequired`] the transaction is rolled
+/// back and the function returns [`ApplyOutcome::InteractiveRequired`]
+/// with a metadata-only summary list.
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+fn apply_bundle_payload(
+    store: &mut Store,
+    project_id: &str,
+    payload: &SealedBundlePayloadV1,
+    resolution: ConflictResolution,
+    include_audit: bool,
+    manifest: &BundleManifest,
+    receiver_master_key: &locket_crypto::KeyBytes,
+    now: i64,
+) -> Result<ApplyOutcome, CliError> {
+    let bundle_digest_bytes = decode_bundle_digest(&manifest.payload_digest)?;
+    let mut applied = AppliedBundleCounts::default();
+    let mut conflicts = BundleConflictCounts::default();
+    let mut divergent_summary: Vec<String> = Vec::new();
+
+    let connection = store.connection_mut();
+    let transaction = connection.transaction().map_err(|error| {
+        metadata_invalid_error(format!("apply transaction begin failed: {error}"))
+    })?;
+
+    // Profiles: insert if absent, otherwise compare. Profile rows have no
+    // version field; the conflict matrix is identical-vs-divergent only.
+    for profile in &payload.profiles {
+        match read_local_profile(&transaction, project_id, &profile.profile_id)? {
+            None => {
+                transaction
+                    .execute(
+                        "INSERT INTO profiles(id, project_id, name, dangerous, created_at)
+                         VALUES (?1, ?2, ?3, ?4, ?5)",
+                        params![
+                            profile.profile_id,
+                            project_id,
+                            profile.name,
+                            profile.dangerous,
+                            profile.created_at,
+                        ],
+                    )
+                    .map_err(map_apply_sqlite_error)?;
+                applied.profile_count = applied.profile_count.saturating_add(1);
+                conflicts.applied = conflicts.applied.saturating_add(1);
+            }
+            Some(local) => {
+                let identical = local.name == profile.name
+                    && local.dangerous == profile.dangerous
+                    && local.created_at == profile.created_at;
+                if identical {
+                    conflicts.identical = conflicts.identical.saturating_add(1);
+                    continue;
+                }
+                if resolve_divergent(
+                    resolution,
+                    &mut conflicts,
+                    &mut divergent_summary,
+                    "profile",
+                    &profile.profile_id,
+                ) == DivergentDecision::Apply
+                {
+                    transaction
+                        .execute(
+                            "UPDATE profiles
+                             SET name = ?2, dangerous = ?3, created_at = ?4
+                             WHERE id = ?1 AND project_id = ?5",
+                            params![
+                                profile.profile_id,
+                                profile.name,
+                                profile.dangerous,
+                                profile.created_at,
+                                project_id,
+                            ],
+                        )
+                        .map_err(map_apply_sqlite_error)?;
+                    applied.profile_count = applied.profile_count.saturating_add(1);
+                }
+            }
+        }
+    }
+
+    // Profile keys: rewrap each plaintext key under the receiver's
+    // master-key-derived wrapping key with a fresh receiver-side key id,
+    // then insert. Skip when a key with this scope+purpose is already
+    // present locally (idempotent for round-trip imports).
+    for profile_key in &payload.profile_keys {
+        let purpose = parse_key_purpose(&profile_key.purpose)?;
+        let existing = transaction
+            .query_row(
+                "SELECT 1 FROM keys
+                 WHERE project_id = ?1 AND profile_id IS ?2 AND purpose = ?3",
+                params![project_id, profile_key.profile_id, profile_key.purpose],
+                |_| Ok(()),
+            )
+            .map(Some)
+            .or_else(|error| {
+                if matches!(error, rusqlite::Error::QueryReturnedNoRows) {
+                    Ok(None)
+                } else {
+                    Err(error)
+                }
+            })
+            .map_err(map_apply_sqlite_error)?;
+        if existing.is_some() {
+            conflicts.identical = conflicts.identical.saturating_add(1);
+            continue;
+        }
+        let plaintext_bytes =
+            BASE64URL_NOPAD.decode(profile_key.key_material_b64.as_bytes()).map_err(|_| {
+                bundle_verification_error("profile key material is not valid base64url")
+            })?;
+        let mut plaintext_array = [0_u8; locket_crypto::KEY_LEN];
+        if plaintext_bytes.len() != plaintext_array.len() {
+            return Err(bundle_verification_error("profile key material has wrong length"));
+        }
+        plaintext_array.copy_from_slice(&plaintext_bytes);
+        let receiver_key_id = KeyId::generate().map_err(|_| CliError::Time)?;
+        let wrapped = rewrap_imported_profile_key(
+            receiver_master_key,
+            project_id,
+            &profile_key.profile_id,
+            receiver_key_id.as_str(),
+            purpose,
+            &plaintext_array,
+        )?;
+        let key_record = KeyRecord {
+            id: receiver_key_id.into_string(),
+            project_id: project_id.to_owned(),
+            profile_id: Some(profile_key.profile_id.clone()),
+            purpose: purpose.as_str().to_owned(),
+            wrapped_material: wrapped.ciphertext,
+            nonce: wrapped.nonce,
+            created_at: now,
+        };
+        transaction
+            .execute(
+                "INSERT INTO keys(id, project_id, profile_id, purpose, wrapped_material, nonce, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    key_record.id,
+                    key_record.project_id,
+                    key_record.profile_id,
+                    key_record.purpose,
+                    key_record.wrapped_material,
+                    key_record.nonce,
+                    key_record.created_at,
+                ],
+            )
+            .map_err(map_apply_sqlite_error)?;
+        applied.profile_key_count = applied.profile_key_count.saturating_add(1);
+        conflicts.applied = conflicts.applied.saturating_add(1);
+    }
+
+    // Command policies: upsert is always idempotent because it overwrites
+    // policy_json/normalized_json and bumps updated_at. We treat absent as
+    // applied; present is counted as identical for the conflict matrix.
+    for policy in &payload.command_policies {
+        let policy_json = command_policy_value(policy);
+        let exists = transaction
+            .query_row(
+                "SELECT 1 FROM command_policies WHERE project_id = ?1 AND name = ?2",
+                params![project_id, policy.name],
+                |_| Ok(()),
+            )
+            .map(Some)
+            .or_else(|error| {
+                if matches!(error, rusqlite::Error::QueryReturnedNoRows) {
+                    Ok(None)
+                } else {
+                    Err(error)
+                }
+            })
+            .map_err(map_apply_sqlite_error)?
+            .is_some();
+        let policy_text = serde_json::to_string(&policy_json).map_err(CliError::from)?;
+        let normalized_text = policy_text.clone();
+        transaction
+            .execute(
+                "INSERT INTO command_policies(
+                   project_id, name, policy_json, normalized_json, created_at, updated_at
+                 )
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?5)
+                 ON CONFLICT(project_id, name) DO UPDATE SET
+                   policy_json = excluded.policy_json,
+                   normalized_json = excluded.normalized_json,
+                   updated_at = excluded.updated_at",
+                params![project_id, policy.name, policy_text, normalized_text, now],
+            )
+            .map_err(map_apply_sqlite_error)?;
+        if exists {
+            conflicts.identical = conflicts.identical.saturating_add(1);
+        } else {
+            applied.command_policy_count = applied.command_policy_count.saturating_add(1);
+            conflicts.applied = conflicts.applied.saturating_add(1);
+        }
+    }
+
+    // Secrets: insert metadata when absent. Conflict resolution uses the
+    // updated_at timestamp for newer-vs-divergent and the secret state
+    // ('active' vs 'deleted') for the deleted-vs-active arm.
+    for secret in &payload.secrets {
+        match read_local_secret(&transaction, &secret.id)? {
+            None => {
+                transaction
+                    .execute(
+                        "INSERT INTO secrets(
+                           id, project_id, profile_id, name, source, origin, required,
+                           current_version, state, created_at, updated_at, last_rotated_at, deleted_at
+                         )
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?7, ?8, ?9, ?10, ?11, ?12)",
+                        params![
+                            secret.id,
+                            project_id,
+                            secret.profile_id,
+                            secret.name,
+                            secret.source,
+                            secret.origin,
+                            secret.current_version,
+                            secret.state,
+                            secret.created_at,
+                            secret.updated_at,
+                            secret.last_rotated_at,
+                            secret.deleted_at,
+                        ],
+                    )
+                    .map_err(map_apply_sqlite_error)?;
+                applied.secret_count = applied.secret_count.saturating_add(1);
+                conflicts.applied = conflicts.applied.saturating_add(1);
+            }
+            Some(local) => {
+                let identical = local.profile_id == secret.profile_id
+                    && local.name == secret.name
+                    && local.source == secret.source
+                    && local.origin == secret.origin
+                    && local.current_version == secret.current_version
+                    && local.state == secret.state
+                    && local.created_at == secret.created_at
+                    && local.updated_at == secret.updated_at
+                    && local.last_rotated_at == secret.last_rotated_at
+                    && local.deleted_at == secret.deleted_at;
+                if identical {
+                    conflicts.identical = conflicts.identical.saturating_add(1);
+                    continue;
+                }
+                let deleted_vs_active = local.state != secret.state;
+                if deleted_vs_active {
+                    conflicts.deleted_vs_active =
+                        conflicts.deleted_vs_active.saturating_add(1);
+                }
+                let newer_incoming = secret.updated_at > local.updated_at
+                    || secret.current_version > local.current_version;
+                if newer_incoming && !deleted_vs_active {
+                    conflicts.newer_incoming = conflicts.newer_incoming.saturating_add(1);
+                }
+                let decision = if deleted_vs_active || !newer_incoming {
+                    resolve_divergent(
+                        resolution,
+                        &mut conflicts,
+                        &mut divergent_summary,
+                        "secret",
+                        &secret.id,
+                    )
+                } else if matches!(resolution, ConflictResolution::AcceptIncoming) {
+                    DivergentDecision::Apply
+                } else if matches!(resolution, ConflictResolution::AcceptLocal) {
+                    DivergentDecision::Skip
+                } else {
+                    divergent_summary.push(format!("secret/{}: newer-incoming", secret.id));
+                    DivergentDecision::Defer
+                };
+                if matches!(decision, DivergentDecision::Apply) {
+                    transaction
+                        .execute(
+                            "UPDATE secrets
+                             SET name = ?2, source = ?3, origin = ?4, current_version = ?5,
+                                 state = ?6, created_at = ?7, updated_at = ?8,
+                                 last_rotated_at = ?9, deleted_at = ?10
+                             WHERE id = ?1",
+                            params![
+                                secret.id,
+                                secret.name,
+                                secret.source,
+                                secret.origin,
+                                secret.current_version,
+                                secret.state,
+                                secret.created_at,
+                                secret.updated_at,
+                                secret.last_rotated_at,
+                                secret.deleted_at,
+                            ],
+                        )
+                        .map_err(map_apply_sqlite_error)?;
+                    applied.secret_count = applied.secret_count.saturating_add(1);
+                }
+            }
+        }
+    }
+
+    // Secret versions: identical-on-match, newer-incoming triggers
+    // rotate-with-no-grace against the local current version, divergent
+    // routes through `resolve_divergent`.
+    for version in &payload.secret_versions {
+        match read_local_secret_version(&transaction, &version.secret_id, version.version)? {
+            None => {
+                if version.state == "current" {
+                    deprecate_local_current_version(&transaction, &version.secret_id, now)?;
+                }
+                insert_secret_version(&transaction, version)?;
+                applied.secret_version_count = applied.secret_version_count.saturating_add(1);
+                conflicts.applied = conflicts.applied.saturating_add(1);
+            }
+            Some(local) => {
+                let identical = local.source == version.source
+                    && local.origin == version.origin
+                    && local.state == version.state
+                    && local.created_at == version.created_at
+                    && local.deprecated_at == version.deprecated_at
+                    && local.grace_until == version.grace_until
+                    && local.purged_at == version.purged_at;
+                if identical {
+                    conflicts.identical = conflicts.identical.saturating_add(1);
+                    continue;
+                }
+                let local_active = local.state == "current";
+                let incoming_active = version.state == "current";
+                let deleted_vs_active = local_active != incoming_active;
+                if deleted_vs_active {
+                    conflicts.deleted_vs_active =
+                        conflicts.deleted_vs_active.saturating_add(1);
+                }
+                let newer_incoming =
+                    !deleted_vs_active && version.created_at > local.created_at;
+                if newer_incoming {
+                    conflicts.newer_incoming = conflicts.newer_incoming.saturating_add(1);
+                }
+                let decision = if deleted_vs_active || !newer_incoming {
+                    resolve_divergent(
+                        resolution,
+                        &mut conflicts,
+                        &mut divergent_summary,
+                        "secret_version",
+                        &format!("{}@{}", version.secret_id, version.version),
+                    )
+                } else if matches!(resolution, ConflictResolution::AcceptIncoming) {
+                    DivergentDecision::Apply
+                } else if matches!(resolution, ConflictResolution::AcceptLocal) {
+                    DivergentDecision::Skip
+                } else {
+                    divergent_summary.push(format!(
+                        "secret_version/{}@{}: newer-incoming",
+                        version.secret_id, version.version
+                    ));
+                    DivergentDecision::Defer
+                };
+                if matches!(decision, DivergentDecision::Apply) {
+                    transaction
+                        .execute(
+                            "UPDATE secret_versions
+                             SET source = ?3, origin = ?4, state = ?5, created_at = ?6,
+                                 deprecated_at = ?7, grace_until = ?8, purged_at = ?9
+                             WHERE secret_id = ?1 AND version = ?2",
+                            params![
+                                version.secret_id,
+                                version.version,
+                                version.source,
+                                version.origin,
+                                version.state,
+                                version.created_at,
+                                version.deprecated_at,
+                                version.grace_until,
+                                version.purged_at,
+                            ],
+                        )
+                        .map_err(map_apply_sqlite_error)?;
+                    applied.secret_version_count =
+                        applied.secret_version_count.saturating_add(1);
+                }
+            }
+        }
+    }
+
+    // Blobs: insert when absent; identical when stored bytes match;
+    // divergent otherwise. Blob conflicts always route through
+    // `resolve_divergent` because blobs have no timestamp.
+    for blob in &payload.blobs {
+        match read_local_blob(&transaction, &blob.secret_id, blob.version)? {
+            None => {
+                let blob_record = decode_bundle_blob(blob)?;
+                transaction
+                    .execute(
+                        "INSERT INTO blobs(
+                           secret_id, version, encrypted_dek, ciphertext, value_nonce,
+                           aad_schema_version, created_at
+                         )
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                        params![
+                            blob_record.secret_id,
+                            blob_record.version,
+                            blob_record.encrypted_dek,
+                            blob_record.ciphertext,
+                            blob_record.value_nonce.as_slice(),
+                            blob_record.aad_schema_version,
+                            blob_record.created_at,
+                        ],
+                    )
+                    .map_err(map_apply_sqlite_error)?;
+                applied.blob_count = applied.blob_count.saturating_add(1);
+                conflicts.applied = conflicts.applied.saturating_add(1);
+            }
+            Some(local) => {
+                let incoming = decode_bundle_blob(blob)?;
+                let identical = local.encrypted_dek == incoming.encrypted_dek
+                    && local.ciphertext == incoming.ciphertext
+                    && local.value_nonce == incoming.value_nonce;
+                if identical {
+                    conflicts.identical = conflicts.identical.saturating_add(1);
+                    continue;
+                }
+                let decision = resolve_divergent(
+                    resolution,
+                    &mut conflicts,
+                    &mut divergent_summary,
+                    "blob",
+                    &format!("{}@{}", blob.secret_id, blob.version),
+                );
+                if matches!(decision, DivergentDecision::Apply) {
+                    transaction
+                        .execute(
+                            "UPDATE blobs
+                             SET encrypted_dek = ?3, ciphertext = ?4, value_nonce = ?5,
+                                 aad_schema_version = ?6, created_at = ?7
+                             WHERE secret_id = ?1 AND version = ?2",
+                            params![
+                                incoming.secret_id,
+                                incoming.version,
+                                incoming.encrypted_dek,
+                                incoming.ciphertext,
+                                incoming.value_nonce.as_slice(),
+                                incoming.aad_schema_version,
+                                incoming.created_at,
+                            ],
+                        )
+                        .map_err(map_apply_sqlite_error)?;
+                    applied.blob_count = applied.blob_count.saturating_add(1);
+                }
+            }
+        }
+    }
+
+    if !divergent_summary.is_empty()
+        && matches!(resolution, ConflictResolution::InteractiveRequired)
+    {
+        transaction.rollback().map_err(|error| {
+            metadata_invalid_error(format!("apply transaction rollback failed: {error}"))
+        })?;
+        return Ok(ApplyOutcome::InteractiveRequired { divergent: divergent_summary });
+    }
+
+    if include_audit && let Some(audit_chain) = payload.audit_chain.as_ref() {
+        insert_imported_audit_chain(
+            &transaction,
+            project_id,
+            &bundle_digest_bytes,
+            manifest,
+            audit_chain,
+            now,
+        )?;
+    }
+
+    transaction.commit().map_err(|error| {
+        metadata_invalid_error(format!("apply transaction commit failed: {error}"))
+    })?;
+    Ok(ApplyOutcome::Applied { applied, conflicts })
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum DivergentDecision {
+    Apply,
+    Skip,
+    Defer,
+}
+
+fn resolve_divergent(
+    resolution: ConflictResolution,
+    conflicts: &mut BundleConflictCounts,
+    divergent: &mut Vec<String>,
+    family: &str,
+    identifier: &str,
+) -> DivergentDecision {
+    conflicts.divergent = conflicts.divergent.saturating_add(1);
+    match resolution {
+        ConflictResolution::AcceptIncoming => {
+            conflicts.applied = conflicts.applied.saturating_add(1);
+            DivergentDecision::Apply
+        }
+        ConflictResolution::AcceptLocal => {
+            conflicts.rejected = conflicts.rejected.saturating_add(1);
+            DivergentDecision::Skip
+        }
+        ConflictResolution::InteractiveRequired => {
+            divergent.push(format!("{family}/{identifier}: divergent"));
+            DivergentDecision::Defer
+        }
+    }
+}
+
+#[derive(Debug)]
+struct LocalProfileRow {
+    name: String,
+    dangerous: bool,
+    created_at: i64,
+}
+
+fn read_local_profile(
+    transaction: &rusqlite::Transaction<'_>,
+    project_id: &str,
+    profile_id: &str,
+) -> Result<Option<LocalProfileRow>, CliError> {
+    use rusqlite::OptionalExtension;
+    transaction
+        .query_row(
+            "SELECT name, dangerous, created_at
+             FROM profiles
+             WHERE id = ?1 AND project_id = ?2",
+            params![profile_id, project_id],
+            |row| {
+                Ok(LocalProfileRow {
+                    name: row.get(0)?,
+                    dangerous: row.get(1)?,
+                    created_at: row.get(2)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(map_apply_sqlite_error)
+}
+
+#[derive(Debug)]
+struct LocalSecretRow {
+    profile_id: String,
+    name: String,
+    source: String,
+    origin: String,
+    current_version: u32,
+    state: String,
+    created_at: i64,
+    updated_at: i64,
+    last_rotated_at: Option<i64>,
+    deleted_at: Option<i64>,
+}
+
+fn read_local_secret(
+    transaction: &rusqlite::Transaction<'_>,
+    secret_id: &str,
+) -> Result<Option<LocalSecretRow>, CliError> {
+    use rusqlite::OptionalExtension;
+    transaction
+        .query_row(
+            "SELECT profile_id, name, source, origin, current_version, state,
+                    created_at, updated_at, last_rotated_at, deleted_at
+             FROM secrets
+             WHERE id = ?1",
+            params![secret_id],
+            |row| {
+                Ok(LocalSecretRow {
+                    profile_id: row.get(0)?,
+                    name: row.get(1)?,
+                    source: row.get(2)?,
+                    origin: row.get(3)?,
+                    current_version: row.get(4)?,
+                    state: row.get(5)?,
+                    created_at: row.get(6)?,
+                    updated_at: row.get(7)?,
+                    last_rotated_at: row.get(8)?,
+                    deleted_at: row.get(9)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(map_apply_sqlite_error)
+}
+
+#[derive(Debug)]
+struct LocalSecretVersionRow {
+    source: String,
+    origin: String,
+    state: String,
+    created_at: i64,
+    deprecated_at: Option<i64>,
+    grace_until: Option<i64>,
+    purged_at: Option<i64>,
+}
+
+fn read_local_secret_version(
+    transaction: &rusqlite::Transaction<'_>,
+    secret_id: &str,
+    version: u32,
+) -> Result<Option<LocalSecretVersionRow>, CliError> {
+    use rusqlite::OptionalExtension;
+    transaction
+        .query_row(
+            "SELECT source, origin, state, created_at, deprecated_at, grace_until, purged_at
+             FROM secret_versions
+             WHERE secret_id = ?1 AND version = ?2",
+            params![secret_id, version],
+            |row| {
+                Ok(LocalSecretVersionRow {
+                    source: row.get(0)?,
+                    origin: row.get(1)?,
+                    state: row.get(2)?,
+                    created_at: row.get(3)?,
+                    deprecated_at: row.get(4)?,
+                    grace_until: row.get(5)?,
+                    purged_at: row.get(6)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(map_apply_sqlite_error)
+}
+
+#[derive(Debug)]
+struct LocalBlobRow {
+    encrypted_dek: Vec<u8>,
+    ciphertext: Vec<u8>,
+    value_nonce: [u8; 24],
+}
+
+fn read_local_blob(
+    transaction: &rusqlite::Transaction<'_>,
+    secret_id: &str,
+    version: u32,
+) -> Result<Option<LocalBlobRow>, CliError> {
+    use rusqlite::OptionalExtension;
+    transaction
+        .query_row(
+            "SELECT encrypted_dek, ciphertext, value_nonce
+             FROM blobs
+             WHERE secret_id = ?1 AND version = ?2",
+            params![secret_id, version],
+            |row| {
+                let nonce_bytes: Vec<u8> = row.get(2)?;
+                let mut nonce = [0_u8; 24];
+                if nonce_bytes.len() != 24 {
+                    return Err(rusqlite::Error::InvalidColumnType(
+                        2,
+                        "blobs.value_nonce".to_owned(),
+                        rusqlite::types::Type::Blob,
+                    ));
+                }
+                nonce.copy_from_slice(&nonce_bytes);
+                Ok(LocalBlobRow {
+                    encrypted_dek: row.get(0)?,
+                    ciphertext: row.get(1)?,
+                    value_nonce: nonce,
+                })
+            },
+        )
+        .optional()
+        .map_err(map_apply_sqlite_error)
+}
+
+fn deprecate_local_current_version(
+    transaction: &rusqlite::Transaction<'_>,
+    secret_id: &str,
+    now: i64,
+) -> Result<(), CliError> {
+    transaction
+        .execute(
+            "UPDATE secret_versions
+             SET state = 'deprecated', deprecated_at = ?2, grace_until = ?2
+             WHERE secret_id = ?1 AND state = 'current'",
+            params![secret_id, now],
+        )
+        .map_err(map_apply_sqlite_error)?;
+    Ok(())
+}
+
+fn insert_secret_version(
+    transaction: &rusqlite::Transaction<'_>,
+    version: &SealedBundleSecretVersionV1,
+) -> Result<(), CliError> {
+    transaction
+        .execute(
+            "INSERT INTO secret_versions(
+               secret_id, version, source, origin, state, created_at,
+               deprecated_at, grace_until, purged_at
+             )
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                version.secret_id,
+                version.version,
+                version.source,
+                version.origin,
+                version.state,
+                version.created_at,
+                version.deprecated_at,
+                version.grace_until,
+                version.purged_at,
+            ],
+        )
+        .map_err(map_apply_sqlite_error)?;
+    Ok(())
+}
+
+fn decode_bundle_blob(blob: &SealedBundleBlobV1) -> Result<SecretBlobRecord, CliError> {
+    let encrypted_dek = BASE64URL_NOPAD
+        .decode(blob.encrypted_dek_b64.as_bytes())
+        .map_err(|_| bundle_verification_error("blob encrypted_dek_b64 is not valid base64url"))?;
+    let ciphertext = BASE64URL_NOPAD
+        .decode(blob.ciphertext_b64.as_bytes())
+        .map_err(|_| bundle_verification_error("blob ciphertext_b64 is not valid base64url"))?;
+    let nonce_bytes = BASE64URL_NOPAD
+        .decode(blob.value_nonce_b64.as_bytes())
+        .map_err(|_| bundle_verification_error("blob value_nonce_b64 is not valid base64url"))?;
+    if nonce_bytes.len() != 24 {
+        return Err(bundle_verification_error("blob value_nonce must be 24 bytes"));
+    }
+    let mut value_nonce = [0_u8; 24];
+    value_nonce.copy_from_slice(&nonce_bytes);
+    Ok(SecretBlobRecord {
+        secret_id: blob.secret_id.clone(),
+        version: blob.version,
+        encrypted_dek,
+        ciphertext,
+        value_nonce,
+        aad_schema_version: blob.aad_schema_version,
+        created_at: blob.created_at,
+    })
+}
+
+fn command_policy_value(policy: &SealedBundleCommandPolicyV1) -> Value {
+    serde_json::to_value(policy).unwrap_or(Value::Null)
+}
+
+fn parse_key_purpose(value: &str) -> Result<KeyPurpose, CliError> {
+    match value {
+        v if v == KeyPurpose::ProfileSecret.as_str() => Ok(KeyPurpose::ProfileSecret),
+        v if v == KeyPurpose::ProfileFingerprint.as_str() => Ok(KeyPurpose::ProfileFingerprint),
+        v if v == KeyPurpose::ProjectMetadata.as_str() => Ok(KeyPurpose::ProjectMetadata),
+        v if v == KeyPurpose::Audit.as_str() => Ok(KeyPurpose::Audit),
+        other => Err(bundle_verification_error(format!(
+            "unknown profile key purpose in bundle: {other}"
+        ))),
+    }
+}
+
+#[allow(clippy::needless_pass_by_value)]
+fn map_apply_sqlite_error(error: rusqlite::Error) -> CliError {
+    metadata_invalid_error(format!("apply step failed: {error}"))
+}
+
+fn decode_bundle_digest(digest: &str) -> Result<[u8; 32], CliError> {
+    if digest.len() != 64 {
+        return Err(metadata_invalid_error("bundle digest must be 64 hex characters"));
+    }
+    let mut output = [0_u8; 32];
+    for (index, chunk) in digest.as_bytes().chunks_exact(2).enumerate() {
+        let high = bundle_hex_nibble(chunk[0])?;
+        let low = bundle_hex_nibble(chunk[1])?;
+        output[index] = (high << 4) | low;
+    }
+    Ok(output)
+}
+
+fn bundle_hex_nibble(byte: u8) -> Result<u8, CliError> {
+    match byte {
+        b'0'..=b'9' => Ok(byte - b'0'),
+        b'a'..=b'f' => Ok(byte - b'a' + 10),
+        b'A'..=b'F' => Ok(byte - b'A' + 10),
+        _ => Err(metadata_invalid_error("bundle digest must be hex encoded")),
+    }
+}
+
+/// Inserts the bundle's encrypted audit-chain payload as one
+/// `imported_audit_chains` row. Full HMAC-chain verification happens in
+/// the sibling `bundle-include-audit-import` slice; this writer covers
+/// the apply-time persistence so test assertions can observe the row.
+fn insert_imported_audit_chain(
+    transaction: &rusqlite::Transaction<'_>,
+    project_id: &str,
+    bundle_digest: &[u8; 32],
+    manifest: &BundleManifest,
+    audit_chain: &SealedAuditChainPayloadV1,
+    now: i64,
+) -> Result<(), CliError> {
+    let chain_id = generate_imported_audit_chain_id()?;
+    let source_device_fingerprint = manifest
+        .recipient_fingerprints
+        .first()
+        .cloned()
+        .unwrap_or_else(|| format_hex(bundle_digest));
+    let checkpoint_hmac = BASE64URL_NOPAD
+        .decode(audit_chain.checkpoint_hmac_b64.as_bytes())
+        .map_err(|_| bundle_verification_error("audit chain checkpoint hmac is not base64url"))?;
+    if checkpoint_hmac.len() != AUDIT_HMAC_LEN {
+        return Err(bundle_verification_error("audit chain checkpoint hmac must be 32 bytes"));
+    }
+    let encrypted_rows = BASE64URL_NOPAD
+        .decode(audit_chain.encrypted_rows_b64.as_bytes())
+        .map_err(|_| bundle_verification_error("audit chain ciphertext is not base64url"))?;
+    let nonce = BASE64URL_NOPAD
+        .decode(audit_chain.nonce_b64.as_bytes())
+        .map_err(|_| bundle_verification_error("audit chain nonce is not base64url"))?;
+    if nonce.len() != 24 {
+        return Err(bundle_verification_error("audit chain nonce must be 24 bytes"));
+    }
+    transaction
+        .execute(
+            "INSERT INTO imported_audit_chains(
+               id, project_id, source_device_fingerprint, bundle_digest, checkpoint_sequence,
+               checkpoint_hmac, encrypted_rows, nonce, aad_schema_version, imported_at
+             )
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![
+                chain_id,
+                project_id,
+                source_device_fingerprint,
+                bundle_digest.as_slice(),
+                audit_chain.checkpoint_sequence,
+                checkpoint_hmac,
+                encrypted_rows,
+                nonce,
+                audit_chain.aad_schema_version,
+                now,
+            ],
+        )
+        .map_err(map_apply_sqlite_error)?;
+    Ok(())
+}
+
+fn generate_imported_audit_chain_id() -> Result<String, CliError> {
+    let random: [u8; 16] = locket_crypto::random_bytes::<16>()?;
+    Ok(format!("lk_chain_{}", format_hex(&random)))
 }
 
 fn build_import_device_private_key_storage(
@@ -939,6 +1910,9 @@ struct BundleAuditRequest<'a> {
     include_audit_requested: Option<bool>,
     user_verification: UserVerificationAudit,
     decrypted_counts: Option<&'a ImportedBundleCounts>,
+    applied_counts: Option<&'a AppliedBundleCounts>,
+    conflict_counts: Option<&'a BundleConflictCounts>,
+    applied: Option<bool>,
 }
 
 trait BundleAuditSubject {
@@ -1056,6 +2030,7 @@ fn write_bundle_verify_audit_if_available(
     Ok(())
 }
 
+#[allow(clippy::too_many_lines)]
 fn write_bundle_audit_if_available(
     context: &RuntimeContext,
     store: &mut Store,
@@ -1113,6 +2088,39 @@ fn write_bundle_audit_if_available(
         metadata.insert("blob_count".to_owned(), Value::from(counts.blob_count));
         metadata
             .insert("command_policy_count".to_owned(), Value::from(counts.command_policy_count));
+    }
+    if let Some(applied_counts) = request.applied_counts {
+        metadata
+            .insert("applied_profile_count".to_owned(), Value::from(applied_counts.profile_count));
+        metadata
+            .insert("applied_secret_count".to_owned(), Value::from(applied_counts.secret_count));
+        metadata.insert(
+            "applied_secret_version_count".to_owned(),
+            Value::from(applied_counts.secret_version_count),
+        );
+        metadata.insert("applied_blob_count".to_owned(), Value::from(applied_counts.blob_count));
+        metadata.insert(
+            "applied_command_policy_count".to_owned(),
+            Value::from(applied_counts.command_policy_count),
+        );
+        metadata.insert(
+            "applied_profile_key_count".to_owned(),
+            Value::from(applied_counts.profile_key_count),
+        );
+    }
+    if let Some(conflict_counts) = request.conflict_counts {
+        let mut entry = Map::new();
+        entry.insert("identical".to_owned(), Value::from(conflict_counts.identical));
+        entry.insert("newer_incoming".to_owned(), Value::from(conflict_counts.newer_incoming));
+        entry.insert("divergent".to_owned(), Value::from(conflict_counts.divergent));
+        entry
+            .insert("deleted_vs_active".to_owned(), Value::from(conflict_counts.deleted_vs_active));
+        entry.insert("applied".to_owned(), Value::from(conflict_counts.applied));
+        entry.insert("rejected".to_owned(), Value::from(conflict_counts.rejected));
+        metadata.insert("conflict_counts".to_owned(), Value::Object(entry));
+    }
+    if let Some(applied) = request.applied {
+        metadata.insert("applied".to_owned(), Value::from(applied));
     }
     metadata
         .insert("user_verification".to_owned(), serde_json::to_value(request.user_verification)?);
