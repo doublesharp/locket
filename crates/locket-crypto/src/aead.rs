@@ -18,9 +18,9 @@ pub fn aead_encrypt(
     plaintext: &[u8],
     aad: &[u8],
 ) -> CryptoResult<Vec<u8>> {
-    let cipher = XChaCha20Poly1305::new(Key::from_slice(key));
+    let cipher = XChaCha20Poly1305::new(&Key::from(*key));
     cipher
-        .encrypt(XNonce::from_slice(nonce), Payload { msg: plaintext, aad })
+        .encrypt(&XNonce::from(*nonce), Payload { msg: plaintext, aad })
         .map_err(|_| CryptoError::EncryptionFailed)
 }
 
@@ -30,8 +30,8 @@ pub fn aead_decrypt(
     ciphertext: &[u8],
     aad: &[u8],
 ) -> CryptoResult<Vec<u8>> {
-    let cipher = XChaCha20Poly1305::new(Key::from_slice(key));
+    let cipher = XChaCha20Poly1305::new(&Key::from(*key));
     cipher
-        .decrypt(XNonce::from_slice(nonce), Payload { msg: ciphertext, aad })
+        .decrypt(&XNonce::from(*nonce), Payload { msg: ciphertext, aad })
         .map_err(|_| CryptoError::DecryptionFailed)
 }

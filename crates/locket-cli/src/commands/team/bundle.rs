@@ -1407,7 +1407,7 @@ fn insert_imported_audit_chain(
                 project_id,
                 source_device_fingerprint,
                 bundle_digest.as_slice(),
-                audit_chain.checkpoint_sequence,
+                audit_chain.checkpoint_sequence as i64,
                 checkpoint_hmac_bytes,
                 encrypted_rows,
                 nonce,
@@ -1905,9 +1905,9 @@ fn encrypt_audit_chain(
         checkpoint_sequence,
         &checkpoint_hmac,
     );
-    let cipher = XChaCha20Poly1305::new(Key::from_slice(&key));
+    let cipher = XChaCha20Poly1305::new(&Key::from(key));
     let ciphertext = cipher
-        .encrypt(XNonce::from_slice(&nonce), Payload { msg: plaintext.as_slice(), aad: &aad })
+        .encrypt(&XNonce::from(nonce), Payload { msg: plaintext.as_slice(), aad: &aad })
         .map_err(|_| metadata_invalid_error("audit chain encryption failed"))?;
 
     Ok(SealedAuditChainPayloadV1 {
@@ -1962,12 +1962,17 @@ fn decrypt_audit_chain(
         payload.checkpoint_sequence,
         &checkpoint_hmac,
     );
-    let cipher = XChaCha20Poly1305::new(Key::from_slice(&key_bytes));
+    let key_array: [u8; 32] = key_bytes
+        .as_slice()
+        .try_into()
+        .map_err(|_| bundle_verification_error("audit chain encryption key must be 32 bytes"))?;
+    let nonce_array: [u8; 24] = nonce_bytes
+        .as_slice()
+        .try_into()
+        .map_err(|_| bundle_verification_error("audit chain nonce must be 24 bytes"))?;
+    let cipher = XChaCha20Poly1305::new(&Key::from(key_array));
     let plaintext = cipher
-        .decrypt(
-            XNonce::from_slice(&nonce_bytes),
-            Payload { msg: ciphertext.as_slice(), aad: &aad },
-        )
+        .decrypt(&XNonce::from(nonce_array), Payload { msg: ciphertext.as_slice(), aad: &aad })
         .map_err(|_| bundle_verification_error("audit chain decryption failed"))?;
     let rows: Vec<SealedAuditChainRowV1> = serde_json::from_slice(&plaintext).map_err(|error| {
         bundle_verification_error(format!("audit chain row decode failed: {error}"))

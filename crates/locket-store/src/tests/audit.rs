@@ -154,7 +154,7 @@ fn audited_secret_create_appends_hmac_chained_row() -> Result<(), Box<dyn Error>
         [],
         |row| {
             Ok((
-                row.get::<_, u64>(0)?,
+                row.get::<_, i64>(0)? as u64,
                 row.get::<_, String>(1)?,
                 row.get::<_, String>(2)?,
                 row.get::<_, Vec<u8>>(3)?,
@@ -504,11 +504,11 @@ fn rolled_back_transaction_leaves_no_audit_row_or_sequence_gap() -> Result<(), B
 
     test_store.store.append_audit(&[42; 32], &write)?;
 
-    let landed_sequence: u64 = test_store.store.connection().query_row(
+    let landed_sequence = test_store.store.connection().query_row(
         "SELECT sequence FROM audit_log WHERE project_id = 'lk_proj_test'",
         [],
-        |row| row.get(0),
-    )?;
+        |row| row.get::<_, i64>(0),
+    )? as u64;
     assert_eq!(
         landed_sequence, 1,
         "next successful append must reuse sequence 1, not skip past the rolled-back attempt"

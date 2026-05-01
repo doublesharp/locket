@@ -165,7 +165,7 @@ struct StoredAuditRow {
 
 pub fn audit_log_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AuditLogRecord> {
     Ok(AuditLogRecord {
-        sequence: row.get(0)?,
+        sequence: row.get::<_, i64>(0)? as u64,
         timestamp: row.get(1)?,
         profile_id: row.get(2)?,
         action: row.get(3)?,
@@ -201,7 +201,7 @@ fn read_audit_rows(
             let previous_hmac = row.get::<_, Vec<u8>>(8)?;
             let hmac = row.get::<_, Vec<u8>>(9)?;
             Ok((
-                row.get::<_, u64>(0)?,
+                row.get::<_, i64>(0)? as u64,
                 row.get::<_, u16>(1)?,
                 row.get::<_, i64>(2)?,
                 row.get::<_, String>(3)?,
@@ -404,7 +404,7 @@ pub fn append_audit(
              ORDER BY sequence DESC
              LIMIT 1",
             [audit.project_id],
-            |row| Ok((row.get::<_, u64>(0)?, row.get::<_, Vec<u8>>(1)?)),
+            |row| Ok((row.get::<_, i64>(0)? as u64, row.get::<_, Vec<u8>>(1)?)),
         )
         .optional()?;
     let (sequence, previous_hmac) = match previous {
@@ -442,7 +442,7 @@ pub fn append_audit(
          VALUES (?1, ?2, 1, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         params![
             audit.project_id,
-            sequence,
+            sequence as i64,
             audit.timestamp,
             audit.profile_id,
             audit.action,
@@ -1034,7 +1034,7 @@ impl Store {
         let rows = statement
             .query_map([project_id], |row| {
                 Ok((
-                    row.get::<_, u64>(0)?,
+                    row.get::<_, i64>(0)? as u64,
                     row.get::<_, u16>(1)?,
                     row.get::<_, i64>(2)?,
                     row.get::<_, Option<String>>(3)?,

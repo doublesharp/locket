@@ -21,7 +21,7 @@
 use std::collections::BTreeSet;
 use std::io::{Read, Write};
 
-use bech32::{ToBase32, Variant};
+use bech32::{Bech32, Hrp};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use thiserror::Error;
@@ -250,10 +250,13 @@ pub fn decrypt_bundle_payload_with_x25519_secret(
     encrypted_payload: &[u8],
     secret_key: &[u8; 32],
 ) -> BundleEncryptionResult<Vec<u8>> {
-    let encoded = bech32::encode("AGE-SECRET-KEY-", secret_key.to_base32(), Variant::Bech32)
-        .map_err(|error| {
-            BundleEncryptionError::Decrypt(format!("invalid x25519 secret: {error}"))
-        })?;
+    let hrp = Hrp::parse("AGE-SECRET-KEY-").map_err(|error| {
+        BundleEncryptionError::Decrypt(format!("invalid x25519 secret hrp: {error}"))
+    })?;
+    let encoded = bech32::encode::<Bech32>(hrp, secret_key).map_err(|error| {
+        BundleEncryptionError::Decrypt(format!("invalid x25519 secret: {error}"))
+    })?;
+    let encoded = encoded.to_uppercase();
     let identity: age::x25519::Identity = encoded
         .parse()
         .map_err(|message: &'static str| BundleEncryptionError::Decrypt(message.to_owned()))?;
@@ -416,10 +419,13 @@ fn age_recipient_from_x25519_public_key(
     index: usize,
     public_key: &[u8; 32],
 ) -> BundleEncryptionResult<age::x25519::Recipient> {
-    let encoded =
-        bech32::encode("age", public_key.to_base32(), Variant::Bech32).map_err(|error| {
-            BundleEncryptionError::InvalidRecipient { index, message: error.to_string() }
-        })?;
+    let hrp = Hrp::parse("age").map_err(|error| BundleEncryptionError::InvalidRecipient {
+        index,
+        message: error.to_string(),
+    })?;
+    let encoded = bech32::encode::<Bech32>(hrp, public_key).map_err(|error| {
+        BundleEncryptionError::InvalidRecipient { index, message: error.to_string() }
+    })?;
     encoded.parse().map_err(|message: &'static str| BundleEncryptionError::InvalidRecipient {
         index,
         message: message.to_owned(),
@@ -545,7 +551,6 @@ fn read_slice<'data>(
 #[allow(clippy::cast_possible_truncation)]
 mod tests {
     use super::*;
-    use bech32::FromBase32;
 
     fn sample_manifest() -> BundleManifest {
         BundleManifest {
@@ -559,9 +564,9 @@ mod tests {
     }
 
     fn public_key_bytes(recipient: &age::x25519::Recipient) -> [u8; 32] {
-        let (hrp, data, _) = bech32::decode(&recipient.to_string()).unwrap();
-        assert_eq!(hrp, "age");
-        Vec::<u8>::from_base32(&data).unwrap().try_into().unwrap()
+        let (hrp, data) = bech32::decode(&recipient.to_string()).unwrap();
+        assert_eq!(hrp.as_str(), "age");
+        data.try_into().unwrap()
     }
 
     #[test]

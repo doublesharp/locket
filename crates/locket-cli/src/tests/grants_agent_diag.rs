@@ -900,8 +900,8 @@ fn expired_runtime_session_preserved_fields(
                 ended_at: row.get(4)?,
                 exit_status: row.get(5)?,
                 secret_names_json: row.get(6)?,
-                spawn_audit_sequence: row.get(7)?,
-                completion_audit_sequence: row.get(8)?,
+                spawn_audit_sequence: row.get::<_, i64>(7)? as u64,
+                completion_audit_sequence: row.get::<_, i64>(8)? as u64,
             })
         },
     )?)

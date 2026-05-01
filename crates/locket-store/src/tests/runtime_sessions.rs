@@ -47,8 +47,8 @@ fn runtime_sessions_insert_complete_and_list_incomplete() -> Result<(), Box<dyn 
                 row.get::<_, String>(2)?,
                 row.get::<_, u32>(3)?,
                 row.get::<_, i64>(4)?,
-                row.get::<_, u64>(5)?,
-                row.get::<_, u64>(6)?,
+                row.get::<_, i64>(5)? as u64,
+                row.get::<_, i64>(6)? as u64,
             ))
         },
     )?;
@@ -105,8 +105,8 @@ fn runtime_session_secret_names_are_names_only_and_pruned_alone() -> Result<(), 
                 row.get::<_, Option<i64>>(4)?,
                 row.get::<_, Option<i32>>(5)?,
                 row.get::<_, String>(6)?,
-                row.get::<_, u64>(7)?,
-                row.get::<_, Option<u64>>(8)?,
+                row.get::<_, i64>(7)? as u64,
+                row.get::<_, Option<i64>>(8)?.map(|value| value as u64),
             ))
         },
     )?;
@@ -256,7 +256,7 @@ fn spawn_and_completion_audit_sequences_are_preserved() -> Result<(), Box<dyn Er
         "SELECT spawn_audit_sequence, completion_audit_sequence
          FROM runtime_sessions WHERE id = 'lk_sess_seq'",
         [],
-        |row| Ok((row.get::<_, u64>(0)?, row.get::<_, u64>(1)?)),
+        |row| Ok((row.get::<_, i64>(0)? as u64, row.get::<_, i64>(1)? as u64)),
     )?;
     assert_eq!(spawn_seq, 7);
     assert_eq!(completion_seq, 8);

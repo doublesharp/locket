@@ -129,7 +129,7 @@ fn validate_id(value: &str, expected_prefix: &'static str) -> Result<(), Invalid
 
 fn generate_id(prefix: &str) -> Result<String, IdGenerationError> {
     let mut random = [0_u8; GENERATED_ID_RANDOM_BYTES];
-    getrandom::getrandom(&mut random).map_err(|_| IdGenerationError)?;
+    getrandom::fill(&mut random).map_err(|_| IdGenerationError)?;
 
     let mut value = String::with_capacity(prefix.len() + GENERATED_ID_SUFFIX_CHARS);
     value.push_str(prefix);
