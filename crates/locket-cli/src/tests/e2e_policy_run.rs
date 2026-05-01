@@ -383,6 +383,118 @@ require_user_verification = true
     Ok(())
 }
 
+/// Merge mode: parent environment is inherited and Locket secrets overlay it.
+/// The audit row records `env_mode = "merge"`.
+#[test]
+fn e2e_policy_run_env_mode_merge_inherits_parent_and_overlays_secrets()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+
+    let db_args = test_secret_write_args("DATABASE_URL");
+    crate::set_secret_value(&context, &db_args, "postgres://localhost/app", "manual", 1_000)?;
+
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(directory.path().join("locket.toml"))?
+        .write_all(
+            br#"
+[commands.merge_check]
+argv = ["/bin/sh", "-c", "printf 'PATH=%s\nDB=%s\n' \"${PATH:+present}\" \"${DATABASE_URL:+present}\" > merge-presence.txt"]
+required_secrets = ["DATABASE_URL"]
+env_mode = "merge"
+"#,
+        )?;
+
+    run_with_context(
+        Cli::try_parse_from(["locket", "run", "merge_check"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+
+    // Parent PATH is inherited because merge starts from parent env, and the
+    // Locket secret is overlaid on the merged child env.
+    let presence = std::fs::read_to_string(directory.path().join("merge-presence.txt"))?;
+    assert_eq!(presence, "PATH=present\nDB=present\n");
+    assert!(!presence.contains("postgres://localhost/app"), "merge run must not leak secret values");
+
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let metadata: String = store.connection().query_row(
+        "SELECT metadata_json FROM audit_log WHERE action = 'RUN_POLICY'
+         ORDER BY sequence DESC LIMIT 1",
+        [],
+        |row| row.get(0),
+    )?;
+    let metadata_json: serde_json::Value = serde_json::from_str(&metadata)?;
+    assert_eq!(metadata_json["env_mode"], "merge");
+    assert_eq!(metadata_json["status"], "SUCCESS");
+    assert_eq!(metadata_json["policy_id"], "merge_check");
+    assert_eq!(metadata_json["secret_names"], json!(["DATABASE_URL"]));
+    Ok(())
+}
+
+/// Passthrough mode: parent environment passes through and Locket secrets
+/// authorized for the policy are still injected. The audit row records
+/// `env_mode = "passthrough"`.
+#[test]
+fn e2e_policy_run_env_mode_passthrough_preserves_parent_environment()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+
+    let api_args = test_secret_write_args("API_KEY");
+    crate::set_secret_value(&context, &api_args, "sk-test-value", "manual", 1_000)?;
+
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(directory.path().join("locket.toml"))?
+        .write_all(
+            br#"
+[commands.passthrough_check]
+argv = ["/bin/sh", "-c", "printf 'PATH=%s\nAPI=%s\n' \"${PATH:+present}\" \"${API_KEY:+present}\" > passthrough-presence.txt"]
+optional_secrets = ["API_KEY"]
+env_mode = "passthrough"
+"#,
+        )?;
+
+    run_with_context(
+        Cli::try_parse_from(["locket", "run", "passthrough_check"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+
+    // Parent PATH is passed through to the child process under passthrough mode.
+    let presence = std::fs::read_to_string(directory.path().join("passthrough-presence.txt"))?;
+    assert_eq!(presence, "PATH=present\nAPI=present\n");
+    assert!(
+        !presence.contains("sk-test-value"),
+        "passthrough run must not leak secret values"
+    );
+
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let metadata: String = store.connection().query_row(
+        "SELECT metadata_json FROM audit_log WHERE action = 'RUN_POLICY'
+         ORDER BY sequence DESC LIMIT 1",
+        [],
+        |row| row.get(0),
+    )?;
+    let metadata_json: serde_json::Value = serde_json::from_str(&metadata)?;
+    assert_eq!(metadata_json["env_mode"], "passthrough");
+    assert_eq!(metadata_json["status"], "SUCCESS");
+    assert_eq!(metadata_json["policy_id"], "passthrough_check");
+    Ok(())
+}
+
 #[cfg(unix)]
 struct TestAgent {
     shutdown: Arc<tokio::sync::Notify>,
