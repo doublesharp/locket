@@ -53,15 +53,17 @@ Every shipped slice satisfies these:
 
 ## Critical Path
 
-Updated 2026-04-30. One remaining critical-path item.
+Updated 2026-05-01. Bundle apply/conflict handling is now
+integrated on `main`; team sync parity and imported-audit-chain work
+are unblocked. One remaining critical-path item.
 
 | # | Task | Unblocks |
 | - | --- | --- |
-| 1 | bundle-apply-and-conflicts | bundle roundtrip e2e, full team sync, parity test with `team accept` (shipped on a worktree branch awaiting integration) |
+| 1 | LocalUserVerifier Windows + Linux backends | `--verify-user` works without a memory-only stub on Windows / Linux hosts (macOS shipped) |
 
 ## Deferred integrations (worktree branches preserved)
 
-Three worktrees ship completed work but couldn't be cleanly merged
+Two worktrees ship completed work but couldn't be cleanly merged
 to `main` in this round due to stale-base destructive diffs. Their
 content is preserved in worktree branches; integration is a careful
 manual surgical task for a future session.
@@ -74,12 +76,6 @@ manual surgical task for a future session.
   `Store::initialize_schema` returns `SchemaMigrationOutcome` and a
   helper appends a `SCHEMA_MIGRATE` audit row when a real version
   bump occurs. Adds `passkey register` audit emission scaffold.
-- **`worktree-agent-a5470fd22c9d6a3fc` (bundle-apply-and-conflicts):**
-  the full bundle-import apply chain in one transaction with the
-  conflict matrix (identical / newer-incoming / divergent /
-  deleted-vs-active), rotate-with-no-grace lifecycle, and 6 e2e
-  tests. Touches `crates/locket-cli/src/commands/team/bundle.rs` +
-  audit.rs known-fields + new e2e tests.
 
 ## P0 — Correctness / Security Drift (audit findings)
 
