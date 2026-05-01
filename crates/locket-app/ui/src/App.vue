@@ -361,7 +361,7 @@ function triggerVerify(): void {
   void refreshSecrets();
   void refreshVersions();
   void refreshRuntimeSessions();
-  void refreshAuditActivity();
+  void refreshAuditLog();
   void verifyAuditChain();
 }
 
@@ -553,7 +553,6 @@ watch(runtimeSessionRequest, () => {
   void refreshRuntimeSessions();
 });
 
-const auditActivityRequest = computed<ListAuditRequest | null>(() => {
 const auditRequest = computed<ListAuditRequest | null>(() => {
   const projectId = status.value?.project_id;
   if (projectId === null || projectId === undefined) {
@@ -564,7 +563,6 @@ const auditRequest = computed<ListAuditRequest | null>(() => {
     profile_id: null,
     action: null,
     status: null,
-    limit: 25,
     limit: 100,
     redact_names: settings.value.privacyRedactNames,
   };
@@ -583,16 +581,6 @@ function auditErrorLabel(error: AgentClientError): string {
   }
 }
 
-let auditRefreshSequence = 0;
-
-async function refreshAuditActivity(): Promise<void> {
-  const request = auditActivityRequest.value;
-  const sequence = (auditRefreshSequence += 1);
-  if (request === null) {
-    auditRows.value = [];
-    auditError.value = null;
-    auditLoading.value = false;
-    auditLastRefreshed.value = undefined;
 function auditStatusLabel(status: string): AuditLogRow['status'] {
   switch (status.toUpperCase()) {
     case 'SUCCESS':
@@ -657,7 +645,7 @@ async function refreshAuditLog(): Promise<void> {
   }
   if (result.ok) {
     const hmacOk = result.value.chain_status.hmac_ok !== false;
-    auditRows.value = result.value.rows.map((row) => auditLogRow(row, hmacOk));
+    auditRows.value = result.value.rows.map((row) => auditLogRow(row, result.value.chain_status));
     auditChainOk.value = hmacOk;
     auditLastRefreshed.value = new Date().toISOString();
   } else {
@@ -667,10 +655,6 @@ async function refreshAuditLog(): Promise<void> {
   }
   auditLoading.value = false;
 }
-
-watch(auditActivityRequest, () => {
-  void refreshAuditActivity();
-});
 
 const recentActivityRows = computed(() => {
   const okCount = auditRows.value.filter((row) => row.status === 'OK').length;
@@ -688,12 +672,7 @@ const recentActivityRows = computed(() => {
       tone: auditChainOk.value ? 'ok' : 'warn',
     },
   ];
-    auditChainOk.value = result.value.chain_status.hmac_ok !== false;
-    auditRows.value = result.value.rows.map((row) => auditLogRow(row, result.value.chain_status));
-  } else {
-    auditRows.value = [];
-  }
-}
+});
 
 async function verifyAuditChain(): Promise<void> {
   const request = auditRequest.value;

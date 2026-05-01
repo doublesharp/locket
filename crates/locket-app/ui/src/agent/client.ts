@@ -14,8 +14,6 @@ import type {
   CopyResponse,
   ListAuditRequest,
   ListAuditResponse,
-  ListSecretsRequest,
-  ListSecretsResponse,
   ListVersionsRequest,
   ListVersionsResponse,
   ListRuntimeSessionsRequest,
@@ -192,6 +190,8 @@ export async function writeConfig(
   request: WriteConfigRequest,
 ): Promise<AgentResult<WriteConfigResponse>> {
   return callTyped<WriteConfigResponse>('agent_write_config', { request });
+}
+
 export async function listAudit(
   request: ListAuditRequest,
 ): Promise<AgentResult<ListAuditResponse>> {
@@ -202,6 +202,8 @@ export async function verifyAudit(
   request: VerifyAuditRequest,
 ): Promise<AgentResult<VerifyAuditResponse>> {
   return callTyped<VerifyAuditResponse>('agent_verify_audit', { request });
+}
+
 export async function listVersions(
   request: ListVersionsRequest,
 ): Promise<AgentResult<ListVersionsResponse>> {
