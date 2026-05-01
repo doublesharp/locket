@@ -52,7 +52,8 @@ pub(crate) use commands::exec::docker::{
 };
 #[cfg(test)]
 pub(crate) use commands::exec::run::{
-    ComposeConfigCommand, resolve_policy_external_env,
+    ComposeConfigCommand, ide_env_source_context_for_tests, prepare_agent_policy_access_for_tests,
+    resolve_external_env_ide_with_session_id, resolve_policy_external_env,
     resolve_policy_external_env_with_compose_config_command,
 };
 pub(crate) use commands::project::install_hooks::git_dir_for_worktree;
