@@ -431,7 +431,7 @@ fn device_audit_metadata(
     })
 }
 
-fn device_audit_write<'a>(
+const fn device_audit_write<'a>(
     project_id: &'a str,
     action: &'static str,
     command: &'static str,

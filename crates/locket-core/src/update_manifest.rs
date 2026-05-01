@@ -342,6 +342,7 @@ fn signed_payload_bytes(payload: &UpdateManifestPayload) -> Result<Vec<u8>, Upda
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use data_encoding::BASE64URL_NOPAD;
     use ed25519_dalek::{Signer, SigningKey};
