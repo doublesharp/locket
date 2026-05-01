@@ -431,11 +431,54 @@ fn collect_diagnostics(
 
     checks.push(check_agent_placeholder(context));
     checks.push(check_hardening());
+    checks.push(check_degraded_audit_log(context));
     for check in SKIPPED_LOCKED_CHECKS {
         checks.push(DiagnosticCheck::skip(check, "locked-safe metadata-only invocation"));
     }
 
     DiagnosticReport::new(checks)
+}
+
+/// Checks the size and line count of the out-of-band degraded-audit log
+/// at `${LOCKET_HOME}/audit-degraded.log`.
+///
+/// - `pass` when the file is absent or empty.
+/// - `warn` when the file exists and is non-empty (reports bytes + line
+///   count; the operator should run `locket audit verify` and rotate
+///   the log once the underlying refusals have been investigated).
+/// - `fail` when the file exists but cannot be read.
+fn check_degraded_audit_log(context: &RuntimeContext) -> DiagnosticCheck {
+    let Some(home) = context.store_path.parent() else {
+        return DiagnosticCheck::pass(
+            "degraded_audit_log",
+            "absent (locket-home unresolved)",
+        );
+    };
+    let log_path = home.join(locket_platform::DEGRADED_AUDIT_LOG_FILENAME);
+    match fs::metadata(&log_path) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            DiagnosticCheck::pass("degraded_audit_log", "absent")
+        }
+        Err(error) => DiagnosticCheck::fail("degraded_audit_log", false, error.to_string()),
+        Ok(metadata) => {
+            let bytes = metadata.len();
+            if bytes == 0 {
+                return DiagnosticCheck::pass("degraded_audit_log", "empty");
+            }
+            match fs::read_to_string(&log_path) {
+                Ok(body) => {
+                    let lines = body.lines().count();
+                    DiagnosticCheck::warn(
+                        "degraded_audit_log",
+                        format!("bytes={bytes} lines={lines}"),
+                    )
+                }
+                Err(error) => {
+                    DiagnosticCheck::fail("degraded_audit_log", false, error.to_string())
+                }
+            }
+        }
+    }
 }
 
 fn check_locket_toml(path: &Path) -> DiagnosticCheck {

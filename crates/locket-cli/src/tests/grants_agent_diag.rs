@@ -699,7 +699,51 @@ fn doctor_reports_locked_safe_diagnostics_and_exit_codes() -> Result<(), Box<dyn
             .as_array()
             .is_some_and(|names| names.iter().any(|name| name == "sqlite_integrity"))
     );
+    assert!(
+        doctor_metadata["check_names"]
+            .as_array()
+            .is_some_and(|names| names.iter().any(|name| name == "degraded_audit_log"))
+    );
     assert!(!doctor_metadata.to_string().contains(directory.path().to_string_lossy().as_ref()));
+    assert!(doctor_output.contains("pass degraded_audit_log: absent"));
+    Ok(())
+}
+
+#[test]
+fn doctor_warns_when_degraded_audit_log_is_non_empty()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    let mut init_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut init_output,
+    )?;
+    run_git(directory.path(), &["init"])?;
+
+    // Seed the degraded-audit log with two metadata-only refusal rows.
+    let degraded_log = directory.path().join(locket_platform::DEGRADED_AUDIT_LOG_FILENAME);
+    fs::write(
+        &degraded_log,
+        "{\"schema_version\":1,\"action\":\"REVEAL\",\"status\":\"DENIED_LOCKED\",\"ts_unix_nanos\":1700000000000000000,\"failure_reason\":\"vault_locked\",\"command\":\"get --reveal\"}\n\
+         {\"schema_version\":1,\"action\":\"COPY\",\"status\":\"DENIED_LOCKED\",\"ts_unix_nanos\":1700000000000000001,\"failure_reason\":\"vault_locked\",\"command\":\"agent.Copy\"}\n",
+    )?;
+    let bytes = fs::metadata(&degraded_log)?.len();
+
+    let mut doctor_output = Vec::new();
+    let code = run_with_context(
+        Cli::try_parse_from(["locket", "doctor"])?,
+        &context,
+        &mut doctor_output,
+    )?;
+    // `warn` alone does not trip the exit code; without other failures
+    // `doctor` exits 0.
+    assert_eq!(code, 0);
+    let doctor_output = String::from_utf8(doctor_output)?;
+    assert!(doctor_output.contains("warn degraded_audit_log:"));
+    assert!(doctor_output.contains(&format!("bytes={bytes}")));
+    assert!(doctor_output.contains("lines=2"));
     Ok(())
 }
 
