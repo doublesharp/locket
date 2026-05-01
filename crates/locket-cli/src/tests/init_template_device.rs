@@ -2470,6 +2470,44 @@ fn team_accept_revoked_invite_fails_closed_with_denial_audit()
     Ok(())
 }
 
+#[test]
+fn team_accept_confirmation_mismatch_fails_closed_with_denial_audit()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = team_accept_invite_fixture(
+        "lk_invite_accept_confirm",
+        4_102_444_800,
+        None,
+        None,
+        None,
+        None,
+    )?;
+    let accept_context = context_with_confirmation(&fixture.context, "not-the-issuer\n");
+    let result = run_with_context(
+        Cli::try_parse_from([
+            "locket",
+            "team",
+            "accept",
+            fixture.invite_path.to_str().ok_or("non-utf8 invite path")?,
+        ])?,
+        &accept_context,
+        &mut Vec::new(),
+    );
+
+    assert_typed_error(
+        result,
+        locket_core::LocketError::ConfirmationFailed,
+        "confirmation did not match issuer fingerprint",
+    )?;
+    assert_invite_not_accepted(&fixture.directory, &fixture.invite_id)?;
+    assert_team_accept_denial_audit(
+        &fixture.directory,
+        &fixture.invite_id,
+        "confirmation_mismatch",
+        locket_core::LocketError::ConfirmationFailed,
+    )?;
+    Ok(())
+}
+
 struct TeamAcceptInviteFixture {
     directory: tempfile::TempDir,
     context: RuntimeContext,

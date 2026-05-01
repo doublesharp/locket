@@ -260,7 +260,7 @@ fn team_accept_command(
         preflight_team_accept(context, &invite)?;
 
     write_accept_summary(output, &invite)?;
-    confirm_team_accept(context, &invite)?;
+    confirm_team_accept(context, &mut store, &project_id, &invite)?;
     accept_invite_with_audit(context, &mut store, &project_id, &local_device, &invite)?;
 
     writeln!(output, "team_accept: accepted")?;
@@ -422,9 +422,22 @@ fn ensure_invite_pending_with_denial(
     Ok(())
 }
 
-fn confirm_team_accept(context: &RuntimeContext, invite: &SignedInvite) -> Result<(), CliError> {
+fn confirm_team_accept(
+    context: &RuntimeContext,
+    store: &mut locket_store::Store,
+    project_id: &str,
+    invite: &SignedInvite,
+) -> Result<(), CliError> {
     let confirmation = context.confirmation_reader.read_confirmation("team accept")?;
     if confirmation.trim_end_matches(['\r', '\n']) != invite.payload.issuer_device_fingerprint {
+        append_team_accept_denial(
+            context,
+            store,
+            project_id,
+            invite,
+            "confirmation_mismatch",
+            LocketError::ConfirmationFailed,
+        )?;
         return Err(confirmation_failed_error("confirmation did not match issuer fingerprint"));
     }
     Ok(())
