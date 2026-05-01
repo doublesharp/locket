@@ -792,6 +792,7 @@ mod tests {
             store_path: directory.path().join("store.db"),
             config_path: directory.path().join("config.toml"),
             template_dir: directory.path().join(".locket").join("templates"),
+            agent_data_dir: None,
             key_store: Arc::new(KeyringMasterKeyStore),
             automation_client_key_store: Arc::new(KeyringAutomationClientKeyStore),
             passphrase_store: PassphraseFallbackMasterKeyStore::new(

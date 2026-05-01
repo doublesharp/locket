@@ -435,6 +435,7 @@ fn collect_diagnostics(
     }
 
     checks.push(check_agent_placeholder(context));
+    checks.push(check_agent_socket_path_matches_spec(context));
     checks.push(check_degraded_audit_log_perms(context));
     checks.push(check_hardening());
     checks.push(check_degraded_audit_log(context));
@@ -747,6 +748,90 @@ fn check_agent_placeholder(context: &RuntimeContext) -> DiagnosticCheck {
         "unavailable last_known_pid=no"
     };
     DiagnosticCheck::pass("agent_placeholder", status)
+}
+
+/// Confirms the agent socket path follows the platform-specific spec
+/// described in `docs/specs/agent.md:18-21`:
+///
+/// - Linux: `$XDG_RUNTIME_DIR/locket/agent.sock` (or `~/.locket/agent.sock`).
+/// - macOS: `~/Library/Application Support/locket/agent.sock`.
+/// - Windows: today reported as `skipped` because the named-pipe path
+///   resolution stub does not yet wire `\\.\pipe\locket-agent-<sid>`.
+///
+/// Tests build a `RuntimeContext` with `agent_data_dir = None` and a
+/// tempdir-local `store_path`; the check is reported as `skipped` in
+/// that case so legacy fixtures continue to pass without forcing every
+/// test to point at the user's real `XDG_RUNTIME_DIR`.
+fn check_agent_socket_path_matches_spec(context: &RuntimeContext) -> DiagnosticCheck {
+    const NAME: &str = "agent_socket_path_spec";
+    let Some(configured) = context.agent_data_dir.as_ref() else {
+        return DiagnosticCheck::skip(
+            NAME,
+            "agent_data_dir override not set (test/runtime context)",
+        );
+    };
+    let configured_socket = configured.join("agent.sock");
+    let actual_socket = agent_socket_path(context);
+    if configured_socket != actual_socket {
+        return DiagnosticCheck::fail(
+            NAME,
+            false,
+            format!(
+                "agent socket path drifted from configured agent_data_dir: actual={} configured={}",
+                actual_socket.display(),
+                configured_socket.display(),
+            ),
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        return DiagnosticCheck::skip(
+            NAME,
+            "windows named-pipe path resolution is a documented follow-up",
+        );
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
+            return DiagnosticCheck::warn(NAME, "HOME unset; cannot validate spec path");
+        };
+        #[cfg(target_os = "linux")]
+        let expected_candidates: Vec<PathBuf> = {
+            let mut candidates = Vec::new();
+            if let Some(value) = std::env::var_os("XDG_RUNTIME_DIR") {
+                candidates.push(PathBuf::from(value).join("locket"));
+            }
+            candidates.push(home.join(".locket"));
+            candidates
+        };
+        #[cfg(target_os = "macos")]
+        let expected_candidates: Vec<PathBuf> =
+            vec![home.join("Library").join("Application Support").join("locket")];
+        #[cfg(all(not(target_os = "linux"), not(target_os = "macos")))]
+        let expected_candidates: Vec<PathBuf> = vec![home.join(".locket")];
+
+        if expected_candidates.iter().any(|candidate| candidate == configured) {
+            DiagnosticCheck::pass(
+                NAME,
+                format!("platform={} dir={}", std::env::consts::OS, configured.display()),
+            )
+        } else {
+            DiagnosticCheck::warn(
+                NAME,
+                format!(
+                    "agent_data_dir does not match spec candidates: dir={} expected_one_of={}",
+                    configured.display(),
+                    expected_candidates
+                        .iter()
+                        .map(|p| p.display().to_string())
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                ),
+            )
+        }
+    }
 }
 
 fn check_device_private_key_storage(

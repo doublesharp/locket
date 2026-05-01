@@ -229,6 +229,7 @@ pub(super) fn test_context_with_key_store_confirmation_and_secret(
         store_path: directory.path().join("store.db"),
         config_path: directory.path().join("config.toml"),
         template_dir: directory.path().join(".locket").join("templates"),
+        agent_data_dir: None,
         key_store,
         automation_client_key_store: Arc::new(MemoryAutomationClientKeyStore::default()),
         passphrase_store: PassphraseFallbackMasterKeyStore::new(

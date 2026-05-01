@@ -691,6 +691,7 @@ fn doctor_reports_locked_safe_diagnostics_and_exit_codes() -> Result<(), Box<dyn
     assert!(doctor_output.contains("pass trusted_roots"));
     assert!(doctor_output.contains("pass schema_migration_backups"));
     assert!(doctor_output.contains("skip audit_hmac_verification"));
+    assert!(doctor_output.contains("skip agent_socket_path_spec"));
     // The hardening check must surface every shipped mitigation. Tests
     // run as a child of cargo, so both helpers have been called at
     // process startup; the line is
@@ -714,7 +715,7 @@ fn doctor_reports_locked_safe_diagnostics_and_exit_codes() -> Result<(), Box<dyn
     assert_eq!(doctor_metadata["action"], "DOCTOR");
     assert_eq!(doctor_metadata["status"], "SUCCESS");
     assert_eq!(doctor_metadata["fail_count"], 0);
-    assert_eq!(doctor_metadata["skip_count"], 5);
+    assert_eq!(doctor_metadata["skip_count"], 6);
     assert!(
         doctor_metadata["check_names"]
             .as_array()
@@ -724,6 +725,11 @@ fn doctor_reports_locked_safe_diagnostics_and_exit_codes() -> Result<(), Box<dyn
         doctor_metadata["check_names"]
             .as_array()
             .is_some_and(|names| names.iter().any(|name| name == "degraded_audit_log"))
+    );
+    assert!(
+        doctor_metadata["check_names"]
+            .as_array()
+            .is_some_and(|names| names.iter().any(|name| name == "agent_socket_path_spec"))
     );
     assert!(!doctor_metadata.to_string().contains(directory.path().to_string_lossy().as_ref()));
     assert!(doctor_output.contains("pass degraded_audit_log: absent"));

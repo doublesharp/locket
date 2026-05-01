@@ -157,21 +157,23 @@ PK already covers the version side.)
 
 ### C. CLI / runtime / agent
 
-- [~] (in-flight: agent 14c) **agent-register-revoke-client-rpc**: `agent.md:86-87`
-  requires `RegisterClient` + `RevokeClient` RPCs storing scoped
-  automation-client public key + `CLIENT_ADD`/`CLIENT_REVOKE` audit.
-  Variants exist in `method.rs:17,19` but `server.rs:823-828` falls
-  through to "method not implemented in this build". Test at
-  `tests.rs:2532-2559` even pins missing-dispatch behavior. Touches:
-  new agent handlers, `CLIENT_ADD`/`CLIENT_REVOKE` audit emission,
-  server.rs dispatch arms.
-- [~] (in-flight: agent 14c) **agent-socket-path-xdg-runtime-dir**: `agent.md:18-21`
-  requires Linux `$XDG_RUNTIME_DIR/locket/agent.sock`, macOS
-  `~/Library/Application Support/locket/agent.sock`, Windows
-  `\\.\pipe\locket-agent-<sid>`. `main.rs:2122` derives socket path
-  from `context.store_path.parent().join("agent.sock")` — sockets
-  land next to the SQLite store. Touches: `agent_socket_path`,
-  `agent_pid_path`, `agent_data_dir` + Windows named-pipe branch.
+(`agent-register-revoke-client-rpc` shipped — agent dispatch now
+implements `RegisterClient` / `RevokeClient`, writes automation
+client rows, and emits `CLIENT_ADD` / `CLIENT_REVOKE` audit rows.)
+(`agent-socket-path-xdg-runtime-dir` shipped for Unix production
+paths — Linux uses `$XDG_RUNTIME_DIR/locket` when set with fallback
+to `~/.locket`; macOS uses `~/Library/Application Support/locket`.
+Windows named-pipe/SID transport remains tracked below.)
+- [ ] **agent-windows-named-pipe-sid-path**: follow-up from shipped
+  14c socket placement work. `agent.md:20` requires
+  `\\.\pipe\locket-agent-<sid>` with a current-user-only DACL.
+  Current production startup now uses `$XDG_RUNTIME_DIR/locket` on
+  Linux and `~/Library/Application Support/locket` on macOS, but the
+  Windows/non-Unix branch still falls back to `<HOME>/.locket` because
+  the CLI/agent surface is Unix-socket-only and does not resolve the
+  user's SID. Touches: Windows pipe listener/client transport,
+  `resolve_default_agent_data_dir`, startup diagnostics, and pipe ACL
+  tests.
 (`external-env-file-error-band` shipped — resolve_external_env_file now surfaces InvalidPolicy (band 65); 3 existing tests updated.)
 (`external-env-file-symlink-tests` shipped — two #[cfg(unix)] tests added for symlink-out (rejected) and symlink-in (accepted).)
 
@@ -296,6 +298,14 @@ table, reveal/copy, scan-known-values, list-secrets/versions,
 `ResolveReference`, `PrepareExec`, `SetSecret`, `SetActiveProfile`,
 `Unlock` (agent-owned unwrap), `RegisterIdeEnvSession`, and
 `IdeEnvSession` dispatch are all implemented.
+
+(14c shipped `RegisterClient` / `RevokeClient` dispatch with
+automation-client row writes and `CLIENT_ADD` / `CLIENT_REVOKE` audit
+emission. 14c also moved production Unix socket, pid, and log placement
+to the spec paths: `$XDG_RUNTIME_DIR/locket` on Linux when set, falling
+back to `~/.locket`, and `~/Library/Application Support/locket` on
+macOS. The remaining Windows named-pipe/SID transport work is tracked
+as `agent-windows-named-pipe-sid-path` above.)
 
 (No remaining daemon stubs at the dispatch level. New gaps go here
 as they are discovered.)

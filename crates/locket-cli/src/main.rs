@@ -2119,7 +2119,21 @@ pub(crate) fn ensure_trusted_project_root(
     Err(project_root_untrusted_error())
 }
 
-fn agent_data_dir(context: &RuntimeContext) -> PathBuf {
+/// Resolves the on-disk directory the agent uses for its socket, pid
+/// file, and rotated log files.
+///
+/// Honors `RuntimeContext::agent_data_dir` when set so production
+/// startup can pin the spec-mandated platform path
+/// (`$XDG_RUNTIME_DIR/locket`, `~/Library/Application Support/locket`,
+/// or the Windows stub described in
+/// [`crate::runtime::context::resolve_default_agent_data_dir`]). Tests
+/// that build a `RuntimeContext` directly leave the field at `None`
+/// and inherit the legacy `store_path.parent()` derivation so each
+/// test's tempdir continues to own its own socket.
+pub(crate) fn agent_data_dir(context: &RuntimeContext) -> PathBuf {
+    if let Some(dir) = context.agent_data_dir.as_ref() {
+        return dir.clone();
+    }
     context.store_path.parent().map_or_else(|| context.cwd.clone(), Path::to_path_buf)
 }
 

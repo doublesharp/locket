@@ -2516,7 +2516,7 @@ mod server_tests {
     }
 
     #[tokio::test]
-    async fn unimplemented_methods_return_protocol_error_envelopes()
+    async fn unknown_methods_return_protocol_error_envelopes()
     -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempdir()?;
         tighten_directory(directory.path())?;
@@ -2535,9 +2535,16 @@ mod server_tests {
         });
 
         let mut client = UnixStream::connect(&socket_path).await?;
-        // `RegisterClient` is one of the methods that still has no dispatch
-        // arm, so it exercises the catch-all `ProtocolError` branch.
-        let request = RequestEnvelope::new("req-2", AgentMethod::RegisterClient, Value::Null);
+        // Construct an envelope with a `kind` value that does not parse to a
+        // known `AgentMethod`. This exercises the dispatcher's catch-all
+        // `ProtocolError` arm without depending on any specific method
+        // remaining unimplemented.
+        let request = RequestEnvelope {
+            v: PROTOCOL_VERSION,
+            id: "req-2".into(),
+            kind: "DefinitelyNotAnRpc".into(),
+            payload: Value::Null,
+        };
         let frame = encode_frame(&request, DEFAULT_MAX_MESSAGE_SIZE)?;
         client.write_all(&frame).await?;
         client.flush().await?;
@@ -2559,7 +2566,6 @@ mod server_tests {
         };
         assert_eq!(error.id, "req-2");
         assert_eq!(error.error, "ProtocolError");
-        assert!(error.message.contains("RegisterClient"));
         assert!(!error.retryable);
 
         drop(client);
@@ -3462,5 +3468,242 @@ async fn register_command_policies_does_not_drop_other_projects()
         ]
     };
     assert_eq!(snapshot_counts, [1, 1]);
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn register_client_inserts_record_and_appends_audit() -> Result<(), Box<dyn std::error::Error>>
+{
+    use crate::server::{AgentSocketState, dispatch};
+
+    let directory = tempfile::tempdir()?;
+    let store_path = directory.path().join("store.db");
+    let mut store = locket_store::Store::open(&store_path)?;
+    store.initialize_schema()?;
+    store.insert_project_if_absent("p-clients", "clients project", 1)?;
+    drop(store);
+
+    let state = AgentSocketState::locked("test-version");
+    unlock_profile_test_state(&state, "p-clients").await;
+
+    let public_key = [7_u8; 32];
+    let request = RequestEnvelope::new(
+        "rc-1",
+        AgentMethod::RegisterClient,
+        json!({
+            "project_id": "p-clients",
+            "store_path": store_path,
+            "name": "ci",
+            "public_key": public_key.to_vec(),
+            "storage": "external",
+            "allowed_actions": ["run-policy"],
+            "allowed_policies": ["deploy"],
+            "created_by_locket": false,
+        }),
+    );
+    let ResponseEnvelope::Success(success) = dispatch(&request, &state).await else {
+        return Err("RegisterClient should succeed".into());
+    };
+    let client_id = success.payload["client_id"].as_str().expect("client_id").to_owned();
+    let fingerprint = success.payload["fingerprint"].as_str().expect("fingerprint").to_owned();
+    assert!(client_id.starts_with("lk_client_"));
+    assert!(!fingerprint.is_empty());
+
+    let store = locket_store::Store::open(&store_path)?;
+    let row = store.get_automation_client("p-clients", &client_id)?.expect("client row written");
+    assert_eq!(row.name, "ci");
+    assert_eq!(row.public_key, public_key.to_vec());
+    assert_eq!(row.allowed_actions, vec!["run-policy".to_owned()]);
+    assert_eq!(row.allowed_policies, vec!["deploy".to_owned()]);
+    assert!(row.revoked_at.is_none());
+
+    let audit_rows = store.connection().query_row::<i64, _, _>(
+        "SELECT COUNT(*) FROM audit_log WHERE project_id = 'p-clients' AND action = 'CLIENT_ADD'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(audit_rows, 1, "CLIENT_ADD audit row should be appended");
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn register_client_requires_unlock() -> Result<(), Box<dyn std::error::Error>> {
+    use crate::server::{AgentSocketState, dispatch};
+
+    let directory = tempfile::tempdir()?;
+    let store_path = directory.path().join("store.db");
+    let mut store = locket_store::Store::open(&store_path)?;
+    store.initialize_schema()?;
+    store.insert_project_if_absent("p-locked-clients", "locked", 1)?;
+    drop(store);
+
+    let state = AgentSocketState::locked("test-version");
+    let public_key = [1_u8; 32].to_vec();
+    let request = RequestEnvelope::new(
+        "rc-locked",
+        AgentMethod::RegisterClient,
+        json!({
+            "project_id": "p-locked-clients",
+            "store_path": store_path,
+            "name": "ci",
+            "public_key": public_key,
+            "storage": "external",
+            "allowed_actions": ["run-policy"],
+            "allowed_policies": ["deploy"],
+        }),
+    );
+    let ResponseEnvelope::Error(error) = dispatch(&request, &state).await else {
+        return Err("locked vault must reject RegisterClient".into());
+    };
+    assert_eq!(error.error, "UnlockRequired");
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn register_client_rejects_invalid_metadata() -> Result<(), Box<dyn std::error::Error>> {
+    use crate::server::{AgentSocketState, dispatch};
+
+    let directory = tempfile::tempdir()?;
+    let store_path = directory.path().join("store.db");
+    let mut store = locket_store::Store::open(&store_path)?;
+    store.initialize_schema()?;
+    store.insert_project_if_absent("p-bad-clients", "bad", 1)?;
+    drop(store);
+
+    let state = AgentSocketState::locked("test-version");
+    unlock_profile_test_state(&state, "p-bad-clients").await;
+
+    let public_key = [1_u8; 32].to_vec();
+    let request = RequestEnvelope::new(
+        "rc-bad",
+        AgentMethod::RegisterClient,
+        json!({
+            "project_id": "p-bad-clients",
+            "store_path": store_path,
+            "name": "BadName",
+            "public_key": public_key,
+            "storage": "external",
+            "allowed_actions": ["run-policy"],
+            "allowed_policies": ["deploy"],
+        }),
+    );
+    let ResponseEnvelope::Error(error) = dispatch(&request, &state).await else {
+        return Err("invalid name must be rejected".into());
+    };
+    assert_eq!(error.error, "MetadataInvalid");
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn revoke_client_marks_row_and_appends_audit() -> Result<(), Box<dyn std::error::Error>> {
+    use crate::server::{AgentSocketState, dispatch};
+
+    let directory = tempfile::tempdir()?;
+    let store_path = directory.path().join("store.db");
+    let mut store = locket_store::Store::open(&store_path)?;
+    store.initialize_schema()?;
+    store.insert_project_if_absent("p-rev", "revoke project", 1)?;
+    drop(store);
+
+    let state = AgentSocketState::locked("test-version");
+    unlock_profile_test_state(&state, "p-rev").await;
+
+    let public_key = [9_u8; 32].to_vec();
+    let register = RequestEnvelope::new(
+        "reg",
+        AgentMethod::RegisterClient,
+        json!({
+            "project_id": "p-rev",
+            "store_path": store_path,
+            "name": "ci",
+            "public_key": public_key,
+            "storage": "external",
+            "allowed_actions": ["run-policy"],
+            "allowed_policies": ["deploy"],
+        }),
+    );
+    let ResponseEnvelope::Success(success) = dispatch(&register, &state).await else {
+        return Err("RegisterClient should succeed".into());
+    };
+    let client_id = success.payload["client_id"].as_str().expect("client_id").to_owned();
+
+    let revoke = RequestEnvelope::new(
+        "rev",
+        AgentMethod::RevokeClient,
+        json!({
+            "project_id": "p-rev",
+            "store_path": store_path,
+            "client": client_id.clone(),
+        }),
+    );
+    let ResponseEnvelope::Success(success) = dispatch(&revoke, &state).await else {
+        return Err("RevokeClient should succeed".into());
+    };
+    assert_eq!(success.payload["client_id"], serde_json::Value::String(client_id.clone()));
+    assert_eq!(success.payload["newly_revoked"], serde_json::Value::Bool(true));
+
+    let store = locket_store::Store::open(&store_path)?;
+    let row = store.get_automation_client("p-rev", &client_id)?.expect("client row");
+    assert!(row.revoked_at.is_some(), "client must be marked revoked");
+
+    let audit_rows = store.connection().query_row::<i64, _, _>(
+        "SELECT COUNT(*) FROM audit_log WHERE project_id = 'p-rev' AND action = 'CLIENT_REVOKE'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(audit_rows, 1, "CLIENT_REVOKE audit row should be appended");
+
+    // Idempotent re-revocation: second call returns newly_revoked=false and
+    // does not append an additional audit row.
+    let second = RequestEnvelope::new(
+        "rev2",
+        AgentMethod::RevokeClient,
+        json!({
+            "project_id": "p-rev",
+            "store_path": store_path,
+            "client": client_id,
+        }),
+    );
+    let ResponseEnvelope::Success(success) = dispatch(&second, &state).await else {
+        return Err("second RevokeClient should still succeed".into());
+    };
+    assert_eq!(success.payload["newly_revoked"], serde_json::Value::Bool(false));
+    let audit_rows_after = store.connection().query_row::<i64, _, _>(
+        "SELECT COUNT(*) FROM audit_log WHERE project_id = 'p-rev' AND action = 'CLIENT_REVOKE'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(audit_rows_after, 1, "CLIENT_REVOKE audit row stays at one");
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn revoke_client_returns_policy_not_found_for_unknown_client()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::server::{AgentSocketState, dispatch};
+
+    let directory = tempfile::tempdir()?;
+    let store_path = directory.path().join("store.db");
+    let mut store = locket_store::Store::open(&store_path)?;
+    store.initialize_schema()?;
+    store.insert_project_if_absent("p-missing", "missing", 1)?;
+    drop(store);
+
+    let state = AgentSocketState::locked("test-version");
+    unlock_profile_test_state(&state, "p-missing").await;
+
+    let request = RequestEnvelope::new(
+        "rev-missing",
+        AgentMethod::RevokeClient,
+        json!({
+            "project_id": "p-missing",
+            "store_path": store_path,
+            "client": "lk_client_does_not_exist",
+        }),
+    );
+    let ResponseEnvelope::Error(error) = dispatch(&request, &state).await else {
+        return Err("missing client must surface PolicyNotFound".into());
+    };
+    assert_eq!(error.error, "PolicyNotFound");
     Ok(())
 }

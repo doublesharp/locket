@@ -8,6 +8,8 @@ mod audit;
 mod audit_deny;
 mod audit_verify;
 mod auth;
+#[cfg(unix)]
+mod clients;
 mod config;
 mod degraded_audit;
 mod device_members;
@@ -39,6 +41,10 @@ mod versions;
 pub use audit::{AuditChainStatus, ListAuditRequest, ListAuditResponse, ListAuditRow};
 pub use audit_verify::{VerifyAuditRequest, VerifyAuditResponse};
 pub use auth::{ClientHelloRequest, ClientHelloResponse};
+#[cfg(unix)]
+pub use clients::{
+    RegisterClientRequest, RegisterClientResponse, RevokeClientRequest, RevokeClientResponse,
+};
 pub use config::{
     AgentConfigSettings, DangerousProfileSetting, EffectiveUserVerificationSettings,
     ReadConfigRequest, UserVerificationSettings, WriteConfigChanges, WriteConfigRequest,

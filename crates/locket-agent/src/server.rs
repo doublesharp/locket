@@ -820,6 +820,12 @@ pub async fn dispatch(envelope: &RequestEnvelope, state: &AgentSocketState) -> R
         Ok(method @ (AgentMethod::RegisterIdeEnvSession | AgentMethod::IdeEnvSession)) => {
             ide_env_session_dispatch(method, envelope, state).await
         }
+        Ok(AgentMethod::RegisterClient) => {
+            crate::clients::handle_register_client(envelope, state, current_unix_nanos()).await
+        }
+        Ok(AgentMethod::RevokeClient) => {
+            crate::clients::handle_revoke_client(envelope, state, current_unix_nanos()).await
+        }
         Ok(method) => ResponseEnvelope::Error(ErrorEnvelope::new(
             envelope.id.clone(),
             "ProtocolError",
