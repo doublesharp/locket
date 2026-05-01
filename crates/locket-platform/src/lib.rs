@@ -10,6 +10,10 @@ mod device_private_key;
 mod error;
 mod fs_helpers;
 mod locked_vault_audit;
+#[cfg(target_os = "macos")]
+mod macos_local_authentication;
+#[cfg(target_os = "macos")]
+mod macos_user_verifier;
 mod master_key;
 mod memory_lock;
 mod passphrase;
@@ -52,6 +56,11 @@ pub use user_verification::{
     LocalUserVerifier, MemoryLocalUserVerifier, UnavailableLocalUserVerifier,
 };
 
+#[cfg(target_os = "macos")]
+pub use macos_local_authentication::{LocalAuthError, evaluate_local_user};
+#[cfg(target_os = "macos")]
+pub use macos_user_verifier::MacosLocalUserVerifier;
+
 // Re-exports of crate-private helpers used by `tests.rs`.
 #[cfg(test)]
 pub(crate) use master_key::{decode_key, encode_key, master_key_account};
@@ -60,6 +69,24 @@ pub(crate) use master_key::{decode_key, encode_key, master_key_account};
 #[must_use]
 pub const fn platform_name() -> &'static str {
     std::env::consts::OS
+}
+
+/// Returns the default [`LocalUserVerifier`] for the current target.
+///
+/// On macOS this returns [`MacosLocalUserVerifier`], which delegates to
+/// `LocalAuthentication.framework` (`docs/specs/crypto.md:192-218`).
+/// On every other target this returns [`UnavailableLocalUserVerifier`]
+/// so callers fail closed until a platform backend ships.
+#[must_use]
+pub fn default_local_user_verifier() -> std::sync::Arc<dyn LocalUserVerifier + Send + Sync> {
+    #[cfg(target_os = "macos")]
+    {
+        std::sync::Arc::new(MacosLocalUserVerifier::new())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        std::sync::Arc::new(UnavailableLocalUserVerifier)
+    }
 }
 
 #[cfg(test)]

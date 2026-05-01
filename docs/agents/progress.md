@@ -184,22 +184,22 @@ skill set fits a leaf better.
 - [ ] `device init` first-run-on-machine bootstrap: master key,
   recovery envelope, and recovery code on a teammate clone
   (`docs/specs/team-sync-recovery.md`).
-- [ ] LocalUserVerifier macOS backend
-  (`docs/specs/crypto.md:192-218`). Plan: add a single-file
-  `crates/locket-platform/src/macos_local_authentication.rs` module
-  marked `#[allow(unsafe_code)]` (the only exception in the crate;
-  document why in a `// SAFETY-AUDIT:` comment block at the top
-  citing this section). Inside, expose ONE safe Rust function
-  `evaluate_local_user(reason: &str) -> Result<bool,
-  LocalAuthError>` that wraps the objc2 `LAContext`
-  `evaluatePolicy:localizedReason:reply:` flow. Implement the
-  outer `LocalUserVerifier` impl in a separate file
-  (`macos_user_verifier.rs`) with no `unsafe`; it just calls the
-  wrapper. Update the `unsafe-inventory` entry to list the new
-  module. Tests: `cfg(target_os = "macos")` integration check that
-  the wrapper round-trips a deterministic mock when
-  `LOCKET_TEST_LOCAL_AUTH=allow|deny`. Ship behind no flag once
-  green.
+- [x] LocalUserVerifier macOS backend
+  (`docs/specs/crypto.md:192-218`). Implemented:
+  `crates/locket-platform/src/macos_local_authentication.rs`
+  exposes the safe `evaluate_local_user(reason)` wrapper around
+  `LAContext::evaluatePolicy:localizedReason:reply:` via the
+  `objc2-local-authentication` 0.3 binding. The single `unsafe`
+  block is documented in a `SAFETY-AUDIT` comment block at the top
+  of that file. `crates/locket-platform/src/macos_user_verifier.rs`
+  hosts `MacosLocalUserVerifier` (zero `unsafe`) which maps the
+  bool outcome onto the `LocalUserVerifier` trait. The crate uses
+  inlined lints (`unsafe_code = "deny"` only in this crate) and
+  exposes `default_local_user_verifier()` from `lib.rs` so callers
+  switch backends per target. Tests round-trip the wrapper through
+  `LOCKET_TEST_LOCAL_AUTH=allow|deny|unavailable|timeout` without
+  invoking the framework; documented in
+  `docs/specs/engineering.md` under the `unsafe` inventory list.
 - [ ] LocalUserVerifier Windows Hello backend.
 - [ ] LocalUserVerifier Linux Secret Service / hardware-key-presence
   backend.

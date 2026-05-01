@@ -10,8 +10,33 @@ repository.workspace = true
 rust-version.workspace = true
 version.workspace = true
 
-[lints]
-workspace = true
+# NOTE: this crate cannot use `lints.workspace = true` because the
+# workspace `unsafe_code = "forbid"` lint cannot be overridden, and the
+# macOS LocalAuthentication backend in `src/macos_local_authentication.rs`
+# requires a single, isolated `unsafe` block to call into Apple's
+# Objective-C framework. The lints below mirror the workspace lints
+# (see the workspace `Cargo.toml`) but downgrade `unsafe_code` to
+# `deny`. See the `SAFETY-AUDIT` comment at the top of
+# `macos_local_authentication.rs`, which cites
+# `docs/specs/crypto.md:192-218`.
+[lints.rust]
+missing_docs = "warn"
+unsafe_code = "deny"
+unused_crate_dependencies = "warn"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+cargo = { level = "warn", priority = -1 }
+dbg_macro = "deny"
+expect_used = "deny"
+panic = "deny"
+print_stderr = "deny"
+print_stdout = "deny"
+todo = "deny"
+unimplemented = "deny"
+unwrap_used = "deny"
 
 [dependencies]
 data-encoding = { workspace = true }
@@ -25,6 +50,21 @@ zeroize = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 rustix = { workspace = true, features = ["mm", "process"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = { version = "0.6", default-features = false, features = ["alloc"] }
+objc2 = { version = "0.6", default-features = false, features = ["std"] }
+objc2-foundation = { version = "0.3", default-features = false, features = [
+  "alloc",
+  "NSError",
+  "NSString",
+] }
+objc2-local-authentication = { version = "0.3", default-features = false, features = [
+  "std",
+  "block2",
+  "LAContext",
+  "LAError",
+] }
 
 [dev-dependencies]
 tempfile = { workspace = true }
