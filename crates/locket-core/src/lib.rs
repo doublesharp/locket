@@ -12,6 +12,7 @@ pub mod error;
 pub mod id;
 pub mod invite;
 pub mod metadata;
+pub mod pgp_word_list;
 pub mod policy;
 pub mod privacy;
 pub mod profile_name;
@@ -47,6 +48,9 @@ pub use invite::{
     SignedInvite, TeamRole, device_fingerprint_v1, fingerprint_hex,
 };
 pub use metadata::{MetadataPrivacyFinding, MetadataValidationError, validate_metadata_field};
+pub use pgp_word_list::{
+    EVEN_SYLLABLE_WORDS, ODD_SYLLABLE_WORDS, SAFETY_WORD_COUNT, safety_words_from_fingerprint_hex,
+};
 pub use policy::{
     CommandPolicy, CommandSpec, ExternalEnvSource, MAX_COMMAND_POLICY_TTL_SECONDS, PolicyDocument,
     PolicyParseError,

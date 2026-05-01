@@ -165,8 +165,10 @@ skill set fits a leaf better.
 - [ ] Device descriptors (`lkdev1_` base64url JSON), v1 fingerprint
   hash, PGP-word-list safety-word derivation, and full local
   device-key lifecycle (`docs/specs/team-sync-recovery.md:50-58`).
-  Note: blocked previously on a license-compatible PGP word list
-  source — resolve before reclaiming.
+  `device-safety-words` shipped: canonical PGP word list (256 even +
+  256 odd, public domain) lives in
+  `crates/locket-core/src/pgp_word_list.rs` and produces 4 safety
+  words per fingerprint.
 - [ ] Invite issuer/recipient trust ceremony
   (`docs/specs/team-sync-recovery.md:56-69`). `invite-codec`,
   `invite-replay-protect`, `invite-clock-skew` shipped. Remaining:

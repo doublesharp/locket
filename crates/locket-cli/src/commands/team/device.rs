@@ -1,5 +1,5 @@
 use data_encoding::BASE64URL_NOPAD;
-use locket_core::{DeviceId, LocketError, ProjectConfig};
+use locket_core::{DeviceId, LocketError, ProjectConfig, safety_words_from_fingerprint_hex};
 use locket_crypto::{
     KeyPurpose, derive_recovery_key_v1, generate_key, generate_recovery_code_bytes,
     generate_recovery_salt,
@@ -424,16 +424,9 @@ pub fn device_fingerprint_hex(
 }
 
 pub(super) fn safety_words_from_fingerprint(fingerprint: &str) -> Vec<String> {
-    const WORDS: [&str; 16] = [
-        "amber", "basil", "cedar", "delta", "ember", "frost", "glade", "harbor", "indigo",
-        "juniper", "kelp", "linen", "maple", "north", "onyx", "prairie",
-    ];
-    fingerprint
-        .bytes()
-        .take(6)
-        .filter_map(|byte| char::from(byte).to_digit(16))
-        .filter_map(|index| WORDS.get(index as usize))
-        .map(|word| (*word).to_owned())
+    safety_words_from_fingerprint_hex(fingerprint)
+        .into_iter()
+        .map(str::to_owned)
         .collect()
 }
 
