@@ -4,7 +4,9 @@ Out-of-tree TypeScript skeleton for the Locket VS Code extension.
 
 This package hosts the VS Code extension backed by the local Locket
 agent. It includes a TypeScript agent socket client for the v1 framed
-JSON protocol; UI features land in follow-up slices.
+JSON protocol. The build/lint/test scripts remain scaffolded so
+follow-up UI subtasks can extend the extension without touching the
+project setup.
 
 ## Build
 
