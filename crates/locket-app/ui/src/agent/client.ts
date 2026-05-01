@@ -27,8 +27,11 @@ import type {
   PrepareExecRequest,
   PrepareExecResponse,
   ReadConfigRequest,
+  RegisterCommandPoliciesRequest,
   ResolveRequest,
   ResolveResponse,
+  SetActiveProfileRequest,
+  SetActiveProfileResponse,
   RevealRequest,
   RevealResponse,
   ScanRequest,
@@ -227,6 +230,28 @@ export async function listPolicies(
   return callTyped<ListPoliciesResponse>('agent_list_policies', { request });
 }
 
+/**
+ * Replace the agent's in-memory snapshot for a project. The desktop
+ * policy editor calls this for create / edit / delete operations; the
+ * agent appends the metadata-only `POLICY_UPDATE` audit row server-side.
+ */
+export async function registerCommandPolicies(
+  request: RegisterCommandPoliciesRequest,
+): Promise<AgentResult<void>> {
+  return callTyped<void>('agent_register_command_policies', { request });
+}
+
+/**
+ * Switch the active project profile. The agent enforces dangerous-
+ * profile gating via the typed `confirmation` field; the desktop
+ * surfaces a typed-confirmation modal before forwarding it.
+ */
+export async function setActiveProfile(
+  request: SetActiveProfileRequest,
+): Promise<AgentResult<SetActiveProfileResponse>> {
+  return callTyped<SetActiveProfileResponse>('agent_set_active_profile', { request });
+}
+
 export async function listDeviceMembers(
   request: ListDeviceMembersRequest,
 ): Promise<AgentResult<ListDeviceMembersResponse>> {
@@ -267,4 +292,29 @@ export async function listVersions(
   request: ListVersionsRequest,
 ): Promise<AgentResult<ListVersionsResponse>> {
   return callTyped<ListVersionsResponse>('agent_list_versions', { request });
+}
+
+/**
+ * Wire shape for the `agent_copy_secret` Tauri command. The desktop
+ * shell calls the agent's `Copy` RPC, writes the returned value to the
+ * clipboard, and schedules a TTL-bound clear; the webview only sees
+ * the metadata-only outcome.
+ */
+export interface CopySecretRequest {
+  secret_name: string;
+  profile_id: string;
+  project_id?: string;
+  store_path?: string;
+  grant_id?: string;
+  ttl_seconds?: number;
+}
+
+export type CopySecretResponse =
+  | { kind: 'copied'; ttl_seconds: number }
+  | { kind: 'unsupported'; unsupported_reason: string };
+
+export async function copySecret(
+  request: CopySecretRequest,
+): Promise<AgentResult<CopySecretResponse>> {
+  return callTyped<CopySecretResponse>('agent_copy_secret', { request });
 }

@@ -1,0 +1,331 @@
+<script setup lang="ts">
+import { computed, ref } from 'vue';
+
+import {
+  isValidProfileName,
+  profileEntries,
+  profileSwitchRequiresTypedConfirmation,
+  type ProfileEntry,
+  type ProfileSwitchState,
+} from '../profile/switcher';
+
+defineOptions({ name: 'ProfileSwitcherView' });
+
+interface Props {
+  state: ProfileSwitchState;
+  privacyMode: boolean;
+  switching: boolean;
+  errorMessage?: string | null;
+  lastSwitchedAt?: string;
+}
+
+const props = defineProps<Props>();
+const emit = defineEmits<{
+  (
+    event: 'switch',
+    payload: { profileName: string; confirmation: string | undefined; dangerous: boolean },
+  ): void;
+  (event: 'select', entry: ProfileEntry): void;
+}>();
+
+const targetName = ref<string>('');
+const targetDangerous = ref<boolean>(false);
+const confirmation = ref<string>('');
+
+const entries = computed<ProfileEntry[]>(() => profileEntries(props.state));
+
+const effectiveDangerous = computed<boolean>(() => {
+  const name = targetName.value.trim();
+  if (name.length === 0) {
+    return false;
+  }
+  // If the typed name matches a listed entry, use its known flag;
+  // otherwise honor the user's explicit dangerous-target checkbox.
+  const matched = entries.value.find((entry) => entry.name === name);
+  if (matched) {
+    return matched.dangerous;
+  }
+  return targetDangerous.value;
+});
+
+const requiresConfirmation = computed<boolean>(() =>
+  profileSwitchRequiresTypedConfirmation(targetName.value.trim(), effectiveDangerous.value),
+);
+
+const validName = computed<boolean>(() => isValidProfileName(targetName.value));
+
+const canSubmit = computed<boolean>(() => {
+  if (props.switching || !validName.value) {
+    return false;
+  }
+  if (requiresConfirmation.value && confirmation.value.trim() !== targetName.value.trim()) {
+    return false;
+  }
+  return true;
+});
+
+function selectEntry(entry: ProfileEntry): void {
+  targetName.value = entry.name;
+  targetDangerous.value = entry.dangerous;
+  confirmation.value = '';
+  emit('select', entry);
+}
+
+function entryLabel(entry: ProfileEntry): string {
+  if (props.privacyMode) {
+    return entry.name === props.state.activeProfile ? 'active profile' : 'profile';
+  }
+  return entry.name;
+}
+
+function onSubmit(): void {
+  if (!canSubmit.value) {
+    return;
+  }
+  const trimmed = targetName.value.trim();
+  emit('switch', {
+    profileName: trimmed,
+    confirmation: requiresConfirmation.value ? confirmation.value.trim() : undefined,
+    dangerous: effectiveDangerous.value,
+  });
+}
+</script>
+
+<template>
+  <section class="view" aria-labelledby="profile-switcher-heading">
+    <header class="view__header">
+      <h2 id="profile-switcher-heading">Profiles</h2>
+      <span v-if="props.lastSwitchedAt" class="view__caption">
+        Last switch: <time :datetime="props.lastSwitchedAt">{{ props.lastSwitchedAt }}</time>
+      </span>
+    </header>
+
+    <p v-if="entries.length === 0" class="view__empty">
+      No profiles tracked yet. Type a target name below or run
+      <code>locket profile create &lt;name&gt;</code>.
+    </p>
+
+    <ul v-else class="profile-list" data-testid="profile-list">
+      <li
+        v-for="entry in entries"
+        :key="entry.name"
+        :class="[
+          'profile-list__item',
+          { 'profile-list__item--active': entry.name === props.state.activeProfile },
+        ]"
+      >
+        <button
+          type="button"
+          class="profile-list__btn"
+          :aria-current="entry.name === props.state.activeProfile ? 'true' : undefined"
+          :data-testid="`profile-entry-${entry.name}`"
+          @click="selectEntry(entry)"
+        >
+          <span class="profile-list__name">{{ entryLabel(entry) }}</span>
+          <span v-if="entry.dangerous" class="badge badge--warning">dangerous</span>
+          <span v-if="entry.name === props.state.activeProfile" class="badge badge--ok">active</span>
+        </button>
+      </li>
+    </ul>
+
+    <form class="switcher-form" data-testid="profile-switcher-form" @submit.prevent="onSubmit">
+      <h3>Switch to a profile</h3>
+
+      <label class="switcher-form__field">
+        <span>Target profile name</span>
+        <input
+          v-model="targetName"
+          type="text"
+          autocomplete="off"
+          spellcheck="false"
+          data-testid="profile-target-name"
+        />
+        <span v-if="targetName.length > 0 && !validName" class="switcher-form__error">
+          Name may contain letters, digits, dot, underscore, and dash.
+        </span>
+      </label>
+
+      <label class="switcher-form__check">
+        <input
+          v-model="targetDangerous"
+          type="checkbox"
+          :disabled="entries.some((entry) => entry.name === targetName.trim())"
+          data-testid="profile-target-dangerous"
+        />
+        Target profile is flagged dangerous
+      </label>
+
+      <label
+        v-if="requiresConfirmation"
+        class="switcher-form__field"
+        data-testid="profile-confirmation"
+      >
+        <span>Type the target profile name to confirm dangerous switch</span>
+        <input v-model="confirmation" type="text" autocomplete="off" spellcheck="false" />
+      </label>
+
+      <p v-if="props.errorMessage" role="alert" class="switcher-form__error">
+        {{ props.errorMessage }}
+      </p>
+
+      <div class="switcher-form__actions">
+        <button
+          type="submit"
+          class="view__button view__button--primary"
+          :disabled="!canSubmit"
+          data-testid="profile-switch-submit"
+        >
+          {{ props.switching ? 'Switching...' : 'Switch profile' }}
+        </button>
+      </div>
+    </form>
+  </section>
+</template>
+
+<style scoped>
+.view {
+  background: #0f1115;
+  color: #e6e8ec;
+  padding: 1rem;
+  border-radius: 0.5rem;
+}
+.view__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 0.75rem;
+}
+.view__header h2 {
+  margin: 0;
+  font-size: 1rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.view__caption {
+  color: #9aa3b2;
+  font-size: 0.8rem;
+}
+.view__empty {
+  color: #9aa3b2;
+  font-size: 0.85rem;
+}
+.view__empty code {
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 0.25rem;
+  color: #e6e8ec;
+  padding: 0.125rem 0.25rem;
+}
+.profile-list {
+  list-style: none;
+  margin: 0 0 1rem;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+.profile-list__item--active .profile-list__btn {
+  background: rgba(248, 215, 122, 0.06);
+}
+.profile-list__btn {
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 0.375rem;
+  padding: 0.5rem 0.75rem;
+  color: #e6e8ec;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.9rem;
+}
+.profile-list__btn:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+.profile-list__name {
+  flex: 1;
+}
+.switcher-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.625rem;
+  margin-top: 1rem;
+  padding: 1rem;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 0.5rem;
+}
+.switcher-form h3 {
+  margin: 0 0 0.5rem;
+  font-size: 0.9rem;
+  color: #c5cbd6;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.switcher-form__field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  font-size: 0.85rem;
+}
+.switcher-form__field input {
+  background: #0b0d11;
+  color: #e6e8ec;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 0.375rem;
+  padding: 0.4rem 0.6rem;
+  font-size: 0.85rem;
+}
+.switcher-form__check {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8rem;
+}
+.switcher-form__error {
+  color: #f08a90;
+  font-size: 0.75rem;
+}
+.switcher-form__actions {
+  display: flex;
+  justify-content: flex-end;
+}
+.view__button {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.05);
+  color: #e6e8ec;
+  border-radius: 0.375rem;
+  padding: 0.4rem 0.85rem;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+.view__button--primary {
+  background: #f8d77a;
+  color: #1a1a1a;
+  border-color: transparent;
+}
+.view__button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.badge {
+  display: inline-block;
+  padding: 0.125rem 0.5rem;
+  border-radius: 0.375rem;
+  font-size: 0.7rem;
+  letter-spacing: 0.02em;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.04);
+  color: #e6e8ec;
+}
+.badge--ok {
+  background: rgba(170, 230, 200, 0.1);
+  border-color: rgba(170, 230, 200, 0.28);
+  color: #b8e6c8;
+}
+.badge--warning {
+  background: rgba(248, 215, 122, 0.12);
+  border-color: rgba(248, 215, 122, 0.32);
+  color: #f8d77a;
+}
+</style>

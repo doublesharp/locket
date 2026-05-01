@@ -189,6 +189,65 @@ export interface ListPoliciesResponse {
   rows: CommandPolicyWireRow[];
 }
 
+/**
+ * Wire shape mirroring `locket_agent::CommandPolicySnapshot`. Used by
+ * the desktop policy editor when calling `agent_register_command_policies`
+ * to replace the agent's in-memory project snapshot. Field set is
+ * metadata-only — never includes a secret value.
+ */
+export interface CommandPolicySnapshotWire {
+  project_id: string;
+  name: string;
+  command_kind: CommandKindWire;
+  command_preview: string;
+  required_secrets: string[];
+  optional_secrets: string[];
+  allowed_secrets: string[];
+  confirm: boolean;
+  require_user_verification: boolean;
+  require_agent: boolean;
+  allow_remote_docker: boolean;
+  ttl_seconds: number;
+  env_mode: CommandEnvModeWire;
+  override_mode: CommandOverrideModeWire;
+  updated_at_unix_nanos: number;
+}
+
+export interface RegisterCommandPoliciesRequest {
+  project_id: string;
+  policies: CommandPolicySnapshotWire[];
+  store_path?: string;
+  audit_profile_id?: string;
+}
+
+/**
+ * Wire shape for `agent_set_active_profile`. Mirrors the desktop's
+ * `DesktopSetActiveProfileRequest` so the webview only fills the
+ * fields it actually owns; the Tauri command supplies defaults for
+ * the rest.
+ */
+export interface SetActiveProfileRequest {
+  config_path?: string;
+  store_path?: string;
+  project_id: string;
+  profile_name: string;
+  confirmation?: string;
+  privacy_redact_names?: boolean;
+  root_hash?: string;
+}
+
+export interface SetActiveProfileResponse {
+  changed: boolean;
+  profile_id: string;
+  profile_name: string;
+  profile_label: string;
+  dangerous: boolean;
+  prior_profile_id: string;
+  prior_profile_name: string;
+  prior_profile_label: string;
+  live_grants_revoked: number;
+}
+
 export interface ListDeviceMembersRequest {
   store_path?: string;
   project_id: string;

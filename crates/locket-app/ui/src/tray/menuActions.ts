@@ -17,7 +17,9 @@ export type TrayMenuAction =
   | 'unlock-vault'
   | 'switch-profile'
   | 'run-policy'
-  | 'start-scan';
+  | 'start-scan'
+  | 'reveal-secret'
+  | 'copy-secret';
 
 export type TrayView =
   | 'dashboard'
@@ -38,7 +40,57 @@ export type TraySideEffect =
   | 'open-unlock-modal'
   | 'open-profile-switcher'
   | 'refresh-policies'
-  | 'start-scan';
+  | 'start-scan'
+  | 'reveal-selected-secret'
+  | 'copy-selected-secret';
+
+/**
+ * Vault + secret-selection state pushed into the Rust tray module via
+ * `tray_set_selection`. Carries booleans only — never a secret name,
+ * value, or id — so the tray surface remains metadata-only per the
+ * desktop spec.
+ */
+export interface TraySelectionState {
+  vault_unlocked: boolean;
+  secret_selected: boolean;
+}
+
+/** Pure mirror of the Rust enablement matrix. Used by tests. */
+export interface TrayMenuItemEnablement {
+  enabled: boolean;
+  disabledReason: string | null;
+}
+
+const SELECTION_AWARE_ACTIONS: ReadonlySet<TrayMenuAction> = new Set([
+  'reveal-secret',
+  'copy-secret',
+]);
+
+/** Whether the action depends on the (vault unlocked, secret selected) gate. */
+export function trayActionRequiresSelection(action: TrayMenuAction): boolean {
+  return SELECTION_AWARE_ACTIONS.has(action);
+}
+
+/**
+ * Pure mirror of `tray::tray_menu_action_enablement`. Returns the same
+ * (enabled, disabledReason) shape so the desktop tests pin the matrix
+ * end-to-end with the Rust side.
+ */
+export function trayActionEnablement(
+  action: TrayMenuAction,
+  selection: TraySelectionState,
+): TrayMenuItemEnablement {
+  if (!trayActionRequiresSelection(action)) {
+    return { enabled: true, disabledReason: null };
+  }
+  if (!selection.vault_unlocked) {
+    return { enabled: false, disabledReason: 'Unlock the vault to use this action.' };
+  }
+  if (!selection.secret_selected) {
+    return { enabled: false, disabledReason: 'Select a secret in the desktop list first.' };
+  }
+  return { enabled: true, disabledReason: null };
+}
 
 /**
  * Pure mapping from a tray action wire string to the primary view the
@@ -58,6 +110,9 @@ export function trayActionToView(action: TrayMenuAction): TrayView | null {
       return 'policies';
     case 'start-scan':
       return 'scan';
+    case 'reveal-secret':
+    case 'copy-secret':
+      return 'secrets';
     default:
       return null;
   }
@@ -81,6 +136,10 @@ export function trayActionSideEffect(action: TrayMenuAction): TraySideEffect {
       return 'refresh-policies';
     case 'start-scan':
       return 'start-scan';
+    case 'reveal-secret':
+      return 'reveal-selected-secret';
+    case 'copy-secret':
+      return 'copy-selected-secret';
     default:
       return 'none';
   }
@@ -94,4 +153,6 @@ export const TRAY_MENU_ACTIONS: readonly TrayMenuAction[] = [
   'switch-profile',
   'run-policy',
   'start-scan',
+  'reveal-secret',
+  'copy-secret',
 ];

@@ -1,9 +1,14 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
+import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 
 import AgentUnavailableBanner from './components/AgentUnavailableBanner.vue';
+import PolicyEditorForm from './components/PolicyEditorForm.vue';
+import ProfileSwitcherView from './views/ProfileSwitcherView.vue';
+import RevealModal from './components/RevealModal.vue';
 import {
+  copySecret,
   listAudit,
   listDeviceMembers,
   listPolicies,
@@ -12,10 +17,22 @@ import {
   listVersions,
   lockVault,
   readConfig,
+  registerCommandPolicies,
+  reveal as revealAgent,
   scan as scanKnownValues,
+  setActiveProfile,
   writeConfig,
   verifyAudit,
 } from './agent/client';
+import {
+  applyPolicyMutation,
+  type PolicyFormMode,
+} from './policy/form';
+import {
+  rememberTarget,
+  type ProfileSwitchState,
+} from './profile/switcher';
+import type { CommandPolicySnapshotWire } from './agent/types';
 import { deviceMemberRow } from './agent/deviceMembers';
 import { commandPolicyRow } from './agent/policies';
 import { runtimeSessionRow } from './agent/runtimeSessions';
@@ -68,6 +85,7 @@ type ViewKey =
   | 'audit'
   | 'scan'
   | 'policies'
+  | 'profiles'
   | 'recovery'
   | 'settings';
 
@@ -103,6 +121,9 @@ function formatLastSeen(iso: string): string {
 }
 
 const currentView = ref<ViewKey>('dashboard');
+const revealModal = ref<InstanceType<typeof RevealModal> | null>(null);
+const copyError = ref<string | null>(null);
+const revealError = ref<string | null>(null);
 let unlistenTrayMenu: UnlistenFn | null = null;
 
 type TrayMenuAction =
@@ -111,7 +132,9 @@ type TrayMenuAction =
   | 'unlock-vault'
   | 'switch-profile'
   | 'run-policy'
-  | 'start-scan';
+  | 'start-scan'
+  | 'reveal-secret'
+  | 'copy-secret';
 
 const navItems: ReadonlyArray<{ key: ViewKey; label: string }> = [
   { key: 'dashboard', label: 'Dashboard' },
@@ -122,6 +145,7 @@ const navItems: ReadonlyArray<{ key: ViewKey; label: string }> = [
   { key: 'audit', label: 'Audit' },
   { key: 'scan', label: 'Scan' },
   { key: 'policies', label: 'Policies' },
+  { key: 'profiles', label: 'Profiles' },
   { key: 'recovery', label: 'Recovery' },
   { key: 'settings', label: 'Settings' },
 ];
@@ -376,8 +400,10 @@ async function handleTrayMenuAction(action: TrayMenuAction): Promise<void> {
       await refresh();
       break;
     case 'unlock-vault':
-    case 'switch-profile':
       currentView.value = 'settings';
+      break;
+    case 'switch-profile':
+      currentView.value = 'profiles';
       break;
     case 'run-policy':
       currentView.value = 'policies';
@@ -386,13 +412,129 @@ async function handleTrayMenuAction(action: TrayMenuAction): Promise<void> {
       currentView.value = 'scan';
       await triggerRescan();
       break;
+    case 'reveal-secret':
+      currentView.value = 'secrets';
+      await handleRevealSelectedSecret();
+      break;
+    case 'copy-secret':
+      currentView.value = 'secrets';
+      await handleCopySelectedSecret();
+      break;
     default:
       break;
   }
 }
 
-function selectSecret(): void {
+const selectedSecret = ref<SecretRowMeta | null>(null);
+
+function selectSecret(row?: SecretRowMeta): void {
+  if (row !== undefined) {
+    selectedSecret.value = row;
+  }
   currentView.value = 'versions';
+}
+
+/** Generic, name-free label for the reveal modal heading. */
+function secretLabel(row: SecretRowMeta | null, redactNames: boolean): string {
+  if (row === null) {
+    return 'Secret';
+  }
+  if (redactNames) {
+    return row.alias ?? 'Secret';
+  }
+  return row.name;
+}
+
+async function pushTraySelection(): Promise<void> {
+  if (!isTauri()) {
+    return;
+  }
+  const selection = {
+    vault_unlocked: status.value?.lock_state === 'unlocked',
+    secret_selected: selectedSecret.value !== null,
+  };
+  try {
+    await invoke<void>('tray_set_selection', { selection });
+  } catch {
+    // Tray refresh failures are local-only; the next change will retry.
+  }
+}
+
+watch(
+  [
+    () => status.value?.lock_state,
+    selectedSecret,
+  ],
+  () => {
+    void pushTraySelection();
+  },
+  { immediate: true },
+);
+
+async function handleRevealSelectedSecret(): Promise<void> {
+  revealError.value = null;
+  const target = selectedSecret.value;
+  if (target === null) {
+    revealError.value = 'Select a secret in the list before revealing.';
+    return;
+  }
+  const profileId = status.value?.profile_name;
+  if (profileId === null || profileId === undefined) {
+    revealError.value = 'Active profile unavailable.';
+    return;
+  }
+  const result = await revealAgent({
+    secret_name: target.name,
+    profile_id: profileId,
+  });
+  if (!result.ok) {
+    revealError.value = revealErrorLabel(result.error);
+    return;
+  }
+  revealModal.value?.show({
+    secretLabel: secretLabel(target, settings.value.privacyRedactNames),
+    value: result.value.value,
+    ttlSeconds: result.value.ttl_seconds,
+  });
+}
+
+function revealErrorLabel(err: AgentClientError): string {
+  switch (err.kind) {
+    case 'unavailable':
+      return 'Agent unavailable.';
+    case 'protocol':
+      return 'Reveal request failed.';
+    case 'rejected':
+      return err.code;
+    default:
+      return 'Reveal request failed.';
+  }
+}
+
+async function handleCopySelectedSecret(): Promise<void> {
+  copyError.value = null;
+  const target = selectedSecret.value;
+  if (target === null) {
+    copyError.value = 'Select a secret in the list before copying.';
+    return;
+  }
+  const profileId = status.value?.profile_name;
+  if (profileId === null || profileId === undefined) {
+    copyError.value = 'Active profile unavailable.';
+    return;
+  }
+  const result = await copySecret({
+    secret_name: target.name,
+    profile_id: profileId,
+    project_id: status.value?.project_id ?? undefined,
+  });
+  if (!result.ok) {
+    copyError.value = revealErrorLabel(result.error);
+    return;
+  }
+  if (result.value.kind === 'unsupported') {
+    copyError.value = `Clipboard unavailable: ${result.value.unsupported_reason}.`;
+  }
 }
 
 function triggerVerify(): void {
@@ -522,6 +664,7 @@ async function refreshSecrets(): Promise<void> {
 }
 
 watch(secretsRequest, () => {
+  selectedSecret.value = null;
   void refreshSecrets();
 });
 
@@ -660,6 +803,153 @@ async function refreshPolicies(): Promise<void> {
 watch(policiesRequest, () => {
   void refreshPolicies();
 });
+
+const profileSwitchState = ref<ProfileSwitchState>({
+  activeProfile: null,
+  activeDangerous: false,
+  recentTargets: [],
+});
+const profileSwitchInProgress = ref<boolean>(false);
+const profileSwitchError = ref<string | null>(null);
+const profileSwitchLastAt = ref<string | undefined>(undefined);
+
+watch(
+  [
+    () => status.value?.profile_name ?? null,
+    () => settings.value.dangerousProfileFlag,
+  ],
+  ([nextProfile, nextDangerous]) => {
+    profileSwitchState.value = {
+      ...profileSwitchState.value,
+      activeProfile: nextProfile,
+      activeDangerous: nextDangerous,
+    };
+  },
+  { immediate: true },
+);
+
+async function handleProfileSwitch(payload: {
+  profileName: string;
+  confirmation: string | undefined;
+  dangerous: boolean;
+}): Promise<void> {
+  const projectId = status.value?.project_id;
+  if (projectId === null || projectId === undefined) {
+    profileSwitchError.value = 'Active project unavailable.';
+    return;
+  }
+  profileSwitchInProgress.value = true;
+  profileSwitchError.value = null;
+  const result = await setActiveProfile({
+    project_id: projectId,
+    profile_name: payload.profileName,
+    confirmation: payload.confirmation,
+    privacy_redact_names: settings.value.privacyRedactNames,
+  });
+  profileSwitchInProgress.value = false;
+  if (!result.ok) {
+    profileSwitchError.value = profileSwitchErrorLabel(result.error);
+    return;
+  }
+  profileSwitchState.value = rememberTarget(profileSwitchState.value, payload.profileName);
+  profileSwitchLastAt.value = new Date().toISOString();
+  await refresh();
+}
+
+function profileSwitchErrorLabel(err: AgentClientError): string {
+  switch (err.kind) {
+    case 'unavailable':
+      return 'Agent unavailable.';
+    case 'protocol':
+      return 'Profile switch failed.';
+    case 'rejected':
+      return err.code;
+    default:
+      return 'Profile switch failed.';
+  }
+}
+
+const policyFormMode = ref<PolicyFormMode | null>(null);
+const policyFormRow = ref<CommandPolicyRow | null>(null);
+const policyFormSubmitting = ref<boolean>(false);
+const policyFormError = ref<string | null>(null);
+
+function openPolicyCreate(): void {
+  policyFormMode.value = 'create';
+  policyFormRow.value = null;
+  policyFormError.value = null;
+}
+
+function openPolicyEdit(row: CommandPolicyRow): void {
+  policyFormMode.value = 'edit';
+  policyFormRow.value = row;
+  policyFormError.value = null;
+}
+
+function openPolicyDelete(row: CommandPolicyRow): void {
+  policyFormMode.value = 'delete';
+  policyFormRow.value = row;
+  policyFormError.value = null;
+}
+
+function dismissPolicyForm(): void {
+  policyFormMode.value = null;
+  policyFormRow.value = null;
+  policyFormError.value = null;
+}
+
+function snapshotsFromCurrentRows(): CommandPolicySnapshotWire[] {
+  const projectId = status.value?.project_id ?? '';
+  return policies.value.map<CommandPolicySnapshotWire>((row) => ({
+    project_id: projectId,
+    name: row.name,
+    command_kind: row.commandKind,
+    command_preview: row.commandPreview,
+    required_secrets: row.requiredSecrets,
+    optional_secrets: row.optionalSecrets,
+    allowed_secrets: row.allowedSecrets,
+    confirm: row.confirm,
+    require_user_verification: row.requireUserVerification,
+    require_agent: false,
+    allow_remote_docker: row.allowRemoteDocker,
+    ttl_seconds: row.ttlSeconds,
+    env_mode: row.envMode,
+    override_mode: row.overrideMode,
+    updated_at_unix_nanos: Date.parse(row.updatedAt) * 1_000_000,
+  }));
+}
+
+async function submitPolicyForm(payload: {
+  mode: PolicyFormMode;
+  snapshot: CommandPolicySnapshotWire;
+  originalName: string;
+}): Promise<void> {
+  const projectId = status.value?.project_id;
+  if (projectId === null || projectId === undefined) {
+    policyFormError.value = 'Active project unavailable.';
+    return;
+  }
+  policyFormSubmitting.value = true;
+  policyFormError.value = null;
+  const next = applyPolicyMutation(
+    snapshotsFromCurrentRows(),
+    payload.mode,
+    payload.snapshot,
+    payload.originalName,
+  );
+  const result = await registerCommandPolicies({
+    project_id: projectId,
+    policies: next,
+    audit_profile_id: status.value?.profile_name ?? undefined,
+  });
+  policyFormSubmitting.value = false;
+  if (!result.ok) {
+    policyFormError.value = policyErrorLabel(result.error);
+    return;
+  }
+  dismissPolicyForm();
+  await refreshPolicies();
+}
 
 function deviceMemberErrorLabel(error: AgentClientError): string {
   switch (error.kind) {
@@ -1066,6 +1356,19 @@ onUnmounted(() => {
         :loading="policiesLoading || loading"
         :error-message="policiesError"
         @refresh="refreshPolicies"
+        @create="openPolicyCreate"
+        @edit="openPolicyEdit"
+        @delete="openPolicyDelete"
+      />
+
+      <ProfileSwitcherView
+        v-else-if="currentView === 'profiles'"
+        :state="profileSwitchState"
+        :privacy-mode="settings.privacyRedactNames"
+        :switching="profileSwitchInProgress"
+        :error-message="profileSwitchError"
+        :last-switched-at="profileSwitchLastAt"
+        @switch="handleProfileSwitch"
       />
 
       <BackupRecovery v-else-if="currentView === 'recovery'" @action="triggerBackupAction" />
@@ -1077,7 +1380,24 @@ onUnmounted(() => {
         :error-message="settingsError"
         @update="handleSettingsPatch"
       />
+
+      <p v-if="revealError" role="alert" class="shell__notice">{{ revealError }}</p>
+      <p v-if="copyError" role="alert" class="shell__notice">{{ copyError }}</p>
     </main>
+
+    <RevealModal ref="revealModal" />
+    <PolicyEditorForm
+      v-if="policyFormMode !== null && status?.project_id"
+      :mode="policyFormMode"
+      :row="policyFormRow"
+      :project-id="status?.project_id ?? ''"
+      :dangerous-profile="settings.dangerousProfileFlag"
+      :profile-label="status?.profile_name ?? profileLabel"
+      :submitting="policyFormSubmitting"
+      :error-message="policyFormError"
+      @submit="submitPolicyForm"
+      @dismiss="dismissPolicyForm"
+    />
   </div>
 </template>
 
@@ -1260,5 +1580,15 @@ html,
   flex-direction: column;
   gap: 1.5rem;
   overflow: auto;
+}
+
+.shell__notice {
+  margin: 0;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid rgba(248, 215, 122, 0.32);
+  background: rgba(248, 215, 122, 0.08);
+  color: #f8d77a;
+  border-radius: 0.375rem;
+  font-size: 0.85rem;
 }
 </style>
