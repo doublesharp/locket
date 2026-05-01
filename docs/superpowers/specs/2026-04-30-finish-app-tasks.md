@@ -74,7 +74,7 @@ ship. Each bullet has spec ref + code ref + suggested touches.
 
 ### A. Crypto / recovery / bundle correctness
 
-- [ ] **device-key-recovery-envelope-entries**: recovery envelope
+- [~] (in-flight: Codex recovery worker) **device-key-recovery-envelope-entries**: recovery envelope
   must carry `device_signing_private_key` + `device_sealing_private_key`
   per `crypto.md:158,171` and `team-sync-recovery.md:131`. Today
   envelope only carries `master_key` + `automation_client_private_key:*`,
@@ -82,7 +82,7 @@ ship. Each bullet has spec ref + code ref + suggested touches.
   Touches: `team/device.rs:683-694` (bootstrap envelope creation)
   and `vault/recovery.rs:25-39` (restore path); map missing entries
   to `LocalVaultUnrecoverable` per spec table line 147.
-- [ ] **device-init-force-rewraps-envelope**: `team-sync-recovery.md:44`
+- [~] (in-flight: Codex recovery worker) **device-init-force-rewraps-envelope**: `team-sync-recovery.md:44`
   requires `device init --force` to atomically update the recovery
   envelope with new device-key wraps. `team/device.rs:84-118` +
   `replace_local_device_with_audit:461-501` only swap the
@@ -92,7 +92,7 @@ ship. Each bullet has spec ref + code ref + suggested touches.
   to gate on fresh local user verification. `vault/recovery.rs:51-107`
   calls neither helper. Insert verification call + embed
   `UserVerificationAudit` into the `RECOVERY_ROTATE` row.
-- [ ] **recovery-rotate-carries-device-keys**: `crypto.md:172` says
+- [~] (in-flight: Codex recovery worker) **recovery-rotate-carries-device-keys**: `crypto.md:172` says
   rotate must rewrap all active managed client private keys "in the
   same atomic replacement as the master and device key wraps". Pair
   with `device-key-recovery-envelope-entries`.
