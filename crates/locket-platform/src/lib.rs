@@ -52,8 +52,9 @@ pub use master_key::{
 };
 pub use memory_lock::{MemoryLockHardening, lock_process_memory, memory_lock_hardening_state};
 pub use passkey::{
-    MemoryPlatformPasskeyOutcome, MemoryPlatformPasskeyRegistrar, PasskeyRegistration,
-    PlatformPasskeyRegistrar, UnavailablePlatformPasskeyRegistrar,
+    KeyringPlatformPasskeyRegistrar, MemoryPlatformPasskeyOutcome, MemoryPlatformPasskeyRegistrar,
+    PasskeyRegistration, PlatformPasskeyRegistrar, UnavailablePlatformPasskeyRegistrar,
+    default_platform_passkey_registrar,
 };
 pub use passphrase::PassphraseFallbackMasterKeyStore;
 pub use process::{

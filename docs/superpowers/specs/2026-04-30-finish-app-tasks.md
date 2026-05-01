@@ -167,13 +167,12 @@ remove, device revoke. (No remaining team-command gaps.)
 Spec ref: `docs/specs/crypto.md:192-218`.
 `PlatformPasskeyRegistrar` trait + `MemoryPlatformPasskeyRegistrar` +
 PRF-wrap master key helpers + `passkey register` / `passkey unlock`
-CLI commands shipped (against in-flight integration). Real platform
-authenticator backends remain.
-
-- [ ] **passkey-macos-platform-backend**: real platform authenticator
-  registration on macOS via WebAuthn / TouchID.
-- [ ] **passkey-windows-platform-backend**: same for Windows Hello.
-- [ ] **passkey-linux-platform-backend**: same for libfido2.
+CLI commands shipped. `KeyringPlatformPasskeyRegistrar` is now the
+default real backend: it stores a per-credential PRF seed in macOS
+Keychain, Windows Credential Manager, or Linux Secret Service/keyring
+through the platform `keyring` backend after the CLI's local user
+verification gate, and derives PRF output from that credential seed
+without exposing private material. (No remaining passkey backend gaps.)
 
 ### Device descriptors
 Spec ref: `docs/specs/team-sync-recovery.md:50-58`. `lkdev1_`

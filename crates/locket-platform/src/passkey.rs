@@ -6,9 +6,23 @@
 
 use std::sync::Mutex;
 
+use data_encoding::BASE64URL_NOPAD;
+use hmac::{Hmac, Mac};
+use keyring::Entry;
+use locket_crypto::{KEY_LEN, generate_key, random_bytes};
+use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
 use crate::error::PlatformError;
+
+const PASSKEY_KEYRING_SERVICE: &str = "dev.0xdoublesharp.locket.passkey";
+const PASSKEY_ACCOUNT_PREFIX: &str = "prf:";
+const PASSKEY_TRANSPORT_INTERNAL: &str = "internal";
+const PASSKEY_TRANSPORT_KEYRING: &str = "platform-keyring";
+const PASSKEY_PUBLIC_KEY_DOMAIN: &[u8] = b"locket-platform-passkey-public-v1";
+const PASSKEY_PRF_DOMAIN: &[u8] = b"locket-platform-passkey-prf-v1";
+
+type HmacSha256 = Hmac<Sha256>;
 
 /// Result of a successful platform-authenticator registration.
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -87,6 +101,55 @@ impl PlatformPasskeyRegistrar for UnavailablePlatformPasskeyRegistrar {
         _salt: &[u8],
     ) -> Result<Zeroizing<[u8; 32]>, PlatformError> {
         Err(PlatformError::PasskeyUnsupported)
+    }
+}
+
+/// OS secure-storage backed passkey registrar.
+///
+/// This backend is intentionally local: the CLI requires fresh local user
+/// verification before registration/removal, then this registrar stores a
+/// per-credential PRF seed in the platform credential store (`Keychain` on
+/// macOS, Credential Manager on Windows, Secret Service/keyring on Linux).
+/// It returns only public metadata and derives PRF output from the stored
+/// seed plus the caller-provided salt.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct KeyringPlatformPasskeyRegistrar;
+
+impl PlatformPasskeyRegistrar for KeyringPlatformPasskeyRegistrar {
+    fn register_passkey(
+        &self,
+        _label: &str,
+        _relying_party_id: &str,
+    ) -> Result<PasskeyRegistration, PlatformError> {
+        let credential_id = random_bytes::<32>()?.to_vec();
+        let secret = generate_key()?;
+        passkey_entry(&credential_id)?
+            .set_password(&encode_passkey_secret(&secret))
+            .map_err(|_| PlatformError::PasskeyRegistrationFailed)?;
+        Ok(PasskeyRegistration {
+            credential_id,
+            public_key: public_metadata_key(&secret),
+            transports: vec![
+                PASSKEY_TRANSPORT_INTERNAL.to_owned(),
+                PASSKEY_TRANSPORT_KEYRING.to_owned(),
+                platform_transport_label().to_owned(),
+            ],
+            prf_capable: true,
+            backup_eligible: None,
+            backup_state: None,
+        })
+    }
+
+    fn evaluate_prf(
+        &self,
+        credential_id: &[u8],
+        salt: &[u8],
+    ) -> Result<Zeroizing<[u8; 32]>, PlatformError> {
+        let encoded = passkey_entry(credential_id)?
+            .get_password()
+            .map_err(|error| map_passkey_get_error(&error))?;
+        let secret = decode_passkey_secret(&encoded)?;
+        Ok(Zeroizing::new(derive_passkey_prf(&secret, salt)?))
     }
 }
 
@@ -194,5 +257,76 @@ impl PlatformPasskeyRegistrar for MemoryPlatformPasskeyRegistrar {
                 _ => Err(PlatformError::PasskeyAuthFailed),
             },
         }
+    }
+}
+
+/// Returns the default passkey registrar for this build.
+#[must_use]
+pub const fn default_platform_passkey_registrar() -> KeyringPlatformPasskeyRegistrar {
+    KeyringPlatformPasskeyRegistrar
+}
+
+fn passkey_entry(credential_id: &[u8]) -> Result<Entry, PlatformError> {
+    Entry::new(PASSKEY_KEYRING_SERVICE, &passkey_account(credential_id))
+        .map_err(|_| PlatformError::PasskeyUnsupported)
+}
+
+pub(super) fn passkey_account(credential_id: &[u8]) -> String {
+    format!("{PASSKEY_ACCOUNT_PREFIX}{}", BASE64URL_NOPAD.encode(credential_id))
+}
+
+fn encode_passkey_secret(secret: &[u8; KEY_LEN]) -> String {
+    BASE64URL_NOPAD.encode(secret)
+}
+
+fn decode_passkey_secret(encoded: &str) -> Result<Zeroizing<[u8; KEY_LEN]>, PlatformError> {
+    let decoded =
+        BASE64URL_NOPAD.decode(encoded.as_bytes()).map_err(|_| PlatformError::PasskeyAuthFailed)?;
+    if decoded.len() != KEY_LEN {
+        return Err(PlatformError::PasskeyAuthFailed);
+    }
+    let mut secret = Zeroizing::new([0_u8; KEY_LEN]);
+    secret.copy_from_slice(&decoded);
+    Ok(secret)
+}
+
+pub(super) fn public_metadata_key(secret: &[u8; KEY_LEN]) -> Vec<u8> {
+    Sha256::new().chain_update(PASSKEY_PUBLIC_KEY_DOMAIN).chain_update(secret).finalize().to_vec()
+}
+
+pub(super) fn derive_passkey_prf(
+    secret: &[u8; KEY_LEN],
+    salt: &[u8],
+) -> Result<[u8; KEY_LEN], PlatformError> {
+    let mut mac =
+        HmacSha256::new_from_slice(secret).map_err(|_| PlatformError::PasskeyAuthFailed)?;
+    mac.update(PASSKEY_PRF_DOMAIN);
+    mac.update(salt);
+    Ok(mac.finalize().into_bytes().into())
+}
+
+fn map_passkey_get_error(error: &keyring::Error) -> PlatformError {
+    match error {
+        keyring::Error::NoEntry => PlatformError::PasskeyNotFound,
+        _ => PlatformError::PasskeyAuthFailed,
+    }
+}
+
+pub(super) const fn platform_transport_label() -> &'static str {
+    #[cfg(target_os = "macos")]
+    {
+        "macos-keychain"
+    }
+    #[cfg(target_os = "windows")]
+    {
+        "windows-credential-manager"
+    }
+    #[cfg(target_os = "linux")]
+    {
+        "linux-secret-service"
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+    {
+        "platform-keyring"
     }
 }
