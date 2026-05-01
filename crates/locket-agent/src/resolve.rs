@@ -263,6 +263,7 @@ fn resolve_reference(
             append_resolve_reference_audit(
                 &mut store,
                 project_id,
+                authorized_profile_id,
                 policy_name,
                 &parsed,
                 &master_key,
@@ -275,6 +276,7 @@ fn resolve_reference(
             append_resolve_reference_audit(
                 &mut store,
                 project_id,
+                authorized_profile_id,
                 policy_name,
                 &parsed,
                 &master_key,
@@ -363,9 +365,11 @@ enum ResolveAuditOutcome<'a> {
     Failure(&'a ResolveFailure),
 }
 
+#[allow(clippy::too_many_arguments)]
 fn append_resolve_reference_audit(
     store: &mut Store,
     project_id: &str,
+    authorized_profile_id: &str,
     policy_name: &str,
     parsed: &LkReferenceUri,
     master_key: &locket_crypto::KeyBytes,
@@ -375,6 +379,14 @@ fn append_resolve_reference_audit(
     let audit_key = load_project_key_with_master(store, project_id, KeyPurpose::Audit, master_key)
         .map_err(|_| corrupt_db())?;
     let timestamp = i64::try_from(timestamp).map_err(|_| corrupt_db())?;
+    // Pre-seed `profile_id` and `source` so the audit-store
+    // `RESOLVE_REFERENCE` required-fields validator (audit.rs) accepts
+    // both SUCCESS and FAILURE rows. SUCCESS overwrites with the resolved
+    // profile/source; FAILURE keeps the caller's authorized profile and
+    // either the explicit URI source or an empty string when the URI did
+    // not pin one.
+    let initial_source =
+        parsed.source().map(|source| source.as_str().to_owned()).unwrap_or_default();
     let mut metadata = Map::from_iter([
         ("schema_version".to_owned(), json!(1)),
         ("action".to_owned(), json!("RESOLVE_REFERENCE")),
@@ -382,10 +394,9 @@ fn append_resolve_reference_audit(
         ("policy".to_owned(), json!(policy_name)),
         ("profile_name".to_owned(), json!(parsed.profile().as_str())),
         ("secret_name".to_owned(), json!(parsed.key().as_str())),
+        ("profile_id".to_owned(), json!(authorized_profile_id)),
+        ("source".to_owned(), json!(initial_source)),
     ]);
-    if let Some(source) = parsed.source() {
-        metadata.insert("source".to_owned(), json!(source.as_str()));
-    }
     if let Some(version) = parsed.version() {
         metadata.insert("selected_version".to_owned(), json!(version.get()));
     }

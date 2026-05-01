@@ -555,6 +555,7 @@ fn required_fields_for_action(action: &str) -> &'static [&'static str] {
         "REVEAL" | "COPY" | "GET" => {
             &["secret_name", "profile_id", "source", "access_mode"]
         }
+        "RESOLVE_REFERENCE" => &["secret_name", "profile_id", "source"],
         "SECRET_COPY" => &["secret_name", "from_profile_id", "to_profile_id"],
         "RUN" | "RUN_POLICY" | "EXEC" => &["command"],
         "SCAN" | "REDACT" => {
