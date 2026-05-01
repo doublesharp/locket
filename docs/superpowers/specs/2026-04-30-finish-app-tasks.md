@@ -17,6 +17,9 @@ Sources:
 ## Conventions
 
 - `[ ]` = open. Delete when shipped.
+- `[~]` = in-flight (an agent or human is actively working it).
+  Annotate with `(in-flight: agent <id>)` or `(in-flight: <person>)`
+  so coordinators can avoid collisions.
 - **Spec ref** points at the section that defines the requirement.
   Re-read it before starting work; specs are canonical.
 - **Pre-req** lists upstream items in this same file. Don't start
@@ -163,7 +166,7 @@ inseparable):
   Audit: extend the existing `BACKUP_IMPORT` row's `metadata_json`
   with applied counts and `conflict_counts`.
   Pre-req: `bundle-profile-key-rewrap-helper`.
-- [ ] **bundle-include-audit-import**: append imported audit rows
+- [~] **bundle-include-audit-import** (in-flight: agent 13c): append imported audit rows
   to `imported_audit_chains` with HMAC structural verification.
   Pre-req: `bundle-payload-include-audit-rows`,
   `bundle-apply-and-conflicts`.
@@ -206,7 +209,7 @@ Shipped: `invite-codec`, `invite-replay-protect`,
 issuer fingerprint confirmation, accept denial rows, and revoke
 flows. 2026-04-30 audit found one remaining gap:
 
-- [ ] **invite-sealed-payload-import**: spec lines 7, 28, and 67
+- [~] **invite-sealed-payload-import** (in-flight: agent 13c): spec lines 7, 28, and 67
   require invites to carry plaintext profile secret/fingerprint
   keys and command policies inside an age-sealed payload addressed
   to the recipient device sealing key, with `team accept` rewrapping
@@ -253,13 +256,13 @@ protected use cases:
 
 Remaining gates with no enforcement (subtasks):
 
-- [ ] **vault-unlock-verify-user**: `locket vault unlock
+- [~] **vault-unlock-verify-user** (in-flight: agent 13b): `locket vault unlock
   --verify-user` currently returns `unimplemented_in_build_error`
   (`crates/locket-cli/src/commands/vault/lock.rs:90-93`). Spec line
   205 ("Unlocking the vault with local user verification") requires
   the gate to call `LocalUserVerifier` before unlocking and emit a
   satisfied `user_verification` block in the `UNLOCK` audit row.
-- [ ] **team-accept-verify-user**: `team_accept_command`
+- [~] **team-accept-verify-user** (in-flight: agent 13b): `team_accept_command`
   (`crates/locket-cli/src/commands/team/members.rs:299`) does not
   call any user-verification helper. Spec line 206 ("Requiring
   presence/verification before … team invite acceptance") requires
@@ -347,13 +350,13 @@ actions on commit dbf6ab52.)
 - [ ] **desktop-policy-editor-write**: create/edit/delete forms
   backed by `agent-policy-write` RPC. Dangerous-profile requires
   typed confirmation; `POLICY_UPDATE` audit.
-- [ ] **desktop-team-invite-view**: invite issue/accept/revoke +
+- [~] **desktop-team-invite-view** (in-flight: agent 13d): invite issue/accept/revoke +
   member/device removal. Pre-req: team sync apply-path subtasks and
   any ceremony gaps found by the audit above.
 - [ ] **desktop-profile-switcher-view**: switch profile +
   dangerous-profile typed confirmation through a desktop Tauri
   wrapper for shipped `agent-set-active-profile`.
-- [ ] **desktop-secret-editor-view**: `SecretEditor.vue` set/update
+- [~] **desktop-secret-editor-view** (in-flight: agent 13d): `SecretEditor.vue` set/update
   with TTL-bound reveal. Pre-req: `desktop-reveal-modal`,
   `agent-set-secret`.
 
@@ -361,7 +364,7 @@ actions on commit dbf6ab52.)
 Spec ref: `docs/specs/desktop.md`. One subtask per surface; never
 exposes values; pre-req is the relevant view's data RPC.
 
-- [ ] **desktop-search-filter-enumeration**: enumerate the
+- [~] **desktop-search-filter-enumeration** (in-flight: agent 13d): enumerate the
   search/filter surfaces from `docs/specs/desktop.md` and produce
   one subtask per surface (each renders one view; never exposes
   values; pre-req is the relevant view's data RPC).
@@ -399,7 +402,7 @@ ratchet-back to 90/90 remains:
 - Shipped: **coverage-bundle-90** (commit 2632f8c7).
 - Shipped: **coverage-store-90** (commit bffddecd).
 - Shipped: **coverage-agent-90** (commit f1de2092).
-- [ ] **coverage-gate-ratchet**: re-run `make coverage-branch`,
+- [~] **coverage-gate-ratchet** (in-flight: agent 13a): re-run `make coverage-branch`,
   ratchet `scripts/coverage.sh` back to
   `--fail-under-lines 90 --fail-under-branches 90`, remove the
   `TODO(coverage-90)` comment. Pre-req: all four
@@ -463,7 +466,7 @@ bench plus a regression that fails the budget.
   `docs/superpowers/specs/2026-04-30-perf-budget-tasks.md` (commit
   23fb58b1). Track open per-budget benches in that file rather than
   re-listing here.
-- [ ] **bench-scripts-chmod-x**: `scripts/bench-regression.sh`
+- [~] **bench-scripts-chmod-x** (in-flight: agent 13a): `scripts/bench-regression.sh`
   and `scripts/perf-cli-cold-start.sh` were committed at 0644
   due to a sandbox limitation. Either `chmod +x` the on-disk
   files or `git update-index --chmod=+x` the index entries
