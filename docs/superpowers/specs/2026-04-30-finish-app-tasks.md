@@ -96,7 +96,7 @@ ship. Each bullet has spec ref + code ref + suggested touches.
   rotate must rewrap all active managed client private keys "in the
   same atomic replacement as the master and device key wraps". Pair
   with `device-key-recovery-envelope-entries`.
-- [ ] **bundle-verify-attempts-decrypt-when-recipient**:
+- [~] (in-flight: agent 14d) **bundle-verify-attempts-decrypt-when-recipient**:
   `team-sync-recovery.md:213` says verify must attempt decryption
   when device has a matching recipient key. `team/bundle.rs:1459-1476`
   + `verify_bundle_file:1913-1929` are structural-only. Hardcoded
@@ -104,7 +104,7 @@ ship. Each bullet has spec ref + code ref + suggested touches.
   `:2055-2063`. Touch: when matching device sealing private key is
   available, decrypt + validate inner manifest references + report
   truthful flag.
-- [ ] **bundle-import-rotate-uses-import-timestamp**:
+- [~] (in-flight: agent 14d) **bundle-import-rotate-uses-import-timestamp**:
   `team-sync-recovery.md:224` says newer-incoming over active target
   sets `SecretMeta.last_rotated_at` to the import timestamp.
   `team/bundle.rs:828-846` writes the bundle's value, not local
@@ -124,7 +124,7 @@ ship. Each bullet has spec ref + code ref + suggested touches.
   tools presence check, and actually running the configured
   `smoke_policy` (reports presence but never invokes
   `locket run <policy>`).
-- [ ] **privacy-alias-canonical-encoding**: `invariants.md:37`
+- [~] (in-flight: agent 14e) **privacy-alias-canonical-encoding**: `invariants.md:37`
   defines aliases as `SHA-256("locket-privacy-alias-v1" ||
   field("kind", kind) || field("id", id))` with length-prefixed
   UTF-8 `field` from `crypto.md`. CLI (`main.rs:1955-1961`) and UI
@@ -134,7 +134,7 @@ ship. Each bullet has spec ref + code ref + suggested touches.
 
 ### B. Schema / data-model alignment
 
-- [ ] **audit-verify-validator-arm**: `required_fields_for_action`
+- [~] (in-flight: agent 14a) **audit-verify-validator-arm**: `required_fields_for_action`
   (`audit.rs:551-588`) has no `AUDIT_VERIFY` arm. `audit.md:55`
   requires `check_names` + pass/warn/fail/skip counts.
   `audit.rs:1156-1170` already emits these, so just add the
@@ -147,30 +147,30 @@ ship. Each bullet has spec ref + code ref + suggested touches.
   Touches: schema migration + `PasskeyCredentialRecord` updates in
   `locket-store/src/passkey.rs` + registrar plumbing in
   `locket-platform`.
-- [ ] **directory-grants-missing-revoked-and-granted-by**:
+- [~] (in-flight: agent 14b) **directory-grants-missing-revoked-and-granted-by**:
   `directory_grants` (`schema.rs:156-167`) missing `granted_by` +
   `revoked_at` per `data-model.md:221-228`. `grants.rs:133-156`
   hard-deletes on deny instead of setting `revoked_at`, losing the
   audit-correlation breadcrumb.
-- [ ] **imported-audit-chain-optionality**: `data-model.md:421-432`
+- [~] (in-flight: agent 14a) **imported-audit-chain-optionality**: `data-model.md:421-432`
   declares `source_device_fingerprint`, `encrypted_rows_nonce`,
   `encrypted_rows` as Option. `imported_audit_chains` schema makes
   all three NOT NULL → checkpoint-only imports can't persist.
   Reconcile spec vs schema (one is wrong).
-- [ ] **bundle-conflict-index-by-profile-name-version**:
+- [~] (in-flight: agent 14b) **bundle-conflict-index-by-profile-name-version**:
   `storage.md:149` requires composite index for bundle-apply
   conflict lookup by profile/name/version. Today `secrets` has
   `(project_id, profile_id, name)` (no version) and `secret_versions`
   is keyed by `(secret_id, version)`. No covering index for the
   apply path. Add a covering index + doctor check.
-- [ ] **devices-missing-member-id-and-label**: `Device`
+- [~] (in-flight: agent 14b) **devices-missing-member-id-and-label**: `Device`
   (`data-model.md:254-265`) declares `member_id: Option<MemberId>`
   + separate `label: String`. `devices` schema (`:272-284`) has only
   `name`, no `member_id`. Reconcile spec vs schema.
 
 ### C. CLI / runtime / agent
 
-- [ ] **agent-register-revoke-client-rpc**: `agent.md:86-87`
+- [~] (in-flight: agent 14c) **agent-register-revoke-client-rpc**: `agent.md:86-87`
   requires `RegisterClient` + `RevokeClient` RPCs storing scoped
   automation-client public key + `CLIENT_ADD`/`CLIENT_REVOKE` audit.
   Variants exist in `method.rs:17,19` but `server.rs:823-828` falls
@@ -178,19 +178,19 @@ ship. Each bullet has spec ref + code ref + suggested touches.
   `tests.rs:2532-2559` even pins missing-dispatch behavior. Touches:
   new agent handlers, `CLIENT_ADD`/`CLIENT_REVOKE` audit emission,
   server.rs dispatch arms.
-- [ ] **agent-socket-path-xdg-runtime-dir**: `agent.md:18-21`
+- [~] (in-flight: agent 14c) **agent-socket-path-xdg-runtime-dir**: `agent.md:18-21`
   requires Linux `$XDG_RUNTIME_DIR/locket/agent.sock`, macOS
   `~/Library/Application Support/locket/agent.sock`, Windows
   `\\.\pipe\locket-agent-<sid>`. `main.rs:2122` derives socket path
   from `context.store_path.parent().join("agent.sock")` — sockets
   land next to the SQLite store. Touches: `agent_socket_path`,
   `agent_pid_path`, `agent_data_dir` + Windows named-pipe branch.
-- [ ] **external-env-file-error-band**: `runtime.md:117` requires
+- [~] (in-flight: agent 14a) **external-env-file-error-band**: `runtime.md:117` requires
   `ExternalEnvSource::File` path validation failures to produce
   `InvalidPolicy` (band 65). `exec/run.rs:549-579` returns
   `metadata_invalid_error(...)` → `MetadataInvalid` → exit 64. Wrong
   typed error and wrong band. Mirror fix in `agent/prepare_exec.rs`.
-- [ ] **external-env-file-symlink-tests**: `runtime.md:117` requires
+- [~] (in-flight: agent 14a) **external-env-file-symlink-tests**: `runtime.md:117` requires
   symlinks resolving outside project root be rejected.
   `canonicalize().starts_with(canonical_root)` covers escape, but no
   explicit symlink rejection test in `tests/`. Add tests for
@@ -227,13 +227,13 @@ ship. Each bullet has spec ref + code ref + suggested touches.
   depends on a deprecated version with active or expired grace.
   `SecretMetadataList.vue` only shows per-row `hasDeprecatedGrace`
   badge from row's own state.
-- [ ] **integrations-suppress-marker-spec-conflict**:
+- [~] (in-flight: agent 14f) **integrations-suppress-marker-spec-conflict**:
   `integrations.md:115` mandates `locket-allow` /
   `locket-allow-next-line` markers; `scan-redaction.md:80-95`
   mandates `locket-suppress*` family. `suppressions.rs:30-39` only
   honors `locket-suppress*`. **Spec-vs-spec contradiction** — pick
   one canonical marker family, edit the loser spec.
-- [ ] **process-env-pattern-non-js-coverage**: VS Code diagnostic
+- [~] (in-flight: agent 14f) **process-env-pattern-non-js-coverage**: VS Code diagnostic
   in `extensions/vscode/src/diagnosticsModel.ts:34` only matches
   `process.env.KEY` (Node). `integrations.md:49` says "process.env.KEY
   *and similar references*". Python (`os.environ["KEY"]`,
@@ -263,11 +263,11 @@ ship. Each bullet has spec ref + code ref + suggested touches.
   and are invoked before sample collection. Directory missing
   entirely. Add `arm64-mac.sh` / `x86-linux.sh` + a fingerprint JSON
   writer; wire `bench-smoke.sh` to read the fingerprint.
-- [ ] **fuzz-corpus-seed-thinness**: `fuzzing.md:41` requires
+- [~] (in-flight: agent 14f) **fuzz-corpus-seed-thinness**: `fuzzing.md:41` requires
   diverse versioned corpora; most directories under `fuzz/corpus/`
   carry one trivial seed (e.g. `fuzz_lk_uri/basic.txt`). Seed each
   with edge-case / malformed / boundary inputs.
-- [ ] **mutation-scope-mismatch**: `testing.md:43` and
+- [~] (in-flight: agent 14g) **mutation-scope-mismatch**: `testing.md:43` and
   `engineering.md:34` require mutation testing on policy / env-merge
   / typed-error / authz **areas**. `scripts/mutation-smoke.sh`
   runs whole packages with no `--file` filter, so env-merge code in
@@ -281,19 +281,19 @@ ship. Each bullet has spec ref + code ref + suggested touches.
   `locket-scan/tests/leak_canary.rs`. Extend into agent reveal/copy,
   Docker compose helper, audit row writer, desktop UI smoke, VSIX
   integration.
-- [ ] **doublcov-html-not-canonical**: `testing.md:48` names
+- [~] (in-flight: agent 14g) **doublcov-html-not-canonical**: `testing.md:48` names
   `cargo llvm-cov` as canonical. `scripts/coverage.sh` mode `html`
   shells out to `npx -y @0xdoublesharp/doublcov@0.4.3` — adds a
   Node/network dependency to a security-sensitive coverage path
   that isn't documented in the spec. Default to native
   `cargo llvm-cov --html`; gate doublcov behind opt-in.
-- [ ] **bench-report-spec-claim**: `performance.md:31` lists
+- [~] (in-flight: agent 14g) **bench-report-spec-claim**: `performance.md:31` lists
   `make bench-report` as required. `bench-smoke.sh` mode `report`
   only reprints a previously recorded `target/quality/bench-report.md`
   and errors out if `make bench-ci` was never run. Either auto-run
   a smoke pass first or document the bench-ci pre-req on the
   Makefile target.
-- [ ] **sanitizer-not-required-in-smoke**: `fuzzing.md:43` says
+- [~] (in-flight: agent 14g) **sanitizer-not-required-in-smoke**: `fuzzing.md:43` says
   smoke jobs should use ASan/UBSan where available.
   `scripts/fuzz-smoke.sh` only sets `sanitizer=address` in nightly
   mode; PR `make fuzz-smoke` runs without sanitizers. Enable
@@ -504,7 +504,7 @@ shipped. Core-dump suppression also shipped on all three platforms:
   (commit 97058f69).
 - Shipped: **harden-macos-core-dump** — macOS core-dump suppression
   via `RLIMIT_CORE=0` (part of commit 9923b7f0).
-- [ ] **harden-windows-core-dump-real**: `disable_windows_core_dumps`
+- [~] (in-flight: agent 14e) **harden-windows-core-dump-real**: `disable_windows_core_dumps`
   is still a stub returning `Unsupported`
   (`crates/locket-platform/src/core_dumps.rs:182-202`). Wire the
   `windows` crate, call `SetErrorMode(SEM_NOGPFAULTERRORBOX |
