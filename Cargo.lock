@@ -2555,6 +2555,7 @@ dependencies = [
  "locket-agent",
  "locket-app",
  "locket-core",
+ "locket-store",
  "serde",
  "serde_json",
  "tauri",

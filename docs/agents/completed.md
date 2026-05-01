@@ -396,6 +396,8 @@ Slices that have merged to `main` and verified. Open work tracked in
 - [x] agent-set-active-profile: Agent can switch the active profile through a typed RPC.
 - [x] desktop-settings-data: Settings now sync through the agent-backed desktop config
   bridge. Privacy changes propagate reactively while preserving typed failures.
+- [x] tray-recent-activity: Recent tray activity now renders bounded safe status counts.
+  The desktop shell reads activity through the agent audit-list bridge.
 
 ## Full Spec Coverage TODO — Code Health and Bug Fixes
 

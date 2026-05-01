@@ -3,7 +3,9 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 
 import AgentUnavailableBanner from './components/AgentUnavailableBanner.vue';
+import { auditLogRow } from './agent/audit';
 import {
+  listAudit,
   listRuntimeSessions,
   listSecrets,
   lockVault,
@@ -38,6 +40,7 @@ import type {
 import type {
   AgentClientError,
   AgentConfigSettings,
+  ListAuditRequest,
   ListRuntimeSessionsRequest,
   ListSecretsRequest,
   ScanFinding,
@@ -140,6 +143,9 @@ const sessionsError = ref<string | null>(null);
 const sessionsLastRefreshed = ref<string | undefined>(undefined);
 const settingsLoading = ref<boolean>(false);
 const settingsError = ref<string | null>(null);
+const auditLoading = ref<boolean>(false);
+const auditError = ref<string | null>(null);
+const auditLastRefreshed = ref<string | undefined>(undefined);
 const scanning = ref<boolean>(false);
 const scanLocked = ref<boolean>(false);
 const scanError = ref<string | null>(null);
@@ -346,6 +352,7 @@ function triggerVerify(): void {
   void refresh();
   void refreshSecrets();
   void refreshRuntimeSessions();
+  void refreshAuditActivity();
 }
 
 const secretsRequest = computed<ListSecretsRequest | null>(() => {
@@ -470,6 +477,89 @@ watch(runtimeSessionRequest, () => {
   void refreshRuntimeSessions();
 });
 
+const auditActivityRequest = computed<ListAuditRequest | null>(() => {
+  const projectId = status.value?.project_id;
+  if (projectId === null || projectId === undefined) {
+    return null;
+  }
+  return {
+    project_id: projectId,
+    profile_id: null,
+    action: null,
+    status: null,
+    limit: 25,
+    redact_names: settings.value.privacyRedactNames,
+  };
+});
+
+function auditErrorLabel(error: AgentClientError): string {
+  switch (error.kind) {
+    case 'unavailable':
+      return 'Agent unavailable.';
+    case 'protocol':
+      return 'Audit request failed.';
+    case 'rejected':
+      return error.code;
+    default:
+      return 'Audit request failed.';
+  }
+}
+
+let auditRefreshSequence = 0;
+
+async function refreshAuditActivity(): Promise<void> {
+  const request = auditActivityRequest.value;
+  const sequence = (auditRefreshSequence += 1);
+  if (request === null) {
+    auditRows.value = [];
+    auditError.value = null;
+    auditLoading.value = false;
+    auditLastRefreshed.value = undefined;
+    auditChainOk.value = true;
+    return;
+  }
+
+  auditLoading.value = true;
+  auditError.value = null;
+  const result = await listAudit(request);
+  if (sequence !== auditRefreshSequence) {
+    return;
+  }
+  if (result.ok) {
+    const hmacOk = result.value.chain_status.hmac_ok !== false;
+    auditRows.value = result.value.rows.map((row) => auditLogRow(row, hmacOk));
+    auditChainOk.value = hmacOk;
+    auditLastRefreshed.value = new Date().toISOString();
+  } else {
+    auditRows.value = [];
+    auditError.value = auditErrorLabel(result.error);
+    auditChainOk.value = true;
+  }
+  auditLoading.value = false;
+}
+
+watch(auditActivityRequest, () => {
+  void refreshAuditActivity();
+});
+
+const recentActivityRows = computed(() => {
+  const okCount = auditRows.value.filter((row) => row.status === 'OK').length;
+  const deniedCount = auditRows.value.filter((row) => row.status === 'DENIED').length;
+  const failedCount = auditRows.value.filter(
+    (row) => row.status === 'FAILED' || !row.hmacOk,
+  ).length;
+  return [
+    { label: 'OK', value: okCount.toString(), tone: 'ok' },
+    { label: 'Denied', value: deniedCount.toString(), tone: deniedCount === 0 ? 'ok' : 'warn' },
+    { label: 'Failed', value: failedCount.toString(), tone: failedCount === 0 ? 'ok' : 'warn' },
+    {
+      label: 'Audit',
+      value: auditChainOk.value ? 'safe' : 'check',
+      tone: auditChainOk.value ? 'ok' : 'warn',
+    },
+  ];
+});
+
 function scanErrorLabel(error: AgentClientError): string {
   switch (error.kind) {
     case 'unavailable':
@@ -561,6 +651,22 @@ onUnmounted(() => {
           <dt>Profile</dt>
           <dd>{{ profileLabel }}</dd>
         </dl>
+        <section class="shell__activity" aria-label="Recent activity">
+          <div class="shell__activity-head">
+            <span>Recent</span>
+            <span v-if="auditLoading">Loading</span>
+            <span v-else-if="auditError">{{ auditError }}</span>
+            <span v-else-if="auditLastRefreshed">Updated</span>
+          </div>
+          <dl>
+            <div v-for="row in recentActivityRows" :key="row.label">
+              <dt>{{ row.label }}</dt>
+              <dd :class="`shell__activity-value shell__activity-value--${row.tone}`">
+                {{ row.value }}
+              </dd>
+            </div>
+          </dl>
+        </section>
       </div>
 
       <nav>
@@ -728,6 +834,54 @@ html,
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.shell__activity {
+  margin-top: 1rem;
+  padding-top: 0.875rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.shell__activity-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  font-size: 0.7rem;
+  color: #9aa3b2;
+}
+
+.shell__activity dl {
+  margin: 0.625rem 0 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.5rem;
+}
+
+.shell__activity div {
+  min-width: 0;
+}
+
+.shell__activity dt {
+  font-size: 0.68rem;
+  color: #9aa3b2;
+}
+
+.shell__activity dd {
+  margin: 0.125rem 0 0;
+  font-size: 0.875rem;
+  font-weight: 650;
+}
+
+.shell__activity-value--ok {
+  color: #8fd19e;
+}
+
+.shell__activity-value--warn {
+  color: #f2b879;
+}
+
+.shell__activity-value--neutral {
+  color: #e6e8ec;
 }
 
 .shell__nav nav ul {

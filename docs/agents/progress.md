@@ -167,7 +167,6 @@ Slices 1+2 shipped (agent client, tray binding, 6 view scaffolds,
   shipped. Remaining: real data sources per view, tray menu actions,
   SubscribeStatus stream consumer.
 - [ ] Tray/status panel (`docs/specs/desktop.md:65-108`):
-  - [~] [4ab55ee9] branch agent-4ab55ee9/tray-recent-activity, worktree .worktrees/agent-4ab55ee9-tray-recent-activity; tray recent activity shows bounded safe statuses.
 - [ ] Desktop UI campaign — remaining slices:
   - [~] [90b9f58a] branch agent-90b9f58a/desktop-subscribe-status, worktree .worktrees/agent-90b9f58a-desktop-subscribe-status; **subtask** — desktop-subscribe-status: replace `useAgent` poll with a Tauri event channel bridging `SubscribeStatus`. Slice 3.
   - [~] [acda32e4] branch agent-acda32e4/desktop-versions-data, worktree .worktrees/agent-acda32e4-desktop-versions-data; **subtask** — desktop-versions-data: wire agent version history into the view.

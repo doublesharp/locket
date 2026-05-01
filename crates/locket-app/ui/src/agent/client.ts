@@ -10,10 +10,12 @@ import type {
   AgentStatus,
   CopyRequest,
   CopyResponse,
-  ListSecretsRequest,
-  ListSecretsResponse,
+  ListAuditRequest,
+  ListAuditResponse,
   ListRuntimeSessionsRequest,
   ListRuntimeSessionsResponse,
+  ListSecretsRequest,
+  ListSecretsResponse,
   PrepareExecRequest,
   PrepareExecResponse,
   ReadConfigRequest,
@@ -144,4 +146,8 @@ export async function writeConfig(
   request: WriteConfigRequest,
 ): Promise<AgentResult<WriteConfigResponse>> {
   return callTyped<WriteConfigResponse>('agent_write_config', { request });
+export async function listAudit(
+  request: ListAuditRequest,
+): Promise<AgentResult<ListAuditResponse>> {
+  return callTyped<ListAuditResponse>('agent_list_audit', { request });
 }

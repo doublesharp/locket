@@ -14,6 +14,8 @@ use tauri::Manager as _;
 
 // Test-only dev-deps; suppress `unused_crate_dependencies` for the lib-test target.
 #[cfg(test)]
+use locket_store as _;
+#[cfg(test)]
 use tempfile as _;
 
 mod agent_client;
@@ -76,6 +78,54 @@ impl DesktopWriteConfigRequest {
             project_id: self.project_id,
             profile_name: self.profile_name,
             changes: self.changes,
+        })
+    }
+}
+
+/// Desktop-side audit-list request.
+///
+/// Mirrors `locket_agent::ListAuditRequest`, but lets the webview omit
+/// `store_path` so the shell can use the same default store location as
+/// the CLI without exposing local filesystem details to the frontend.
+#[derive(Debug, Deserialize)]
+struct DesktopListAuditRequest {
+    /// Optional explicit SQLite store path for tests or advanced shells.
+    store_path: Option<PathBuf>,
+    /// Project id whose audit chain is listed.
+    project_id: String,
+    /// Optional profile id filter.
+    profile_id: Option<String>,
+    /// Optional audit action filter.
+    action: Option<String>,
+    /// Optional audit status filter.
+    status: Option<String>,
+    /// Optional inclusive lower timestamp bound.
+    since_unix_nanos: Option<i64>,
+    /// Optional inclusive upper timestamp bound.
+    until_unix_nanos: Option<i64>,
+    /// Maximum number of recent matching rows.
+    limit: Option<u32>,
+    /// Whether project/profile/secret/command labels should be aliased.
+    #[serde(default)]
+    redact_names: bool,
+}
+
+impl DesktopListAuditRequest {
+    fn into_agent_request(self) -> Result<locket_agent::ListAuditRequest, AgentClientError> {
+        let store_path = match self.store_path {
+            Some(path) => path,
+            None => default_store_path()?,
+        };
+        Ok(locket_agent::ListAuditRequest {
+            store_path,
+            project_id: self.project_id,
+            profile_id: self.profile_id,
+            action: self.action,
+            status: self.status,
+            since_unix_nanos: self.since_unix_nanos,
+            until_unix_nanos: self.until_unix_nanos,
+            limit: self.limit,
+            redact_names: self.redact_names,
         })
     }
 }
@@ -211,6 +261,16 @@ async fn agent_write_config(
     agent_client::invoke_method(&path, locket_agent::AgentMethod::WriteConfig, &request).await
 }
 
+/// Tauri command exposing the agent's metadata-only audit list.
+#[tauri::command]
+async fn agent_list_audit(
+    request: DesktopListAuditRequest,
+) -> Result<locket_agent::ListAuditResponse, AgentClientError> {
+    let request = request.into_agent_request()?;
+    let path = agent_client::resolve_socket_path();
+    agent_client::invoke_method(&path, locket_agent::AgentMethod::ListAudit, &request).await
+}
+
 /// Tauri command pushing a new tray icon state from the webview.
 ///
 /// The frontend's `useTray` composable derives the desired
@@ -249,6 +309,7 @@ pub fn run() -> tauri::Result<()> {
             agent_list_secrets,
             agent_read_config,
             agent_write_config,
+            agent_list_audit,
             tray_set_state,
         ])
         .setup(|app| {

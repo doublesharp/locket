@@ -33,6 +33,8 @@ use locket_agent::{
 use locket_desktop_lib::{
     AgentClientError, fetch_status, invoke_method, resolve_socket_path, stream_status_events,
 };
+use locket_store::{AuditWrite, Store};
+use serde_json::json;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixListener;
 use tokio::sync::Notify;
@@ -204,6 +206,70 @@ async fn config_settings_round_trip_and_locked_write_rejection() {
         other => panic!("expected UnlockRequired rejection, got {other:?}"),
     }
     server.stop().await;
+}
+
+#[tokio::test]
+async fn list_audit_round_trips_against_a_live_agent_while_locked()
+-> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempdir_user_only();
+    let store_path = dir.path().join("store.db");
+    let mut store = Store::open(&store_path)?;
+    store.initialize_schema()?;
+    store.connection().execute(
+        "INSERT INTO projects(id, name, created_at) VALUES ('project-main', 'main', 1)",
+        [],
+    )?;
+    store.connection().execute(
+        "INSERT INTO profiles(id, project_id, name, dangerous, created_at)
+         VALUES ('profile-prod', 'project-main', 'prod', 0, 1)",
+        [],
+    )?;
+    store.append_audit(
+        &[9; 32],
+        &AuditWrite {
+            project_id: "project-main",
+            profile_id: Some("profile-prod"),
+            action: "COPY",
+            status: "SUCCESS",
+            secret_name: Some("DATABASE_URL"),
+            command: Some("deploy"),
+            metadata_json: &json!({
+                "schema_version": 1,
+                "action": "COPY",
+                "status": "SUCCESS",
+                "profile_id": "profile-prod",
+                "secret_name": "DATABASE_URL",
+                "source": "user-local",
+                "command": "deploy"
+            }),
+            timestamp: 100,
+        },
+    )?;
+
+    let socket_path = dir.path().join("agent.sock");
+    let server = TestServer::start_at(&socket_path).await;
+    let request = locket_agent::ListAuditRequest {
+        store_path,
+        project_id: "project-main".to_owned(),
+        profile_id: None,
+        action: None,
+        status: None,
+        since_unix_nanos: None,
+        until_unix_nanos: None,
+        limit: Some(5),
+        redact_names: true,
+    };
+    let response: locket_agent::ListAuditResponse =
+        invoke_method(&server.socket_path, AgentMethod::ListAudit, &request).await?;
+
+    assert_eq!(response.rows.len(), 1);
+    assert_eq!(response.rows[0].action, "COPY");
+    assert_ne!(response.rows[0].profile_id.as_deref(), Some("profile-prod"));
+    assert_ne!(response.rows[0].secret_name.as_deref(), Some("DATABASE_URL"));
+    assert!(response.chain_status.locked);
+    assert_eq!(response.chain_status.hmac_ok, None);
+    server.stop().await;
+    Ok(())
 }
 
 #[test]

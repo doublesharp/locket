@@ -234,4 +234,36 @@ export interface AgentConfigSettings {
 export interface WriteConfigResponse {
   settings: AgentConfigSettings;
   changed_keys: string[];
+export interface ListAuditRequest {
+  store_path?: string | null;
+  project_id: string;
+  profile_id?: string | null;
+  action?: string | null;
+  status?: string | null;
+  since_unix_nanos?: number | null;
+  until_unix_nanos?: number | null;
+  limit?: number | null;
+  redact_names?: boolean;
+}
+
+export interface AuditChainStatus {
+  hmac_ok: boolean | null;
+  first_break_sequence: number | null;
+  rows_verified: number;
+  locked: boolean;
+}
+
+export interface AuditWireRow {
+  sequence: number;
+  timestamp: number;
+  profile_id: string | null;
+  action: string;
+  status: string;
+  secret_name: string | null;
+  command: string | null;
+}
+
+export interface ListAuditResponse {
+  rows: AuditWireRow[];
+  chain_status: AuditChainStatus;
 }
