@@ -5,6 +5,7 @@
 #![allow(clippy::multiple_crate_versions)]
 
 mod audit;
+mod audit_deny;
 mod audit_verify;
 mod auth;
 mod config;

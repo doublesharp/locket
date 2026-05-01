@@ -1,0 +1,156 @@
+//! Best-effort `AGENT_REVOKE DENIED` audit row emission for grant-denial
+//! returns from `Reveal`, `Copy`, `ScanKnownValues`, and `ResolveReference`.
+//!
+//! Per `docs/specs/audit.md`, refused grant-required operations should leave
+//! a metadata-only `DENIED` audit row. The grant-denial paths land in the
+//! encrypted store, so the audit append is gated on the project's master key
+//! still being cached. When the master key is unavailable (vault locked or
+//! never cached) the helper silently skips the append rather than failing
+//! the typed error response; the `audit-deny-locked-vault` work covers the
+//! degraded-audit channel for the locked-vault case.
+
+use std::path::Path;
+
+use locket_crypto::{
+    HkdfWrapInfo, KeyPurpose, KeyWrapAad, KeyWrapPurpose, WrappedKeyMaterial,
+    derive_wrapping_key_v1, key_wrap_aad_v1, unwrap_key_material_v1,
+};
+use locket_store::{AuditWrite, Store};
+use serde_json::json;
+
+use crate::grant::GrantAction;
+
+/// Append a metadata-only `AGENT_REVOKE DENIED` audit row best-effort.
+///
+/// Returns `true` when a row was successfully appended. Any failure (locked
+/// vault, missing keys, store I/O) is swallowed so the agent's typed
+/// `GrantRequired` response is never blocked on audit availability.
+#[allow(clippy::too_many_arguments)]
+pub fn try_append_grant_denial(
+    project_id: &str,
+    profile_id: &str,
+    store_path: Option<&Path>,
+    master_key: Option<&[u8]>,
+    grant_action: GrantAction,
+    ttl_seconds: u32,
+    timestamp_unix_nanos: i128,
+    client_kind: &str,
+) -> bool {
+    let Some(store_path) = store_path else { return false };
+    let Some(master_key) = master_key else { return false };
+    let Ok(master_key_array) = key_array(master_key) else { return false };
+    let Ok(timestamp) = i64::try_from(timestamp_unix_nanos) else { return false };
+    let Ok(mut store) = Store::open(store_path) else { return false };
+    let Ok(audit_key) = unwrap_audit_key(&store, project_id, &master_key_array) else {
+        return false;
+    };
+    let action = "AGENT_REVOKE";
+    let status = "DENIED";
+    let metadata = json!({
+        "schema_version": 1,
+        "action": action,
+        "status": status,
+        "project_id": project_id,
+        "profile_id": profile_id,
+        "client_kind": client_kind,
+        "grant_actions": [grant_action_label(grant_action)],
+        "ttl_seconds": ttl_seconds,
+        "failure_reason": "grant_required",
+    });
+    let audit = AuditWrite {
+        project_id,
+        profile_id: Some(profile_id),
+        action,
+        status,
+        secret_name: None,
+        command: None,
+        metadata_json: &metadata,
+        timestamp,
+    };
+    store.append_audit(audit_key.as_ref(), &audit).is_ok()
+}
+
+fn key_array(bytes: &[u8]) -> Result<locket_crypto::KeyBytes, ()> {
+    bytes.try_into().map_err(|_| ())
+}
+
+const fn grant_action_label(action: GrantAction) -> &'static str {
+    match action {
+        GrantAction::RunPolicy => "RunPolicy",
+        GrantAction::ResolveReference => "ResolveReference",
+        GrantAction::ScanKnownValues => "ScanKnownValues",
+        GrantAction::Reveal => "Reveal",
+        GrantAction::Copy => "Copy",
+        GrantAction::SetSecret => "SetSecret",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn try_append_grant_denial_returns_false_without_master_key() {
+        let appended = try_append_grant_denial(
+            "lk_proj_x",
+            "lk_profile_x",
+            None,
+            None,
+            GrantAction::Reveal,
+            0,
+            1_700_000_000_000_000_000,
+            "agent",
+        );
+        assert!(!appended, "no master key means no row is appended");
+    }
+
+    #[test]
+    fn try_append_grant_denial_returns_false_without_store_path() {
+        let key = [0_u8; 32];
+        let appended = try_append_grant_denial(
+            "lk_proj_x",
+            "lk_profile_x",
+            None,
+            Some(&key),
+            GrantAction::Reveal,
+            0,
+            1_700_000_000_000_000_000,
+            "agent",
+        );
+        assert!(!appended, "no store path means no row is appended");
+    }
+
+    #[test]
+    fn grant_action_labels_are_stable() {
+        assert_eq!(grant_action_label(GrantAction::Reveal), "Reveal");
+        assert_eq!(grant_action_label(GrantAction::Copy), "Copy");
+        assert_eq!(grant_action_label(GrantAction::ScanKnownValues), "ScanKnownValues");
+        assert_eq!(grant_action_label(GrantAction::ResolveReference), "ResolveReference");
+        assert_eq!(grant_action_label(GrantAction::RunPolicy), "RunPolicy");
+        assert_eq!(grant_action_label(GrantAction::SetSecret), "SetSecret");
+    }
+}
+
+fn unwrap_audit_key(
+    store: &Store,
+    project_id: &str,
+    master_key: &locket_crypto::KeyBytes,
+) -> Result<zeroize::Zeroizing<locket_crypto::KeyBytes>, locket_crypto::CryptoError> {
+    let record = store
+        .get_key_by_scope(project_id, None, KeyPurpose::Audit.as_str())
+        .map_err(|_| locket_crypto::CryptoError::DecryptionFailed)?
+        .ok_or(locket_crypto::CryptoError::DecryptionFailed)?;
+    let wrapping_key = derive_wrapping_key_v1(
+        master_key,
+        &HkdfWrapInfo::new(project_id, None, KeyPurpose::Audit),
+    )?;
+    let aad = key_wrap_aad_v1(&KeyWrapAad::new(
+        project_id,
+        &record.id,
+        None,
+        0,
+        KeyWrapPurpose::from(KeyPurpose::Audit),
+    ))?;
+    let wrapped = WrappedKeyMaterial { ciphertext: record.wrapped_material, nonce: record.nonce };
+    unwrap_key_material_v1(&wrapping_key, &wrapped, &aad)
+}
