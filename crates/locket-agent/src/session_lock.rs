@@ -166,4 +166,83 @@ mod tests {
         assert!(metadata.get("command").is_none());
         Ok(())
     }
+
+    #[test]
+    fn session_lock_source_as_str_covers_every_variant() {
+        let cases = [
+            (SessionLockSource::Explicit, "explicit"),
+            (SessionLockSource::IdleTimeout, "idle_timeout"),
+            (SessionLockSource::ProcessExit, "process_exit"),
+            (SessionLockSource::SystemSleep, "system_sleep"),
+            (SessionLockSource::ScreenLock, "screen_lock"),
+            (SessionLockSource::UserSessionSwitch, "user_session_switch"),
+        ];
+        for (source, expected) in cases {
+            assert_eq!(source.as_str(), expected);
+        }
+    }
+
+    #[test]
+    fn session_lock_source_default_is_explicit() {
+        assert_eq!(SessionLockSource::default(), SessionLockSource::Explicit);
+    }
+
+    #[test]
+    fn session_lock_source_serializes_snake_case() {
+        let s = serde_json::to_string(&SessionLockSource::IdleTimeout).unwrap();
+        assert_eq!(s, "\"idle_timeout\"");
+        let parsed: SessionLockSource = serde_json::from_str("\"system_sleep\"").unwrap();
+        assert_eq!(parsed, SessionLockSource::SystemSleep);
+    }
+
+    #[test]
+    fn session_lock_outcome_changed_reflects_state() {
+        let none = SessionLockOutcome { cached_keys_cleared: 0, live_grants_revoked: 0 };
+        assert!(!none.changed());
+        let keys = SessionLockOutcome { cached_keys_cleared: 1, live_grants_revoked: 0 };
+        assert!(keys.changed());
+        let grants = SessionLockOutcome { cached_keys_cleared: 0, live_grants_revoked: 5 };
+        assert!(grants.changed());
+        let both = SessionLockOutcome { cached_keys_cleared: 1, live_grants_revoked: 1 };
+        assert!(both.changed());
+    }
+
+    #[test]
+    fn lock_audit_metadata_includes_required_fields() {
+        let outcome = SessionLockOutcome { cached_keys_cleared: 4, live_grants_revoked: 7 };
+        let metadata = lock_audit_metadata(SessionLockSource::ScreenLock, outcome);
+        assert_eq!(metadata["schema_version"], 1);
+        assert_eq!(metadata["action"], "LOCK");
+        assert_eq!(metadata["status"], "OK");
+        assert_eq!(metadata["source"], "screen_lock");
+        assert_eq!(metadata["cached_keys_cleared"], 4);
+        assert_eq!(metadata["live_grants_revoked"], 7);
+        assert_eq!(metadata["metadata_only"], true);
+    }
+
+    #[test]
+    fn lock_audit_metadata_does_not_leak_command_or_secret_name() {
+        let outcome = SessionLockOutcome { cached_keys_cleared: 0, live_grants_revoked: 0 };
+        let metadata = lock_audit_metadata(SessionLockSource::Explicit, outcome);
+        assert!(metadata.get("secret_name").is_none());
+        assert!(metadata.get("command").is_none());
+    }
+
+    #[test]
+    fn session_lock_outcome_clone_copy_eq_debug() {
+        let outcome = SessionLockOutcome { cached_keys_cleared: 1, live_grants_revoked: 2 };
+        let copied = outcome;
+        assert_eq!(outcome, copied);
+        let debug = format!("{outcome:?}");
+        assert!(debug.contains("cached_keys_cleared"));
+    }
+
+    #[test]
+    fn session_lock_source_clone_copy_eq_debug() {
+        let s = SessionLockSource::ProcessExit;
+        let copied = s;
+        assert_eq!(s, copied);
+        let debug = format!("{s:?}");
+        assert!(debug.contains("ProcessExit"));
+    }
 }

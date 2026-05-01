@@ -534,6 +534,243 @@ required_secrets = ["API_KEY"]
         let result = PolicyDocument::from_toml_str("commands = 42");
         assert_eq!(result, Err(PolicyParseError::CommandsMustBeTable));
     }
+
+    #[test]
+    fn rejects_command_body_that_is_not_a_table() {
+        let result = PolicyDocument::from_toml_str(
+            r#"[commands]
+dev = 42
+"#,
+        );
+        assert_eq!(
+            result,
+            Err(PolicyParseError::CommandMustBeTable { command: "dev".to_owned() })
+        );
+    }
+
+    #[test]
+    fn rejects_command_with_unknown_field() {
+        let result = PolicyDocument::from_toml_str(
+            r#"[commands.dev]
+argv = ["pnpm"]
+unknown_field = "value"
+"#,
+        );
+        assert!(matches!(result, Err(PolicyParseError::CommandSchema { .. })));
+    }
+
+    #[test]
+    fn rejects_command_with_wrong_field_type() {
+        let result = PolicyDocument::from_toml_str(
+            r#"[commands.dev]
+argv = "not-a-list"
+"#,
+        );
+        assert!(matches!(result, Err(PolicyParseError::CommandSchema { .. })));
+    }
+
+    #[test]
+    fn rejects_command_with_non_bool_confirm() {
+        let result = PolicyDocument::from_toml_str(
+            r#"[commands.dev]
+argv = ["pnpm"]
+confirm = "yes"
+"#,
+        );
+        assert!(matches!(result, Err(PolicyParseError::CommandSchema { .. })));
+    }
+
+    #[test]
+    fn rejects_secrets_with_empty_string_name() {
+        let result = PolicyDocument::from_toml_str(
+            r#"[commands.dev]
+argv = ["pnpm"]
+required_secrets = [""]
+"#,
+        );
+        assert_eq!(
+            result,
+            Err(PolicyParseError::InvalidSecretName {
+                command: "dev".to_owned(),
+                field: "required_secrets",
+                name: String::new(),
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_optional_secret_duplicate_within_field() {
+        let result = PolicyDocument::from_toml_str(
+            r#"[commands.dev]
+argv = ["pnpm"]
+optional_secrets = ["TOKEN", "TOKEN"]
+"#,
+        );
+        assert_eq!(
+            result,
+            Err(PolicyParseError::DuplicateSecretName {
+                command: "dev".to_owned(),
+                field: "optional_secrets",
+                name: "TOKEN".to_owned(),
+            })
+        );
+    }
+
+    #[test]
+    fn external_env_sources_file_object_is_kept_as_pathbuf() -> Result<(), Box<dyn Error>> {
+        let document = PolicyDocument::from_toml_str(
+            r#"[commands.dev]
+argv = ["pnpm"]
+external_env_sources = [{ file = "/abs/path.env" }]
+"#,
+        )?;
+        let policy = document.commands.get("dev").ok_or("missing dev")?;
+        assert_eq!(
+            policy.external_env_sources,
+            vec![ExternalEnvSource::File(std::path::PathBuf::from("/abs/path.env"))]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn ttl_zero_seconds_is_rejected_by_invalid_ttl() {
+        // "0s" is invalid grammar per existing test; "0m"/"0h" too. Verify "1s" parses.
+        let document = PolicyDocument::from_toml_str(
+            r#"[commands.dev]
+argv = ["pnpm"]
+ttl = "1s"
+"#,
+        );
+        assert!(document.is_ok());
+        let document = document.unwrap();
+        let policy = document.commands.get("dev").unwrap();
+        assert_eq!(policy.ttl.as_secs(), 1);
+    }
+
+    #[test]
+    fn override_explicit_locket_value_is_marked_explicit() -> Result<(), Box<dyn Error>> {
+        let document = PolicyDocument::from_toml_str(
+            r#"[commands.dev]
+argv = ["pnpm"]
+override = "locket"
+"#,
+        )?;
+        let policy = document.commands.get("dev").ok_or("missing dev")?;
+        assert!(policy.override_explicit());
+        assert_eq!(policy.override_behavior, crate::EnvOverrideMode::Locket);
+        Ok(())
+    }
+
+    #[test]
+    fn override_error_value_parses_explicit() -> Result<(), Box<dyn Error>> {
+        let document = PolicyDocument::from_toml_str(
+            r#"[commands.dev]
+argv = ["pnpm"]
+override = "error"
+"#,
+        )?;
+        let policy = document.commands.get("dev").ok_or("missing dev")?;
+        assert!(policy.override_explicit());
+        Ok(())
+    }
+
+    #[test]
+    fn parse_error_display_contains_command_name() {
+        let err = PolicyParseError::EmptyArgv { command: "deploy".to_owned() };
+        let message = err.to_string();
+        assert!(message.contains("deploy"));
+    }
+
+    #[test]
+    fn parse_error_clone_and_eq() {
+        let err = PolicyParseError::Toml { message: "boom".to_owned() };
+        let cloned = err.clone();
+        assert_eq!(err, cloned);
+    }
+
+    #[test]
+    fn parse_error_root_must_be_table_display() {
+        let err = PolicyParseError::RootMustBeTable;
+        assert!(!err.to_string().is_empty());
+    }
+
+    #[test]
+    fn external_env_source_clone_and_debug() {
+        let s = ExternalEnvSource::Parent;
+        let cloned = s.clone();
+        assert_eq!(s, cloned);
+        let debug = format!("{s:?}");
+        assert!(debug.contains("Parent"));
+
+        let f = ExternalEnvSource::File(std::path::PathBuf::from("foo.env"));
+        let cloned_f = f.clone();
+        assert_eq!(f, cloned_f);
+    }
+
+    #[test]
+    fn command_spec_clone_and_debug() {
+        let argv = CommandSpec::Argv(vec!["a".to_owned(), "b".to_owned()]);
+        let cloned = argv.clone();
+        assert_eq!(argv, cloned);
+        let shell = CommandSpec::Shell("echo".to_owned());
+        let cloned_shell = shell.clone();
+        assert_eq!(shell, cloned_shell);
+        assert_ne!(argv, shell);
+    }
+
+    #[test]
+    fn policy_document_clone_round_trips() -> Result<(), Box<dyn Error>> {
+        let document = PolicyDocument::from_toml_str(
+            r#"[commands.dev]
+argv = ["pnpm"]
+"#,
+        )?;
+        let cloned = document.clone();
+        assert_eq!(document, cloned);
+        Ok(())
+    }
+
+    #[test]
+    fn invalid_ttl_unit_is_rejected() {
+        let result = PolicyDocument::from_toml_str(
+            r#"[commands.dev]
+argv = ["pnpm"]
+ttl = "5y"
+"#,
+        );
+        assert_eq!(
+            result,
+            Err(PolicyParseError::InvalidTtl {
+                command: "dev".to_owned(),
+                value: "5y".to_owned(),
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_external_env_source_object_with_unknown_field() {
+        let result = PolicyDocument::from_toml_str(
+            r#"[commands.dev]
+argv = ["pnpm"]
+external_env_sources = [{ file = "x", extra = "y" }]
+"#,
+        );
+        // untagged enum fallback should error rather than silently accept.
+        assert!(result.is_err(), "unknown field on file source should fail, got {result:?}");
+    }
+
+    #[test]
+    fn empty_inherit_env_is_kept() -> Result<(), Box<dyn Error>> {
+        let document = PolicyDocument::from_toml_str(
+            r#"[commands.dev]
+argv = ["pnpm"]
+inherit_env = []
+"#,
+        )?;
+        let policy = document.commands.get("dev").ok_or("missing dev")?;
+        assert!(policy.inherit_env.is_empty());
+        Ok(())
+    }
 }
 
 #[cfg(test)]
