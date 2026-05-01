@@ -188,6 +188,9 @@ Slices that have merged to `main` and verified. Open work tracked in
 - [x] e2e-team-invite-accept: Team invite e2e now covers invite creation, acceptance,
   and revoked-invite denial. The regression keeps command output and audit metadata
   value-free.
+- [x] mutation-platform-mocks: Platform abstraction mocks now run under the mutation
+  smoke default. The fallback gate exercises the platform package when cargo-mutants is
+  unavailable.
 
 ## Full Spec Coverage TODO — Security/Recovery/Team
 
