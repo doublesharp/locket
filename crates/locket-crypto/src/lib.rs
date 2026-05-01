@@ -4,6 +4,11 @@
 // which triggers this lint. This cannot be fixed without upgrading all crates.
 #![allow(clippy::multiple_crate_versions)]
 
+// criterion is a dev-dep used only by the bench target; pull it in for the
+// lib-test target so `unused_crate_dependencies` stays quiet.
+#[cfg(test)]
+use criterion as _;
+
 mod aad;
 mod aead;
 mod error;
