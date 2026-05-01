@@ -5,6 +5,7 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import AgentUnavailableBanner from './components/AgentUnavailableBanner.vue';
 import {
   listAudit,
+  listDeviceMembers,
   listPolicies,
   listRuntimeSessions,
   listSecrets,
@@ -15,6 +16,7 @@ import {
   writeConfig,
   verifyAudit,
 } from './agent/client';
+import { deviceMemberRow } from './agent/deviceMembers';
 import { commandPolicyRow } from './agent/policies';
 import { runtimeSessionRow } from './agent/runtimeSessions';
 import { secretRow } from './agent/secrets';
@@ -47,6 +49,7 @@ import type {
   AuditChainStatus,
   AuditWireRow,
   ListAuditRequest,
+  ListDeviceMembersRequest,
   ListPoliciesRequest,
   ListRuntimeSessionsRequest,
   ListSecretsRequest,
@@ -152,6 +155,9 @@ const versionsLastRefreshed = ref<string | undefined>(undefined);
 const sessionsLoading = ref<boolean>(false);
 const sessionsError = ref<string | null>(null);
 const sessionsLastRefreshed = ref<string | undefined>(undefined);
+const deviceMembersLoading = ref<boolean>(false);
+const deviceMembersError = ref<string | null>(null);
+const deviceMembersLastRefreshed = ref<string | undefined>(undefined);
 const policiesLoading = ref<boolean>(false);
 const policiesError = ref<string | null>(null);
 const settingsLoading = ref<boolean>(false);
@@ -366,6 +372,7 @@ function triggerVerify(): void {
   void refreshSecrets();
   void refreshVersions();
   void refreshRuntimeSessions();
+  void refreshDeviceMembers();
   void refreshPolicies();
   void refreshAuditLog();
   void verifyAuditChain();
@@ -429,6 +436,18 @@ const policiesRequest = computed<ListPoliciesRequest | null>(() => {
   return {
     project_id: projectId,
     privacy_redact_names: settings.value.privacyRedactNames,
+  };
+});
+
+const deviceMembersRequest = computed<ListDeviceMembersRequest | null>(() => {
+  const projectId = status.value?.project_id;
+  if (projectId === null || projectId === undefined) {
+    return null;
+  }
+  return {
+    project_id: projectId,
+    redact_names: settings.value.privacyRedactNames,
+    include_revoked_devices: true,
   };
 });
 
@@ -612,6 +631,52 @@ async function refreshPolicies(): Promise<void> {
 
 watch(policiesRequest, () => {
   void refreshPolicies();
+});
+
+function deviceMemberErrorLabel(error: AgentClientError): string {
+  switch (error.kind) {
+    case 'unavailable':
+      return 'Agent unavailable.';
+    case 'protocol':
+      return 'Device request failed.';
+    case 'rejected':
+      return error.code;
+    default:
+      return 'Device request failed.';
+  }
+}
+
+let deviceMembersRefreshSequence = 0;
+
+async function refreshDeviceMembers(): Promise<void> {
+  const request = deviceMembersRequest.value;
+  const sequence = (deviceMembersRefreshSequence += 1);
+  if (request === null) {
+    deviceMembers.value = [];
+    deviceMembersError.value = null;
+    deviceMembersLoading.value = false;
+    deviceMembersLastRefreshed.value = undefined;
+    return;
+  }
+
+  deviceMembersLoading.value = true;
+  deviceMembersError.value = null;
+  const result = await listDeviceMembers(request);
+  if (sequence !== deviceMembersRefreshSequence) {
+    return;
+  }
+  if (result.ok) {
+    deviceMembers.value = result.value.rows.map(deviceMemberRow);
+    deviceMembersLastRefreshed.value = new Date().toISOString();
+  } else {
+    deviceMembers.value = [];
+    deviceMembersError.value = deviceMemberErrorLabel(result.error);
+  }
+  deviceMembersLoading.value = false;
+}
+
+watch(deviceMembersRequest, () => {
+  void refreshDeviceMembers();
 });
 
 const auditRequest = computed<ListAuditRequest | null>(() => {
@@ -933,6 +998,10 @@ onUnmounted(() => {
         v-else-if="currentView === 'devices'"
         :rows="deviceMembers"
         :privacy-mode="settings.privacyRedactNames"
+        :loading="deviceMembersLoading"
+        :error-message="deviceMembersError"
+        :last-refreshed-at="deviceMembersLastRefreshed"
+        @refresh="refreshDeviceMembers"
       />
 
       <AuditLog

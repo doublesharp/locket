@@ -12,6 +12,8 @@ import type {
   AgentStatusEvent,
   CopyRequest,
   CopyResponse,
+  ListDeviceMembersRequest,
+  ListDeviceMembersResponse,
   ListAuditRequest,
   ListAuditResponse,
   ListPoliciesRequest,
@@ -180,6 +182,12 @@ export async function listPolicies(
   request: ListPoliciesRequest,
 ): Promise<AgentResult<ListPoliciesResponse>> {
   return callTyped<ListPoliciesResponse>('agent_list_policies', { request });
+}
+
+export async function listDeviceMembers(
+  request: ListDeviceMembersRequest,
+): Promise<AgentResult<ListDeviceMembersResponse>> {
+  return callTyped<ListDeviceMembersResponse>('agent_list_device_members', { request });
 }
 
 export async function listSecrets(

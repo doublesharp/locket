@@ -6,12 +6,18 @@ import type { DeviceMemberRow } from '../types/views';
 interface Props {
   rows: DeviceMemberRow[];
   privacyMode: boolean;
+  loading?: boolean;
+  errorMessage?: string | null;
+  lastRefreshedAt?: string;
 }
 
 type KindFilter = 'all' | DeviceMemberRow['kind'];
 type StatusFilter = 'all' | DeviceMemberRow['status'];
 
 const props = defineProps<Props>();
+const emit = defineEmits<{
+  refresh: [];
+}>();
 
 const searchTerm = ref<string>('');
 const kindFilter = ref<KindFilter>('all');
@@ -72,12 +78,21 @@ function memberDeviceCount(row: DeviceMemberRow): string {
   }
   return `${row.trustedDeviceCount ?? 0}`;
 }
+
+function refreshRows(): void {
+  emit('refresh');
+}
 </script>
 
 <template>
   <section class="view" aria-labelledby="device-member-directory-heading">
     <header class="view__header">
       <h2 id="device-member-directory-heading">Devices &amp; members</h2>
+      <div class="view__actions">
+        <span v-if="loading" class="view__muted" role="status">Loading</span>
+        <span v-else-if="lastRefreshedAt" class="view__muted">Updated</span>
+        <button type="button" class="view__button" @click="refreshRows">Refresh</button>
+      </div>
     </header>
 
     <div class="view__controls" aria-label="Device and member filters">
@@ -107,7 +122,9 @@ function memberDeviceCount(row: DeviceMemberRow): string {
       </label>
     </div>
 
-    <p v-if="filteredRows.length === 0" class="view__empty">{{ emptyText }}</p>
+    <p v-if="errorMessage" class="view__empty">{{ errorMessage }}</p>
+
+    <p v-else-if="filteredRows.length === 0" class="view__empty">{{ emptyText }}</p>
 
     <table v-else class="view__table" aria-describedby="device-member-directory-heading">
       <thead>
@@ -175,6 +192,29 @@ function memberDeviceCount(row: DeviceMemberRow): string {
   font-size: 1rem;
   letter-spacing: 0.04em;
   text-transform: uppercase;
+}
+
+.view__actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.view__button {
+  min-height: 2rem;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 0.375rem;
+  background: rgba(255, 255, 255, 0.05);
+  color: #e6e8ec;
+  cursor: pointer;
+  font: inherit;
+  padding: 0.375rem 0.625rem;
+}
+
+.view__button:focus-visible {
+  border-color: #f8d77a;
+  outline: 2px solid rgba(248, 215, 122, 0.24);
+  outline-offset: 1px;
 }
 
 .view__controls {

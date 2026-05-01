@@ -189,6 +189,35 @@ export interface ListPoliciesResponse {
   rows: CommandPolicyWireRow[];
 }
 
+export interface ListDeviceMembersRequest {
+  store_path?: string;
+  project_id: string;
+  redact_names: boolean;
+  include_revoked_devices?: boolean;
+}
+
+export type DeviceMemberKindWire = 'device' | 'member';
+export type DeviceMemberStatusWire = 'active' | 'revoked' | 'removed';
+
+export interface DeviceMemberWireRow {
+  id: string;
+  kind: DeviceMemberKindWire;
+  name: string;
+  alias?: string;
+  role?: 'owner' | 'maintainer' | 'developer' | 'viewer' | 'read-only';
+  fingerprint?: string;
+  fingerprint_alias?: string;
+  trusted_device_count?: number;
+  local_device?: boolean;
+  status: DeviceMemberStatusWire;
+  created_at: number;
+  last_seen_at?: number;
+}
+
+export interface ListDeviceMembersResponse {
+  rows: DeviceMemberWireRow[];
+}
+
 export interface ListSecretsRequest {
   store_path?: string;
   project_id: string;
