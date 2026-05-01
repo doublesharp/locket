@@ -361,6 +361,8 @@ Slices that have merged to `main` and verified. Open work tracked in
 - [x] agent-scan-known-values-impl: Agent known-value scans now run through the live
   cache and grant path. Responses stay redacted while covered scans record safe
   activity.
+- [x] agent-set-secret: Agent SetSecret RPC creates and rotates webview-submitted values
+  through grant and unlock gates.
 
 ## Full Spec Coverage TODO — Code Health and Bug Fixes
 
