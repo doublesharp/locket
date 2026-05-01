@@ -2475,6 +2475,93 @@ pub(crate) fn write_runtime_policy_audit_if_available(
     Ok(())
 }
 
+/// Emits a metadata-only `RUN_POLICY` audit row with `status = "DENIED"` for
+/// policy executions rejected before the executor spawns the child.
+///
+/// Callers may pass a fully-resolved `CommandPolicy` when one is available
+/// (e.g. failures inside `prepare_policy_execution`) or only the requested
+/// policy name when the policy itself could not be loaded
+/// (e.g. `policy_not_found`).
+pub(crate) fn write_runtime_policy_denial_audit_if_available(
+    context: &RuntimeContext,
+    store: &mut Store,
+    resolved: &ResolvedProject,
+    profile: Option<&ProfileRecord>,
+    policy: Option<&CommandPolicy>,
+    requested_policy_name: &str,
+    failure_reason: &str,
+) -> Result<(), CliError> {
+    if store.get_project(resolved.config.project_id.as_str())?.is_none() {
+        return Ok(());
+    }
+    let audit_key =
+        load_project_key(context, store, resolved.config.project_id.as_str(), KeyPurpose::Audit)?;
+    let policy_name = policy.map_or(requested_policy_name, |policy| policy.name.as_str());
+    let env_mode = policy.map_or_else(|| "minimal".to_owned(), |policy| policy.env_mode.to_string());
+    let override_mode = policy
+        .map_or_else(|| "locket".to_owned(), |policy| policy.override_behavior.to_string());
+    let override_explicit = policy.is_some_and(CommandPolicy::override_explicit);
+    let command_type_label = policy.map_or("argv", |policy| command_type(&policy.command));
+    let allowed_secret_names = policy.map_or_else(Vec::new, |policy| {
+        let raw = policy
+            .allowed_secrets
+            .iter()
+            .map(locket_core::SecretName::as_str)
+            .collect::<Vec<_>>();
+        summarize_names(&raw)
+    });
+    let required_secret_names = policy.map_or_else(Vec::new, |policy| {
+        let raw = policy
+            .required_secrets
+            .iter()
+            .map(locket_core::SecretName::as_str)
+            .collect::<Vec<_>>();
+        summarize_names(&raw)
+    });
+    let external_sources = policy.map_or_else(Vec::new, |policy| {
+        policy.external_env_sources.iter().map(external_env_source_label).collect()
+    });
+    let user_verification_metadata = json!({
+        "required": policy.is_some_and(|policy| policy.require_user_verification),
+        "satisfied": false,
+        "method": Value::Null,
+    });
+    let metadata = json!({
+        "schema_version": 1,
+        "action": "RUN_POLICY",
+        "status": "DENIED",
+        "command": "run",
+        "policy": policy_name,
+        "policy_id": policy_name,
+        "command_type": command_type_label,
+        "env_mode": env_mode,
+        "override": override_mode,
+        "override_explicit": override_explicit,
+        "secret_names": Vec::<String>::new(),
+        "secrets": Vec::<Value>::new(),
+        "allowed_secret_names": allowed_secret_names,
+        "required_secret_names": required_secret_names,
+        "external_env_sources": external_sources,
+        "external_sources": external_sources,
+        "confirmation_source": Value::Null,
+        "user_verification": user_verification_metadata,
+        "child_exit": Value::Null,
+        "failure_reason": failure_reason,
+    });
+    let audit = AuditWrite {
+        project_id: resolved.config.project_id.as_str(),
+        profile_id: profile.map(|profile| profile.id.as_str()),
+        action: "RUN_POLICY",
+        status: "DENIED",
+        secret_name: None,
+        command: Some("run"),
+        metadata_json: &metadata,
+        timestamp: now_unix_nanos()?,
+    };
+    store.append_audit(audit_key.as_ref(), &audit)?;
+    Ok(())
+}
+
 fn policy_secret_audit_entries(selections: &[PolicySecretSelection]) -> Vec<Value> {
     selections
         .iter()
