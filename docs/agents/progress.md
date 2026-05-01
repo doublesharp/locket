@@ -216,10 +216,7 @@ Slices 1+2 shipped (agent client, tray binding, 6 view scaffolds,
   - [ ] **subtask** — desktop-secret-editor-view: `SecretEditor.vue`
     set/update with TTL-bound reveal. Pre-req:
     `desktop-reveal-modal`, `agent-set-secret`.
-  - [ ] **subtask** — agent-set-secret: RPC creating or rotating a
-    secret with a value from the webview's secure input. Emits
-    `SET` / `ROTATE`. Pre-req: `agent-unlock-cache`,
-    `agent-grant-table`.
+  - [~] [4ab55ee9] branch agent-4ab55ee9/agent-set-secret, worktree .worktrees/agent-4ab55ee9-agent-set-secret; **subtask** — agent-set-secret: RPC creating or rotating a secret.
 - [ ] Search/filter UI (`docs/specs/desktop.md`). Each subtask
   renders one surface; never exposes values; pre-req is the
   relevant view's data RPC.
@@ -270,8 +267,8 @@ Re-verify file:line references before editing — they drift. Severity:
   Windows MSI, and Linux packages (`docs/specs/operations.md:27-53`).
 - [ ] Cold-start budgets (`docs/specs/performance.md`). Each subtask
   adds one bench plus a regression that fails the budget:
-  - [ ] **subtask** — perf-agent-idle-memory: ≤50 MB RSS after
-    documented warmup. Pre-req: agent daemon subtasks.
+  - [~] [90b9f58a] branch agent-90b9f58a/perf-agent-idle-memory, worktree .worktrees/agent-90b9f58a-perf-agent-idle-memory; **subtask** — perf-agent-idle-memory: ≤50 MB RSS after documented warmup.
+    Pre-req: agent daemon subtasks.
 - [ ] Property-test harness for new uncovered invariants.
   All current `proptest-*` subtasks shipped.
   Add new harnesses as uncovered invariants surface
