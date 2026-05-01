@@ -870,6 +870,7 @@ pub fn execute_prepared_with_runtime_session(
                 context,
                 request.resolved.config.project_id.as_str(),
                 &request.profile.id,
+                request.policy_name,
                 process_id,
                 grant_request.ttl_seconds,
             ) {
@@ -927,11 +928,19 @@ fn request_run_policy_grant(
     context: &RuntimeContext,
     project_id: &str,
     profile_id: &str,
+    policy_name: Option<&str>,
     process_id: u32,
     ttl_seconds: u64,
 ) -> Result<RunPolicyGrant, CliError> {
     let binding = locket_platform::process_binding_for_pid(process_id)?;
-    request_run_policy_grant_with_binding(context, project_id, profile_id, binding, ttl_seconds)
+    request_run_policy_grant_with_binding(
+        context,
+        project_id,
+        profile_id,
+        policy_name,
+        binding,
+        ttl_seconds,
+    )
 }
 
 #[cfg(all(unix, not(test)))]
@@ -939,12 +948,14 @@ fn request_run_policy_grant_with_binding(
     context: &RuntimeContext,
     project_id: &str,
     profile_id: &str,
+    policy_name: Option<&str>,
     binding: locket_platform::ProcessBinding,
     ttl_seconds: u64,
 ) -> Result<RunPolicyGrant, CliError> {
     let payload = locket_agent::RequestGrantPayload {
         project_id: project_id.to_owned(),
         profile_id: profile_id.to_owned(),
+        policy_name: policy_name.map(ToOwned::to_owned),
         action: locket_agent::GrantAction::RunPolicy,
         ttl_seconds,
         binding: locket_agent::GrantBinding::new(binding.pid, binding.process_start_time.clone()),
@@ -974,6 +985,7 @@ fn request_run_policy_grant_with_binding(
     _context: &RuntimeContext,
     _project_id: &str,
     _profile_id: &str,
+    _policy_name: Option<&str>,
     _binding: locket_platform::ProcessBinding,
     _ttl_seconds: u64,
 ) -> Result<RunPolicyGrant, CliError> {
@@ -989,6 +1001,7 @@ fn request_run_policy_grant_with_binding(
     _context: &RuntimeContext,
     _project_id: &str,
     _profile_id: &str,
+    _policy_name: Option<&str>,
     binding: locket_platform::ProcessBinding,
     ttl_seconds: u64,
 ) -> Result<RunPolicyGrant, CliError> {
