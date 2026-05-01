@@ -226,6 +226,8 @@ Slices that have merged to `main` and verified. Open work tracked in
   malformed bundles and unsupported schema versions.
 - [x] team-invite-accept: invite acceptance verifies signature,
   fingerprint, expiry, replay state, and safety-word confirmation.
+- [x] invite-fail-closed: team accept fails closed for invalid
+  invites and records denial audit rows.
 - [x] team-dangerous-user-verification: dangerous team/device actions
   now require fresh local user verification.
 

@@ -150,7 +150,6 @@ skill set fits a leaf better.
   `invite-replay-protect`, `invite-clock-skew` shipped. Remaining:
   - [ ] **subtask** — invite-accept-display: issuer fingerprint +
     PGP safety words, typed confirmation before applying.
-  - [~] [52c592db] branch agent-52c592db/invite-fail-closed, worktree .worktrees/agent-52c592db-invite-fail-closed; **subtask** — invite-fail-closed: expired / revoked / fingerprint-mismatched / signature-invalid invites fail closed with typed errors and audit denial rows.
 - [ ] Audit coverage for denials. Reveal/copy denial rows shipped.
   Remaining sweep: dangerous-profile reads, locked-vault refusals
   (needs degraded-audit mechanism), role denials, grant denials.
