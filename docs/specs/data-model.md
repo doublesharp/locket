@@ -421,12 +421,12 @@ struct AuditLog {
 struct ImportedAuditChain {
     id: String,
     project_id: ProjectId,
-    source_device_fingerprint: Option<String>,
+    source_device_fingerprint: String,
     bundle_digest: Vec<u8>,
     checkpoint_sequence: u64,
     checkpoint_hmac: [u8; 32],
-    encrypted_rows_nonce: Option<[u8; 24]>,
-    encrypted_rows: Option<Vec<u8>>,
+    encrypted_rows_nonce: [u8; 24],
+    encrypted_rows: Vec<u8>,
     aad_schema_version: u16,
     imported_at: Timestamp,
 }
