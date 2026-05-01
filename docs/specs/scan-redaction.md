@@ -54,7 +54,7 @@ Scanner severity:
 - Provider-token pattern: warning by default unless configured as blocking.
 - High entropy: warning by default.
 - `.env` file: warning or blocking according to project policy.
-- Suppressed finding: metadata-only audit event with path, rule id, and reason, never the matched value.
+- Suppressed finding: metadata-only audit event with path, rule id, and reason, never the matched value. See [Inline Suppressions](#inline-suppressions) for the directive syntax that promotes a finding into this category.
 
 `locket context` must output AI-safe context only:
 
@@ -74,3 +74,27 @@ No secret values included.
 `locket ai-safe -- <cmd>` captures both stdout and stderr, redacts line-by-line, writes redacted stdout to stdout, writes redacted stderr to stderr, forwards the child exit code unchanged, preserves stream ordering where practical, and warns when output contains unterminated partial lines that may delay redaction until a newline or buffer flush. Implementations must cap the in-memory partial-line buffer; when the cap is reached, the buffered content is redacted with known-value and pattern rules before any output is emitted, then processing continues with a warning so an attacker cannot force unbounded memory growth by omitting newlines. `--output <file>` additionally writes a combined redacted transcript with stream labels and timestamps; the transcript must never contain unredacted values. The output file is created with user-only permissions (0600) before writing begins; if the file already exists, Locket fails with an error rather than overwriting without explicit `--force` confirmation.
 
 `locket ai-safe` writes a `REDACT` audit row when project context is available. Metadata includes child `argv0`, argument count, output destinations, whether `--pattern-only` was used, whether known-value coverage was active, redaction counts by rule, and exact known secret names redacted from output. Audit metadata never stores privacy aliases; aliases are applied only when rendering audit output or redacted transcripts. It never records child output or secret values.
+
+## Inline Suppressions
+
+Findings can be suppressed in source via inline directives. Three forms:
+
+- **Line-level**: `# locket-suppress: <reason>` on the same line as the
+  finding. Suppresses that line only.
+- **Block-level**: `# locket-suppress-block-start: <reason>` ... `# locket-suppress-block-end`.
+  Suppresses every finding between the markers.
+- **File-level**: `# locket-suppress-file: <reason>` on the first 5
+  lines of the file. Suppresses the whole file.
+
+The `<reason>` is required and audited. Reasons must be 4-200 chars,
+plain text. Empty or missing reasons fail the scan with `ConfigError`.
+
+Suppressions are language-agnostic: comment syntax differs per
+language but the directive text after the comment marker is the same.
+The scanner must accept `# locket-suppress: ...`, `// locket-suppress: ...`,
+`-- locket-suppress: ...`, `<!-- locket-suppress: ... -->` (HTML),
+and the equivalent block forms.
+
+Each suppressed finding writes a `SCAN` audit row with
+`status: "SUPPRESSED"`, the finding's rule id, the suppression reason,
+and the path. Values are NEVER serialized.

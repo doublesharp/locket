@@ -4,6 +4,10 @@ use locket_scan::{
     FindingKind, KnownRedaction, redact_text, redact_text_with_known_values, scan_text,
 };
 
+// `thiserror` is a transitive build dependency through `locket-scan`'s lib but is not
+// used in this integration test crate; silence `unused_crate_dependencies`.
+use thiserror as _;
+
 fn provider_canary() -> String {
     format!("{}{}", "sk", "_test_locketCanaryValue1234567890")
 }

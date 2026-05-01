@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 
+use crate::suppressions::{SuppressionMap, SuppressionParseError, parse_suppression_map};
 use crate::{
     INLINE_SUPPRESS_LINE_MARKER, INLINE_SUPPRESS_NEXT_MARKER, RULE_ID_ENV_FILE,
     RULE_ID_HIGH_ENTROPY, RULE_ID_KNOWN_SECRET, RULE_ID_PROVIDER_TOKEN,
@@ -147,13 +148,48 @@ pub struct SuppressionResult {
 #[must_use]
 pub fn partition_inline_suppressions(text: &str, findings: Vec<ScanFinding>) -> SuppressionResult {
     let directives = collect_inline_suppressions(text);
+    partition_with_directives(findings, &directives, None)
+}
+
+/// Partitions `findings` into kept and inline-suppressed groups using both legacy
+/// `locket-allow*` markers and the new `locket-suppress*` directives.
+///
+/// The new directives are parsed by [`parse_suppression_map`]. When the directive
+/// reason text fails validation (empty, too short, too long, malformed block markers,
+/// or a file-level directive past the first five lines), this function returns a
+/// [`SuppressionParseError`] so the caller can surface a `ConfigError` to the user.
+///
+/// # Errors
+///
+/// Returns [`SuppressionParseError`] when any `locket-suppress*` directive in `text`
+/// is malformed.
+pub fn partition_inline_suppressions_strict(
+    text: &str,
+    findings: Vec<ScanFinding>,
+) -> Result<SuppressionResult, SuppressionParseError> {
+    let legacy = collect_inline_suppressions(text);
+    let strict = parse_suppression_map(text)?;
+    Ok(partition_with_directives(findings, &legacy, Some(&strict)))
+}
+
+fn partition_with_directives(
+    findings: Vec<ScanFinding>,
+    legacy: &BTreeMap<usize, String>,
+    strict: Option<&SuppressionMap>,
+) -> SuppressionResult {
     let mut kept = Vec::new();
     let mut suppressed = Vec::new();
 
     for finding in findings {
-        if finding.kind.allows_inline_suppression()
-            && let Some(reason) = directives.get(&finding.line)
-        {
+        if !finding.kind.allows_inline_suppression() {
+            kept.push(finding);
+            continue;
+        }
+        let reason = strict
+            .and_then(|map| map.reason_for_line(finding.line))
+            .map(str::to_owned)
+            .or_else(|| legacy.get(&finding.line).cloned());
+        if let Some(reason) = reason {
             suppressed.push(SuppressedFinding {
                 path_label: finding.path_label,
                 line: finding.line,
@@ -161,7 +197,7 @@ pub fn partition_inline_suppressions(text: &str, findings: Vec<ScanFinding>) -> 
                 token_length: finding.token_length,
                 kind: finding.kind,
                 rule_id: finding.kind.rule_id(),
-                reason: reason.clone(),
+                reason,
             });
         } else {
             kept.push(finding);

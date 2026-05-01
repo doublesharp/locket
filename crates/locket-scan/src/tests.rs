@@ -389,3 +389,55 @@ fn suppression_result_default_is_empty() {
     assert!(result.kept.is_empty());
     assert!(result.suppressed.is_empty());
 }
+
+#[test]
+fn strict_partition_suppresses_high_entropy_finding_via_locket_suppress_directive()
+-> Result<(), Box<dyn std::error::Error>> {
+    use super::partition_inline_suppressions_strict;
+    let entropy = "Z9a$kLmN2pQx7R!sT4vW8yB3cD6eF";
+    let text = format!("token={entropy} # locket-suppress: known random fixture\n");
+    let findings = scan_text("notes.txt", &text);
+    assert_eq!(findings.len(), 1, "scan must produce one high-entropy finding before suppression");
+
+    let result = partition_inline_suppressions_strict(&text, findings)?;
+
+    assert!(result.kept.is_empty());
+    assert_eq!(result.suppressed.len(), 1);
+    assert_eq!(result.suppressed[0].kind, FindingKind::HighEntropy);
+    assert_eq!(result.suppressed[0].reason, "known random fixture");
+    assert!(!format!("{:?}", result.suppressed[0]).contains(entropy));
+    Ok(())
+}
+
+#[test]
+fn strict_partition_block_directive_suppresses_inner_findings()
+-> Result<(), Box<dyn std::error::Error>> {
+    use super::partition_inline_suppressions_strict;
+    let entropy = "Z9a$kLmN2pQx7R!sT4vW8yB3cD6eF";
+    let text = format!(
+        "// locket-suppress-block-start: vendored fixtures section\n\
+         {entropy}\n\
+         // locket-suppress-block-end\n",
+    );
+    let findings = scan_text("notes.txt", &text);
+
+    let result = partition_inline_suppressions_strict(&text, findings)?;
+
+    assert!(result.kept.is_empty());
+    assert_eq!(result.suppressed.len(), 1);
+    assert_eq!(result.suppressed[0].reason, "vendored fixtures section");
+    Ok(())
+}
+
+#[test]
+fn strict_partition_propagates_reason_validation_errors()
+-> Result<(), Box<dyn std::error::Error>> {
+    use super::{SuppressionParseError, partition_inline_suppressions_strict};
+    let text = "value # locket-suppress: hi\n";
+    let result = partition_inline_suppressions_strict(text, Vec::new());
+    let Err(error) = result else {
+        return Err("must fail".into());
+    };
+    assert!(matches!(error, SuppressionParseError::ReasonTooShort { line: 1, .. }));
+    Ok(())
+}

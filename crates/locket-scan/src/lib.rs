@@ -4,19 +4,25 @@ mod detect;
 mod finding;
 mod redact;
 mod rules;
+mod suppressions;
 
 #[cfg(test)]
 mod tests;
 
 pub use finding::{
     FindingKind, ScanFinding, Severity, SuppressedFinding, SuppressionResult,
-    partition_inline_suppressions,
+    partition_inline_suppressions, partition_inline_suppressions_strict,
 };
 pub use redact::{KnownRedaction, RedactionResult, redact_text, redact_text_with_known_values};
 pub use rules::{
     DEFAULT_ENTROPY_THRESHOLD, DEFAULT_MIN_ENTROPY_TOKEN_LEN, EntropyRule,
     is_default_high_entropy_token, is_high_entropy_token, is_high_entropy_token_with_rule,
     is_provider_token, shannon_entropy,
+};
+pub use suppressions::{
+    FILE_LEVEL_MAX_LINE, MAX_REASON_LENGTH, MIN_REASON_LENGTH, SUPPRESS_BLOCK_END_MARKER,
+    SUPPRESS_BLOCK_START_MARKER, SUPPRESS_FILE_MARKER, SUPPRESS_LINE_MARKER, SuppressionMap,
+    SuppressionParseError, parse_suppression_map,
 };
 
 use detect::sensitive_detections_with_entropy_rule;
