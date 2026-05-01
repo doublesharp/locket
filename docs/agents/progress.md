@@ -194,7 +194,6 @@ Slices 1+2 shipped (agent client, tray binding, 6 view scaffolds,
   - [ ] **subtask** — desktop-policy-editor-write: create/edit/delete
     forms backed by `agent-policy-write` RPC. Dangerous-profile
     requires typed confirmation; `POLICY_UPDATE` audit.
-  - [~] [90b9f58a] branch agent-90b9f58a/agent-resolve-reference-impl, worktree .worktrees/agent-90b9f58a-agent-resolve-reference-impl; **subtask** — agent-resolve-reference-impl: real `ResolveReference` (cross-references `lk-resolve-rpc` under Runtime/DX). Pre-reqs shipped. **Critical path.**
   - [ ] **subtask** — agent-prepare-exec-impl: real `PrepareExec`
     returning resolved env-name allow-list + TTL. Pre-req:
     `policy-ttls`, `agent-resolve-reference-impl`.

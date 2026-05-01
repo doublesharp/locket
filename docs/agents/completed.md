@@ -181,6 +181,8 @@ Slices that have merged to `main` and verified. Open work tracked in
 - [x] automation-client-auth: Automation clients can authenticate signed agent requests.
 - [x] run-agent-backed: Run policies can opt into the agent-backed grant and
   reference-resolution path.
+- [x] agent-resolve-reference-impl: Enforced the live grant profile scope during agent
+  reference resolution.
 
 ## Full Spec Coverage TODO — Security/Recovery/Team
 
