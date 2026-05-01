@@ -257,7 +257,8 @@ Re-verify file:line references before editing — they drift. Severity:
   - [ ] **subtask** — e2e-ui-editor-smoke: smoke flows in the
     desktop app and the VS Code extension. Pre-req: desktop-* and
     vscode-* items.
-- [ ] Bench harnesses and performance gates. Local smoke/report
+- [~] [90b9f58a] branch agent-90b9f58a/bench-smoke-coverage, worktree .worktrees/agent-90b9f58a-bench-smoke-coverage; bench smoke covers metadata/status and staged scan gates.
+  Local smoke/report
   scaffolding, deterministic fixtures, and PR/release tolerance policy
   exist. Remaining: expand measured benchmark coverage beyond the
   current CLI smoke runner (`docs/specs/performance.md`).
