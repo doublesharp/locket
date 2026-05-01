@@ -147,6 +147,7 @@ pub async fn handle_resolve(
     match resolve_reference(
         &typed.reference,
         project_id,
+        profile_id,
         policy_name,
         Path::new(store_path),
         &master_key,
@@ -196,6 +197,7 @@ impl ResolveFailure {
 fn resolve_reference(
     reference: &str,
     project_id: &str,
+    authorized_profile_id: &str,
     policy_name: &str,
     store_path: &Path,
     master_key: &[u8],
@@ -213,6 +215,7 @@ fn resolve_reference(
     match resolve_reference_inner(
         &store,
         project_id,
+        authorized_profile_id,
         policy_name,
         &parsed,
         &master_key,
@@ -248,6 +251,7 @@ fn resolve_reference(
 fn resolve_reference_inner(
     store: &Store,
     project_id: &str,
+    authorized_profile_id: &str,
     policy_name: &str,
     parsed: &LkReferenceUri,
     master_key: &locket_crypto::KeyBytes,
@@ -264,6 +268,13 @@ fn resolve_reference_inner(
                 LocketError::ProfileNotFound,
             )
         })?;
+    if profile.id != authorized_profile_id {
+        return Err(ResolveFailure::new(
+            ERROR_ACCESS_DENIED,
+            "live grant does not authorize the referenced profile",
+            LocketError::AccessDenied,
+        ));
+    }
     let secret = select_secret(store, project_id, &profile.id, parsed)?;
     let version_number = parsed.version().map_or(secret.current_version, SecretVersion::get);
     let version = store
@@ -1210,6 +1221,32 @@ mod tests {
         let response = resolve_with_fixture(&fixture, "lk://dev/DATABASE_URL@v99", 1).await?;
 
         assert_eq!(error_code(response)?, "SecretNotFound");
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn handle_resolve_denies_profile_outside_live_grant()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let fixture = build_fixture()?;
+        let store = Store::open(&fixture.store_path)?;
+        store.insert_profile_if_absent("lk_prof_prod", PROJECT_ID, "prod", false, 1)?;
+        let state = unlocked_state(&fixture).await;
+        let mut request = resolve_request(&fixture);
+        request.reference = "lk://prod/DATABASE_URL".to_owned();
+        let envelope = RequestEnvelope::new(
+            "req-profile-denied",
+            AgentMethod::ResolveReference,
+            serde_json::to_value(request)?,
+        );
+
+        let response = handle_resolve(&envelope, &state, 1).await;
+        assert_eq!(error_code(response)?, "AccessDenied");
+        let audits = resolve_audit_metadata(&fixture)?;
+        assert_eq!(audits.len(), 1);
+        assert_eq!(audits[0]["status"], "FAILURE");
+        assert_eq!(audits[0]["failure_reason"], "AccessDenied");
+        assert_eq!(audits[0]["profile_name"], "prod");
+        assert!(audits[0].get("value").is_none());
         Ok(())
     }
 
