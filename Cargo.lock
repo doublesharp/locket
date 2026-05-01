@@ -2679,6 +2679,7 @@ dependencies = [
  "locket-store",
  "proptest",
  "rpassword",
+ "rusqlite",
  "rustix",
  "serde",
  "serde_json",

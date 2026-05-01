@@ -364,3 +364,218 @@ fn bundle_without_device_private_key_fails_verification()
 //    audit rows must land in `imported_audit_chains` with structural
 //    verification. Today the import command only emits
 //    `bundle_include_audit: yes/no` and does not persist rows.
+
+/// Returns the count of rows in a single store table for assertions.
+fn store_row_count(
+    store_path: &Path,
+    sql: &str,
+) -> Result<i64, Box<dyn std::error::Error>> {
+    let store = locket_store::Store::open(store_path)?;
+    let count: i64 = store.connection().query_row(sql, [], |row| row.get(0))?;
+    Ok(count)
+}
+
+#[test]
+fn applied_rows_persist_across_reopen() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let (context, _descriptor, bundle_path, _export_output) =
+        export_sealed_bundle(&directory, "applied.locket-bundle")?;
+
+    let mut import_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from([
+            "locket",
+            "import-bundle",
+            bundle_path.to_str().ok_or("utf8 path")?,
+            "--accept-incoming",
+            "--include-audit",
+        ])?,
+        &context,
+        &mut import_output,
+    )?;
+    let import_output = String::from_utf8(import_output)?;
+    assert!(import_output.contains("import: applied"), "missing import: applied: {import_output}");
+
+    let store_path = context.store_path.clone();
+    drop(context);
+    assert!(store_row_count(&store_path, "SELECT COUNT(*) FROM profiles")? >= 1);
+    assert!(store_row_count(&store_path, "SELECT COUNT(*) FROM secrets")? >= 1);
+    assert!(store_row_count(&store_path, "SELECT COUNT(*) FROM secret_versions")? >= 1);
+    assert!(store_row_count(&store_path, "SELECT COUNT(*) FROM blobs")? >= 1);
+    Ok(())
+}
+
+#[test]
+fn newer_incoming_rotates_active_version() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let (context, _descriptor, bundle_path, _export_output) =
+        export_sealed_bundle(&directory, "rotate.locket-bundle")?;
+
+    let store_path = context.store_path.clone();
+    {
+        let store = locket_store::Store::open(&store_path)?;
+        let connection = store.connection();
+        connection.execute("PRAGMA foreign_keys = OFF", [])?;
+        connection.execute("UPDATE secret_versions SET version = 2 WHERE version = 1", [])?;
+        connection.execute("UPDATE blobs SET version = 2 WHERE version = 1", [])?;
+        connection.execute("UPDATE fingerprints SET version = 2 WHERE version = 1", [])?;
+        connection.execute("UPDATE secrets SET current_version = 2", [])?;
+        connection.execute("PRAGMA foreign_keys = ON", [])?;
+    }
+
+    let mut import_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from([
+            "locket",
+            "import-bundle",
+            bundle_path.to_str().ok_or("utf8 path")?,
+            "--accept-incoming",
+        ])?,
+        &context,
+        &mut import_output,
+    )?;
+    let import_output = String::from_utf8(import_output)?;
+    assert!(import_output.contains("import: applied"));
+
+    drop(context);
+    let deprecated_count = store_row_count(
+        &store_path,
+        "SELECT COUNT(*) FROM secret_versions WHERE state = 'deprecated'
+         AND deprecated_at IS NOT NULL AND grace_until IS NOT NULL",
+    )?;
+    let current_count = store_row_count(
+        &store_path,
+        "SELECT COUNT(*) FROM secret_versions WHERE state = 'current'",
+    )?;
+    assert_eq!(current_count, 1, "incoming version must become the only current row");
+    assert!(deprecated_count >= 1, "prior current row must be deprecated with grace_until set");
+    Ok(())
+}
+
+#[test]
+fn divergent_arm_rolls_back_without_flag() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let (context, _descriptor, bundle_path, _export_output) =
+        export_sealed_bundle(&directory, "divergent.locket-bundle")?;
+
+    let store_path = context.store_path.clone();
+    {
+        let store = locket_store::Store::open(&store_path)?;
+        store.connection().execute(
+            "UPDATE blobs SET ciphertext = X'00FF' WHERE secret_id IN (SELECT id FROM secrets)",
+            [],
+        )?;
+    }
+    let pre_blob_bytes: Vec<u8> = locket_store::Store::open(&store_path)?
+        .connection()
+        .query_row("SELECT ciphertext FROM blobs LIMIT 1", [], |row| row.get(0))?;
+
+    let result = run_with_context(
+        Cli::try_parse_from([
+            "locket",
+            "import-bundle",
+            bundle_path.to_str().ok_or("utf8 path")?,
+        ])?,
+        &context,
+        &mut Vec::new(),
+    );
+    assert!(result.is_err(), "default policy must reject divergent conflicts");
+
+    drop(context);
+    let post_blob_bytes: Vec<u8> = locket_store::Store::open(&store_path)?
+        .connection()
+        .query_row("SELECT ciphertext FROM blobs LIMIT 1", [], |row| row.get(0))?;
+    assert_eq!(pre_blob_bytes, post_blob_bytes, "rolled-back tx must leave blob unchanged");
+    Ok(())
+}
+
+#[test]
+fn divergent_arm_applies_with_accept_incoming() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let (context, _descriptor, bundle_path, _export_output) =
+        export_sealed_bundle(&directory, "divergent-applied.locket-bundle")?;
+
+    let store_path = context.store_path.clone();
+    {
+        let store = locket_store::Store::open(&store_path)?;
+        store.connection().execute(
+            "UPDATE blobs SET ciphertext = X'00FF' WHERE secret_id IN (SELECT id FROM secrets)",
+            [],
+        )?;
+    }
+
+    let mut import_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from([
+            "locket",
+            "import-bundle",
+            bundle_path.to_str().ok_or("utf8 path")?,
+            "--accept-incoming",
+        ])?,
+        &context,
+        &mut import_output,
+    )?;
+    let import_output = String::from_utf8(import_output)?;
+    assert!(import_output.contains("import: applied"));
+
+    drop(context);
+    let post_blob_bytes: Vec<u8> = locket_store::Store::open(&store_path)?
+        .connection()
+        .query_row("SELECT ciphertext FROM blobs LIMIT 1", [], |row| row.get(0))?;
+    assert_ne!(
+        post_blob_bytes,
+        b"\x00\xFF".to_vec(),
+        "accept-incoming must overwrite local divergent ciphertext"
+    );
+    Ok(())
+}
+
+#[test]
+fn deleted_vs_active_arm() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let (context, _descriptor, bundle_path, _export_output) =
+        export_sealed_bundle(&directory, "tombstone.locket-bundle")?;
+
+    let store_path = context.store_path.clone();
+    {
+        let store = locket_store::Store::open(&store_path)?;
+        store.connection().execute(
+            "UPDATE secrets SET state = 'deleted', deleted_at = ?1 WHERE state = 'active'",
+            [9_999_999_999_i64],
+        )?;
+    }
+
+    let result = run_with_context(
+        Cli::try_parse_from([
+            "locket",
+            "import-bundle",
+            bundle_path.to_str().ok_or("utf8 path")?,
+        ])?,
+        &context,
+        &mut Vec::new(),
+    );
+    assert!(
+        result.is_err(),
+        "tombstone-vs-active without flags must require interactive resolution"
+    );
+
+    let mut import_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from([
+            "locket",
+            "import-bundle",
+            bundle_path.to_str().ok_or("utf8 path")?,
+            "--accept-incoming",
+        ])?,
+        &context,
+        &mut import_output,
+    )?;
+    let import_output = String::from_utf8(import_output)?;
+    assert!(import_output.contains("import: applied"));
+
+    drop(context);
+    let active_count =
+        store_row_count(&store_path, "SELECT COUNT(*) FROM secrets WHERE state = 'active'")?;
+    assert!(active_count >= 1, "accept-incoming must rejoin active secret");
+    Ok(())
+}
