@@ -2016,6 +2016,7 @@ fn write_bundle_verify_audit_if_available(
     Ok(())
 }
 
+#[allow(clippy::too_many_lines)]
 fn write_bundle_audit_if_available(
     context: &RuntimeContext,
     store: &mut Store,

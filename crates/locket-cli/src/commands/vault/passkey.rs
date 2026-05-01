@@ -127,17 +127,28 @@ fn passkey_register_command(
             write_passkey_register_failure_audit(
                 context,
                 &mut store,
-                &resolved,
-                label,
-                relying_party_id,
-                user_verification,
-                &error,
-                timestamp,
+                &PasskeyRegisterFailureAudit {
+                    resolved: &resolved,
+                    label,
+                    relying_party_id,
+                    user_verification,
+                    error: &error,
+                    timestamp,
+                },
             )
             .ok();
             Err(map_platform_passkey_error(&error))
         }
     }
+}
+
+struct PasskeyRegisterFailureAudit<'a> {
+    resolved: &'a ResolvedProject,
+    label: &'a str,
+    relying_party_id: &'a str,
+    user_verification: UserVerificationAudit,
+    error: &'a PlatformError,
+    timestamp: i64,
 }
 
 fn map_platform_passkey_error(error: &PlatformError) -> CliError {
@@ -467,16 +478,15 @@ fn write_passkey_register_audit(
 fn write_passkey_register_failure_audit(
     context: &RuntimeContext,
     store: &mut Store,
-    resolved: &ResolvedProject,
-    label: &str,
-    relying_party_id: &str,
-    user_verification: UserVerificationAudit,
-    error: &PlatformError,
-    timestamp: i64,
+    request: &PasskeyRegisterFailureAudit<'_>,
 ) -> Result<(), CliError> {
-    let audit_key =
-        load_project_key(context, store, resolved.config.project_id.as_str(), KeyPurpose::Audit)?;
-    let auth_result = match error {
+    let audit_key = load_project_key(
+        context,
+        store,
+        request.resolved.config.project_id.as_str(),
+        KeyPurpose::Audit,
+    )?;
+    let auth_result = match request.error {
         PlatformError::PasskeyUnsupported => "unsupported",
         _ => "denied",
     };
@@ -486,22 +496,22 @@ fn write_passkey_register_failure_audit(
         "status": "DENIED",
         "command": "passkey register",
         "passkey_id": serde_json::Value::Null,
-        "label": label,
+        "label": request.label,
         "credential_id_prefix": serde_json::Value::Null,
         "auth_result": auth_result,
-        "webauthn_relying_party_id": relying_party_id,
-        "user_verification": user_verification,
-        "failure_reason": error.to_string(),
+        "webauthn_relying_party_id": request.relying_party_id,
+        "user_verification": request.user_verification,
+        "failure_reason": request.error.to_string(),
     });
     let audit = AuditWrite {
-        project_id: resolved.config.project_id.as_str(),
+        project_id: request.resolved.config.project_id.as_str(),
         profile_id: None,
         action: "PASSKEY_REGISTER",
         status: "DENIED",
         secret_name: None,
         command: Some("passkey register"),
         metadata_json: &metadata,
-        timestamp,
+        timestamp: request.timestamp,
     };
     store.append_audit(audit_key.as_ref(), &audit)?;
     Ok(())
