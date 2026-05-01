@@ -86,6 +86,37 @@ pub struct ImportedAuditChainRow {
     pub hmac: [u8; AUDIT_HMAC_LEN],
 }
 
+/// Full audit-log row for sealed-bundle export with `--include-audit`.
+///
+/// Carries every field needed by the receiver to structurally verify
+/// the imported chain and write it into `imported_audit_chains` with no
+/// further DB-side translation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExportableAuditRow {
+    /// Project-scoped audit sequence.
+    pub sequence: u64,
+    /// HMAC-covered metadata schema version stored alongside the row.
+    pub schema_version: u16,
+    /// Event timestamp in nanoseconds since the Unix epoch.
+    pub timestamp: i64,
+    /// Optional profile identifier covered by the HMAC.
+    pub profile_id: Option<String>,
+    /// HMAC-covered action label.
+    pub action: String,
+    /// HMAC-covered status label.
+    pub status: String,
+    /// HMAC-covered metadata object as canonical JSON text.
+    pub metadata_json: String,
+    /// Optional query-convenience secret name.
+    pub secret_name: Option<String>,
+    /// Optional query-convenience command string.
+    pub command: Option<String>,
+    /// Previous row HMAC (32 bytes, all zeroes for sequence 1).
+    pub previous_hmac: [u8; AUDIT_HMAC_LEN],
+    /// Stored row HMAC (32 bytes).
+    pub hmac: [u8; AUDIT_HMAC_LEN],
+}
+
 /// Summary returned after imported audit-chain structural verification.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ImportedAuditChainVerification {
@@ -905,6 +936,79 @@ impl Store {
                 audit_log_record_from_row,
             )?
             .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// Returns every audit row for a project, in ascending sequence
+    /// order, with all HMAC-covered and convenience fields preserved.
+    ///
+    /// Used by sealed-bundle export when `--include-audit` is set so
+    /// the bundle payload carries the structurally verifiable chain.
+    /// The returned rows form a contiguous prefix of the project audit
+    /// log up to the latest sequence; callers serializing them into a
+    /// bundle should treat the final row's `sequence` and `hmac` as the
+    /// `(checkpoint_sequence, checkpoint_hmac)` for that bundle.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Sqlite`] when `SQLite` cannot query the
+    /// audit log or any row carries a malformed HMAC blob.
+    pub fn list_exportable_audit_rows(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<ExportableAuditRow>, StoreError> {
+        let mut statement = self.connection.prepare(
+            "SELECT sequence, schema_version, timestamp, profile_id, action, status,
+                    metadata_json, secret_name, command, previous_hmac, hmac
+             FROM audit_log
+             WHERE project_id = ?1
+             ORDER BY sequence",
+        )?;
+        let rows = statement
+            .query_map([project_id], |row| {
+                Ok((
+                    row.get::<_, u64>(0)?,
+                    row.get::<_, u16>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, Option<String>>(7)?,
+                    row.get::<_, Option<String>>(8)?,
+                    row.get::<_, Vec<u8>>(9)?,
+                    row.get::<_, Vec<u8>>(10)?,
+                ))
+            })?
+            .map(|row| {
+                let (
+                    sequence,
+                    schema_version,
+                    timestamp,
+                    profile_id,
+                    action,
+                    status,
+                    metadata_json,
+                    secret_name,
+                    command,
+                    previous_hmac,
+                    hmac,
+                ) = row?;
+                Ok(ExportableAuditRow {
+                    sequence,
+                    schema_version,
+                    timestamp,
+                    profile_id,
+                    action,
+                    status,
+                    metadata_json,
+                    secret_name,
+                    command,
+                    previous_hmac: hmac_vec_to_array(sequence, previous_hmac)?,
+                    hmac: hmac_vec_to_array(sequence, hmac)?,
+                })
+            })
+            .collect::<Result<Vec<_>, StoreError>>()?;
         Ok(rows)
     }
 

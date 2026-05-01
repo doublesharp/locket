@@ -29,6 +29,7 @@ pub use passphrase::{PassphraseKdfParams, derive_passphrase_fallback_key_v1};
 pub use purpose::{KeyPurpose, KeyWrapPurpose};
 pub use random::{
     generate_key, generate_passphrase_salt, generate_recovery_code_bytes, generate_recovery_salt,
+    random_bytes,
 };
 pub use recovery_code::{recovery_code_decode, recovery_code_encode};
 pub use recovery_envelope::{
