@@ -688,6 +688,7 @@ fn doctor_reports_locked_safe_diagnostics_and_exit_codes() -> Result<(), Box<dyn
     let doctor_output = String::from_utf8(doctor_output)?;
     assert!(doctor_output.contains("pass locket_toml_parseability"));
     assert!(doctor_output.contains("pass sqlite_integrity"));
+    assert!(doctor_output.contains("pass bundle_conflict_index"));
     assert!(doctor_output.contains("pass trusted_roots"));
     assert!(doctor_output.contains("pass schema_migration_backups"));
     assert!(doctor_output.contains("skip audit_hmac_verification"));
@@ -720,6 +721,11 @@ fn doctor_reports_locked_safe_diagnostics_and_exit_codes() -> Result<(), Box<dyn
         doctor_metadata["check_names"]
             .as_array()
             .is_some_and(|names| names.iter().any(|name| name == "sqlite_integrity"))
+    );
+    assert!(
+        doctor_metadata["check_names"]
+            .as_array()
+            .is_some_and(|names| names.iter().any(|name| name == "bundle_conflict_index"))
     );
     assert!(
         doctor_metadata["check_names"]

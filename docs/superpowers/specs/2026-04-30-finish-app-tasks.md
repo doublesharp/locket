@@ -134,19 +134,22 @@ ship. Each bullet has spec ref + code ref + suggested touches.
   `locket-store/src/passkey.rs` + registrar plumbing in
   `locket-platform`.
 (`directory-grants-missing-revoked-and-granted-by` shipped —
-directory_grants gained granted_by + revoked_at; deny_directory_grant*
-paths now soft-revoke (UPDATE) instead of DELETE; allow path revives
-prior row keeping grant_id stable. Active-grant queries filter
-revoked rows. DENY_DIRECTORY audit now records both columns.)
-(`devices-missing-member-id-and-label` shipped — devices gained
-`member_id` + `label` columns plus a partial `devices_member_idx`;
-`name` kept as the stable id, `label` is the separate display
-string (mirrored from `name` until a label-on-add flow lands).)
+`directory_grants` now persists nullable `granted_by` + `revoked_at`,
+deny paths soft-revoke rows instead of deleting, active lookups
+filter revoked grants, and allow revives the prior scope row while
+preserving stable audit correlation.)
+(`imported-audit-chain-optionality` shipped — spec was wrong;
+updated data-model.md:421-432 to drop Option from encrypted-rows
+fields (schema is canonical).)
 (`bundle-conflict-index-by-profile-name-version` shipped — added
-secrets_bundle_conflict_idx covering (project_id, profile_id, name,
-source, state, current_version); EXPLAIN-QUERY-PLAN test confirms
-SQLite picks the index for the apply-path predicate. secret_versions
-PK already covers the version side.)
+`secrets_bundle_conflict_idx(project_id, profile_id, name, source,
+state, current_version)`, kept `secret_versions(secret_id, version)`
+as the version-side lookup, added planner/index-shape tests, and
+surfaced the index in `locket doctor` as `bundle_conflict_index`.)
+(`devices-missing-member-id-and-label` shipped — `devices` now has
+nullable `member_id` with active-member index plus separate non-null
+`label`; store records and CLI/device descriptor paths populate/read
+both while preserving `name` as the stable selector.)
 - [ ] **store-schema-migration-framework**: 14b's three column
   additions land via `CREATE TABLE IF NOT EXISTS`, which only
   applies to brand-new stores. Pre-v1 ship is fine, but before

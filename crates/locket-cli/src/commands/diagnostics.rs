@@ -346,6 +346,7 @@ fn collect_diagnostics(
                     } else {
                         DiagnosticCheck::fail("sqlite_integrity", true, "integrity_check failed")
                     });
+                    checks.push(check_bundle_conflict_index(&store));
                     checks.push(match store.get_project(project.config.project_id.as_str()) {
                         Ok(Some(record)) => DiagnosticCheck::pass(
                             "project_store_metadata",
@@ -497,6 +498,46 @@ fn check_locket_toml(path: &Path) -> DiagnosticCheck {
             ),
         ),
         Err(error) => DiagnosticCheck::fail("locket_toml_parseability", true, error.to_string()),
+    }
+}
+
+fn check_bundle_conflict_index(store: &locket_store::Store) -> DiagnosticCheck {
+    let mut statement = match store
+        .connection()
+        .prepare("SELECT name FROM pragma_index_info('secrets_bundle_conflict_idx') ORDER BY seqno")
+    {
+        Ok(statement) => statement,
+        Err(error) => {
+            return DiagnosticCheck::fail("bundle_conflict_index", false, error.to_string());
+        }
+    };
+    let columns = match statement.query_map([], |row| row.get::<_, String>(0)) {
+        Ok(rows) => rows.collect::<Result<Vec<_>, _>>(),
+        Err(error) => {
+            return DiagnosticCheck::fail("bundle_conflict_index", false, error.to_string());
+        }
+    };
+    match columns {
+        Ok(columns)
+            if columns
+                == ["project_id", "profile_id", "name", "source", "state", "current_version"] =>
+        {
+            DiagnosticCheck::pass(
+                "bundle_conflict_index",
+                "secrets_bundle_conflict_idx covers project/profile/name/source/state/current_version",
+            )
+        }
+        Ok(columns) if columns.is_empty() => DiagnosticCheck::fail(
+            "bundle_conflict_index",
+            true,
+            "missing secrets_bundle_conflict_idx",
+        ),
+        Ok(columns) => DiagnosticCheck::fail(
+            "bundle_conflict_index",
+            true,
+            format!("unexpected secrets_bundle_conflict_idx columns={}", columns.join(",")),
+        ),
+        Err(error) => DiagnosticCheck::fail("bundle_conflict_index", false, error.to_string()),
     }
 }
 
