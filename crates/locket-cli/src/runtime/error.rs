@@ -47,7 +47,8 @@ const fn crypto_error_exit_code(error: locket_crypto::CryptoError) -> u8 {
 const fn platform_error_exit_code(error: &locket_platform::PlatformError) -> u8 {
     match error {
         locket_platform::PlatformError::MasterKeyNotFound
-        | locket_platform::PlatformError::InvalidPassphrase => {
+        | locket_platform::PlatformError::InvalidPassphrase
+        | locket_platform::PlatformError::DevicePrivateKeyNotFound => {
             LocketError::UnlockRequired.exit_code()
         }
         locket_platform::PlatformError::LocalUserVerificationFailed
@@ -67,7 +68,9 @@ const fn platform_error_exit_code(error: &locket_platform::PlatformError) -> u8 
         | locket_platform::PlatformError::TomlDe(_)
         | locket_platform::PlatformError::TomlSer(_)
         | locket_platform::PlatformError::Crypto(_)
-        | locket_platform::PlatformError::MemoryPoisoned => {
+        | locket_platform::PlatformError::MemoryPoisoned
+        | locket_platform::PlatformError::DevicePrivateKeyIntegrityFailure(_)
+        | locket_platform::PlatformError::DevicePrivateKeyPermissionsTooWide(_) => {
             LocketError::KeychainUnavailable.exit_code()
         }
     }
