@@ -797,6 +797,44 @@ env_mode = "strict"
 }
 
 #[test]
+fn ide_external_env_source_returns_typed_ide_env_session_unavailable()
+-> Result<(), Box<dyn std::error::Error>> {
+    let document = locket_core::PolicyDocument::from_toml_str(
+        r#"
+[commands.env_check]
+argv = ["/bin/sh", "-c", "true"]
+required_secrets = ["DATABASE_URL"]
+external_env_sources = ["ide"]
+env_mode = "strict"
+"#,
+    )?;
+    let policy = document.commands.get("env_check").ok_or("missing policy")?;
+    let project_root = tempdir()?;
+
+    let result = crate::resolve_policy_external_env(
+        policy,
+        &locket_exec::EnvMap::new(),
+        project_root.path(),
+    );
+
+    let Err(error) = result else {
+        return Err("ide external env source must fail until handler is wired".into());
+    };
+    assert_eq!(error.exit_code(), locket_core::LocketError::IdeEnvSessionUnavailable.exit_code());
+    assert_eq!(error.exit_code(), 80);
+    let message = error.to_string();
+    assert!(
+        message.contains("IdeEnvSessionUnavailable"),
+        "error must be typed, got: {message}"
+    );
+    assert!(
+        message.contains("agent IDE env-session handler not yet implemented"),
+        "error must carry the reason, got: {message}"
+    );
+    Ok(())
+}
+
+#[test]
 fn docker_policy_plan_and_audit_are_metadata_only() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempdir()?;
     let context = test_context(&directory);

@@ -26,8 +26,8 @@ use crate::commands::secrets::import::{EnvImportEntry, parse_env_import};
 use crate::runtime::RuntimeContext;
 use crate::runtime::error::{
     CliError, child_exit_error, confirmation_failed_error, corrupt_db_error, exec_prepare_error,
-    external_source_unavailable_error, invalid_policy_error, metadata_invalid_error,
-    typed_cli_error, unimplemented_in_build_error, user_verification_failed_error,
+    external_source_unavailable_error, ide_env_session_unavailable_error, invalid_policy_error,
+    metadata_invalid_error, typed_cli_error, user_verification_failed_error,
 };
 use crate::runtime::key_access::{MasterKeySource, default_profile, load_master_key};
 use crate::support::secret_helpers::{
@@ -323,8 +323,8 @@ pub(crate) fn resolve_policy_external_env_with_compose_config_command(
                 )?);
             }
             ExternalEnvSource::Ide => {
-                return Err(unimplemented_in_build_error(
-                    "external env source is not wired in this build",
+                return Err(ide_env_session_unavailable_error(
+                    "agent IDE env-session handler not yet implemented",
                 ));
             }
         }
