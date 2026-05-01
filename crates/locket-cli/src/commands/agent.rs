@@ -197,7 +197,7 @@ fn agent_status_command(context: &RuntimeContext, output: &mut impl Write) -> Re
 }
 
 #[cfg(all(unix, not(test)))]
-pub(crate) fn request_agent_once(
+pub(super) fn request_agent_once(
     context: &RuntimeContext,
     method: locket_agent::AgentMethod,
     payload: Value,
@@ -211,7 +211,7 @@ pub(crate) fn request_agent_once(
 }
 
 #[cfg(all(not(unix), not(test)))]
-pub(crate) fn request_agent_once(
+pub(super) fn request_agent_once(
     _context: &RuntimeContext,
     _method: (),
     _payload: Value,

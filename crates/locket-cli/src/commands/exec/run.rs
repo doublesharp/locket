@@ -984,6 +984,7 @@ fn request_run_policy_grant_with_binding(
 }
 
 #[cfg(test)]
+#[allow(clippy::unnecessary_wraps)]
 fn request_run_policy_grant_with_binding(
     _context: &RuntimeContext,
     _project_id: &str,
@@ -1018,7 +1019,7 @@ fn revoke_run_policy_grant_id(context: &RuntimeContext, grant_id: &str) {
 }
 
 #[cfg(any(not(unix), test))]
-fn revoke_run_policy_grant_id(_context: &RuntimeContext, _grant_id: &str) {}
+const fn revoke_run_policy_grant_id(_context: &RuntimeContext, _grant_id: &str) {}
 
 fn runtime_session_retention(
     context: &RuntimeContext,
