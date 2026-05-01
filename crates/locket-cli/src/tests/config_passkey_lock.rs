@@ -817,25 +817,6 @@ fn lock_and_unlock_use_direct_metadata_only_mode() -> Result<(), Box<dyn std::er
         &mut init_output,
     )?;
 
-    let mut unlock_with_verify = Vec::new();
-    let verify_result = run_with_context(
-        Cli::try_parse_from(["locket", "unlock", "--verify-user"])?,
-        &context,
-        &mut unlock_with_verify,
-    );
-    let Err(verify_error) = verify_result else {
-        return Err("--verify-user must hard-error".into());
-    };
-    assert_eq!(
-        verify_error.exit_code(),
-        locket_core::LocketError::PolicyValidationIncomplete.exit_code(),
-    );
-    assert_error_contains(
-        Err::<(), _>(verify_error),
-        "platform user verification is not implemented",
-    );
-    assert!(unlock_with_verify.is_empty());
-
     let mut unlock_output = Vec::new();
     run_with_context(Cli::try_parse_from(["locket", "unlock"])?, &context, &mut unlock_output)?;
     let unlock_output = String::from_utf8(unlock_output)?;
@@ -843,6 +824,78 @@ fn lock_and_unlock_use_direct_metadata_only_mode() -> Result<(), Box<dyn std::er
     assert!(unlock_output.contains("unlock_method: OsKeychain"));
     assert!(unlock_output.contains("cached_keys: no"));
     assert!(unlock_output.contains("verify_user: not requested"));
+    Ok(())
+}
+
+#[test]
+fn unlock_with_verify_user_records_satisfied_verification_audit()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+
+    let allowing_context =
+        context_with_user_verifier(&context, Arc::new(MemoryLocalUserVerifier::allowing()));
+    let mut unlock_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "unlock", "--verify-user"])?,
+        &allowing_context,
+        &mut unlock_output,
+    )?;
+    let unlock_output = String::from_utf8(unlock_output)?;
+    assert!(unlock_output.contains("metadata-only direct CLI unlock succeeded"));
+    assert!(unlock_output.contains("verify_user: satisfied"));
+
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let metadata: String = store.connection().query_row(
+        "SELECT metadata_json FROM audit_log WHERE action = 'UNLOCK' ORDER BY sequence DESC LIMIT 1",
+        [],
+        |row| row.get(0),
+    )?;
+    let metadata: serde_json::Value = serde_json::from_str(&metadata)?;
+    assert_eq!(metadata["status"], "SUCCESS");
+    assert_eq!(metadata["user_verification"]["required"], true);
+    assert_eq!(metadata["user_verification"]["satisfied"], true);
+    assert_eq!(metadata["user_verification"]["method"], "test");
+    Ok(())
+}
+
+#[test]
+fn unlock_with_verify_user_denial_returns_typed_error_and_writes_no_unlock_audit()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+
+    let denying_context =
+        context_with_user_verifier(&context, Arc::new(MemoryLocalUserVerifier::denying()));
+    let mut unlock_output = Vec::new();
+    let result = run_with_context(
+        Cli::try_parse_from(["locket", "unlock", "--verify-user"])?,
+        &denying_context,
+        &mut unlock_output,
+    );
+    let Err(error) = result else {
+        return Err("denied user verification must fail unlock".into());
+    };
+    assert_eq!(error.exit_code(), locket_core::LocketError::UserVerificationFailed.exit_code());
+    assert!(unlock_output.is_empty());
+
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let unlock_count: i64 = store.connection().query_row(
+        "SELECT COUNT(*) FROM audit_log WHERE action = 'UNLOCK'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(unlock_count, 0, "denied verification must not write an UNLOCK audit row");
     Ok(())
 }
 

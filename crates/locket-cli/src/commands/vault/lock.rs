@@ -6,10 +6,10 @@ use locket_crypto::KeyPurpose;
 use locket_store::AuditWrite;
 use serde_json::json;
 
+use crate::runtime::user_verification::{UserVerificationAudit, require_user_verification};
 use crate::{
     CliError, MasterKeySource, RuntimeContext, UnlockArgs, default_profile, ensure_project_exists,
     load_project_key_with_source, now_unix_nanos, open_store, require_project, resolve_project,
-    unimplemented_in_build_error,
 };
 
 const DIRECT_CLI_CLIENT_KIND: &str = "direct-cli";
@@ -87,11 +87,11 @@ pub fn unlock_command(
     output: &mut impl Write,
     args: &UnlockArgs,
 ) -> Result<(), CliError> {
-    if args.verify_user {
-        return Err(unimplemented_in_build_error(
-            "unlock --verify-user: platform user verification is not implemented in this build; no interactive verification was performed",
-        ));
-    }
+    let user_verification = if args.verify_user {
+        require_user_verification(context, "vault unlock", "unlock vault")?
+    } else {
+        UserVerificationAudit::not_required()
+    };
 
     let resolved = require_project(context)?;
     let mut store = open_store(context)?;
@@ -112,11 +112,7 @@ pub fn unlock_command(
         "method": method,
         "agent_available": false,
         "cached_keys": false,
-        "user_verification": {
-            "required": false,
-            "satisfied": false,
-            "method": null,
-        },
+        "user_verification": user_verification,
         "grant_actions": [],
         "ttl_seconds": 0,
     });
@@ -132,12 +128,13 @@ pub fn unlock_command(
     };
     store.append_audit(audit_key.as_ref(), &audit)?;
 
+    let verify_status = if args.verify_user { "satisfied" } else { "not requested" };
     writeln!(output, "unlock: metadata-only direct CLI unlock succeeded")?;
     writeln!(output, "project_id: {project_id}")?;
     writeln!(output, "active_profile: {} ({})", resolved.config.default_profile, profile.id)?;
     writeln!(output, "unlock_method: {method}")?;
     writeln!(output, "agent: unavailable")?;
     writeln!(output, "cached_keys: no")?;
-    writeln!(output, "verify_user: not requested")?;
+    writeln!(output, "verify_user: {verify_status}")?;
     Ok(())
 }
