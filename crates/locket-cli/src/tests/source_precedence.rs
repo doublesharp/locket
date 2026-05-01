@@ -144,6 +144,7 @@ fn get_copy_with_explicit_source_uses_selected_source_and_audit_shape()
         force: false,
         copy: true,
         verify_user: false,
+        use_dangerous: false,
     };
     let mut copy_output = Vec::new();
     let mut copy_stderr = Vec::new();

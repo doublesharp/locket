@@ -206,6 +206,7 @@ fn diff_since_ignores_access_audit_rows() -> Result<(), Box<dyn std::error::Erro
         force: false,
         copy: true,
         verify_user: false,
+        use_dangerous: false,
     };
     let mut copy_output = Vec::new();
     let mut copy_stderr = Vec::new();

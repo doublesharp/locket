@@ -408,6 +408,7 @@ mod ai_safe;
 mod cli_basics;
 mod cli_errors;
 mod config_passkey_lock;
+mod dangerous_profile_gating;
 mod diff_copy;
 mod e2e_bundle_roundtrip;
 mod e2e_policy_run;

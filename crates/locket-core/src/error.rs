@@ -53,6 +53,9 @@ pub enum LocketError {
     /// Policy, role, profile, or command scope explicitly denied the action.
     #[error("access denied")]
     AccessDenied,
+    /// Read against a dangerous profile requires explicit `--use-dangerous` consent.
+    #[error("dangerous profile confirmation required")]
+    DangerousProfileConfirmationRequired,
     /// Caller's team role does not permit this team management action.
     #[error("team role denied")]
     TeamRoleDenied,
@@ -185,6 +188,9 @@ impl LocketError {
             b"ScanFindingBlocked" => Some(Self::ScanFindingBlocked),
             b"SecretAlreadyExists" => Some(Self::SecretAlreadyExists),
             b"AccessDenied" => Some(Self::AccessDenied),
+            b"DangerousProfileConfirmationRequired" => {
+                Some(Self::DangerousProfileConfirmationRequired)
+            }
             b"TeamRoleDenied" => Some(Self::TeamRoleDenied),
             b"ProjectRootUntrusted" => Some(Self::ProjectRootUntrusted),
             b"ProjectNotFound" => Some(Self::ProjectNotFound),
@@ -301,6 +307,10 @@ impl LocketError {
             Self::AccessDenied => Some(ErrorDisplayCopy {
                 reason: "Policy or trust rules denied the action.",
                 next_action: "Request the required grant, policy change, or team role.",
+            }),
+            Self::DangerousProfileConfirmationRequired => Some(ErrorDisplayCopy {
+                reason: "Reads against a profile marked dangerous require explicit consent.",
+                next_action: "Re-run the command with --use-dangerous to confirm the dangerous profile read.",
             }),
             Self::TeamRoleDenied => Some(ErrorDisplayCopy {
                 reason: "Your team role does not allow this action.",
@@ -463,7 +473,9 @@ impl LocketError {
             Self::SecretAlreadyExists => 67,
             Self::ConfirmationFailed | Self::TtyRequired => 68,
             Self::ScanFindingBlocked => 69,
-            Self::AccessDenied | Self::TeamRoleDenied => 70,
+            Self::AccessDenied
+            | Self::TeamRoleDenied
+            | Self::DangerousProfileConfirmationRequired => 70,
             Self::ProjectRootUntrusted => 71,
             Self::UnlockRequired => 72,
             Self::GrantRequired => 73,
@@ -520,6 +532,7 @@ mod tests {
         LocketError::ScanFindingBlocked,
         LocketError::SecretAlreadyExists,
         LocketError::AccessDenied,
+        LocketError::DangerousProfileConfirmationRequired,
         LocketError::TeamRoleDenied,
         LocketError::ProjectRootUntrusted,
         LocketError::ProjectNotFound,
@@ -577,6 +590,7 @@ mod tests {
     #[test]
     fn maps_authorization_exit_codes() {
         assert_eq!(LocketError::AccessDenied.exit_code(), 70);
+        assert_eq!(LocketError::DangerousProfileConfirmationRequired.exit_code(), 70);
         assert_eq!(LocketError::TeamRoleDenied.exit_code(), 70);
         assert_eq!(LocketError::ProjectRootUntrusted.exit_code(), 71);
         assert_eq!(LocketError::UnlockRequired.exit_code(), 72);
@@ -667,6 +681,10 @@ mod tests {
             Some(LocketError::UnlockRequired)
         );
         assert_eq!(LocketError::from_code_name("GrantRequired"), Some(LocketError::GrantRequired));
+        assert_eq!(
+            LocketError::from_code_name("DangerousProfileConfirmationRequired"),
+            Some(LocketError::DangerousProfileConfirmationRequired)
+        );
         assert_eq!(LocketError::from_code_name("ProtocolError"), None);
     }
 

@@ -8,6 +8,9 @@ use std::time::Duration;
 use zeroize::Zeroize;
 
 use crate::runtime::RuntimeContext;
+use crate::runtime::dangerous_profile::{
+    DANGEROUS_PROFILE_DENIAL_REASON, ensure_dangerous_profile_consent,
+};
 use crate::runtime::error::{CliError, external_source_unavailable_error};
 use crate::runtime::user_verification::{UserVerificationAudit, require_user_verification};
 use crate::support::secret_helpers::{
@@ -121,6 +124,15 @@ pub fn get_command_with_clipboard_status_and_limit(
         Some(source) => resolve_active_secret_for_source(context, &args.key, Some(source))?,
         None => resolve_active_secret(context, &args.key)?,
     };
+    let (action, access_mode) = get_audit_action_and_access_mode(args);
+    enforce_dangerous_profile_consent_or_audit(
+        context,
+        &resolved_secret,
+        action,
+        access_mode,
+        args.use_dangerous,
+        args.force,
+    )?;
     if args.copy {
         return get_copy_command(
             context,
@@ -143,6 +155,55 @@ pub fn get_command_with_clipboard_status_and_limit(
         resolved_secret.secret.source,
         resolved_secret.secret.current_version
     )?;
+    Ok(())
+}
+
+/// Returns the audit-row `action` and `access_mode` strings that match the
+/// requested `get` mode. `--copy` wins over `--reveal` because clap rejects
+/// the conflicting combination.
+const fn get_audit_action_and_access_mode(args: &GetArgs) -> (&'static str, &'static str) {
+    if args.copy {
+        ("COPY", "clipboard")
+    } else if args.reveal {
+        ("REVEAL", "stdout")
+    } else {
+        ("GET", "get")
+    }
+}
+
+/// Refuse reads against profiles marked `dangerous` unless `--use-dangerous`
+/// was passed. Writes a metadata-only `DENIED` audit row tagged with
+/// `failure_reason: "dangerous_profile_unconfirmed"` BEFORE returning the
+/// typed error so the audit trail records the refusal even when no other
+/// work happens.
+fn enforce_dangerous_profile_consent_or_audit(
+    context: &RuntimeContext,
+    resolved_secret: &ResolvedSecret,
+    action: &'static str,
+    access_mode: &'static str,
+    use_dangerous: bool,
+    force: bool,
+) -> Result<(), CliError> {
+    if let Err(error) =
+        ensure_dangerous_profile_consent(&resolved_secret.profile, use_dangerous)
+    {
+        write_value_access_audit_if_available(&ValueAccessAudit {
+            context,
+            resolved: resolved_secret,
+            action,
+            status: "DENIED",
+            access_mode,
+            ttl_seconds: None,
+            force,
+            clipboard_supported: None,
+            clipboard_clear_supported: None,
+            unsupported_reason: None,
+            denial_reason: None,
+            failure_reason: Some(DANGEROUS_PROFILE_DENIAL_REASON),
+            user_verification: UserVerificationAudit::not_required(),
+        })?;
+        return Err(error);
+    }
     Ok(())
 }
 
@@ -195,6 +256,7 @@ fn get_copy_command(
         clipboard_clear_supported,
         unsupported_reason,
         denial_reason: None,
+        failure_reason: None,
         user_verification,
     })?;
     result.map_err(external_source_unavailable_error)?;
@@ -231,6 +293,7 @@ fn get_reveal_command(
             clipboard_clear_supported: None,
             unsupported_reason: None,
             denial_reason: Some("noninteractive_terminal"),
+            failure_reason: None,
             user_verification: UserVerificationAudit::not_required(),
         })?;
         return Err(access_denied_error(
@@ -261,6 +324,7 @@ fn get_reveal_command(
         clipboard_clear_supported: None,
         unsupported_reason: None,
         denial_reason: None,
+        failure_reason: None,
         user_verification,
     })?;
     writeln!(output, "{}", value.as_str())?;
@@ -318,6 +382,7 @@ fn value_access_user_verification_or_audit_denial(
                 clipboard_clear_supported: None,
                 unsupported_reason: None,
                 denial_reason: Some("user_verification_failed"),
+                failure_reason: None,
                 user_verification: UserVerificationAudit::failed_required(),
             })?;
             Err(error)
