@@ -22,3 +22,10 @@ rand = { workspace = true }
 sha2 = { workspace = true }
 thiserror = { workspace = true }
 zeroize = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "key_derivation"
+harness = false
