@@ -11,7 +11,9 @@
 #![allow(clippy::unwrap_used)]
 #![allow(unused_crate_dependencies)]
 
-use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use std::hint::black_box;
+
+use criterion::{Criterion, criterion_group, criterion_main};
 use locket_crypto::{HkdfWrapInfo, KEY_LEN, KeyPurpose, derive_wrapping_key_v1};
 
 const MASTER_KEY: [u8; KEY_LEN] = [42_u8; KEY_LEN];
