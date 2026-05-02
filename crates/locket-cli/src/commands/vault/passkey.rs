@@ -54,7 +54,10 @@ fn passkey_register_command(
     let project_id = resolved.config.project_id.as_str();
     ensure_project_exists(&store, project_id)?;
     let local_device = store.get_active_local_device(project_id)?.ok_or_else(|| {
-        invalid_reference_error("active local device required for passkey registration")
+        invalid_reference_error(
+            "no active local device for this project. Run `locket device init` to create one, \
+             or re-run `locket init` (which now sets one up automatically by default).",
+        )
     })?;
     let member_id = match store.get_team_by_project(project_id)? {
         Some(team) => store
