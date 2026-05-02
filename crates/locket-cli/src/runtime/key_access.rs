@@ -1,5 +1,7 @@
 //! Master- and project-key loading helpers used by CLI commands.
 
+use std::io::Write;
+
 use locket_core::{LocketError, ProjectConfig};
 use locket_crypto::{
     HkdfWrapInfo, KeyPurpose, KeyWrapAad, KeyWrapPurpose, WrappedKeyMaterial,
@@ -11,6 +13,29 @@ use crate::runtime::RuntimeContext;
 use crate::runtime::error::{
     CliError, profile_not_found_error, project_not_found_error, typed_cli_error,
 };
+
+#[derive(Clone, Copy)]
+enum PassphrasePromptReason {
+    NewFallback,
+    ExistingFallback,
+}
+
+fn explain_passphrase_prompt(reason: PassphrasePromptReason) {
+    let mut stderr = std::io::stderr();
+    let _ = match reason {
+        PassphrasePromptReason::NewFallback => writeln!(
+            stderr,
+            "locket: OS keychain is unavailable; setting up a passphrase fallback for this project.\n\
+             locket: you will need this passphrase to use this vault on this machine.\n\
+             locket: save your recovery code separately when it is displayed."
+        ),
+        PassphrasePromptReason::ExistingFallback => writeln!(
+            stderr,
+            "locket: OS keychain entry not found for this project; using the passphrase fallback.\n\
+             locket: enter the passphrase you set when this project was first initialized on this machine."
+        ),
+    };
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MasterKeySource {
@@ -36,6 +61,7 @@ pub fn store_master_key_with_fallback(
     match context.key_store.store_master_key(project_id, master_key) {
         Ok(()) => Ok(MasterKeySource::OsKeyStore),
         Err(_primary_error) => {
+            explain_passphrase_prompt(PassphrasePromptReason::NewFallback);
             let passphrase = context.passphrase_reader.new_passphrase()?;
             context.passphrase_store.store_master_key(
                 project_id,
@@ -80,6 +106,7 @@ pub fn load_fallback_master_key(
     {
         return Ok(key);
     }
+    explain_passphrase_prompt(PassphrasePromptReason::ExistingFallback);
     let passphrase = context.passphrase_reader.existing_passphrase()?;
     let key = context.passphrase_store.load_master_key(project_id, passphrase.as_bytes())?;
     context
