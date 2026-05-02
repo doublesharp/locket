@@ -19,6 +19,7 @@ use arboard as _;
 use directories as _;
 use locket_agent as _;
 use locket_core as _;
+use locket_platform as _;
 use locket_store as _;
 use serde as _;
 use serde_json as _;

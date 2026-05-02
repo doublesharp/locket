@@ -8,7 +8,7 @@ use thiserror::Error;
 pub enum PlatformError {
     /// OS keyring returned an error.
     #[error(transparent)]
-    Keyring(#[from] keyring::Error),
+    Keyring(#[from] keyring_core::Error),
     /// No master key exists for the requested project.
     #[error("master key not found")]
     MasterKeyNotFound,

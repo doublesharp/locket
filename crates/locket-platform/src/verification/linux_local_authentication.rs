@@ -27,7 +27,7 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use data_encoding::BASE64URL_NOPAD;
-use keyring::{Entry, Error as KeyringError};
+use keyring_core::{Entry, Error as KeyringError};
 use locket_crypto::random_bytes;
 use thiserror::Error;
 

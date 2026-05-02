@@ -8,7 +8,7 @@ use std::sync::Mutex;
 
 use data_encoding::BASE64URL_NOPAD;
 use hmac::{Hmac, KeyInit, Mac};
-use keyring::Entry;
+use keyring_core::Entry;
 use locket_crypto::{KEY_LEN, generate_key, random_bytes};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
@@ -308,9 +308,9 @@ pub fn derive_passkey_prf(
     Ok(mac.finalize().into_bytes().into())
 }
 
-const fn map_passkey_get_error(error: &keyring::Error) -> PlatformError {
+const fn map_passkey_get_error(error: &keyring_core::Error) -> PlatformError {
     match error {
-        keyring::Error::NoEntry => PlatformError::PasskeyNotFound,
+        keyring_core::Error::NoEntry => PlatformError::PasskeyNotFound,
         _ => PlatformError::PasskeyAuthFailed,
     }
 }

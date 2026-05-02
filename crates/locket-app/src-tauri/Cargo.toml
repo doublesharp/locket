@@ -27,6 +27,7 @@ directories = { workspace = true }
 locket-agent = { path = "../../locket-agent" }
 locket-app = { path = ".." }
 locket-core = { path = "../../locket-core" }
+locket-platform = { path = "../../locket-platform" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tauri = { version = "2", features = ["tray-icon", "image-png"] }

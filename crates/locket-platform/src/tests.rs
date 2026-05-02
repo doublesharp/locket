@@ -123,6 +123,7 @@ fn keyring_store_round_trips_against_host_keychain() -> Result<(), PlatformError
     if std::env::var_os("LOCKET_KEYRING_HOST_TEST").is_none() {
         return Ok(());
     }
+    crate::init_platform_keyring()?;
 
     let project_id = format!(
         "lk_proj_test_keyring_{}_{}",

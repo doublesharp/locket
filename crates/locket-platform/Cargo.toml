@@ -45,7 +45,7 @@ linux-fido2 = []
 [dependencies]
 data-encoding = { workspace = true }
 hmac = { workspace = true }
-keyring = { workspace = true }
+keyring-core = { workspace = true }
 locket-crypto = { version = "0.1.0", path = "../locket-crypto" }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -69,10 +69,13 @@ windows-sys = { version = "0.61", features = [
 ] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-keyring = { workspace = true, features = ["async-secret-service", "async-io", "crypto-rust"] }
+zbus-secret-service-keyring-store = { version = "1", features = ["rt-tokio-crypto-rust"] }
+
+[target.'cfg(target_os = "windows")'.dependencies.windows-native-keyring-store]
+version = "1"
 
 [target.'cfg(target_os = "macos")'.dependencies]
-keyring = { workspace = true, features = ["apple-native"] }
+apple-native-keyring-store = { version = "1", features = ["keychain"] }
 block2 = { version = "0.6", default-features = false, features = ["alloc"] }
 objc2 = { version = "0.6", default-features = false, features = ["std"] }
 objc2-foundation = { version = "0.3", default-features = false, features = [

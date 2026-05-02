@@ -96,6 +96,64 @@ pub const fn platform_name() -> &'static str {
     std::env::consts::OS
 }
 
+/// Installs the OS credential store as `keyring-core`'s default backend.
+///
+/// `keyring-core` 1.0 split the per-platform credential store out of the
+/// `keyring` crate into separate provider crates. `Entry::new` returns
+/// `NoDefaultStore` until a store has been registered. The first successful
+/// call installs the store; subsequent calls are no-ops. Failed calls do
+/// not poison the store, so callers may retry after a transient backend
+/// failure (for example, Secret Service becoming available later).
+///
+/// # Errors
+///
+/// Returns [`PlatformError::Keyring`] if the platform store cannot be
+/// constructed (for example, when Secret Service is unavailable on Linux).
+/// On targets without a supported credential backend this is a no-op.
+pub fn init_platform_keyring() -> Result<(), PlatformError> {
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static INSTALLED: AtomicBool = AtomicBool::new(false);
+    static GUARD: Mutex<()> = Mutex::new(());
+
+    if INSTALLED.load(Ordering::Acquire) {
+        return Ok(());
+    }
+    let _lock = GUARD.lock().map_err(|_| PlatformError::MemoryPoisoned)?;
+    if INSTALLED.load(Ordering::Acquire) {
+        return Ok(());
+    }
+    install_default_credential_store().map_err(PlatformError::Keyring)?;
+    INSTALLED.store(true, Ordering::Release);
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn install_default_credential_store() -> Result<(), keyring_core::Error> {
+    let store = apple_native_keyring_store::keychain::Store::new()?;
+    keyring_core::set_default_store(store);
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn install_default_credential_store() -> Result<(), keyring_core::Error> {
+    let store = zbus_secret_service_keyring_store::Store::new()?;
+    keyring_core::set_default_store(store);
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn install_default_credential_store() -> Result<(), keyring_core::Error> {
+    let store = windows_native_keyring_store::Store::new()?;
+    keyring_core::set_default_store(store);
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+const fn install_default_credential_store() -> Result<(), keyring_core::Error> {
+    Ok(())
+}
+
 /// Returns the default [`LocalUserVerifier`] for the current target.
 ///
 /// On macOS this returns [`MacosLocalUserVerifier`], which delegates to

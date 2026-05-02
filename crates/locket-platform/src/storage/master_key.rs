@@ -3,7 +3,7 @@
 use std::sync::Mutex;
 
 use data_encoding::BASE64URL_NOPAD;
-use keyring::Entry;
+use keyring_core::Entry;
 use locket_crypto::{KEY_LEN, KeyBytes};
 use zeroize::{Zeroize, Zeroizing};
 
@@ -280,9 +280,9 @@ pub fn decode_key(encoded: &str) -> Result<Zeroizing<KeyBytes>, PlatformError> {
     Ok(key)
 }
 
-pub fn map_keyring_get_error(error: keyring::Error) -> PlatformError {
+pub fn map_keyring_get_error(error: keyring_core::Error) -> PlatformError {
     match error {
-        keyring::Error::NoEntry => PlatformError::MasterKeyNotFound,
+        keyring_core::Error::NoEntry => PlatformError::MasterKeyNotFound,
         other => PlatformError::Keyring(other),
     }
 }

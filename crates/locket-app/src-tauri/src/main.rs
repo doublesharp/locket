@@ -13,6 +13,7 @@ use directories as _;
 use locket_agent as _;
 use locket_app as _;
 use locket_core as _;
+use locket_platform as _;
 #[cfg(test)]
 use locket_store as _;
 use serde as _;

@@ -888,6 +888,10 @@ async fn tray_set_privacy_context(
 /// application.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() -> tauri::Result<()> {
+    // keyring-core 1.0 requires registering a credential store before any
+    // Entry can resolve. A failure here surfaces later as the same error
+    // from whichever agent command first touches the keychain.
+    let _ = locket_platform::init_platform_keyring();
     let app = tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             agent_status,

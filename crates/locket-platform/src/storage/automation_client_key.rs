@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::sync::Mutex;
 
 use data_encoding::BASE64URL_NOPAD;
-use keyring::Entry;
+use keyring_core::Entry;
 use locket_crypto::{KEY_LEN, KeyBytes};
 use zeroize::{Zeroize, Zeroizing};
 
@@ -64,7 +64,7 @@ impl AutomationClientKeyStore for KeyringAutomationClientKeyStore {
     fn delete_client_key(&self, client_id: &str) -> Result<(), PlatformError> {
         let entry = automation_client_key_entry(client_id)?;
         match entry.delete_credential() {
-            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Ok(()) | Err(keyring_core::Error::NoEntry) => Ok(()),
             Err(error) => Err(PlatformError::Keyring(error)),
         }
     }

@@ -1159,6 +1159,10 @@ fn main() -> ProcessExitCode {
     // hardening gaps separately.
     let _ = locket_platform::disable_core_dumps();
     let _ = locket_platform::lock_process_memory();
+    // keyring-core 1.0 requires registering a credential store before any
+    // Entry can resolve. A failure here surfaces later as the same error
+    // from whichever command first touches the keychain.
+    let _ = locket_platform::init_platform_keyring();
 
     let cli = Cli::parse();
     if let Some(Command::Completion(args)) = &cli.command {
@@ -1553,7 +1557,7 @@ fn preflight_rotate_secret_value(
     args: &RotateArgs,
 ) -> Result<(), CliError> {
     let name = SecretName::new(args.key.clone())
-        .map_err(|_| invalid_secret_name_error("invalid secret name"))?;
+        .map_err(|err| invalid_secret_name_error(err.to_string()))?;
     resolve_active_secret_for_source(context, name.as_str(), args.source.source)?;
     Ok(())
 }
@@ -1566,7 +1570,7 @@ fn rotate_secret_value(
     grace_until: Option<i64>,
 ) -> Result<(String, u32), CliError> {
     let name = SecretName::new(args.key.clone())
-        .map_err(|_| invalid_secret_name_error("invalid secret name"))?;
+        .map_err(|err| invalid_secret_name_error(err.to_string()))?;
     validate_secret_value_str(value)?;
     let resolved_secret =
         resolve_active_secret_for_source(context, name.as_str(), args.source.source)?;
@@ -1709,7 +1713,7 @@ fn copy_secret_value(
     timestamp: i64,
 ) -> Result<CopySecretResult, CliError> {
     let name = SecretName::new(args.key.clone())
-        .map_err(|_| invalid_secret_name_error("invalid secret name"))?;
+        .map_err(|err| invalid_secret_name_error(err.to_string()))?;
     let resolved = require_project(context)?;
     let mut store = open_store(context)?;
     ensure_trusted_project_root(&store, &resolved)?;
