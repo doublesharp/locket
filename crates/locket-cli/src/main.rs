@@ -178,6 +178,11 @@ enum Command {
     Import(ImportArgs),
     /// Get secret metadata, reveal, or copy.
     Get(GetArgs),
+    /// Reveal a secret value to stdout (alias for `get --reveal`).
+    Reveal(RevealArgs),
+    /// Copy a secret value to the clipboard (alias for `get --copy`).
+    #[command(alias = "clip")]
+    Cp(CpArgs),
     /// Tombstone a secret source.
     Rm(SourceKeyArgs),
     /// Destructively purge encrypted versions.
@@ -417,6 +422,37 @@ struct GetArgs {
     #[arg(long)]
     copy: bool,
     /// Require local user verification before reveal or copy.
+    #[arg(long)]
+    verify_user: bool,
+    /// Confirm read intent against a profile marked dangerous.
+    #[arg(long)]
+    use_dangerous: bool,
+}
+
+#[derive(Debug, Args)]
+struct RevealArgs {
+    /// Secret key name.
+    key: String,
+    #[command(flatten)]
+    source: SourceArg,
+    /// Allow reveal when stdout is not an interactive terminal.
+    #[arg(long)]
+    force: bool,
+    /// Require local user verification before reveal.
+    #[arg(long)]
+    verify_user: bool,
+    /// Confirm read intent against a profile marked dangerous.
+    #[arg(long)]
+    use_dangerous: bool,
+}
+
+#[derive(Debug, Args)]
+struct CpArgs {
+    /// Secret key name.
+    key: String,
+    #[command(flatten)]
+    source: SourceArg,
+    /// Require local user verification before copy.
     #[arg(long)]
     verify_user: bool,
     /// Confirm read intent against a profile marked dangerous.
@@ -1222,6 +1258,32 @@ fn run_with_context(
         Command::Set(args) => secrets::set::set_command(context, output, &args)?,
         Command::Import(args) => secrets::import::import_command(context, output, &args)?,
         Command::Get(args) => secrets::get::get_command(context, output, &args)?,
+        Command::Reveal(args) => secrets::get::get_command(
+            context,
+            output,
+            &GetArgs {
+                key: args.key,
+                source: args.source,
+                reveal: true,
+                force: args.force,
+                copy: false,
+                verify_user: args.verify_user,
+                use_dangerous: args.use_dangerous,
+            },
+        )?,
+        Command::Cp(args) => secrets::get::get_command(
+            context,
+            output,
+            &GetArgs {
+                key: args.key,
+                source: args.source,
+                reveal: false,
+                force: false,
+                copy: true,
+                verify_user: args.verify_user,
+                use_dangerous: args.use_dangerous,
+            },
+        )?,
         Command::Rm(args) => secrets::lifecycle::rm_command(context, output, &args)?,
         Command::Purge(args) => secrets::lifecycle::purge_command(context, output, &args)?,
         Command::List(args) => secrets::lifecycle::list_command(context, output, &args)?,
