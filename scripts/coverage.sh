@@ -4,13 +4,13 @@ set -euo pipefail
 # coverage.sh - drive cargo-llvm-cov for line, html, and branch coverage.
 #
 # docs/specs/testing.md:48 names `cargo llvm-cov` as the canonical line and
-# branch coverage tool. The HTML mode used to shell out to
-# `npx -y @0xdoublesharp/doublcov`, adding a Node + network dependency to the
-# default `make coverage-html` flow. HTML now defaults to `cargo llvm-cov
-# --html`, which writes a self-contained report under coverage/html/.
+# branch coverage tool. HTML mode renders through
+# `npx -y @0xdoublesharp/doublcov` by default for richer reports under
+# coverage/report/; `cargo llvm-cov --html` is retained as the legacy
+# renderer and is also used as an automatic fallback when npx is unavailable.
 #
-# Set COVERAGE_HTML_TOOL=doublcov (or pass --use-doublcov as the second
-# argument) to opt back into the doublcov renderer.
+# Set COVERAGE_HTML_TOOL=llvm-cov (or pass --use-llvm-cov as the second
+# argument) to force the legacy renderer.
 
 mode="${1:-line}"
 html_tool_flag="${2:-}"
@@ -19,7 +19,7 @@ llvm_cov="${CARGO_LLVM_COV:-cargo llvm-cov}"
 jobs="${CARGO_JOBS:-12}"
 offline="${OFFLINE:-1}"
 strict="${STRICT:-0}"
-html_tool="${COVERAGE_HTML_TOOL:-llvm-cov}"
+html_tool="${COVERAGE_HTML_TOOL:-doublcov}"
 doublcov_version="${DOUBLCOV_VERSION:-0.4.3}"
 doublcov_pkg="@0xdoublesharp/doublcov@${doublcov_version}"
 line_floor="${COVERAGE_MIN_LINES:-89}"
@@ -27,6 +27,8 @@ branch_floor="${COVERAGE_MIN_BRANCHES:-68}"
 
 if [[ "${html_tool_flag}" == "--use-doublcov" ]]; then
   html_tool="doublcov"
+elif [[ "${html_tool_flag}" == "--use-llvm-cov" ]]; then
+  html_tool="llvm-cov"
 fi
 
 offline_args=()
@@ -56,8 +58,8 @@ case "${mode}" in
     exec ${llvm_cov} --workspace --all-features "${offline_args[@]}" --fail-under-lines "${line_floor}" --lcov --output-path coverage/lcov.info
     ;;
   html)
-    if [[ "${html_tool}" != "doublcov" ]]; then
-      # Canonical path: cargo llvm-cov --html. No Node, no network.
+    if [[ "${html_tool}" == "llvm-cov" ]]; then
+      # Legacy path: cargo llvm-cov --html. No Node, no network.
       exec ${llvm_cov} --workspace --all-features "${offline_args[@]}" --fail-under-lines "${line_floor}" --html --output-dir coverage/html
     fi
 

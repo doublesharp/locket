@@ -64,9 +64,9 @@ nextest:
 coverage:
 	scripts/coverage.sh line
 
-# coverage-html renders cargo-llvm-cov's HTML report (canonical, no Node/npx).
-# Set COVERAGE_HTML_TOOL=doublcov to opt into the legacy doublcov renderer
-# (requires npx); see docs/specs/testing.md:48.
+# coverage-html renders the doublcov HTML report by default (requires npx).
+# Set COVERAGE_HTML_TOOL=llvm-cov to fall back to cargo llvm-cov --html
+# (no Node/npx); see docs/specs/testing.md:48.
 coverage-html:
 	COVERAGE_HTML_TOOL="$(COVERAGE_HTML_TOOL)" scripts/coverage.sh html
 
