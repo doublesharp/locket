@@ -660,7 +660,7 @@ const fn corrupt_db() -> ValueAccessFailure {
     ValueAccessFailure::new(ERROR_CORRUPT_DB, "value access failed", LocketError::CorruptDb)
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     #![allow(clippy::unwrap_used)]
     #![allow(clippy::panic)]
