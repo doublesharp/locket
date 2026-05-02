@@ -1,16 +1,32 @@
 <div align="center">
 
-<img src="docs/Locket.png" alt="Locket" width="180" />
+<img src="docs/Locket.png" alt="Locket" width="160" />
 
 # Locket
 
-**A local-first secrets control plane for development environments.**
+### A local-first secrets control plane for development environments.
 
-*Replace plaintext `.env` files with an encrypted vault, explicit policy, and process-scoped delivery — without ever leaving your machine.*
+<p>
+  <img alt="local-first" src="https://img.shields.io/badge/local--first-✓-3b82f6?style=flat-square" />
+  <img alt="no telemetry" src="https://img.shields.io/badge/no_telemetry-✓-10b981?style=flat-square" />
+  <img alt="encrypted vault" src="https://img.shields.io/badge/encrypted_vault-✓-8b5cf6?style=flat-square" />
+  <img alt="rust" src="https://img.shields.io/badge/built_with-Rust-orange?style=flat-square&logo=rust&logoColor=white" />
+  <img alt="platforms" src="https://img.shields.io/badge/macOS_·_Linux_·_Windows-grey?style=flat-square" />
+</p>
+
+<em>Replace plaintext <code>.env</code> files with an encrypted vault, explicit policy,<br/>and process-scoped delivery — without ever leaving your machine.</em>
+
+<br/>
+
+<sub>
+  🔐&nbsp;Encrypted&nbsp;&nbsp;·&nbsp;&nbsp;🎯&nbsp;Capability-scoped&nbsp;&nbsp;·&nbsp;&nbsp;🧭&nbsp;Project&nbsp;+&nbsp;Profile&nbsp;&nbsp;·&nbsp;&nbsp;🪪&nbsp;Passkey&nbsp;Sync&nbsp;&nbsp;·&nbsp;&nbsp;🚫&nbsp;No&nbsp;Telemetry
+</sub>
 
 </div>
 
-Locket treats secrets as **capabilities** — granted to specific projects, profiles, commands, directories, editors, shells, and runtime sessions. No plaintext on disk. No values in shell history. No telemetry. No remote calls except the ones you explicitly ask for.
+<br/>
+
+> Locket treats secrets as **capabilities** — granted to specific projects, profiles, commands, directories, editors, shells, and runtime sessions. No plaintext on disk. No values in shell history. No telemetry. No remote calls except the ones you explicitly ask for.
 
 ---
 
