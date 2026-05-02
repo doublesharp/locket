@@ -43,7 +43,7 @@ pub fn preflight_set_secret_value(
     args: &SecretWriteArgs,
 ) -> Result<(), CliError> {
     let name = SecretName::new(args.key.clone())
-        .map_err(|_| invalid_secret_name_error("invalid secret name"))?;
+        .map_err(|err| invalid_secret_name_error(err.to_string()))?;
     let resolved = require_project(context)?;
     let store = open_store(context)?;
     let profile = default_profile(&store, &resolved.config)?;
@@ -122,7 +122,7 @@ pub fn set_secret_value_in_profile(
     request: SecretWriteRequest<'_>,
 ) -> Result<(), CliError> {
     let name = SecretName::new(request.key.to_owned())
-        .map_err(|_| invalid_secret_name_error("invalid secret name"))?;
+        .map_err(|err| invalid_secret_name_error(err.to_string()))?;
     validate_secret_value_str(request.value)?;
     if let Some(existing) = store.get_secret_by_source(
         request.resolved.config.project_id.as_str(),

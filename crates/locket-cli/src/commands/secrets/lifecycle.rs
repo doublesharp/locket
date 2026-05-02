@@ -251,7 +251,7 @@ pub fn history_command(
     args: &HistoryArgs,
 ) -> Result<(), CliError> {
     let name = SecretName::new(args.key.clone())
-        .map_err(|_| invalid_secret_name_error("invalid secret name"))?;
+        .map_err(|err| invalid_secret_name_error(err.to_string()))?;
     let resolved = require_project(context)?;
     let store = open_store(context)?;
     ensure_trusted_project_root(&store, &resolved)?;

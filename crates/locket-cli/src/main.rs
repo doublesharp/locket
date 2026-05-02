@@ -1241,6 +1241,13 @@ fn run_with_context(
 
     let command = cli.command.unwrap_or(Command::Status);
 
+    // The master-key cache is scoped to a single CLI invocation. In
+    // production each invocation gets a fresh `RuntimeContext`; tests
+    // reuse one context across multiple runs, so clear it here to keep
+    // semantics consistent (deleting an OS-stored master key between
+    // runs must invalidate any previously cached unlock).
+    context.master_key_cache.clear();
+
     match command {
         Command::Status => project::status::status(context, output)?,
         Command::New(args) => new_command(context, output, &args)?,

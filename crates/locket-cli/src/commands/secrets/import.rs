@@ -272,7 +272,7 @@ fn rotate_import_secret_value_in_profile(
     request: ImportRotateRequest<'_>,
 ) -> Result<u32, CliError> {
     let name = SecretName::new(request.key.to_owned())
-        .map_err(|_| invalid_secret_name_error("invalid secret name"))?;
+        .map_err(|err| invalid_secret_name_error(err.to_string()))?;
     let secret = store
         .get_secret_by_source(
             request.resolved.config.project_id.as_str(),

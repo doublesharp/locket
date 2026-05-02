@@ -53,20 +53,32 @@ impl FromStr for SecretName {
 
 /// Error returned when a secret name is invalid.
 #[derive(Debug, Clone, Eq, Error, PartialEq)]
-#[error("invalid secret name")]
-pub struct InvalidSecretName;
+pub enum InvalidSecretName {
+    /// The name was empty.
+    #[error("invalid secret name: empty")]
+    Empty,
+    /// The first character did not match `[A-Z_]`.
+    #[error("invalid secret name: must start with A-Z or '_', got {0:?}")]
+    InvalidStartChar(char),
+    /// A character after the first did not match `[A-Z0-9_]`.
+    #[error("invalid secret name: contains invalid character {0:?} (only A-Z, 0-9, '_' allowed)")]
+    InvalidChar(char),
+}
 
 fn validate_secret_name(value: &str) -> Result<(), InvalidSecretName> {
     let mut chars = value.chars();
     let Some(first) = chars.next() else {
-        return Err(InvalidSecretName);
+        return Err(InvalidSecretName::Empty);
     };
 
     if !is_secret_name_start(first) {
-        return Err(InvalidSecretName);
+        return Err(InvalidSecretName::InvalidStartChar(first));
     }
 
-    if chars.all(is_secret_name_rest) { Ok(()) } else { Err(InvalidSecretName) }
+    if let Some(bad) = chars.find(|c| !is_secret_name_rest(*c)) {
+        return Err(InvalidSecretName::InvalidChar(bad));
+    }
+    Ok(())
 }
 
 const fn is_secret_name_start(value: char) -> bool {
@@ -105,6 +117,35 @@ mod tests {
         for value in ["database_url", "DATABASE-URL", "DATABASE.URL", "DATABASE URL", "É_KEY"] {
             assert!(SecretName::new(value).is_err(), "{value} should be invalid");
         }
+    }
+
+    #[test]
+    fn empty_name_reports_empty_reason() {
+        let err = SecretName::new("").expect_err("empty must error");
+        assert!(matches!(err, super::InvalidSecretName::Empty));
+        assert_eq!(err.to_string(), "invalid secret name: empty");
+    }
+
+    #[test]
+    fn lowercase_start_reports_invalid_start_char() {
+        let err = SecretName::new("foo").expect_err("lowercase start must error");
+        assert!(matches!(err, super::InvalidSecretName::InvalidStartChar('f')));
+        assert!(err.to_string().contains("must start with A-Z or '_'"));
+        assert!(err.to_string().contains("'f'"));
+    }
+
+    #[test]
+    fn digit_start_reports_invalid_start_char() {
+        let err = SecretName::new("1FOO").expect_err("digit start must error");
+        assert!(matches!(err, super::InvalidSecretName::InvalidStartChar('1')));
+    }
+
+    #[test]
+    fn invalid_mid_char_reports_invalid_char() {
+        let err = SecretName::new("FOO-BAR").expect_err("hyphen must error");
+        assert!(matches!(err, super::InvalidSecretName::InvalidChar('-')));
+        assert!(err.to_string().contains("contains invalid character"));
+        assert!(err.to_string().contains("'-'"));
     }
 
     #[test]

@@ -1,8 +1,14 @@
 //! Runtime context shared across CLI commands.
 
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+
+use locket_crypto::KeyBytes;
+use zeroize::Zeroizing;
+
+use crate::runtime::key_access::MasterKeySource;
 
 use directories::{BaseDirs, ProjectDirs};
 use locket_platform::{
@@ -45,6 +51,53 @@ pub struct RuntimeContext {
     pub secret_value_reader: Arc<dyn SecretValueReader + Send + Sync>,
     pub user_verifier: Arc<dyn LocalUserVerifier + Send + Sync>,
     pub passkey_registrar: Arc<dyn PlatformPasskeyRegistrar + Send + Sync>,
+    /// Per-invocation cache of unlocked master keys keyed by `project_id`.
+    /// Lets a single command load the master key once and reuse it across
+    /// every key-derivation call in the same invocation, avoiding repeated
+    /// passphrase prompts when the OS key store is unavailable.
+    pub master_key_cache: MasterKeyCache,
+}
+
+type MasterKeyEntry = (Zeroizing<KeyBytes>, MasterKeySource);
+
+/// In-memory cache of unlocked master keys for a single CLI invocation.
+///
+/// Shared across `RuntimeContext` clones via `Arc<Mutex<_>>`. Entries are
+/// dropped when the last `RuntimeContext` clone is dropped at the end of
+/// the command, and `Zeroizing` wipes the key bytes at that point.
+#[derive(Clone, Default)]
+pub struct MasterKeyCache {
+    entries: Arc<Mutex<HashMap<String, MasterKeyEntry>>>,
+}
+
+impl MasterKeyCache {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    #[must_use]
+    pub fn get(&self, project_id: &str) -> Option<MasterKeyEntry> {
+        let guard = self.entries.lock().ok()?;
+        guard.get(project_id).map(|(key, source)| (key.clone(), *source))
+    }
+
+    pub fn insert(
+        &self,
+        project_id: &str,
+        key: Zeroizing<KeyBytes>,
+        source: MasterKeySource,
+    ) {
+        if let Ok(mut guard) = self.entries.lock() {
+            guard.insert(project_id.to_owned(), (key, source));
+        }
+    }
+
+    pub fn clear(&self) {
+        if let Ok(mut guard) = self.entries.lock() {
+            guard.clear();
+        }
+    }
 }
 
 impl RuntimeContext {
@@ -77,6 +130,7 @@ impl RuntimeContext {
             secret_value_reader: Arc::new(StdinOrPromptSecretValueReader),
             user_verifier: default_local_user_verifier(),
             passkey_registrar: Arc::new(default_platform_passkey_registrar()),
+            master_key_cache: MasterKeyCache::new(),
         })
     }
 }
@@ -122,8 +176,57 @@ fn resolve_agent_data_dir_for_platform(
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_agent_data_dir_for_platform;
+    use super::{MasterKeyCache, MasterKeySource, resolve_agent_data_dir_for_platform};
+    use locket_crypto::KEY_LEN;
     use std::path::Path;
+    use zeroize::Zeroizing;
+
+    #[test]
+    fn master_key_cache_returns_cloned_key_for_known_project() {
+        let cache = MasterKeyCache::new();
+        let key = Zeroizing::new([0x42_u8; KEY_LEN]);
+        cache.insert("lk_proj_alpha", key, MasterKeySource::PassphraseFallback);
+
+        let (got, source) = cache.get("lk_proj_alpha").expect("entry");
+        assert_eq!(*got, [0x42_u8; KEY_LEN]);
+        assert_eq!(source, MasterKeySource::PassphraseFallback);
+    }
+
+    #[test]
+    fn master_key_cache_misses_for_unknown_project() {
+        let cache = MasterKeyCache::new();
+        cache.insert(
+            "lk_proj_alpha",
+            Zeroizing::new([0; KEY_LEN]),
+            MasterKeySource::OsKeyStore,
+        );
+        assert!(cache.get("lk_proj_other").is_none());
+    }
+
+    #[test]
+    fn master_key_cache_clear_drops_entries() {
+        let cache = MasterKeyCache::new();
+        cache.insert(
+            "lk_proj_alpha",
+            Zeroizing::new([0; KEY_LEN]),
+            MasterKeySource::OsKeyStore,
+        );
+        cache.clear();
+        assert!(cache.get("lk_proj_alpha").is_none());
+    }
+
+    #[test]
+    fn master_key_cache_clones_share_state() {
+        let cache_a = MasterKeyCache::new();
+        let cache_b = cache_a.clone();
+        cache_a.insert(
+            "lk_proj_alpha",
+            Zeroizing::new([0xCC; KEY_LEN]),
+            MasterKeySource::OsKeyStore,
+        );
+        assert!(cache_b.get("lk_proj_alpha").is_some());
+    }
+
 
     #[test]
     #[cfg(target_os = "linux")]

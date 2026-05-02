@@ -241,6 +241,7 @@ pub(super) fn test_context_with_key_store_confirmation_and_secret(
         secret_value_reader: Arc::new(StaticSecretValueReader::new(secret_value)),
         user_verifier: Arc::new(MemoryLocalUserVerifier::allowing()),
         passkey_registrar: Arc::new(UnavailablePlatformPasskeyRegistrar),
+        master_key_cache: crate::runtime::context::MasterKeyCache::new(),
     }
 }
 

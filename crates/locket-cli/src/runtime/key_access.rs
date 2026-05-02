@@ -52,26 +52,40 @@ pub fn load_master_key(
     context: &RuntimeContext,
     project_id: &str,
 ) -> Result<(zeroize::Zeroizing<locket_crypto::KeyBytes>, MasterKeySource), CliError> {
-    match context.key_store.load_master_key(project_id) {
-        Ok(master_key) => Ok((master_key, MasterKeySource::OsKeyStore)),
+    if let Some(cached) = context.master_key_cache.get(project_id) {
+        return Ok(cached);
+    }
+    let result = match context.key_store.load_master_key(project_id) {
+        Ok(master_key) => (master_key, MasterKeySource::OsKeyStore),
         Err(primary_error) => {
             if !context.passphrase_store.contains_project(project_id)? {
                 return Err(primary_error.into());
             }
-            Ok((
+            (
                 load_fallback_master_key(context, project_id)?,
                 MasterKeySource::PassphraseFallback,
-            ))
+            )
         }
-    }
+    };
+    context.master_key_cache.insert(project_id, result.0.clone(), result.1);
+    Ok(result)
 }
 
 pub fn load_fallback_master_key(
     context: &RuntimeContext,
     project_id: &str,
 ) -> Result<zeroize::Zeroizing<locket_crypto::KeyBytes>, CliError> {
+    if let Some((key, MasterKeySource::PassphraseFallback)) =
+        context.master_key_cache.get(project_id)
+    {
+        return Ok(key);
+    }
     let passphrase = context.passphrase_reader.existing_passphrase()?;
-    Ok(context.passphrase_store.load_master_key(project_id, passphrase.as_bytes())?)
+    let key = context.passphrase_store.load_master_key(project_id, passphrase.as_bytes())?;
+    context
+        .master_key_cache
+        .insert(project_id, key.clone(), MasterKeySource::PassphraseFallback);
+    Ok(key)
 }
 
 pub fn load_master_key_verified_by_project_key(

@@ -162,7 +162,7 @@ pub fn resolve_active_secret(
     key: &str,
 ) -> Result<ResolvedSecret, CliError> {
     let name = SecretName::new(key.to_owned())
-        .map_err(|_| invalid_secret_name_error("invalid secret name"))?;
+        .map_err(|err| invalid_secret_name_error(err.to_string()))?;
     let project = require_project(context)?;
     let store = open_store(context)?;
     ensure_trusted_project_root(&store, &project)?;
@@ -237,7 +237,7 @@ pub fn resolve_secret_for_source(
     source: Option<SecretSourceArg>,
 ) -> Result<ResolvedSecret, CliError> {
     let name = SecretName::new(key.to_owned())
-        .map_err(|_| invalid_secret_name_error("invalid secret name"))?;
+        .map_err(|err| invalid_secret_name_error(err.to_string()))?;
     let project = require_project(context)?;
     let store = open_store(context)?;
     ensure_trusted_project_root(&store, &project)?;

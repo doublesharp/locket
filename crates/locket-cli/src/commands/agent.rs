@@ -988,6 +988,7 @@ mod tests {
             secret_value_reader: Arc::new(StdinOrPromptSecretValueReader),
             user_verifier: Arc::new(UnavailableLocalUserVerifier),
             passkey_registrar: Arc::new(UnavailablePlatformPasskeyRegistrar),
+            master_key_cache: crate::runtime::context::MasterKeyCache::new(),
         }
     }
 
