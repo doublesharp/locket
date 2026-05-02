@@ -928,6 +928,56 @@ fn status_redacts_project_and_profile_names_from_privacy_config()
 }
 
 #[test]
+fn status_reports_cwd_matches_root_when_run_from_project_root()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+
+    let mut output = Vec::new();
+    run_with_context(Cli::try_parse_from(["locket", "status"])?, &context, &mut output)?;
+
+    let output = String::from_utf8(output)?;
+    assert!(output.contains("cwd: "), "{output}");
+    assert!(output.contains("cwd_matches_root: yes"), "{output}");
+    assert!(!output.contains("cwd_hint:"), "{output}");
+    Ok(())
+}
+
+#[test]
+fn status_shows_cwd_mismatch_when_run_from_subdirectory()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+
+    let subdir = directory.path().join("sub");
+    std::fs::create_dir_all(&subdir)?;
+    let sub_context = RuntimeContext { cwd: subdir, ..context.clone() };
+
+    let mut output = Vec::new();
+    run_with_context(Cli::try_parse_from(["locket", "status"])?, &sub_context, &mut output)?;
+
+    let output = String::from_utf8(output)?;
+    assert!(output.contains("cwd_matches_root: no"), "{output}");
+    assert!(
+        output.contains(
+            "cwd_hint: locket.toml resolved from a parent directory; commands act on the project at root:"
+        ),
+        "{output}"
+    );
+    Ok(())
+}
+
+#[test]
 fn completion_generates_shell_script() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempdir()?;
     let context = test_context(&directory);

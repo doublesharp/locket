@@ -53,6 +53,23 @@ pub fn status(context: &RuntimeContext, output: &mut impl Write) -> Result<(), C
         status_project_id_label(resolved.config.project_id.as_str(), redact_names)
     )?;
     writeln!(output, "root: {}", resolved.root.display())?;
+    let canonical_cwd = context.cwd.canonicalize().ok();
+    let cwd_display = canonical_cwd
+        .as_deref()
+        .map_or_else(|| context.cwd.display().to_string(), |path| path.display().to_string());
+    let cwd_matches_root = canonical_cwd.as_deref() == Some(&resolved.root);
+    writeln!(output, "cwd: {cwd_display}")?;
+    writeln!(
+        output,
+        "cwd_matches_root: {}",
+        if cwd_matches_root { "yes" } else { "no" }
+    )?;
+    if !cwd_matches_root {
+        writeln!(
+            output,
+            "cwd_hint: locket.toml resolved from a parent directory; commands act on the project at root:"
+        )?;
+    }
     writeln!(output, "default_profile: {profile_label}")?;
     writeln!(output, "active_profile: {profile_label}")?;
     writeln!(output, "lock_state: {}", status_lock_state(project.as_ref(), profile.as_ref()))?;
