@@ -36,7 +36,7 @@ pub fn passkey_command(
     }
 }
 
-fn passkey_register_command(
+pub(crate) fn passkey_register_command(
     context: &RuntimeContext,
     output: &mut impl Write,
     args: &PasskeyRegisterArgs,

@@ -63,8 +63,17 @@ pub fn init(
             !state.project_present,
             !state.project_key_exists,
         )?;
-        let result =
-            complete_init(context, output, &mut store, &resolved.config, &resolved.root, timestamp);
+        let result = complete_init(
+            context,
+            output,
+            &mut store,
+            &resolved.config,
+            &resolved.root,
+            timestamp,
+            args.no_device,
+            args.register_passkey,
+            args.no_passkey,
+        );
         let completion = match result {
             Ok(completion) => completion,
             Err(error) => {
@@ -97,7 +106,17 @@ pub fn init(
     let rollback =
         InitRollback::capture(&store, &context.cwd, config.project_id.as_str(), true, true)?;
     write_project_config(&config_path, &config)?;
-    let result = complete_init(context, output, &mut store, &config, &context.cwd, timestamp);
+    let result = complete_init(
+        context,
+        output,
+        &mut store,
+        &config,
+        &context.cwd,
+        timestamp,
+        args.no_device,
+        args.register_passkey,
+        args.no_passkey,
+    );
     let completion = match result {
         Ok(completion) => completion,
         Err(error) => {
@@ -358,6 +377,7 @@ fn init_recovery_files_ready(root: &Path) -> bool {
     recovery_dir.join("kdf.toml").exists() && recovery_dir.join("envelope.bin").exists()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn complete_init(
     context: &RuntimeContext,
     output: &mut impl Write,
@@ -365,12 +385,17 @@ fn complete_init(
     config: &ProjectConfig,
     root: &Path,
     timestamp: i64,
+    no_device: bool,
+    register_passkey: bool,
+    no_passkey: bool,
 ) -> Result<InitCompletion, CliError> {
     ensure_project_metadata(store, config, timestamp)?;
     let key_material = ensure_project_key_material(context, store, config, timestamp)?;
     let recovery_code =
         ensure_initial_recovery_envelope(root, config, &key_material.master_key, timestamp)?;
     trust_root(store, config, root, timestamp)?;
+    maybe_init_device(context, output, no_device);
+    maybe_register_passkey(context, output, register_passkey, no_passkey);
     ensure_gitignore(root)?;
     ensure_example_file(root)?;
     if let Some(code_bytes) = recovery_code {
@@ -386,6 +411,78 @@ fn complete_init(
         root.join(EXAMPLE_FILE).exists(),
     )?;
     Ok(InitCompletion { master_key_source: key_material.source })
+}
+
+/// Run `device init` automatically as part of `init`, swallowing any
+/// failure with a stderr warning so the vault remains usable. Skipped
+/// when the user passes `--no-device`.
+fn maybe_init_device(context: &RuntimeContext, output: &mut impl Write, no_device: bool) {
+    if no_device {
+        return;
+    }
+    let device_args = crate::DeviceInitArgs { force: false };
+    if let Err(error) =
+        crate::commands::team::device::device_init_command(context, output, &device_args)
+    {
+        let mut stderr = std::io::stderr();
+        let _ = writeln!(
+            stderr,
+            "locket: device init failed during init: {error}\n\
+             locket: vault is usable; run `locket device init` later to retry."
+        );
+    }
+}
+
+/// Optionally register a passkey as part of `init`. Honors `--register-passkey`
+/// to skip the prompt, `--no-passkey` to suppress the flow entirely, and
+/// otherwise asks the user once on a TTY. Failures emit a stderr warning
+/// rather than failing init.
+fn maybe_register_passkey(
+    context: &RuntimeContext,
+    output: &mut impl Write,
+    register_passkey: bool,
+    no_passkey: bool,
+) {
+    if no_passkey {
+        return;
+    }
+    let should_register = if register_passkey {
+        true
+    } else if io::stdin().is_terminal() && io::stderr().is_terminal() {
+        match context
+            .confirmation_reader
+            .read_confirmation("Register a passkey for this device? [y/N] ")
+        {
+            Ok(response) => {
+                let trimmed = response.trim().to_lowercase();
+                matches!(trimmed.as_str(), "y" | "yes")
+            }
+            Err(_) => false,
+        }
+    } else {
+        false
+    };
+    if !should_register {
+        return;
+    }
+    let label = std::env::var("HOSTNAME")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "primary".to_owned());
+    let args = crate::PasskeyRegisterArgs {
+        label,
+        relying_party_id: locket_store::DEFAULT_WEBAUTHN_RELYING_PARTY_ID.to_owned(),
+    };
+    if let Err(error) =
+        crate::commands::vault::passkey::passkey_register_command(context, output, &args)
+    {
+        let mut stderr = std::io::stderr();
+        let _ = writeln!(
+            stderr,
+            "locket: passkey registration failed during init: {error}\n\
+             locket: vault is usable; run `locket passkey register --label <name>` later to retry."
+        );
+    }
 }
 
 fn write_init_summary(

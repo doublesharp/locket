@@ -364,6 +364,16 @@ pub(crate) struct InitArgs {
     /// Initial profile name.
     #[arg(long)]
     pub(crate) profile: Option<String>,
+    /// Skip creating a local device during init.
+    #[arg(long)]
+    pub(crate) no_device: bool,
+    /// Register a passkey after device init using the host name as the label.
+    /// Conflicts with --no-passkey.
+    #[arg(long, conflicts_with = "no_passkey")]
+    pub(crate) register_passkey: bool,
+    /// Skip the passkey registration prompt entirely.
+    #[arg(long)]
+    pub(crate) no_passkey: bool,
 }
 
 #[derive(Debug, Args)]

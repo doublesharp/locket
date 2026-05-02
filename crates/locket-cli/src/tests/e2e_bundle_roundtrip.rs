@@ -23,7 +23,7 @@ fn export_sealed_bundle(
 ) -> Result<(RuntimeContext, String, PathBuf, String), Box<dyn std::error::Error>> {
     let context = test_context(directory);
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
         &context,
         &mut Vec::new(),
     )?;

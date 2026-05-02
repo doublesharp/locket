@@ -9,7 +9,7 @@ fn recovery_restore_rejects_mismatched_kdf_profile() -> Result<(), Box<dyn std::
     let context = test_context(&directory);
     let mut init_output = Vec::new();
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
         &context,
         &mut init_output,
     )?;
@@ -39,7 +39,7 @@ fn recovery_restore_recovers_master_key_from_envelope() -> Result<(), Box<dyn st
     let context = test_context(&directory);
     let mut init_output = Vec::new();
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
         &context,
         &mut init_output,
     )?;
@@ -104,7 +104,7 @@ fn recovery_restore_recovers_managed_automation_client_keys()
     let mut context = test_context(&directory);
     context.automation_client_key_store = automation_keys.clone();
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
         &context,
         &mut Vec::new(),
     )?;
@@ -229,7 +229,7 @@ fn recovery_restore_requires_device_entries_when_local_device_exists()
     let directory = tempdir()?;
     let context = test_context(&directory);
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
         &context,
         &mut Vec::new(),
     )?;
@@ -323,7 +323,7 @@ fn recovery_restore_validation_failure_writes_no_recover_audit()
     let context = test_context(&directory);
     let mut init_output = Vec::new();
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
         &context,
         &mut init_output,
     )?;
@@ -361,7 +361,7 @@ fn recovery_rotate_creates_envelope_and_prints_full_code() -> Result<(), Box<dyn
     let context = test_context(&directory);
     let mut init_output = Vec::new();
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
         &context,
         &mut init_output,
     )?;
@@ -422,7 +422,7 @@ fn recovery_rotate_requires_fresh_user_verification_before_writing()
     let context = test_context(&directory);
     let mut init_output = Vec::new();
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
         &context,
         &mut init_output,
     )?;
@@ -467,7 +467,7 @@ fn recovery_rotate_carries_device_keys_and_recover_restores_device_envelope()
     let context = test_context(&directory);
     let mut init_output = Vec::new();
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
         &context,
         &mut init_output,
     )?;
@@ -533,7 +533,7 @@ fn recover_with_corrupted_kdf_file_exits_with_metadata_invalid()
     let directory = tempdir()?;
     let context = test_context(&directory);
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
         &context,
         &mut Vec::new(),
     )?;
@@ -563,7 +563,7 @@ fn e2e_recovery_roundtrip_init_recover_and_rotate() -> Result<(), Box<dyn std::e
     // Step 1: init — captures the initial recovery code from output.
     let mut init_output = Vec::new();
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
         &context,
         &mut init_output,
     )?;
@@ -624,7 +624,7 @@ fn e2e_recover_refuses_when_keychain_valid_without_force() -> Result<(), Box<dyn
     let context = test_context(&directory);
     let mut init_output = Vec::new();
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
         &context,
         &mut init_output,
     )?;
@@ -654,7 +654,7 @@ fn e2e_recover_force_overwrites_existing_keychain_entry_and_records_audit()
 
     let mut init_output = Vec::new();
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
         &context,
         &mut init_output,
     )?;
@@ -698,7 +698,7 @@ fn e2e_recover_force_requires_user_verification_before_overwrite()
 
     let mut init_output = Vec::new();
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
         &context,
         &mut init_output,
     )?;
@@ -740,7 +740,7 @@ fn init_and_rotate_do_not_emit_ansi_clear_when_stdout_is_not_a_terminal()
 
     let mut init_output = Vec::new();
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
         &context,
         &mut init_output,
     )?;

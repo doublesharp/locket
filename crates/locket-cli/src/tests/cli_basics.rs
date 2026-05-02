@@ -27,7 +27,7 @@ fn client_add_list_and_revoke_are_metadata_only() -> Result<(), Box<dyn std::err
     let directory = tempdir()?;
     let context = test_context(&directory);
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
         &context,
         &mut Vec::new(),
     )?;
@@ -113,7 +113,7 @@ fn client_create_stores_locket_managed_private_key_refs() -> Result<(), Box<dyn 
     let context = test_context(&directory);
     let mut init_output = Vec::new();
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
         &context,
         &mut init_output,
     )?;
@@ -237,7 +237,7 @@ fn client_rejects_unsupported_actions_and_missing_policies()
     let directory = tempdir()?;
     let context = test_context(&directory);
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
         &context,
         &mut Vec::new(),
     )?;
@@ -321,7 +321,7 @@ fn sealed_bundle_export_verify_and_import_are_metadata_only()
     let directory = tempdir()?;
     let context = test_context(&directory);
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
         &context,
         &mut Vec::new(),
     )?;
@@ -482,7 +482,7 @@ fn bundle_verify_rejects_unsupported_schema_as_config_error()
     let directory = tempdir()?;
     let context = test_context(&directory);
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
         &context,
         &mut Vec::new(),
     )?;
@@ -546,7 +546,7 @@ fn import_bundle_without_device_private_key_fails_verification()
     let directory = tempdir()?;
     let context = test_context(&directory);
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
         &context,
         &mut Vec::new(),
     )?;
@@ -615,7 +615,7 @@ fn import_bundle_with_corrupt_age_payload_fails_verification()
     let directory = tempdir()?;
     let context = test_context(&directory);
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
         &context,
         &mut Vec::new(),
     )?;
@@ -693,7 +693,7 @@ fn dangerous_profile_bundle_export_honors_configured_user_verification()
     let directory = tempdir()?;
     let context = test_context(&directory);
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
         &context,
         &mut Vec::new(),
     )?;
@@ -783,7 +783,7 @@ fn bundle_verify_rejects_tampered_digest() -> Result<(), Box<dyn std::error::Err
     let directory = tempdir()?;
     let context = test_context(&directory);
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
         &context,
         &mut Vec::new(),
     )?;
@@ -851,7 +851,7 @@ fn status_reports_metadata_summary_and_next_action() -> Result<(), Box<dyn std::
     let context = test_context(&directory);
     let mut init_output = Vec::new();
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
         &context,
         &mut init_output,
     )?;
@@ -902,7 +902,7 @@ fn status_redacts_project_and_profile_names_from_privacy_config()
     let context = test_context(&directory);
     let mut init_output = Vec::new();
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
         &context,
         &mut init_output,
     )?;
@@ -933,7 +933,7 @@ fn status_reports_cwd_matches_root_when_run_from_project_root()
     let directory = tempdir()?;
     let context = test_context(&directory);
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
         &context,
         &mut Vec::new(),
     )?;
@@ -954,7 +954,7 @@ fn status_shows_cwd_mismatch_when_run_from_subdirectory()
     let directory = tempdir()?;
     let context = test_context(&directory);
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
         &context,
         &mut Vec::new(),
     )?;

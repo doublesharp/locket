@@ -7,7 +7,7 @@ fn rotate_history_and_purge_keep_values_hidden() -> Result<(), Box<dyn std::erro
     let context = test_context(&directory);
     let mut output = Vec::new();
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
         &context,
         &mut output,
     )?;
@@ -110,7 +110,7 @@ fn purge_requires_typed_confirmation_of_full_scope() -> Result<(), Box<dyn std::
     let key_store: Arc<dyn MasterKeyStore + Send + Sync> =
         Arc::new(MemoryMasterKeyStore::default());
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
         &test_context_with_key_store(&directory, Arc::clone(&key_store)),
         &mut Vec::new(),
     )?;
@@ -175,7 +175,7 @@ fn purge_force_skips_confirmation_prompt() -> Result<(), Box<dyn std::error::Err
     let directory = tempdir()?;
     let context = test_context(&directory);
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
         &context,
         &mut Vec::new(),
     )?;
@@ -205,7 +205,7 @@ fn purge_already_purged_skips_confirmation_and_writes_no_audit()
         Arc::new(MemoryMasterKeyStore::default());
     let context = test_context_with_key_store(&directory, Arc::clone(&key_store));
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
         &context,
         &mut Vec::new(),
     )?;
@@ -258,7 +258,7 @@ fn history_filters_by_source_state_limit_and_renders_iso_timestamps()
     let context = test_context(&directory);
     let mut output = Vec::new();
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
         &context,
         &mut output,
     )?;
@@ -356,7 +356,7 @@ fn history_state_filter_prints_no_versions_notice_and_exits_ok()
     let context = test_context(&directory);
     let mut output = Vec::new();
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
         &context,
         &mut output,
     )?;
@@ -382,7 +382,7 @@ fn history_unknown_source_fails_without_listing_other_sources()
     let context = test_context(&directory);
     let mut output = Vec::new();
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
         &context,
         &mut output,
     )?;
@@ -406,7 +406,7 @@ fn history_missing_key_errors_with_secret_not_found() -> Result<(), Box<dyn std:
     let context = test_context(&directory);
     let mut output = Vec::new();
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
         &context,
         &mut output,
     )?;
@@ -444,7 +444,7 @@ fn import_env_encrypts_values_and_refreshes_example() -> Result<(), Box<dyn std:
     let context = test_context(&directory);
     let mut output = Vec::new();
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
         &context,
         &mut output,
     )?;
@@ -513,7 +513,7 @@ fn import_env_targets_named_profile_and_reports_parity() -> Result<(), Box<dyn s
     let context = test_context(&directory);
     let mut output = Vec::new();
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
         &context,
         &mut output,
     )?;
@@ -576,7 +576,7 @@ fn import_overwrite_to_dangerous_profile_requires_confirmation_before_rotation()
     let context = test_context_with_key_store(&directory, Arc::clone(&key_store));
     let mut output = Vec::new();
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
         &context,
         &mut output,
     )?;
@@ -636,7 +636,7 @@ fn import_with_delete_confirmation_removes_env_and_emits_example()
     let directory = tempdir()?;
     let context = test_context(&directory);
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
         &context,
         &mut Vec::new(),
     )?;

@@ -43,7 +43,7 @@ pub fn device_command(
     }
 }
 
-fn device_init_command(
+pub(crate) fn device_init_command(
     context: &RuntimeContext,
     output: &mut impl Write,
     args: &DeviceInitArgs,
