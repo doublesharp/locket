@@ -8,13 +8,24 @@ use super::{
     PassphraseFallbackMasterKeyStore, PlatformError, PlatformPasskeyRegistrar, ProcessBinding,
     RecoveryEnvelope, RecoveryEnvelopeEntry, RecoveryKdfToml, UnavailableLocalUserVerifier,
     UnavailablePlatformPasskeyRegistrar, WrappedLocalFileDevicePrivateKeyStorage,
-    current_process_binding, decode_key, encode_key, load_recovery_envelope,
-    load_recovery_kdf_toml, master_key_account, process_binding_matches_live_process,
-    save_recovery_envelope, save_recovery_kdf_toml,
+    current_process_binding, decode_key, default_local_user_verifier, encode_key,
+    load_recovery_envelope, load_recovery_kdf_toml, master_key_account, platform_name,
+    process_binding_matches_live_process, save_recovery_envelope, save_recovery_kdf_toml,
 };
 
 const PROJECT_ID: &str = "lk_proj_test";
 const MASTER_KEY: [u8; KEY_LEN] = [42; KEY_LEN];
+
+#[test]
+fn platform_name_matches_rust_target_os() {
+    assert_eq!(platform_name(), std::env::consts::OS);
+}
+
+#[test]
+fn default_user_verifier_is_callable_without_prompting() {
+    let verifier = default_local_user_verifier();
+    assert_eq!(std::sync::Arc::strong_count(&verifier), 1);
+}
 
 #[test]
 fn encodes_master_key_without_padding() -> Result<(), PlatformError> {
