@@ -110,11 +110,12 @@ Team local-development UX:
 
 ## Backup, Recovery & Multi-Machine Sync
 
-Backup and recovery are required for a tool that owns local secrets.
+Backup and recovery are required for a tool that owns local secrets. Recovery is local-identity scoped, not project scoped: one OS user/device has one recovery envelope for the local identity master key, device private keys, and Locket-managed automation client keys. Projects may still export/import encrypted project data, but they do not each require a separate recovery code or separate copy of private key material.
 
 Initialization:
 
-- `locket init` emits a recovery code once.
+- `locket identity init` emits a recovery code once when creating the local identity.
+- `locket init` emits a recovery code only when it has to bootstrap a missing local identity; otherwise it reuses the existing local identity and creates only project/profile-scoped keys and records.
 - The recovery code is the only recovery secret. It derives the unwrap key for the local recovery envelope with Argon2id and stored salt/KDF parameters.
 - Locket must clearly tell the user that the recovery code is shown once and is required if the OS keychain entry is lost.
 - The display flow must require a typed acknowledgement that the user has recorded the code before continuing, warn that terminal scrollback may persist the code, and offer to clear the visible screen after acknowledgement. The recovery code is never written to a Locket-managed file, log, or audit row in plaintext form.

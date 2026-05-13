@@ -41,11 +41,16 @@ Secret names must use portable environment variable syntax by default: `^[A-Z_][
 
 Profile names must match `^[a-z][a-z0-9_-]{0,63}$` so they appear unambiguously in `lk://profile/KEY` references and on every surface. Reserved profile names: `_default` (reserved for tool internals).
 
+Secret paths provide a reusable, SSM-like namespace above project scope. A canonical secret path starts with `/`, contains slash-separated portable path segments, and identifies one logical secret independently of any project that consumes it. Examples: `/personal/github/token`, `/work/acme/aws/dev/db-password`, and `/shared/npm/publish-token`. The underlying secret value and per-version DEK live once under that path; projects attach links/aliases to consume it as local environment variable names. Project-local secrets continue to use portable `KEY` names and remain private to the current project/profile.
+
 Core commands:
 
 ```bash
 locket init [--name <name>] [--profile <name>]
+locket identity init
 locket set <KEY> [--source user-local|machine-local|team-managed] [--description <text>] [--owner <name>] [--tag <tag>] [--required]
+locket secret put <PATH> [--description <text>] [--owner <name>] [--tag <tag>]
+locket link <PATH> <KEY> [--profile <name>] [--source user-local|machine-local|team-managed]
 locket get <KEY>
 locket get <KEY> --reveal
 locket get <KEY> --copy
@@ -59,7 +64,11 @@ locket passkey list [--all]
 locket passkey remove <passkey>
 ```
 
-`locket init` is atomic: either `locket.toml`, local store project records, trusted root, default profile, project/profile keys, recovery envelope when needed, `.gitignore` changes, `.env.example` block, and audit row all succeed, or the operation rolls back every Locket-owned change it can safely remove. If `locket.toml` already exists and its `project_id` matches an existing local project, `init` exits successfully with a notice, writes no new rows, and never re-displays the recovery code. If a prior failed init left `locket.toml` without a matching local store project record, the next `locket init` treats that file as resumable partial state: it validates the file, completes missing store/key/profile setup, and either commits the full init or leaves the file unchanged with a typed error.
+`locket identity init` creates or verifies the machine/user-scoped local identity: OS keychain master key, local device private keys, passphrase fallback when needed, and the local recovery envelope. It displays the recovery code only when creating a new local identity. Re-running it on a machine with a valid identity is idempotent and never creates project records.
+
+`locket init` is atomic: either `locket.toml`, local store project records, trusted root, default profile, project/profile keys, local identity bootstrap when needed, `.gitignore` changes, `.env.example` block, and audit row all succeed, or the operation rolls back every Locket-owned change it can safely remove. If no local identity exists, `init` runs the same bootstrap as `locket identity init` and displays the recovery code once. If a local identity already exists, `init` reuses it and must not create a project-specific master key or project-specific recovery code. If `locket.toml` already exists and its `project_id` matches an existing local project, `init` exits successfully with a notice, writes no new rows, and never re-displays the recovery code. If a prior failed init left `locket.toml` without a matching local store project record, the next `locket init` treats that file as resumable partial state: it validates the file, completes missing store/key/profile setup, and either commits the full init or leaves the file unchanged with a typed error.
+
+`locket secret put <PATH>` creates or rotates a reusable global secret under the canonical path. The value is stored once with its own per-version DEK and path-bound metadata. `locket link <PATH> <KEY>` records that the current project/profile may consume the global secret as local secret name `KEY`; links may have project-specific source, profile, policy, and env-mapping metadata. Linking never copies plaintext values, private device keys, or local identity master key material into the project directory. `locket get <KEY>` resolves local project secrets first according to source precedence, then resolves linked global paths only when the active policy/profile grants that link.
 
 `locket set <KEY>` creates version `1` for a selected source and fails with `SecretAlreadyExists` if that `(profile, key, source)` already exists with `SecretState::Active`. If the row exists with `SecretState::Deleted`, `set` fails with `SecretDeleted`; it must not silently reactivate tombstoned history. Reactivation requires an explicit future restore command, not v1 `set`. Secret values are collected only through a secure no-echo TTY prompt, an explicitly configured secure editor flow, or piped stdin when stdin is not a TTY. v1 has no `--value` flag and does not accept secret values through argv, environment variables, shell history-friendly prompts, or logs. If stdin is not a TTY, exactly one UTF-8 secret value is read from stdin; empty input, multiple NUL-separated values, or no input fails with `ConfigError`. If stdin is a TTY and no secure prompt/editor is available, `set` fails closed. Metadata flags populate `SecretMeta` at creation time; `--tag` may be repeated. Updating an existing active source requires `locket rotate <KEY> --source <source>`. Without `--source`, `set` targets `user-local` but refuses to proceed when the same logical key already exists in another source, forcing the user to choose an explicit override source. `team-managed` writes require an appropriate team role.
 

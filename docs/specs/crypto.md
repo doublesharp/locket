@@ -21,19 +21,23 @@ Cryptographic choices must use maintained RustCrypto, dalek, age/rage, or simila
 Key hierarchy:
 
 ```text
-Master Key (OS protected or recovered)
+Local Identity Master Key (OS protected or recovered, machine/user scoped)
   -> HKDF key-wrap keys by project id and key purpose
     -> Wrapped random Project Metadata Key
     -> Wrapped random Project Audit Key
     -> Wrapped random Profile Secret Key per profile
     -> Wrapped random Profile Fingerprint Key per profile
+  -> HKDF key-wrap keys by global secret path and secret key id
+    -> Wrapped random Secret/Data Encryption Key per secret version
   -> Profile Secret Key
     -> Secret/Data Encryption Key
   -> Profile Fingerprint Key
   -> Project Audit Key
 ```
 
-Project metadata, project audit, profile secret, and profile fingerprint keys are random 32-byte keys stored only as wrapped material in the `keys` table. They are not deterministically derived from the master key. HKDF is used to derive purpose-separated wrapping keys from the master key, so wrapped keys can be independently rotated and audited without making one project/profile key substitutable for another.
+The local identity master key is scoped to the OS user/device, not to one project directory. A machine that already has a valid local identity must reuse that identity when initializing another project; `locket init` creates only the project/profile keys needed by the new project. Project metadata, project audit, profile secret, and profile fingerprint keys are random 32-byte keys stored only as wrapped material in the `keys` table. They are not deterministically derived from the master key. HKDF is used to derive purpose-separated wrapping keys from the master key, so wrapped keys can be independently rotated and audited without making one project/profile key substitutable for another.
+
+Global reusable secrets are addressed by canonical absolute secret paths such as `/work/acme/aws/dev/db-password`. A global secret has its own random secret key id and per-version DEK; projects consume that secret through links/aliases and policy grants rather than by copying private key material or duplicating encrypted values. Project-local secrets remain supported for values that should not leave a project boundary.
 
 HKDF wrap info v1:
 
@@ -41,12 +45,15 @@ HKDF wrap info v1:
 hkdf_wrap_info_v1 =
   "locket-wrap-v1" ASCII bytes
   u16_le(wrap_info_schema_version = 1)
-  field("project_id", project_id)
+  field("scope", "project" or "secret")
+  field("project_id", project_id or "")
+  field("secret_path", canonical_secret_path or "")
+  field("secret_key_id", secret_key_id or "")
   field("profile_id", profile_id or "")
   field("purpose", key_purpose)
 ```
 
-`profile_id` is the empty string only for project-scoped keys. `key_purpose` is one of the canonical persisted purpose strings used by `keys.purpose`: `project-metadata`, `project-audit`, `profile-secret`, or `profile-fingerprint`. The Rust `KeyPurpose::Audit` variant serializes as `project-audit`. The `field(name, value)` helper uses the length-prefixed UTF-8 encoding defined for canonical AAD v1. HKDF info construction must never use raw concatenation, delimiters, JSON, TOML, or locale-sensitive encoding.
+`profile_id` is the empty string only for project-scoped keys. `project_id` is empty only for identity-scoped global secret wraps. `secret_path` and `secret_key_id` are empty for project/profile keys and set for global reusable secret keys. `key_purpose` is one of the canonical persisted purpose strings used by `keys.purpose`: `project-metadata`, `project-audit`, `profile-secret`, `profile-fingerprint`, or `global-secret`. The Rust `KeyPurpose::Audit` variant serializes as `project-audit`. The `field(name, value)` helper uses the length-prefixed UTF-8 encoding defined for canonical AAD v1. HKDF info construction must never use raw concatenation, delimiters, JSON, TOML, or locale-sensitive encoding.
 
 Profile key boundary:
 
