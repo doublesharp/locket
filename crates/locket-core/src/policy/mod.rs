@@ -4,11 +4,13 @@ mod command;
 mod document;
 mod env_source;
 mod error;
+mod path_scope;
 
 pub use command::{CommandPolicy, CommandSpec, MAX_COMMAND_POLICY_TTL_SECONDS};
 pub use document::PolicyDocument;
 pub use env_source::ExternalEnvSource;
 pub use error::PolicyParseError;
+pub use path_scope::PathEnvSet;
 
 #[cfg(test)]
 mod tests {
@@ -104,6 +106,71 @@ ttl = "30m"
         assert!(policy.allow_remote_docker);
         assert_eq!(policy.ttl.as_secs(), 30 * 60);
         Ok(())
+    }
+
+    #[test]
+    fn parses_path_scoped_env_sets_and_matches_longest_prefix() -> Result<(), Box<dyn Error>> {
+        let document = PolicyDocument::from_toml_str(
+            r#"
+schema_version = 1
+
+[commands.dev]
+argv = ["pnpm", "dev"]
+
+[paths."."]
+optional_secrets = ["ROOT_TOKEN"]
+
+[paths."apps/api"]
+profile = "api-dev"
+required_secrets = ["DATABASE_URL"]
+optional_secrets = ["STRIPE_SECRET_KEY"]
+
+[paths."apps/api/admin"]
+required_secrets = ["ADMIN_TOKEN"]
+"#,
+        )?;
+
+        let root = std::path::Path::new("/repo");
+        let api = document.path_scope_for(root, std::path::Path::new("/repo/apps/api/src"));
+        let api = api.ok_or("missing api scope")?;
+        assert_eq!(api.profile.as_ref().map(ToString::to_string), Some("api-dev".to_owned()));
+        assert_eq!(
+            api.required_secrets.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            ["DATABASE_URL"]
+        );
+        assert_eq!(
+            api.allowed_secrets.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            ["DATABASE_URL", "STRIPE_SECRET_KEY"]
+        );
+
+        let admin = document.path_scope_for(root, std::path::Path::new("/repo/apps/api/admin"));
+        let admin = admin.ok_or("missing admin scope")?;
+        assert_eq!(
+            admin.required_secrets.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            ["ADMIN_TOKEN"]
+        );
+
+        let root_scope = document.path_scope_for(root, root).ok_or("missing root scope")?;
+        assert_eq!(
+            root_scope.optional_secrets.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            ["ROOT_TOKEN"]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_path_scope_that_escapes_project_root() {
+        let result = PolicyDocument::from_toml_str(
+            r#"
+schema_version = 1
+[paths."../outside"]
+required_secrets = ["TOKEN"]
+"#,
+        );
+        assert_eq!(
+            result,
+            Err(PolicyParseError::InvalidPathScope { path: "../outside".to_owned() })
+        );
     }
 
     #[test]

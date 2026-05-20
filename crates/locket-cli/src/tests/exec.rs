@@ -611,6 +611,59 @@ env_mode = "strict"
 }
 
 #[test]
+fn path_scoped_env_sets_extend_policy_from_matching_subdirectory()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    let api_dir = directory.path().join("apps").join("api").join("src");
+    std::fs::create_dir_all(&api_dir)?;
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(directory.path().join("locket.toml"))?
+        .write_all(
+            br#"
+[commands.dev]
+argv = ["/bin/sh", "-c", "true"]
+required_secrets = ["BASE_URL"]
+optional_secrets = ["BASE_OPT"]
+
+[paths."apps/api"]
+required_secrets = ["DATABASE_URL"]
+optional_secrets = ["STRIPE_SECRET_KEY"]
+"#,
+        )?;
+
+    let api_context = RuntimeContext { cwd: api_dir, ..context.clone() };
+    let mut api_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "env", "inspect", "--policy", "dev"])?,
+        &api_context,
+        &mut api_output,
+    )?;
+    let api_output = String::from_utf8(api_output)?;
+    assert!(api_output.contains("path_scope=apps/api"), "{api_output}");
+    assert!(api_output.contains("secret BASE_URL kind=required"), "{api_output}");
+    assert!(api_output.contains("secret DATABASE_URL kind=required"), "{api_output}");
+    assert!(api_output.contains("secret STRIPE_SECRET_KEY kind=optional"), "{api_output}");
+
+    let mut root_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "env", "inspect", "--policy", "dev"])?,
+        &context,
+        &mut root_output,
+    )?;
+    let root_output = String::from_utf8(root_output)?;
+    assert!(!root_output.contains("path_scope=apps/api"), "{root_output}");
+    assert!(!root_output.contains("DATABASE_URL"), "{root_output}");
+    Ok(())
+}
+
+#[test]
 fn file_external_env_source_rejects_absolute_path() -> Result<(), Box<dyn std::error::Error>> {
     let document = locket_core::PolicyDocument::from_toml_str(
         r#"

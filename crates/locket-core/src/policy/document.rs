@@ -1,12 +1,15 @@
 //! Top-level `[commands]` document parser.
 
 use std::collections::BTreeMap;
+use std::path::Path;
 use std::str::FromStr;
 
 use super::command::CommandPolicy;
 use super::error::PolicyParseError;
+use super::path_scope::PathEnvSet;
 
 const COMMANDS_TABLE: &str = "commands";
+const PATHS_TABLE: &str = "paths";
 const SCHEMA_VERSION_FIELD: &str = "schema_version";
 
 /// Currently supported `locket.toml` policy document schema version.
@@ -22,6 +25,7 @@ pub const SUPPORTED_POLICY_SCHEMA_VERSION: u64 = 1;
 const ALLOWED_ROOT_KEYS: &[&str] = &[
     SCHEMA_VERSION_FIELD,
     COMMANDS_TABLE,
+    PATHS_TABLE,
     "project_id",
     "name",
     "default_profile",
@@ -37,6 +41,8 @@ pub struct PolicyDocument {
     pub schema_version: u64,
     /// Command policies keyed by `[commands.<name>]`.
     pub commands: BTreeMap<String, CommandPolicy>,
+    /// Path-scoped environment sets keyed by `[paths."<relative-path>"]`.
+    pub path_scopes: BTreeMap<String, PathEnvSet>,
 }
 
 impl PolicyDocument {
@@ -78,21 +84,61 @@ impl PolicyDocument {
             }
         }
 
-        let Some(commands) = root.get(COMMANDS_TABLE) else {
-            return Ok(Self { schema_version, commands: BTreeMap::new() });
-        };
-        let Some(commands) = commands.as_table() else {
-            return Err(PolicyParseError::CommandsMustBeTable);
-        };
+        let commands = parse_commands(root)?;
+        let path_scopes = parse_path_scopes(root)?;
 
-        let mut parsed = BTreeMap::new();
-        for (name, body) in commands {
-            let policy = CommandPolicy::from_toml_value(name, body.clone())?;
-            parsed.insert(name.clone(), policy);
-        }
-
-        Ok(Self { schema_version, commands: parsed })
+        Ok(Self { schema_version, commands, path_scopes })
     }
+
+    /// Finds the path scope that best matches `cwd` under `project_root`.
+    ///
+    /// When multiple scopes match, the deepest project-relative path wins.
+    #[must_use]
+    pub fn path_scope_for(&self, project_root: &Path, cwd: &Path) -> Option<&PathEnvSet> {
+        let relative_cwd =
+            cwd.strip_prefix(project_root).ok().filter(|path| !path.as_os_str().is_empty());
+        let relative_cwd = relative_cwd.unwrap_or_else(|| Path::new("."));
+        self.path_scopes
+            .values()
+            .filter(|scope| scope.matches(relative_cwd))
+            .max_by_key(|scope| scope.depth())
+    }
+}
+
+fn parse_commands(
+    root: &toml::value::Table,
+) -> Result<BTreeMap<String, CommandPolicy>, PolicyParseError> {
+    let Some(commands) = root.get(COMMANDS_TABLE) else {
+        return Ok(BTreeMap::new());
+    };
+    let Some(commands) = commands.as_table() else {
+        return Err(PolicyParseError::CommandsMustBeTable);
+    };
+
+    let mut parsed = BTreeMap::new();
+    for (name, body) in commands {
+        let policy = CommandPolicy::from_toml_value(name, body.clone())?;
+        parsed.insert(name.clone(), policy);
+    }
+    Ok(parsed)
+}
+
+fn parse_path_scopes(
+    root: &toml::value::Table,
+) -> Result<BTreeMap<String, PathEnvSet>, PolicyParseError> {
+    let Some(paths) = root.get(PATHS_TABLE) else {
+        return Ok(BTreeMap::new());
+    };
+    let Some(paths) = paths.as_table() else {
+        return Err(PolicyParseError::PathsMustBeTable);
+    };
+
+    let mut parsed = BTreeMap::new();
+    for (path, body) in paths {
+        let scope = PathEnvSet::from_toml_value(path, body.clone())?;
+        parsed.insert(path.clone(), scope);
+    }
+    Ok(parsed)
 }
 
 fn require_schema_version(root: &toml::value::Table) -> Result<u64, PolicyParseError> {

@@ -8,11 +8,11 @@ use super::docker::{prepare_docker_policy_execution, write_docker_policy_audit_i
 use super::run::resolve_policy_external_env;
 use crate::runtime::RuntimeContext;
 use crate::runtime::error::{CliError, child_exit_error};
-use crate::runtime::key_access::default_profile;
 use crate::support::secret_helpers::{PolicySecretSelection, policy_secret_selections};
 use crate::{
-    EnvCommand, EnvDockerArgs, EnvInspectArgs, command_type, ensure_trusted_project_root,
-    external_env_source_label, load_command_policy, open_store, require_project,
+    EnvCommand, EnvDockerArgs, EnvInspectArgs, command_type, effective_policy_profile,
+    ensure_trusted_project_root, external_env_source_label, load_effective_command_policy,
+    open_store, require_project,
 };
 
 pub fn env_command(
@@ -32,20 +32,27 @@ pub fn env_inspect_command(
     args: &EnvInspectArgs,
 ) -> Result<(), CliError> {
     let resolved = require_project(context)?;
-    let policy = load_command_policy(&resolved, &args.policy)?;
+    let effective = load_effective_command_policy(&resolved, &args.policy, &context.cwd)?;
+    let policy = &effective.policy;
     let store = open_store(context)?;
     ensure_trusted_project_root(&store, &resolved)?;
-    let profile = default_profile(&store, &resolved.config)?;
-    let selections = policy_secret_selections(&store, &resolved, &profile, &policy)?;
+    let profile = effective_policy_profile(&store, &resolved, &effective)?;
+    let selections = policy_secret_selections(&store, &resolved, &profile, policy)?;
     let parent_env = std::env::vars()
         .map(|(name, value)| (name, locket_exec::env_value(value)))
         .collect::<locket_exec::EnvMap>();
-    let external_env = resolve_policy_external_env(&policy, &parent_env, &resolved.root)?;
+    let external_env = resolve_policy_external_env(policy, &parent_env, &resolved.root)?;
 
     writeln!(output, "policy {}", policy.name)?;
     writeln!(output, "command_type={}", command_type(&policy.command))?;
     writeln!(output, "env_mode={}", policy.env_mode)?;
     writeln!(output, "override={}", policy.override_behavior)?;
+    if let Some(path) = &effective.path_scope_path {
+        writeln!(output, "path_scope={}", path.display())?;
+    }
+    if let Some(profile) = &effective.path_scope_profile {
+        writeln!(output, "path_scope_profile={profile}")?;
+    }
     if !policy.external_env_sources.is_empty() {
         writeln!(output, "external_layers names={}", inspect_env_names(&external_env))?;
     }
@@ -64,8 +71,8 @@ pub fn env_inspect_command(
             selection.sources.join(",")
         };
         let selected = selection.selected.as_ref().map_or("none", |secret| secret.source.as_str());
-        let conflicts = inspect_conflicts(selection, &parent_env, &external_env, &policy);
-        let decision = inspect_decision(selection, &parent_env, &external_env, &policy);
+        let conflicts = inspect_conflicts(selection, &parent_env, &external_env, policy);
+        let decision = inspect_decision(selection, &parent_env, &external_env, policy);
         writeln!(
             output,
             "secret {} kind={} sources={} selected={} conflicts={} decision={}",

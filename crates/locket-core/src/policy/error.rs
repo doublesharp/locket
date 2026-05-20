@@ -17,6 +17,9 @@ pub enum PolicyParseError {
     /// The top-level `commands` value was not a table.
     #[error("commands must be a table")]
     CommandsMustBeTable,
+    /// The top-level `paths` value was not a table.
+    #[error("paths must be a table")]
+    PathsMustBeTable,
     /// A command table key was empty.
     #[error("command name must not be empty")]
     EmptyCommandName,
@@ -163,5 +166,34 @@ pub enum PolicyParseError {
     UnknownTopLevelKey {
         /// Unknown root-level key name.
         key: String,
+    },
+    /// A path scope table key was empty.
+    #[error("path scope must not be empty")]
+    EmptyPathScope,
+    /// A path scope table key was absolute or escaped the project root.
+    #[error("path scope {path} must be a project-relative path")]
+    InvalidPathScope {
+        /// Invalid path scope.
+        path: String,
+    },
+    /// A path scope body was not a table.
+    #[error("path scope {path} must be a table")]
+    PathScopeMustBeTable {
+        /// Path scope key.
+        path: String,
+    },
+    /// A path scope body did not match the v1 schema.
+    #[error("path scope {path} schema error: {message}")]
+    PathScopeSchema {
+        /// Path scope key.
+        path: String,
+        /// Deserializer error message.
+        message: String,
+    },
+    /// A path scope profile failed validation.
+    #[error("path scope {path} contains invalid profile")]
+    InvalidPathScopeProfile {
+        /// Path scope key.
+        path: String,
     },
 }

@@ -47,6 +47,7 @@
 ## Project Files
 
 - `locket.toml` lives in the project and contains shareable configuration, policies, and metadata.
+- Monorepos can add `[paths."<relative/path>"]` env sets to make package-specific secret names available only when commands run from that subtree.
 - Secret values stay in the local encrypted vault, **not** in Git-tracked project files.
 - `.env.example` is maintained as a names-only contract for expected variables.
 - `.gitignore` is updated to keep plaintext local env files out of Git.
@@ -156,6 +157,20 @@ locket env inspect --policy dev
 locket exec --secret DATABASE_URL -- <command> [args...]
 locket env docker --policy dev -- docker run ...
 locket compose run --policy dev -- docker compose up
+```
+
+In monorepos, path scopes extend the selected command policy by current directory:
+
+```toml
+[commands.dev]
+argv = ["pnpm", "dev"]
+
+[paths."apps/api"]
+required_secrets = ["DATABASE_URL"]
+optional_secrets = ["STRIPE_SECRET_KEY"]
+
+[paths."apps/web"]
+required_secrets = ["NEXT_PUBLIC_API_URL"]
 ```
 
 Execution commands prepare the child process environment for that invocation only. They do not export secrets into the parent shell.

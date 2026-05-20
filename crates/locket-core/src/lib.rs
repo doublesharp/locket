@@ -47,8 +47,8 @@ pub use pgp_word_list::{
     EVEN_SYLLABLE_WORDS, ODD_SYLLABLE_WORDS, SAFETY_WORD_COUNT, safety_words_from_fingerprint_hex,
 };
 pub use policy::{
-    CommandPolicy, CommandSpec, ExternalEnvSource, MAX_COMMAND_POLICY_TTL_SECONDS, PolicyDocument,
-    PolicyParseError,
+    CommandPolicy, CommandSpec, ExternalEnvSource, MAX_COMMAND_POLICY_TTL_SECONDS, PathEnvSet,
+    PolicyDocument, PolicyParseError,
 };
 pub use privacy::privacy_alias;
 pub use profile_name::{InvalidProfileName, MAX_PROFILE_NAME_LEN, ProfileName};

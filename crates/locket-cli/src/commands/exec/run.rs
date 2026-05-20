@@ -34,8 +34,9 @@ use crate::support::secret_helpers::{
     PolicySecretSelection, decrypt_secret_version, policy_secret_selections,
 };
 use crate::{
-    ResolvedProject, RunArgs, agent_socket_path, ensure_trusted_project_root, load_command_policy,
-    now_unix_nanos, open_store, require_project, write_runtime_policy_audit_if_available,
+    ResolvedProject, RunArgs, agent_socket_path, effective_policy_profile,
+    ensure_trusted_project_root, load_effective_command_policy, now_unix_nanos, open_store,
+    require_project, write_runtime_policy_audit_if_available,
     write_runtime_policy_denial_audit_if_available,
 };
 
@@ -118,7 +119,8 @@ pub fn run_command(
     run_args: &RunArgs,
 ) -> Result<(), CliError> {
     let resolved = require_project(context)?;
-    let policy = load_command_policy_or_audit_denial(context, &resolved, &run_args.policy)?;
+    let effective = load_command_policy_or_audit_denial(context, &resolved, &run_args.policy)?;
+    let policy = &effective.policy;
 
     let confirmation_source = if policy.confirm {
         let expected = format!("run {}", policy.name);
@@ -151,7 +153,7 @@ pub fn run_command(
     };
     let mut store = open_store(context)?;
     ensure_trusted_project_root(&store, &resolved)?;
-    let profile = default_profile(&store, &resolved.config)?;
+    let profile = effective_policy_profile(&store, &resolved, &effective)?;
     ensure_agent_running_for_execution(context)?;
     let prepared_policy =
         match prepare_policy_execution(context, output, &store, &resolved, &profile, &policy) {
@@ -1212,8 +1214,8 @@ fn load_command_policy_or_audit_denial(
     context: &RuntimeContext,
     resolved: &ResolvedProject,
     policy_name: &str,
-) -> Result<CommandPolicy, CliError> {
-    match load_command_policy(resolved, policy_name) {
+) -> Result<crate::EffectiveCommandPolicy, CliError> {
+    match load_effective_command_policy(resolved, policy_name, &context.cwd) {
         Ok(policy) => Ok(policy),
         Err(error) => {
             if let Ok(mut store) = open_store(context) {

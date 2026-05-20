@@ -190,7 +190,7 @@ struct RawCommandPolicy {
     ttl: Option<String>,
 }
 
-fn parse_secret_list(
+pub(super) fn parse_secret_list(
     command: &str,
     field: &'static str,
     values: Vec<String>,
@@ -218,7 +218,7 @@ fn parse_secret_list(
     Ok(parsed)
 }
 
-fn normalize_allowed_secrets(
+pub(super) fn normalize_allowed_secrets(
     command: &str,
     required_secrets: &[SecretName],
     optional_secrets: &[SecretName],

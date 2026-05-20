@@ -10,18 +10,19 @@ use locket_crypto::KeyPurpose;
 use locket_store::{AuditWrite, ProfileRecord, Store};
 use serde_json::{Value, json};
 
-use crate::ResolvedProject;
 use crate::runtime::RuntimeContext;
 use crate::runtime::error::{
     CliError, access_denied_error, exec_prepare_error, invalid_reference_error,
     metadata_invalid_error, secret_not_found_error, unimplemented_in_build_error,
 };
-use crate::runtime::key_access::{default_profile, load_project_key};
+use crate::runtime::key_access::load_project_key;
 use crate::support::secret_helpers::{
     PolicySecretSelection, decrypt_secret_version, policy_secret_selections, summarize_names,
 };
+use crate::{EffectiveCommandPolicy, ResolvedProject};
 use crate::{
-    ensure_trusted_project_root, load_command_policy, now_unix_nanos, open_store, require_project,
+    effective_policy_profile, ensure_trusted_project_root, load_effective_command_policy,
+    now_unix_nanos, open_store, require_project,
 };
 
 use locket_core::{CommandPolicy, CommandSpec};
@@ -92,11 +93,12 @@ fn prepare_docker_helper_policy_execution(
     helper_kind: DockerHelperKind,
 ) -> Result<PreparedDockerPolicyExecution, CliError> {
     let resolved = require_project(context)?;
-    let policy = load_command_policy(&resolved, policy_name)?;
+    let effective = load_effective_command_policy(&resolved, policy_name, &context.cwd)?;
+    let policy = effective.policy.clone();
     ensure_runtime_policy_supported(&policy)?;
     let store = open_store(context)?;
     let (profile, selections, locket_env) =
-        resolve_policy_locket_env(context, &store, &resolved, &policy)?;
+        resolve_policy_locket_env(context, &store, &resolved, &effective, &policy)?;
     let endpoint = parent_env.get("DOCKER_HOST").map(|value| value.as_str());
     let plan = match helper_kind {
         DockerHelperKind::DockerRun => locket_docker::prepare_docker_run(
@@ -167,10 +169,11 @@ pub fn resolve_policy_locket_env(
     context: &RuntimeContext,
     store: &Store,
     resolved: &ResolvedProject,
+    effective: &EffectiveCommandPolicy,
     policy: &CommandPolicy,
 ) -> Result<(ProfileRecord, Vec<PolicySecretSelection>, locket_exec::EnvMap), CliError> {
     ensure_trusted_project_root(store, resolved)?;
-    let profile = default_profile(store, &resolved.config)?;
+    let profile = effective_policy_profile(store, resolved, effective)?;
     let selections = policy_secret_selections(store, resolved, &profile, policy)?;
     let missing_required = selections
         .iter()

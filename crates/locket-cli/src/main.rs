@@ -87,8 +87,9 @@ use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::Shell as CompletionShell;
 use locket_core::{
     CommandPolicy, CommandSpec, Duration as LocketDuration, ExternalEnvSource, KeyId,
-    MetadataPrivacyFinding, MetadataValidationError, PROJECT_CONFIG_SCHEMA_VERSION, PolicyDocument,
-    ProfileId, ProjectConfig, SecretId, SecretName, validate_metadata_field,
+    MetadataPrivacyFinding, MetadataValidationError, PROJECT_CONFIG_SCHEMA_VERSION, PathEnvSet,
+    PolicyDocument, ProfileId, ProfileName, ProjectConfig, SecretId, SecretName,
+    validate_metadata_field,
 };
 use locket_crypto::{
     EncryptedSecretValue, HkdfWrapInfo, KeyPurpose, KeyWrapAad, KeyWrapPurpose,
@@ -2459,6 +2460,13 @@ pub struct ResolvedProject {
     pub config: ProjectConfig,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct EffectiveCommandPolicy {
+    pub policy: CommandPolicy,
+    pub path_scope_profile: Option<ProfileName>,
+    pub path_scope_path: Option<PathBuf>,
+}
+
 pub(crate) fn require_project(context: &RuntimeContext) -> Result<ResolvedProject, CliError> {
     resolve_project(&context.cwd)?.ok_or_else(project_not_found_error)
 }
@@ -2500,6 +2508,64 @@ pub(crate) fn load_command_policy(
         .get(policy_name)
         .cloned()
         .ok_or_else(|| policy_not_found_error(format!("command policy not found: {policy_name}")))
+}
+
+pub(crate) fn load_effective_command_policy(
+    resolved: &ResolvedProject,
+    policy_name: &str,
+    cwd: &Path,
+) -> Result<EffectiveCommandPolicy, CliError> {
+    let policy_document = read_policy_document(&resolved.root.join(LOCKET_TOML))?;
+    let mut policy = policy_document.commands.get(policy_name).cloned().ok_or_else(|| {
+        policy_not_found_error(format!("command policy not found: {policy_name}"))
+    })?;
+    let canonical_cwd = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
+    let path_scope = policy_document.path_scope_for(&resolved.root, &canonical_cwd).cloned();
+    if let Some(scope) = path_scope.as_ref() {
+        apply_path_scope_to_policy(&mut policy, scope);
+    }
+    Ok(EffectiveCommandPolicy {
+        policy,
+        path_scope_profile: path_scope.as_ref().and_then(|scope| scope.profile.clone()),
+        path_scope_path: path_scope.map(|scope| scope.path),
+    })
+}
+
+pub(crate) fn effective_policy_profile(
+    store: &Store,
+    resolved: &ResolvedProject,
+    effective: &EffectiveCommandPolicy,
+) -> Result<ProfileRecord, CliError> {
+    if let Some(profile_name) = &effective.path_scope_profile {
+        return store
+            .get_profile_by_name(resolved.config.project_id.as_str(), profile_name.as_str())?
+            .ok_or_else(|| profile_not_found_error("path scope profile not found"));
+    }
+    default_profile(store, &resolved.config)
+}
+
+fn apply_path_scope_to_policy(policy: &mut CommandPolicy, scope: &PathEnvSet) {
+    let mut required = policy.required_secrets.iter().cloned().collect::<BTreeSet<_>>();
+    let mut optional = policy.optional_secrets.iter().cloned().collect::<BTreeSet<_>>();
+    for name in &scope.required_secrets {
+        required.insert(name.clone());
+        optional.remove(name);
+    }
+    for name in &scope.optional_secrets {
+        if !required.contains(name) {
+            optional.insert(name.clone());
+        }
+    }
+    policy.required_secrets = required.into_iter().collect();
+    policy.optional_secrets = optional.into_iter().collect();
+    policy.allowed_secrets = policy
+        .required_secrets
+        .iter()
+        .chain(policy.optional_secrets.iter())
+        .cloned()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
 }
 
 pub(crate) fn read_policy_document(path: &Path) -> Result<PolicyDocument, CliError> {
