@@ -1401,15 +1401,28 @@ fn new_command(
         return Err(error);
     }
 
-    writeln!(output, "initialized locket project {}", config.project_id)?;
-    writeln!(output, "template: {}", args.from_template)?;
-    writeln!(output, "template_source: {}", template.source.label())?;
-    writeln!(output, "default_profile: {}", config.default_profile)?;
-    writeln!(output, "master_key_source: {}", master_key_source.as_str())?;
-    writeln!(output, "profiles: {}", template.profiles.len())?;
-    writeln!(output, "expected_secrets: {}", template.expected_secrets.len())?;
-    writeln!(output, "commands: {}", template.command_count())?;
-    writeln!(output, "secrets: not written")?;
+    if support::style::enabled() {
+        support::style::write_banner(output, "project", "initialized from template")?;
+        support::style::write_kv(output, "project_id", config.project_id.as_str())?;
+        support::style::write_kv(output, "template", args.from_template.as_str())?;
+        support::style::write_kv(output, "template_source", template.source.label())?;
+        support::style::write_kv(output, "default_profile", config.default_profile.as_str())?;
+        support::style::write_kv(output, "master_key_source", master_key_source.as_str())?;
+        support::style::write_kv(output, "profiles", template.profiles.len())?;
+        support::style::write_kv(output, "expected_secrets", template.expected_secrets.len())?;
+        support::style::write_kv(output, "commands", template.command_count())?;
+        support::style::write_kv(output, "secrets", "not written")?;
+    } else {
+        writeln!(output, "initialized locket project {}", config.project_id)?;
+        writeln!(output, "template: {}", args.from_template)?;
+        writeln!(output, "template_source: {}", template.source.label())?;
+        writeln!(output, "default_profile: {}", config.default_profile)?;
+        writeln!(output, "master_key_source: {}", master_key_source.as_str())?;
+        writeln!(output, "profiles: {}", template.profiles.len())?;
+        writeln!(output, "expected_secrets: {}", template.expected_secrets.len())?;
+        writeln!(output, "commands: {}", template.command_count())?;
+        writeln!(output, "secrets: not written")?;
+    }
     Ok(())
 }
 

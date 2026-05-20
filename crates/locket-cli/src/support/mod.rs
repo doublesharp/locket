@@ -2,4 +2,5 @@
 
 pub mod project_files;
 pub mod secret_helpers;
+pub mod style;
 pub mod time;

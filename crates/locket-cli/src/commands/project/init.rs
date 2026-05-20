@@ -31,6 +31,7 @@ use crate::runtime::key_access::{
 use crate::support::project_files::{
     EXAMPLE_FILE, GITIGNORE_FILE, ensure_example_file, ensure_gitignore,
 };
+use crate::support::style::{self, Tone};
 use crate::{
     InitArgs, LOCKET_TOML, ensure_project_metadata, fallback_project_name, format_hex,
     formatted_recovery_code, insert_wrapped_key, now_unix_nanos, open_store, resolve_project,
@@ -48,11 +49,16 @@ pub fn init(
     if let Some(resolved) = resolve_project(&context.cwd)? {
         let state = inspect_init_state(&store, &resolved.config, &resolved.root)?;
         if state.is_complete(args.recovery_code) {
-            writeln!(
-                output,
-                "locket: project already initialized ({})",
-                resolved.config.project_id
-            )?;
+            if style::enabled() {
+                style::write_banner(output, "project", "already initialized")?;
+                style::write_kv(output, "project_id", resolved.config.project_id.as_str())?;
+            } else {
+                writeln!(
+                    output,
+                    "locket: project already initialized ({})",
+                    resolved.config.project_id
+                )?;
+            }
             return Ok(());
         }
 
@@ -497,13 +503,22 @@ fn write_init_summary(
     master_key_source: MasterKeySource,
     resumed: bool,
 ) -> Result<(), CliError> {
-    if resumed {
-        writeln!(output, "resumed locket project {}", config.project_id)?;
+    if style::enabled() {
+        let status = if resumed { "resumed" } else { "initialized" };
+        style::write_banner(output, "project", status)?;
+        style::write_kv(output, "project_id", config.project_id.as_str())?;
+        style::write_kv(output, "default_profile", config.default_profile.as_str())?;
+        style::write_kv(output, "master_key_source", master_key_source.as_str())?;
+        style::write_kv(output, "metadata_only", "yes")?;
     } else {
-        writeln!(output, "initialized locket project {}", config.project_id)?;
+        if resumed {
+            writeln!(output, "resumed locket project {}", config.project_id)?;
+        } else {
+            writeln!(output, "initialized locket project {}", config.project_id)?;
+        }
+        writeln!(output, "default_profile: {}", config.default_profile)?;
+        writeln!(output, "master_key_source: {}", master_key_source.as_str())?;
     }
-    writeln!(output, "default_profile: {}", config.default_profile)?;
-    writeln!(output, "master_key_source: {}", master_key_source.as_str())?;
     Ok(())
 }
 
@@ -625,11 +640,31 @@ fn display_initial_recovery_code(
     code_bytes: &[u8; locket_crypto::RECOVERY_CODE_BYTES],
 ) -> Result<(), CliError> {
     let code = formatted_recovery_code(code_bytes)?;
-    writeln!(output, "recovery_code_init: success")?;
-    writeln!(output, "recovery_code (shown once, store securely):")?;
-    writeln!(output, "{code}")?;
-    writeln!(output, "warning: terminal scrollback may retain this code")?;
-    writeln!(output, "type project name '{}' after recording the recovery code", config.name)?;
+    if style::enabled() {
+        style::write_banner(output, "recovery-code", "shown once")?;
+        style::write_kv(output, "recovery_code_init", "success")?;
+        writeln!(
+            output,
+            "  {} {}",
+            style::paint(Tone::Warn, "warning"),
+            style::paint(Tone::Value, "terminal scrollback may retain this code")
+        )?;
+        writeln!(output, "  {}", style::paint(Tone::Secret, &code))?;
+        writeln!(
+            output,
+            "  {}",
+            style::paint(
+                Tone::Muted,
+                format!("type project name '{}' after recording the recovery code", config.name)
+            )
+        )?;
+    } else {
+        writeln!(output, "recovery_code_init: success")?;
+        writeln!(output, "recovery_code (shown once, store securely):")?;
+        writeln!(output, "{code}")?;
+        writeln!(output, "warning: terminal scrollback may retain this code")?;
+        writeln!(output, "type project name '{}' after recording the recovery code", config.name)?;
+    }
     let confirmation = context.confirmation_reader.read_confirmation("init recovery code")?;
     if confirmation.trim_end_matches(['\r', '\n']) != config.name {
         return Err(confirmation_failed_error("confirmation did not match project name"));

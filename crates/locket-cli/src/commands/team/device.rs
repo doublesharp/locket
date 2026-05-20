@@ -21,6 +21,7 @@ use crate::runtime::error::{confirmation_failed_error, corrupt_db_error, typed_c
 use crate::runtime::user_verification::{
     UserVerificationAudit, configured_user_verification, require_user_verification,
 };
+use crate::support::style::{self, Tone};
 use crate::{
     CliError, DeviceAddArgs, DeviceCommand, DeviceInitArgs, DeviceListArgs, DeviceRemoveArgs,
     ResolvedProject, RuntimeContext, access_denied_error, ensure_project_exists,
@@ -60,10 +61,7 @@ pub(crate) fn device_init_command(
 
     let existing_replacement = if let Some(existing) = store.get_active_local_device(project_id)? {
         if !args.force {
-            writeln!(output, "device: already initialized")?;
-            writeln!(output, "device_id: {}", existing.id)?;
-            writeln!(output, "fingerprint: {}", existing.fingerprint)?;
-            writeln!(output, "metadata_only: yes")?;
+            write_device_init_summary(output, "already initialized", &existing, None)?;
             return Ok(());
         }
         let verification =
@@ -143,13 +141,41 @@ pub(crate) fn device_init_command(
     }
     let descriptor = encode_device_descriptor(&device)?;
 
-    writeln!(output, "device: initialized")?;
-    writeln!(output, "device_id: {}", device.id)?;
-    writeln!(output, "fingerprint: {}", device.fingerprint)?;
-    writeln!(output, "safety_words: {}", device.safety_words.join(" "))?;
-    writeln!(output, "descriptor: {descriptor}")?;
-    writeln!(output, "private_key_storage: wrapped-local-file")?;
-    writeln!(output, "metadata_only: yes")?;
+    write_device_init_summary(output, "initialized", &device, Some(&descriptor))?;
+    Ok(())
+}
+
+fn write_device_init_summary(
+    output: &mut impl Write,
+    status: &str,
+    device: &DeviceRecord,
+    descriptor: Option<&str>,
+) -> Result<(), CliError> {
+    if style::enabled() {
+        style::write_banner(output, "device", status)?;
+        style::write_kv(output, "device_id", device.id.as_str())?;
+        style::write_kv(output, "fingerprint", device.fingerprint.as_str())?;
+        if !device.safety_words.is_empty() {
+            style::write_kv(output, "safety_words", device.safety_words.join(" "))?;
+        }
+        if let Some(descriptor) = descriptor {
+            style::write_kv(output, "descriptor", descriptor)?;
+            style::write_kv(output, "private_key_storage", "wrapped-local-file")?;
+        }
+        style::write_kv(output, "metadata_only", "yes")?;
+    } else {
+        writeln!(output, "device: {status}")?;
+        writeln!(output, "device_id: {}", device.id)?;
+        writeln!(output, "fingerprint: {}", device.fingerprint)?;
+        if !device.safety_words.is_empty() {
+            writeln!(output, "safety_words: {}", device.safety_words.join(" "))?;
+        }
+        if let Some(descriptor) = descriptor {
+            writeln!(output, "descriptor: {descriptor}")?;
+            writeln!(output, "private_key_storage: wrapped-local-file")?;
+        }
+        writeln!(output, "metadata_only: yes")?;
+    }
     Ok(())
 }
 
@@ -868,12 +894,32 @@ fn display_bootstrap_recovery_code(
     code_bytes: &[u8; locket_crypto::RECOVERY_CODE_BYTES],
 ) -> Result<(), CliError> {
     let code = formatted_recovery_code(code_bytes)?;
-    writeln!(output, "device_init_bootstrap: success")?;
-    writeln!(output, "recovery_code (shown once, store securely):")?;
-    writeln!(output, "{code}")?;
-    writeln!(output, "Write this down. It will not be shown again.")?;
-    writeln!(output, "warning: terminal scrollback may retain this code")?;
-    writeln!(output, "type project name '{}' after recording the recovery code", config.name)?;
+    if style::enabled() {
+        style::write_banner(output, "device bootstrap", "recovery-code shown once")?;
+        style::write_kv(output, "device_init_bootstrap", "success")?;
+        writeln!(output, "  {}", style::paint(Tone::Secret, &code))?;
+        writeln!(
+            output,
+            "  {} {}",
+            style::paint(Tone::Warn, "warning"),
+            style::paint(Tone::Value, "terminal scrollback may retain this code")
+        )?;
+        writeln!(
+            output,
+            "  {}",
+            style::paint(
+                Tone::Muted,
+                format!("type project name '{}' after recording the recovery code", config.name)
+            )
+        )?;
+    } else {
+        writeln!(output, "device_init_bootstrap: success")?;
+        writeln!(output, "recovery_code (shown once, store securely):")?;
+        writeln!(output, "{code}")?;
+        writeln!(output, "Write this down. It will not be shown again.")?;
+        writeln!(output, "warning: terminal scrollback may retain this code")?;
+        writeln!(output, "type project name '{}' after recording the recovery code", config.name)?;
+    }
     let confirmation =
         context.confirmation_reader.read_confirmation("device init recovery code")?;
     if confirmation.trim_end_matches(['\r', '\n']) != config.name {
