@@ -6,7 +6,7 @@ Testing should be driven from the threat model and user-facing guarantees. Secur
 
 ## Test Pyramid
 
-- Unit tests: type validation, parsers, policy evaluation, env merge, crypto AAD construction, key-wrap canonicalization, audit HMAC canonicalization, recovery envelope parsing, device descriptor parsing, scanner rules, and typed error mapping.
+- Unit tests: type validation, parsers, policy evaluation, path-scope matching, env merge, crypto AAD construction, key-wrap canonicalization, audit HMAC canonicalization, recovery envelope parsing, device descriptor parsing, scanner rules, and typed error mapping.
 - Integration tests: CLI commands against temp stores, agent RPC calls, import/export bundles, scan and redact flows, recovery flows, and Docker/Compose helpers.
 - End-to-end tests: representative local-dev flows such as greenfield init, dotenv migration, team invite accept, Docker/Compose injection, and VS Code/agent smoke paths where practical.
 - Property tests: `.env` parsing, policy TOML normalization, `lk://` parsing, canonical JSON, device descriptors, and bundle manifest parsing.
@@ -55,7 +55,7 @@ Coverage tooling:
 
 ## Required Test Coverage
 
-- Unit tests for project resolution, source precedence, policy normalization, AAD/key-wrap canonicalization, audit HMAC canonicalization, recovery envelope parsing, device descriptor parsing, scanner rules, and typed error mapping.
+- Unit tests for project resolution, source precedence, policy normalization, path-scope matching and merge precedence, AAD/key-wrap canonicalization, audit HMAC canonicalization, recovery envelope parsing, device descriptor parsing, scanner rules, and typed error mapping.
 - Integration tests for `init`, `profile create`, `profile list`, `agent start/status/stop`, `set`, `get`, `rm`, `purge`, `rotate`, `rotate --grace-ttl`, pinned `lk://...@vN` resolution during grace, pinned reference failure after grace, known-value scan inclusion during grace, known-value scan exclusion after grace expiry, rotation audit metadata for `deprecated_at`/`grace_until`, `import`, `exec --secret`, `run`, `scan`, `audit verify`, `export --sealed`, `import-bundle`, and recovery flows.
 - Cross-platform tests or platform-specific mocks for OS keychain, local user verification, peer credentials, memory-lock failure handling, sockets/named pipes, clipboard clearing, and Docker/Compose helpers.
 - Mutation or negative-path tests for deny-by-default policy, malformed ciphertext/AAD/nonces, replayed automation-client nonces, audit tampering, locked-vault scans, expired deprecated-version references, and dangerous-profile confirmations.
@@ -70,6 +70,7 @@ Coverage tooling:
 - `rotate --grace-ttl` allows pinned references and known-value scan matching only until `grace_until`; after expiry, pinned resolution fails with `SecretVersionExpired` and scan excludes the deprecated value by default.
 - `purge --version N` never purges the current version of an active source.
 - Env injection honors `strict`, `minimal`, `merge`, and `passthrough` modes.
+- Path-scoped env sets merge only from the deepest matching project-relative subtree, reject absolute or parent-traversal keys, and never add values outside the normal policy/source-resolution path.
 - `override = "preserve"` never overwrites existing env vars.
 - `override = "error"` fails before process spawn.
 - Docker/Compose helpers do not write persistent plaintext env files.

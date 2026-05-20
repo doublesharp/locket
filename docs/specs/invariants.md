@@ -23,6 +23,7 @@ Non-negotiable product decisions:
 - `locket exec --all` is a risky escape hatch, not the normal workflow. Prefer `locket run <policy>`, `lk://` references resolved by the agent, or repeated `--secret KEY`.
 - Raw `sha256(secret_value)` fingerprints are forbidden. Use profile-scoped HMAC-SHA256 fingerprints and decrypt known values only in memory for exact-match scanning.
 - `locket.toml` contains the stable `project_id`. Trusted root hashes protect against copied or moved project files silently accessing an existing local vault.
+- `locket.toml` may contain path-scoped env sets under `[paths."relative/path"]`. They are metadata-only policy extensions; they name authorized environment variables for a subtree and must never contain values or wrapped key material.
 - The desktop UI and VS Code extension are administration and status surfaces, not secret browsing apps.
 - The local agent is part of the core developer experience. Without it, repeated keychain prompts and Argon2 runs make shell/editor workflows poor.
 

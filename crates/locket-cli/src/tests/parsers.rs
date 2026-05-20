@@ -1,5 +1,6 @@
 #[allow(unused_imports)]
 use super::*;
+use clap::CommandFactory;
 
 #[test]
 fn env_import_parser_handles_exports_quotes_comments_and_invalid_lines() {
@@ -195,6 +196,15 @@ fn parses_core_secret_commands() {
     ] {
         assert!(Cli::try_parse_from(args).is_ok(), "{args:?}");
     }
+}
+
+#[test]
+fn help_mentions_path_scoped_env_sets() {
+    let mut command = Cli::command();
+    let help = command.render_long_help().to_string();
+
+    assert!(help.contains("[paths.\"relative/path\"]"));
+    assert!(help.contains("[commands.<policy>]"));
 }
 
 #[test]

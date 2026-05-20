@@ -121,7 +121,7 @@ locket status
 locket emit-example
 ```
 
-`locket init` creates the project configuration, prepares the local vault, updates `.gitignore`, and creates a managed `.env.example` block. Pass `--recovery-code` when you want an offline backup code during setup; otherwise you can add or rotate one later with `locket recovery rotate`.
+`locket init` creates the project configuration, prepares the local vault, updates `.gitignore`, and creates a managed `.env.example` block. It reuses the local device identity when one already exists on the machine, so new projects do not require a new backup phrase by default. Pass `--recovery-code` when you want an offline backup code during setup; otherwise you can add or rotate one later with `locket recovery rotate`.
 
 ### Secrets And Profiles
 
@@ -172,6 +172,8 @@ optional_secrets = ["STRIPE_SECRET_KEY"]
 [paths."apps/web"]
 required_secrets = ["NEXT_PUBLIC_API_URL"]
 ```
+
+The deepest matching `[paths."..."]` entry wins. A path scope can add `required_secrets`, add `optional_secrets`, and optionally set `profile = "dev"` for commands run from that subtree. It never stores values; it only names what the selected policy may receive. Run `locket env inspect --policy dev` from a package directory to see the active `path_scope` and final metadata-only injection plan.
 
 Execution commands prepare the child process environment for that invocation only. They do not export secrets into the parent shell.
 

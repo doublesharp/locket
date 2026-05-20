@@ -147,7 +147,14 @@ pub(crate) fn next_secret_version(current_version: u32) -> Result<u32, CliError>
 }
 
 #[derive(Debug, Parser)]
-#[command(name = "locket", version, about = "Local-first secrets control plane")]
+#[command(
+    name = "locket",
+    version,
+    about = "Encrypted local secrets with command and path-scoped delivery",
+    after_help = "Project files keep policy in locket.toml and values in the encrypted local vault.\n\
+                  Monorepos can add [paths.\"relative/path\"] env sets; the deepest matching\n\
+                  scope extends the selected [commands.<policy>] entry when run from that subtree."
+)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
@@ -192,15 +199,15 @@ enum Command {
     List(ListArgs),
     /// Execute a child process with scoped injection.
     Exec(ExecArgs),
-    /// Execute a named command policy from locket.toml.
+    /// Execute a named command policy, extended by any matching path scope.
     Run(RunArgs),
-    /// Inspect runtime environment decisions.
+    /// Inspect runtime environment decisions, including matched path scopes.
     Env {
         /// Environment command.
         #[command(subcommand)]
         command: EnvCommand,
     },
-    /// Execute Docker Compose with scoped policy injection.
+    /// Execute Docker Compose with scoped policy and path injection.
     Compose {
         /// Compose command.
         #[command(subcommand)]
@@ -217,6 +224,11 @@ enum Command {
         command: ProfileCommand,
     },
     /// Author command policies in locket.toml.
+    #[command(
+        after_help = "Path-scoped env sets live in locket.toml under [paths.\"relative/path\"].\n\
+                            Use them to add required/optional secret names, or a profile override,\n\
+                            for commands run from a monorepo subtree."
+    )]
     Policy {
         /// Policy command.
         #[command(subcommand)]
@@ -531,8 +543,11 @@ pub struct ExecArgs {
 
 /// Arguments for the `locket run` command.
 #[derive(Debug, Args)]
+#[command(after_help = "If the current directory is inside a [paths.\"relative/path\"] scope,\n\
+                        Locket merges that scope's required_secrets, optional_secrets, and\n\
+                        optional profile into the selected command policy before spawning.")]
 pub struct RunArgs {
-    /// Command policy name from [commands.<policy>].
+    /// Command policy name from [commands.<policy>], before path-scope merging.
     pub policy: String,
 }
 
@@ -547,16 +562,25 @@ pub enum EnvCommand {
 
 /// Arguments for the `locket env inspect` command.
 #[derive(Debug, Args)]
+#[command(
+    after_help = "This is metadata-only. It prints the selected policy, matched path_scope,\n\
+                        path_scope_profile when set, secret names, sources, conflicts, and final\n\
+                        injection decisions. It never prints values or shell exports."
+)]
 pub struct EnvInspectArgs {
-    /// Command policy name from [commands.<policy>].
+    /// Command policy name from [commands.<policy>], before path-scope merging.
     #[arg(long)]
     pub policy: String,
 }
 
 /// Arguments for the `locket env docker` command.
 #[derive(Debug, Args)]
+#[command(
+    after_help = "Policy-backed Docker injection includes the deepest matching [paths.\"...\"]\n\
+                        env set for the current project directory before Docker receives env names."
+)]
 pub struct EnvDockerArgs {
-    /// Command policy name from [commands.<policy>].
+    /// Command policy name from [commands.<policy>], before path-scope merging.
     #[arg(long)]
     pub policy: String,
     /// Docker command and arguments after `--`.
@@ -573,8 +597,12 @@ pub enum ComposeCommand {
 
 /// Arguments for the `locket compose run` command.
 #[derive(Debug, Args)]
+#[command(
+    after_help = "Policy-backed Compose injection includes the deepest matching [paths.\"...\"]\n\
+                        env set for the current project directory before Compose interpolation."
+)]
 pub struct ComposeRunArgs {
-    /// Command policy name from [commands.<policy>].
+    /// Command policy name from [commands.<policy>], before path-scope merging.
     #[arg(long)]
     pub policy: String,
     /// Compose project directory to pass to docker compose.

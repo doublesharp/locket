@@ -54,7 +54,7 @@ This spec describes the intended v1 product surface for Locket. A conforming imp
 - Signed automation-client identities for scoped local agent requests.
 - Shell integration through `shellenv`, `hook`, `allow`, and `deny`.
 - VS Code extension backed by the local agent.
-- Command policies and `locket run`.
+- Command policies, path-scoped env sets for monorepos, and `locket run`.
 - Config management through `locket config`.
 - `lk://` reference URI resolution through the agent.
 - `locket exec` with explicit `--secret`, `--all`, conservative env isolation, argv commands, explicit shell commands, and policy enforcement.
@@ -75,7 +75,7 @@ The app should be built in slices without pretending the whole spec exists from 
 
 1. Foundation: typed core models, validation, error taxonomy, project resolution, storage migrations, crypto envelopes, and audit chain.
 2. Local CLI MVP: `init`, `set`, metadata-only `get`, `list`, `rotate`, `rm`, `purge`, `.env` import, `.env.example`, and scan/redact basics.
-3. Agent and runtime: authenticated local agent, grants, `lk://` resolution, command policies, `locket run`, and Docker/Compose helpers.
+3. Agent and runtime: authenticated local agent, grants, `lk://` resolution, command policies, path-scoped env sets, `locket run`, and Docker/Compose helpers.
 4. Desktop and integrations: Tauri v2 app/tray, shell hook, VS Code extension, status streams, and local user-verification gates.
 5. Team and distribution: sealed bundles, invite flows, signed packages, update manifests, and release provenance.
 

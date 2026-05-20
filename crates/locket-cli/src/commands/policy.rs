@@ -30,6 +30,9 @@ use crate::{
 };
 
 #[derive(Debug, Subcommand)]
+#[command(after_help = "Command policies live under [commands.<name>] in locket.toml.\n\
+                        Path-scoped env sets live under [paths.\"relative/path\"] and are merged\n\
+                        into the selected command policy only when execution starts from that subtree.")]
 pub enum PolicyCommand {
     /// Add an argv command policy.
     Add(PolicyAddArgs),

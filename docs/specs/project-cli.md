@@ -27,6 +27,20 @@ default_profile = "dev"
 
 The project file must not contain secret values, encrypted secret blobs, wrapped keys, grant tokens, or machine-local unlock state.
 
+Projects may also declare metadata-only path scopes for monorepos:
+
+```toml
+[commands.dev]
+argv = ["pnpm", "dev"]
+
+[paths."apps/api"]
+profile = "dev"
+required_secrets = ["DATABASE_URL"]
+optional_secrets = ["STRIPE_SECRET_KEY"]
+```
+
+Path scopes are project-relative env sets, not secret stores. The deepest matching `[paths."..."]` entry extends the selected `[commands.<policy>]` entry for `locket run`, `locket env inspect`, Docker, and Compose execution from that subtree. A path scope may add `required_secrets`, add `optional_secrets`, and select a profile; normal policy validation, source precedence, conflict handling, and audit rules still apply.
+
 The upward search for `locket.toml` stops at the filesystem root, at the first parent that cannot be read, or when canonicalization fails. In nested projects, the nearest `locket.toml` wins.
 
 Directory hashes used by trusted roots, directory grants, and shell grants are `SHA-256` of the canonicalized absolute path bytes after Unicode NFC normalization. Symlinks are followed during canonicalization. On case-insensitive filesystems the on-disk casing is preserved; Locket does not lowercase paths. Two `locket.toml` files at paths that canonicalize to the same bytes hash identically.
@@ -142,6 +156,8 @@ locket env inspect --policy api
 locket env docker --policy api -- docker run ...
 locket compose run --policy api -- docker compose up
 ```
+
+`locket run <policy>`, `locket env inspect --policy <policy>`, `locket env docker --policy <policy>`, and `locket compose run --policy <policy>` first resolve the project from the current directory, then merge the deepest matching path scope into the named command policy. This lets a monorepo reuse one policy name, such as `dev`, while exposing package-specific env names only inside `apps/api`, `apps/web`, or another configured subtree. Scope keys are relative to the project root and must not be absolute or contain `..`.
 
 `locket env inspect` is metadata-only. It shows the names, sources, conflicts, and policy decisions that would apply to an execution, but it never prints secret values and never emits shell `export` statements. Locket must not support `eval "$(locket ...)"` as a normal delivery path because that would create a global shell export and violate process-scoped injection.
 
