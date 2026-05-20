@@ -154,6 +154,24 @@ fn parses_core_secret_commands() {
         &["locket", "debug", "bundle", "--redacted"],
         &["locket", "debug", "bundle", "--redacted", "--output", "bundle.json"],
         &["locket", "exec", "--secret", "DATABASE_URL", "--", "/bin/sh", "-c", "true"],
+        &["locket", "run", "dev"],
+        &["locket", "env", "inspect", "--policy", "dev"],
+        &["locket", "env", "docker", "--policy", "dev", "--", "docker", "run", "alpine"],
+        &[
+            "locket",
+            "compose",
+            "run",
+            "--policy",
+            "dev",
+            "--project-directory",
+            ".",
+            "--profile",
+            "api",
+            "--",
+            "docker",
+            "compose",
+            "up",
+        ],
         &["locket", "config", "list"],
         &["locket", "config", "get", "privacy.redact_names"],
         &["locket", "config", "set", "privacy.redact_names", "true"],
@@ -205,6 +223,51 @@ fn help_mentions_path_scoped_env_sets() {
 
     assert!(help.contains("[paths.\"relative/path\"]"));
     assert!(help.contains("[commands.<policy>]"));
+}
+
+#[test]
+fn execution_help_mentions_path_scope_merge_points() {
+    let mut command = Cli::command();
+    let run_help =
+        command.find_subcommand_mut("run").expect("run subcommand").render_long_help().to_string();
+    assert!(run_help.contains("path-scope merging"), "{run_help}");
+    assert!(run_help.contains("required_secrets"), "{run_help}");
+
+    let mut command = Cli::command();
+    let env_help = command.find_subcommand_mut("env").expect("env subcommand");
+    let inspect_help = env_help
+        .find_subcommand_mut("inspect")
+        .expect("env inspect subcommand")
+        .render_long_help()
+        .to_string();
+    assert!(inspect_help.contains("metadata-only"), "{inspect_help}");
+    assert!(inspect_help.contains("path_scope_profile"), "{inspect_help}");
+
+    let mut command = Cli::command();
+    let env_help = command.find_subcommand_mut("env").expect("env subcommand");
+    let docker_help = env_help
+        .find_subcommand_mut("docker")
+        .expect("env docker subcommand")
+        .render_long_help()
+        .to_string();
+    assert!(docker_help.contains("[paths.\"...\"]"), "{docker_help}");
+
+    let mut command = Cli::command();
+    let compose_help = command.find_subcommand_mut("compose").expect("compose subcommand");
+    let compose_run_help = compose_help
+        .find_subcommand_mut("run")
+        .expect("compose run subcommand")
+        .render_long_help()
+        .to_string();
+    assert!(compose_run_help.contains("Compose interpolation"), "{compose_run_help}");
+
+    let mut command = Cli::command();
+    let policy_help = command
+        .find_subcommand_mut("policy")
+        .expect("policy subcommand")
+        .render_long_help()
+        .to_string();
+    assert!(policy_help.contains("[paths.\"relative/path\"]"), "{policy_help}");
 }
 
 #[test]
