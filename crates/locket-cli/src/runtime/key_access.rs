@@ -27,7 +27,7 @@ fn explain_passphrase_prompt(reason: PassphrasePromptReason) {
             stderr,
             "locket: OS keychain is unavailable; setting up a passphrase fallback for this project.\n\
              locket: you will need this passphrase to use this vault on this machine.\n\
-             locket: save your recovery code separately when it is displayed."
+             locket: run `locket recovery rotate` later if you want an offline recovery code."
         ),
         PassphrasePromptReason::ExistingFallback => writeln!(
             stderr,
@@ -87,10 +87,7 @@ pub fn load_master_key(
             if !context.passphrase_store.contains_project(project_id)? {
                 return Err(primary_error.into());
             }
-            (
-                load_fallback_master_key(context, project_id)?,
-                MasterKeySource::PassphraseFallback,
-            )
+            (load_fallback_master_key(context, project_id)?, MasterKeySource::PassphraseFallback)
         }
     };
     context.master_key_cache.insert(project_id, result.0.clone(), result.1);
@@ -109,9 +106,7 @@ pub fn load_fallback_master_key(
     explain_passphrase_prompt(PassphrasePromptReason::ExistingFallback);
     let passphrase = context.passphrase_reader.existing_passphrase()?;
     let key = context.passphrase_store.load_master_key(project_id, passphrase.as_bytes())?;
-    context
-        .master_key_cache
-        .insert(project_id, key.clone(), MasterKeySource::PassphraseFallback);
+    context.master_key_cache.insert(project_id, key.clone(), MasterKeySource::PassphraseFallback);
     Ok(key)
 }
 

@@ -113,7 +113,17 @@ fn client_create_stores_locket_managed_private_key_refs() -> Result<(), Box<dyn 
     let context = test_context(&directory);
     let mut init_output = Vec::new();
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from([
+            "locket",
+            "init",
+            "--recovery-code",
+            "--no-device",
+            "--no-passkey",
+            "--name",
+            "app",
+            "--profile",
+            "dev",
+        ])?,
         &context,
         &mut init_output,
     )?;

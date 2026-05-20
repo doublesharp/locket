@@ -46,7 +46,7 @@ Secret paths provide a reusable, SSM-like namespace above project scope. A canon
 Core commands:
 
 ```bash
-locket init [--name <name>] [--profile <name>]
+locket init [--name <name>] [--profile <name>] [--recovery-code]
 locket identity init
 locket set <KEY> [--source user-local|machine-local|team-managed] [--description <text>] [--owner <name>] [--tag <tag>] [--required]
 locket secret put <PATH> [--description <text>] [--owner <name>] [--tag <tag>]
@@ -66,7 +66,7 @@ locket passkey remove <passkey>
 
 `locket identity init` creates or verifies the machine/user-scoped local identity: OS keychain master key, local device private keys, passphrase fallback when needed, and the local recovery envelope. It displays the recovery code only when creating a new local identity. Re-running it on a machine with a valid identity is idempotent and never creates project records.
 
-`locket init` is atomic: either `locket.toml`, local store project records, trusted root, default profile, project/profile keys, local identity bootstrap when needed, `.gitignore` changes, `.env.example` block, and audit row all succeed, or the operation rolls back every Locket-owned change it can safely remove. If no local identity exists, `init` runs the same bootstrap as `locket identity init` and displays the recovery code once. If a local identity already exists, `init` reuses it and must not create a project-specific master key or project-specific recovery code. If `locket.toml` already exists and its `project_id` matches an existing local project, `init` exits successfully with a notice, writes no new rows, and never re-displays the recovery code. If a prior failed init left `locket.toml` without a matching local store project record, the next `locket init` treats that file as resumable partial state: it validates the file, completes missing store/key/profile setup, and either commits the full init or leaves the file unchanged with a typed error.
+`locket init` is atomic: either `locket.toml`, local store project records, trusted root, default profile, project/profile keys, local identity bootstrap when needed, `.gitignore` changes, `.env.example` block, and audit row all succeed, or the operation rolls back every Locket-owned change it can safely remove. Default init does not force an offline recovery-code ceremony for every new project; pass `--recovery-code` to create and display one during setup, or run `locket recovery rotate` later while the vault is still accessible. If a local identity already exists, `init` reuses it and must not create a project-specific master key or project-specific recovery code. If `locket.toml` already exists and its `project_id` matches an existing local project, `init` exits successfully with a notice, writes no new rows, and never re-displays the recovery code. If a prior failed init left `locket.toml` without a matching local store project record, the next `locket init` treats that file as resumable partial state: it validates the file, completes missing store/key/profile setup, and either commits the full init or leaves the file unchanged with a typed error.
 
 `locket secret put <PATH>` creates or rotates a reusable global secret under the canonical path. The value is stored once with its own per-version DEK and path-bound metadata. `locket link <PATH> <KEY>` records that the current project/profile may consume the global secret as local secret name `KEY`; links may have project-specific source, profile, policy, and env-mapping metadata. Linking never copies plaintext values, private device keys, or local identity master key material into the project directory. `locket get <KEY>` resolves local project secrets first according to source precedence, then resolves linked global paths only when the active policy/profile grants that link.
 
@@ -351,7 +351,7 @@ Command parsing must avoid shell expansion unless the policy explicitly uses `sh
 Greenfield flow:
 
 1. User runs `locket init`.
-2. Locket creates `locket.toml` with a `name` defaulting to the current directory name (or the value supplied with `--name`), initializes the encrypted store, creates the default profile named `dev` (or the name supplied with `--profile`), writes safe `.gitignore` entries, and prints the one-time recovery code.
+2. Locket creates `locket.toml` with a `name` defaulting to the current directory name (or the value supplied with `--name`), initializes the encrypted store, creates the default profile named `dev` (or the name supplied with `--profile`), writes safe `.gitignore` entries, and skips the recovery-code ceremony unless `--recovery-code` was requested.
 3. User runs `locket set DATABASE_URL`.
 4. Locket prompts securely, encrypts the value, stores the keyed fingerprint, writes an audit row, and updates `.env.example`.
 5. User runs `locket exec --secret DATABASE_URL -- pnpm dev` or creates a policy and runs `locket run dev`.

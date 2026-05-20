@@ -2,6 +2,8 @@
 set -euo pipefail
 
 cargo_fuzz="${CARGO_FUZZ:-cargo +nightly fuzz}"
+source "$(dirname "${BASH_SOURCE[0]}")/cargo-jobs.sh"
+jobs="$(cargo_jobs)"
 target="${FUZZ_TARGET:-}"
 artifact="${FUZZ_ARTIFACT:-}"
 max_len="${FUZZ_MAX_LEN:-65536}"
@@ -31,13 +33,13 @@ reproducer="${FUZZ_REPRODUCER:-${corpus_dir}/repro-${basename}}"
 cp "${artifact}" "${reproducer}"
 
 echo "minimizing ${artifact} for ${target}"
-${cargo_fuzz} tmin -s "${sanitizer}" "${target}" "${reproducer}" -- \
+${cargo_fuzz} tmin -s "${sanitizer}" -j "${jobs}" "${target}" "${reproducer}" -- \
   "-max_len=${max_len}" \
   "-timeout=${timeout_seconds}" \
   "-rss_limit_mb=${rss_limit_mb}"
 
 echo "verifying minimized reproducer: ${reproducer}"
-${cargo_fuzz} run -s "${sanitizer}" "${target}" "${reproducer}" -- \
+${cargo_fuzz} run -s "${sanitizer}" -j "${jobs}" "${target}" "${reproducer}" -- \
   "-runs=1" \
   "-max_len=${max_len}" \
   "-timeout=${timeout_seconds}" \

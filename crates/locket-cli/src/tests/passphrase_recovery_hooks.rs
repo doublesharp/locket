@@ -8,7 +8,15 @@ fn passphrase_fallback_covers_init_unlock_and_decrypt() -> Result<(), Box<dyn st
 
     let mut init_output = Vec::new();
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from([
+            "locket",
+            "init",
+            "--recovery-code",
+            "--name",
+            "app",
+            "--profile",
+            "dev",
+        ])?,
         &context,
         &mut init_output,
     )?;
@@ -42,7 +50,15 @@ fn passphrase_fallback_covers_stale_os_key_material() -> Result<(), Box<dyn std:
 
     let mut init_output = Vec::new();
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from([
+            "locket",
+            "init",
+            "--recovery-code",
+            "--name",
+            "app",
+            "--profile",
+            "dev",
+        ])?,
         &fallback_context,
         &mut init_output,
     )?;
@@ -101,7 +117,15 @@ fn recovery_rotate_creates_envelope_and_recover_restores_master_key()
     let context = test_context_with_key_store(&directory, original_key_store);
     let mut init_output = Vec::new();
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from([
+            "locket",
+            "init",
+            "--recovery-code",
+            "--name",
+            "app",
+            "--profile",
+            "dev",
+        ])?,
         &context,
         &mut init_output,
     )?;
@@ -167,7 +191,15 @@ fn install_hooks_requires_confirmation_for_unmanaged_hook() -> Result<(), Box<dy
 
     let mut init_output = Vec::new();
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from([
+            "locket",
+            "init",
+            "--recovery-code",
+            "--name",
+            "app",
+            "--profile",
+            "dev",
+        ])?,
         &context,
         &mut init_output,
     )?;
@@ -207,7 +239,15 @@ fn install_hooks_confirms_unmanaged_hook_and_preserves_existing_hook()
 
     let mut init_output = Vec::new();
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from([
+            "locket",
+            "init",
+            "--recovery-code",
+            "--name",
+            "app",
+            "--profile",
+            "dev",
+        ])?,
         &context,
         &mut init_output,
     )?;
@@ -287,7 +327,15 @@ fn install_hooks_creates_missing_hook_without_confirmation()
 
     let mut init_output = Vec::new();
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from([
+            "locket",
+            "init",
+            "--recovery-code",
+            "--name",
+            "app",
+            "--profile",
+            "dev",
+        ])?,
         &context,
         &mut init_output,
     )?;

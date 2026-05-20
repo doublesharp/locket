@@ -38,6 +38,8 @@
 set -euo pipefail
 
 cargo_bin="${CARGO:-cargo}"
+source "$(dirname "${BASH_SOURCE[0]}")/cargo-jobs.sh"
+jobs="$(cargo_jobs)"
 package="${LOCKET_BENCH_REGRESSION_PACKAGE:-locket-crypto}"
 bench_name="${LOCKET_BENCH_REGRESSION_BENCH:-key_derivation}"
 case_name="${LOCKET_BENCH_REGRESSION_CASE:-key_derivation/warm_repeat_call}"
@@ -63,7 +65,7 @@ fi
 # Run the bench in release mode with bencher output. `tee` so we keep the raw
 # log under target/perf/ for inspection on regressions.
 set +e
-"${cargo_bin}" bench -p "${package}" --bench "${bench_name}" -- \
+"${cargo_bin}" bench -p "${package}" --bench "${bench_name}" -j "${jobs}" -- \
   --warm-up-time "${warmup_seconds}" \
   --measurement-time "${measurement_seconds}" \
   --output-format bencher \

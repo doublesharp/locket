@@ -364,6 +364,9 @@ pub(crate) struct InitArgs {
     /// Initial profile name.
     #[arg(long)]
     pub(crate) profile: Option<String>,
+    /// Create and display an offline recovery code during init.
+    #[arg(long)]
+    pub(crate) recovery_code: bool,
     /// Skip creating a local device during init.
     #[arg(long)]
     pub(crate) no_device: bool,

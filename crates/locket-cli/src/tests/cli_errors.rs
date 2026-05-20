@@ -451,7 +451,15 @@ fn confirmation_failed_via_init_recovery_exits_68() -> Result<(), Box<dyn std::e
     let context = test_context_with_confirmation(&directory, "wrong-name\n");
 
     let result = run_with_context(
-        Cli::try_parse_from(["locket", "init", "--name", "the-real-name", "--profile", "dev"])?,
+        Cli::try_parse_from([
+            "locket",
+            "init",
+            "--recovery-code",
+            "--name",
+            "the-real-name",
+            "--profile",
+            "dev",
+        ])?,
         &context,
         &mut Vec::new(),
     );

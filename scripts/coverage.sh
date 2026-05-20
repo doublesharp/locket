@@ -16,7 +16,8 @@ mode="${1:-line}"
 html_tool_flag="${2:-}"
 cargo_bin="${CARGO:-cargo}"
 llvm_cov="${CARGO_LLVM_COV:-cargo llvm-cov}"
-jobs="${CARGO_JOBS:-12}"
+source "$(dirname "${BASH_SOURCE[0]}")/cargo-jobs.sh"
+jobs="$(cargo_jobs)"
 offline="${OFFLINE:-1}"
 strict="${STRICT:-0}"
 html_tool="${COVERAGE_HTML_TOOL:-doublcov}"
@@ -55,12 +56,12 @@ mkdir -p coverage
 
 case "${mode}" in
   line)
-    exec ${llvm_cov} --workspace --all-features "${offline_args[@]}" --fail-under-lines "${line_floor}" --lcov --output-path coverage/lcov.info
+    exec ${llvm_cov} --workspace --all-features "${offline_args[@]}" -j "${jobs}" --fail-under-lines "${line_floor}" --lcov --output-path coverage/lcov.info
     ;;
   html)
     if [[ "${html_tool}" == "llvm-cov" ]]; then
       # Legacy path: cargo llvm-cov --html. No Node, no network.
-      exec ${llvm_cov} --workspace --all-features "${offline_args[@]}" --fail-under-lines "${line_floor}" --html --output-dir coverage/html
+      exec ${llvm_cov} --workspace --all-features "${offline_args[@]}" -j "${jobs}" --fail-under-lines "${line_floor}" --html --output-dir coverage/html
     fi
 
     if ! command -v npx >/dev/null 2>&1; then
@@ -70,10 +71,10 @@ case "${mode}" in
       fi
 
       echo "npx not found; falling back to cargo llvm-cov --html" >&2
-      exec ${llvm_cov} --workspace --all-features "${offline_args[@]}" --fail-under-lines "${line_floor}" --html --output-dir coverage/html
+      exec ${llvm_cov} --workspace --all-features "${offline_args[@]}" -j "${jobs}" --fail-under-lines "${line_floor}" --html --output-dir coverage/html
     fi
 
-    ${llvm_cov} --workspace --all-features "${offline_args[@]}" --fail-under-lines "${line_floor}" --lcov --output-path coverage/lcov.info
+    ${llvm_cov} --workspace --all-features "${offline_args[@]}" -j "${jobs}" --fail-under-lines "${line_floor}" --lcov --output-path coverage/lcov.info
     exec npx -y "${doublcov_pkg}" build \
       --lcov coverage/lcov.info \
       --sources crates \
@@ -87,7 +88,7 @@ case "${mode}" in
       echo "cargo-llvm-cov branch coverage requires a nightly toolchain; set CARGO_LLVM_COV or install nightly" >&2
       exit 127
     fi
-    ${branch_llvm_cov} --workspace --all-features "${offline_args[@]}" --branch --fail-under-lines "${line_floor}" --lcov --output-path coverage/branch.lcov.info
+    ${branch_llvm_cov} --workspace --all-features "${offline_args[@]}" -j "${jobs}" --branch --fail-under-lines "${line_floor}" --lcov --output-path coverage/branch.lcov.info
     branch_percent="$(
       awk -F: '
         /^BRF:/ { total += $2 }

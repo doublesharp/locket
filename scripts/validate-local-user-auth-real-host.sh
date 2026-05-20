@@ -3,6 +3,8 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cargo_bin="${CARGO:-cargo}"
+source "$(dirname "${BASH_SOURCE[0]}")/cargo-jobs.sh"
+jobs="$(cargo_jobs)"
 target="auto"
 dry_run=0
 require_fido2=0
@@ -114,7 +116,7 @@ run_harness() {
   harness_dir="$(mktemp -d "${TMPDIR:-/tmp}/locket-local-auth.XXXXXX")"
   trap 'rm -rf "${harness_dir}"' EXIT
   write_harness "${harness_dir}"
-  "${cargo_bin}" run --manifest-path "${harness_dir}/Cargo.toml" --locked
+  "${cargo_bin}" run --manifest-path "${harness_dir}/Cargo.toml" --locked -j "${jobs}"
 }
 
 validate_linux_prereqs() {

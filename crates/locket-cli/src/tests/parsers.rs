@@ -119,6 +119,7 @@ fn parses_bare_status() {
 fn parses_core_secret_commands() {
     for args in [
         ["locket", "init", "--name", "app"].as_slice(),
+        &["locket", "init", "--recovery-code", "--name", "app"],
         &["locket", "set", "DATABASE_URL", "--source", "user-local"],
         &["locket", "import", ".env", "--source", "user-local"],
         &["locket", "get", "DATABASE_URL", "--source", "user-local"],

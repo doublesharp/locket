@@ -325,7 +325,17 @@ fn emit_example_uses_all_profiles_rewrites_managed_block_and_audits()
     let context = test_context(&directory);
     let mut output = Vec::new();
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from([
+            "locket",
+            "init",
+            "--recovery-code",
+            "--no-device",
+            "--no-passkey",
+            "--name",
+            "app",
+            "--profile",
+            "dev",
+        ])?,
         &context,
         &mut output,
     )?;
@@ -386,7 +396,17 @@ fn emit_example_confirms_unmanaged_replacement_without_value_leakage()
     let directory = tempdir()?;
     let context = test_context_with_confirmation(&directory, "replace .env.example\n");
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from([
+            "locket",
+            "init",
+            "--recovery-code",
+            "--no-device",
+            "--no-passkey",
+            "--name",
+            "app",
+            "--profile",
+            "dev",
+        ])?,
         &context,
         &mut Vec::new(),
     )?;
@@ -426,7 +446,17 @@ fn automatic_example_refresh_respects_user_and_project_config()
     let context = test_context(&directory);
     let mut output = Vec::new();
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from([
+            "locket",
+            "init",
+            "--recovery-code",
+            "--no-device",
+            "--no-passkey",
+            "--name",
+            "app",
+            "--profile",
+            "dev",
+        ])?,
         &context,
         &mut output,
     )?;
@@ -483,7 +513,17 @@ fn automatic_example_refresh_refuses_unmanaged_example_file()
     let context = test_context(&directory);
     let mut output = Vec::new();
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from([
+            "locket",
+            "init",
+            "--recovery-code",
+            "--no-device",
+            "--no-passkey",
+            "--name",
+            "app",
+            "--profile",
+            "dev",
+        ])?,
         &context,
         &mut output,
     )?;
@@ -508,7 +548,17 @@ fn init_creates_project_metadata_files_and_profiles() -> Result<(), Box<dyn std:
     let mut output = Vec::new();
 
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from([
+            "locket",
+            "init",
+            "--recovery-code",
+            "--no-device",
+            "--no-passkey",
+            "--name",
+            "app",
+            "--profile",
+            "dev",
+        ])?,
         &context,
         &mut output,
     )?;
@@ -558,7 +608,17 @@ fn device_commands_initialize_describe_add_list_and_revoke_metadata_only()
     let mut output = Vec::new();
 
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from([
+            "locket",
+            "init",
+            "--recovery-code",
+            "--no-device",
+            "--no-passkey",
+            "--name",
+            "app",
+            "--profile",
+            "dev",
+        ])?,
         &context,
         &mut output,
     )?;
@@ -662,7 +722,16 @@ fn device_registration_honors_configured_user_verification()
     let directory = tempdir()?;
     let context = test_context(&directory);
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from([
+            "locket",
+            "init",
+            "--no-device",
+            "--no-passkey",
+            "--name",
+            "app",
+            "--profile",
+            "dev",
+        ])?,
         &context,
         &mut Vec::new(),
     )?;
@@ -780,7 +849,16 @@ fn team_members_lists_members_and_pending_invites_metadata_only()
     let context = test_context(&directory);
     let mut output = Vec::new();
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from([
+            "locket",
+            "init",
+            "--no-device",
+            "--no-passkey",
+            "--name",
+            "app",
+            "--profile",
+            "dev",
+        ])?,
         &context,
         &mut output,
     )?;
@@ -816,7 +894,16 @@ fn team_members_is_locked_vault_safe() -> Result<(), Box<dyn std::error::Error>>
     let context = test_context(&directory);
     let mut output = Vec::new();
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from([
+            "locket",
+            "init",
+            "--no-device",
+            "--no-passkey",
+            "--name",
+            "app",
+            "--profile",
+            "dev",
+        ])?,
         &context,
         &mut output,
     )?;
@@ -843,7 +930,16 @@ fn team_members_uses_privacy_aliases() -> Result<(), Box<dyn std::error::Error>>
     let context = test_context(&directory);
     let mut output = Vec::new();
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from([
+            "locket",
+            "init",
+            "--no-device",
+            "--no-passkey",
+            "--name",
+            "app",
+            "--profile",
+            "dev",
+        ])?,
         &context,
         &mut output,
     )?;
@@ -879,7 +975,16 @@ fn team_members_without_team_is_metadata_only() -> Result<(), Box<dyn std::error
     let context = test_context(&directory);
     let mut output = Vec::new();
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from([
+            "locket",
+            "init",
+            "--no-device",
+            "--no-passkey",
+            "--name",
+            "app",
+            "--profile",
+            "dev",
+        ])?,
         &context,
         &mut output,
     )?;
@@ -900,7 +1005,16 @@ fn team_remove_member_sets_removed_at_and_writes_team_remove_audit()
     let directory = tempdir()?;
     let context = test_context(&directory);
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from([
+            "locket",
+            "init",
+            "--no-device",
+            "--no-passkey",
+            "--name",
+            "app",
+            "--profile",
+            "dev",
+        ])?,
         &context,
         &mut Vec::new(),
     )?;
@@ -951,7 +1065,16 @@ fn team_revoke_device_sets_revoked_at_and_writes_device_revoke_audit()
     let directory = tempdir()?;
     let context = test_context(&directory);
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from([
+            "locket",
+            "init",
+            "--no-device",
+            "--no-passkey",
+            "--name",
+            "app",
+            "--profile",
+            "dev",
+        ])?,
         &context,
         &mut Vec::new(),
     )?;
@@ -997,7 +1120,16 @@ fn maintainer_can_remove_developer_team_member() -> Result<(), Box<dyn std::erro
     let directory = tempdir()?;
     let context = test_context(&directory);
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from([
+            "locket",
+            "init",
+            "--no-device",
+            "--no-passkey",
+            "--name",
+            "app",
+            "--profile",
+            "dev",
+        ])?,
         &context,
         &mut Vec::new(),
     )?;
@@ -1022,7 +1154,16 @@ fn maintainer_cannot_remove_owner_team_member() -> Result<(), Box<dyn std::error
     let directory = tempdir()?;
     let context = test_context(&directory);
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from([
+            "locket",
+            "init",
+            "--no-device",
+            "--no-passkey",
+            "--name",
+            "app",
+            "--profile",
+            "dev",
+        ])?,
         &context,
         &mut Vec::new(),
     )?;
@@ -1047,7 +1188,16 @@ fn developer_cannot_remove_team_member() -> Result<(), Box<dyn std::error::Error
     let directory = tempdir()?;
     let context = test_context(&directory);
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from([
+            "locket",
+            "init",
+            "--no-device",
+            "--no-passkey",
+            "--name",
+            "app",
+            "--profile",
+            "dev",
+        ])?,
         &context,
         &mut Vec::new(),
     )?;
@@ -1072,7 +1222,16 @@ fn maintainer_can_revoke_developer_team_device() -> Result<(), Box<dyn std::erro
     let directory = tempdir()?;
     let context = test_context(&directory);
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from([
+            "locket",
+            "init",
+            "--no-device",
+            "--no-passkey",
+            "--name",
+            "app",
+            "--profile",
+            "dev",
+        ])?,
         &context,
         &mut Vec::new(),
     )?;
@@ -1096,7 +1255,16 @@ fn maintainer_cannot_revoke_owner_team_device() -> Result<(), Box<dyn std::error
     let directory = tempdir()?;
     let context = test_context(&directory);
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from([
+            "locket",
+            "init",
+            "--no-device",
+            "--no-passkey",
+            "--name",
+            "app",
+            "--profile",
+            "dev",
+        ])?,
         &context,
         &mut Vec::new(),
     )?;
@@ -1122,7 +1290,16 @@ fn team_remove_last_owner_is_rejected_with_team_role_denied()
     let directory = tempdir()?;
     let context = test_context(&directory);
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from([
+            "locket",
+            "init",
+            "--no-device",
+            "--no-passkey",
+            "--name",
+            "app",
+            "--profile",
+            "dev",
+        ])?,
         &context,
         &mut Vec::new(),
     )?;
@@ -1155,7 +1332,16 @@ fn developer_team_remove_emits_role_insufficient_denial() -> Result<(), Box<dyn 
     let directory = tempdir()?;
     let context = test_context(&directory);
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from([
+            "locket",
+            "init",
+            "--no-device",
+            "--no-passkey",
+            "--name",
+            "app",
+            "--profile",
+            "dev",
+        ])?,
         &context,
         &mut Vec::new(),
     )?;
@@ -1205,7 +1391,16 @@ fn team_remove_wrong_confirmation_fails_with_confirmation_failed()
     let directory = tempdir()?;
     let context = test_context(&directory);
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from([
+            "locket",
+            "init",
+            "--no-device",
+            "--no-passkey",
+            "--name",
+            "app",
+            "--profile",
+            "dev",
+        ])?,
         &context,
         &mut Vec::new(),
     )?;
@@ -1231,7 +1426,16 @@ fn team_remove_unknown_member_fails_with_secret_not_found() -> Result<(), Box<dy
     let directory = tempdir()?;
     let context = test_context(&directory);
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from([
+            "locket",
+            "init",
+            "--no-device",
+            "--no-passkey",
+            "--name",
+            "app",
+            "--profile",
+            "dev",
+        ])?,
         &context,
         &mut Vec::new(),
     )?;
@@ -1255,7 +1459,16 @@ fn team_revoke_device_already_revoked_is_idempotent() -> Result<(), Box<dyn std:
     let directory = tempdir()?;
     let context = test_context(&directory);
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from([
+            "locket",
+            "init",
+            "--no-device",
+            "--no-passkey",
+            "--name",
+            "app",
+            "--profile",
+            "dev",
+        ])?,
         &context,
         &mut Vec::new(),
     )?;
@@ -1298,7 +1511,16 @@ fn team_revoke_device_unknown_device_fails_with_invalid_reference()
     let directory = tempdir()?;
     let context = test_context(&directory);
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from([
+            "locket",
+            "init",
+            "--no-device",
+            "--no-passkey",
+            "--name",
+            "app",
+            "--profile",
+            "dev",
+        ])?,
         &context,
         &mut Vec::new(),
     )?;
@@ -1422,7 +1644,17 @@ fn init_writes_recovery_envelope_and_metadata_only_audit() -> Result<(), Box<dyn
     let mut output = Vec::new();
 
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from([
+            "locket",
+            "init",
+            "--recovery-code",
+            "--no-device",
+            "--no-passkey",
+            "--name",
+            "app",
+            "--profile",
+            "dev",
+        ])?,
         &context,
         &mut output,
     )?;
@@ -1454,7 +1686,17 @@ fn device_init_force_replaces_active_local_device() -> Result<(), Box<dyn std::e
     let mut output = Vec::new();
 
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from([
+            "locket",
+            "init",
+            "--recovery-code",
+            "--no-device",
+            "--no-passkey",
+            "--name",
+            "app",
+            "--profile",
+            "dev",
+        ])?,
         &context,
         &mut output,
     )?;
@@ -1516,7 +1758,16 @@ fn device_init_force_requires_local_user_verification_before_rekey()
     let directory = tempdir()?;
     let context = test_context(&directory);
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from([
+            "locket",
+            "init",
+            "--no-device",
+            "--no-passkey",
+            "--name",
+            "app",
+            "--profile",
+            "dev",
+        ])?,
         &context,
         &mut Vec::new(),
     )?;
@@ -1570,7 +1821,17 @@ fn init_existing_complete_project_is_idempotent_without_new_rows_or_recovery_cod
     let context = test_context(&directory);
     let mut output = Vec::new();
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from([
+            "locket",
+            "init",
+            "--recovery-code",
+            "--no-device",
+            "--no-passkey",
+            "--name",
+            "app",
+            "--profile",
+            "dev",
+        ])?,
         &context,
         &mut output,
     )?;
@@ -1610,7 +1871,11 @@ fn init_resumes_valid_locket_toml_without_store_project_and_creates_keys()
     crate::write_project_config(&directory.path().join("locket.toml"), &config)?;
 
     let mut output = Vec::new();
-    run_with_context(Cli::try_parse_from(["locket", "init"])?, &context, &mut output)?;
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--recovery-code"])?,
+        &context,
+        &mut output,
+    )?;
 
     let output = String::from_utf8(output)?;
     assert!(output.contains("resumed locket project"));
@@ -1668,7 +1933,16 @@ fn init_failure_on_unmanaged_env_example_rolls_back_owned_changes()
     let mut output = Vec::new();
 
     let result = run_with_context(
-        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from([
+            "locket",
+            "init",
+            "--no-device",
+            "--no-passkey",
+            "--name",
+            "app",
+            "--profile",
+            "dev",
+        ])?,
         &context,
         &mut output,
     );
@@ -2067,7 +2341,16 @@ fn team_invite_creates_signed_file_pending_row_and_audit() -> Result<(), Box<dyn
     let directory = tempdir()?;
     let context = test_context(&directory);
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from([
+            "locket",
+            "init",
+            "--no-device",
+            "--no-passkey",
+            "--name",
+            "app",
+            "--profile",
+            "dev",
+        ])?,
         &context,
         &mut Vec::new(),
     )?;
@@ -2243,7 +2526,16 @@ fn team_invite_rejects_bad_descriptor_without_file_or_audit()
     let directory = tempdir()?;
     let context = test_context(&directory);
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from([
+            "locket",
+            "init",
+            "--no-device",
+            "--no-passkey",
+            "--name",
+            "app",
+            "--profile",
+            "dev",
+        ])?,
         &context,
         &mut Vec::new(),
     )?;
@@ -2293,7 +2585,16 @@ fn team_invite_locked_vault_fails_before_writing_output() -> Result<(), Box<dyn 
     let directory = tempdir()?;
     let context = test_context(&directory);
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from([
+            "locket",
+            "init",
+            "--no-device",
+            "--no-passkey",
+            "--name",
+            "app",
+            "--profile",
+            "dev",
+        ])?,
         &context,
         &mut Vec::new(),
     )?;
@@ -2360,7 +2661,16 @@ fn team_accept_verifies_invite_displays_trust_summary_and_records_audit()
     let directory = tempdir()?;
     let context = test_context(&directory);
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from([
+            "locket",
+            "init",
+            "--no-device",
+            "--no-passkey",
+            "--name",
+            "app",
+            "--profile",
+            "dev",
+        ])?,
         &context,
         &mut Vec::new(),
     )?;
@@ -2883,7 +3193,16 @@ fn team_accept_invite_fixture(
     let directory = tempdir()?;
     let context = test_context(&directory);
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from([
+            "locket",
+            "init",
+            "--no-device",
+            "--no-passkey",
+            "--name",
+            "app",
+            "--profile",
+            "dev",
+        ])?,
         &context,
         &mut Vec::new(),
     )?;
@@ -3023,7 +3342,16 @@ fn e2e_greenfield_init_set_get_with_audit_chain_and_file_modes()
     // Step 1: locket init (project name "app" matches the default init confirmation reader)
     let mut init_output = Vec::new();
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from([
+            "locket",
+            "init",
+            "--no-device",
+            "--no-passkey",
+            "--name",
+            "app",
+            "--profile",
+            "dev",
+        ])?,
         &context,
         &mut init_output,
     )?;
@@ -3135,7 +3463,16 @@ fn e2e_team_invite_accept_happy_path_and_revoked_invite_failure()
     let context = test_context(&directory);
 
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from([
+            "locket",
+            "init",
+            "--no-device",
+            "--no-passkey",
+            "--name",
+            "app",
+            "--profile",
+            "dev",
+        ])?,
         &context,
         &mut Vec::new(),
     )?;
@@ -3344,7 +3681,16 @@ fn solo_project_without_team_allows_all_owner_operations() -> Result<(), Box<dyn
     let directory = tempdir()?;
     let context = test_context(&directory);
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from([
+            "locket",
+            "init",
+            "--no-device",
+            "--no-passkey",
+            "--name",
+            "app",
+            "--profile",
+            "dev",
+        ])?,
         &context,
         &mut Vec::new(),
     )?;
@@ -3395,7 +3741,16 @@ fn solo_project_without_team_init_rejects_duplicate_team_init()
     let directory = tempdir()?;
     let context = test_context(&directory);
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from([
+            "locket",
+            "init",
+            "--no-device",
+            "--no-passkey",
+            "--name",
+            "app",
+            "--profile",
+            "dev",
+        ])?,
         &context,
         &mut Vec::new(),
     )?;
@@ -3428,7 +3783,16 @@ fn solo_project_can_init_team_and_becomes_team_project() -> Result<(), Box<dyn s
     let directory = tempdir()?;
     let context = test_context(&directory);
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from([
+            "locket",
+            "init",
+            "--no-device",
+            "--no-passkey",
+            "--name",
+            "app",
+            "--profile",
+            "dev",
+        ])?,
         &context,
         &mut Vec::new(),
     )?;
@@ -3473,7 +3837,17 @@ fn device_init_force_cleans_up_prior_wrapped_envelope() -> Result<(), Box<dyn st
 
     let mut project_init_output = Vec::new();
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from([
+            "locket",
+            "init",
+            "--recovery-code",
+            "--no-device",
+            "--no-passkey",
+            "--name",
+            "app",
+            "--profile",
+            "dev",
+        ])?,
         &context,
         &mut project_init_output,
     )?;
@@ -3527,7 +3901,16 @@ fn device_remove_force_local_drops_wrapped_envelope() -> Result<(), Box<dyn std:
     let directory = tempdir()?;
     let context = test_context(&directory);
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from([
+            "locket",
+            "init",
+            "--no-device",
+            "--no-passkey",
+            "--name",
+            "app",
+            "--profile",
+            "dev",
+        ])?,
         &context,
         &mut Vec::new(),
     )?;
@@ -3561,7 +3944,16 @@ fn doctor_reports_pass_for_healthy_device_private_key_storage()
     let directory = tempdir()?;
     let context = test_context(&directory);
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from([
+            "locket",
+            "init",
+            "--no-device",
+            "--no-passkey",
+            "--name",
+            "app",
+            "--profile",
+            "dev",
+        ])?,
         &context,
         &mut Vec::new(),
     )?;
@@ -3587,7 +3979,16 @@ fn doctor_warns_when_device_envelope_missing() -> Result<(), Box<dyn std::error:
     let directory = tempdir()?;
     let context = test_context(&directory);
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from([
+            "locket",
+            "init",
+            "--no-device",
+            "--no-passkey",
+            "--name",
+            "app",
+            "--profile",
+            "dev",
+        ])?,
         &context,
         &mut Vec::new(),
     )?;
@@ -3622,7 +4023,16 @@ fn team_revoke_device_local_drops_wrapped_envelope() -> Result<(), Box<dyn std::
     let directory = tempdir()?;
     let context = test_context(&directory);
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from([
+            "locket",
+            "init",
+            "--no-device",
+            "--no-passkey",
+            "--name",
+            "app",
+            "--profile",
+            "dev",
+        ])?,
         &context,
         &mut Vec::new(),
     )?;
@@ -3664,7 +4074,16 @@ fn doctor_passes_degraded_audit_log_perms_when_log_absent() -> Result<(), Box<dy
     let directory = tempdir()?;
     let context = test_context(&directory);
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from([
+            "locket",
+            "init",
+            "--no-device",
+            "--no-passkey",
+            "--name",
+            "app",
+            "--profile",
+            "dev",
+        ])?,
         &context,
         &mut Vec::new(),
     )?;
@@ -3686,7 +4105,16 @@ fn doctor_passes_degraded_audit_log_perms_for_user_only_log()
     let directory = tempdir()?;
     let context = test_context(&directory);
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from([
+            "locket",
+            "init",
+            "--no-device",
+            "--no-passkey",
+            "--name",
+            "app",
+            "--profile",
+            "dev",
+        ])?,
         &context,
         &mut Vec::new(),
     )?;
@@ -3719,7 +4147,16 @@ fn doctor_fails_degraded_audit_log_perms_when_world_readable()
     let directory = tempdir()?;
     let context = test_context(&directory);
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from([
+            "locket",
+            "init",
+            "--no-device",
+            "--no-passkey",
+            "--name",
+            "app",
+            "--profile",
+            "dev",
+        ])?,
         &context,
         &mut Vec::new(),
     )?;
@@ -3753,7 +4190,16 @@ fn doctor_fails_when_device_envelope_permissions_too_wide() -> Result<(), Box<dy
     let directory = tempdir()?;
     let context = test_context(&directory);
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from([
+            "locket",
+            "init",
+            "--no-device",
+            "--no-passkey",
+            "--name",
+            "app",
+            "--profile",
+            "dev",
+        ])?,
         &context,
         &mut Vec::new(),
     )?;
@@ -3856,7 +4302,16 @@ fn device_init_skips_bootstrap_when_master_key_is_present() -> Result<(), Box<dy
     let directory = tempdir()?;
     let context = test_context(&directory);
     run_with_context(
-        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app", "--profile", "dev"])?,
+        Cli::try_parse_from([
+            "locket",
+            "init",
+            "--no-device",
+            "--no-passkey",
+            "--name",
+            "app",
+            "--profile",
+            "dev",
+        ])?,
         &context,
         &mut Vec::new(),
     )?;
@@ -3964,6 +4419,10 @@ fn init_default_creates_local_device_row() -> Result<(), Box<dyn std::error::Err
         &context,
         &mut output,
     )?;
+    let output_text = String::from_utf8(output)?;
+    assert!(!output_text.contains("recovery_code_init"));
+    assert!(!directory.path().join(".locket/recovery/kdf.toml").exists());
+    assert!(!directory.path().join(".locket/recovery/envelope.bin").exists());
 
     let store = locket_store::Store::open(directory.path().join("store.db"))?;
     let project_id: String =
@@ -4027,6 +4486,7 @@ fn init_with_register_passkey_registers_passkey() -> Result<(), Box<dyn std::err
         Cli::try_parse_from([
             "locket",
             "init",
+            "--recovery-code",
             "--register-passkey",
             "--name",
             "app",
@@ -4059,6 +4519,7 @@ fn init_recovery_code_displayed_even_when_passkey_registration_fails()
         Cli::try_parse_from([
             "locket",
             "init",
+            "--recovery-code",
             "--register-passkey",
             "--name",
             "app",
@@ -4078,23 +4539,12 @@ fn init_recovery_code_displayed_even_when_passkey_registration_fails()
     let project_id: String =
         store.connection().query_row("SELECT id FROM projects LIMIT 1", [], |row| row.get(0))?;
     let credentials = store.list_passkey_credentials(&project_id, false)?;
-    assert!(
-        credentials.is_empty(),
-        "no passkey row should be persisted when registration failed"
-    );
+    assert!(credentials.is_empty(), "no passkey row should be persisted when registration failed");
     Ok(())
 }
 
 #[test]
 fn init_no_passkey_conflicts_with_register_passkey_at_clap_parse_time() {
-    let result = Cli::try_parse_from([
-        "locket",
-        "init",
-        "--no-passkey",
-        "--register-passkey",
-    ]);
-    assert!(
-        result.is_err(),
-        "clap must reject --no-passkey + --register-passkey as a conflict"
-    );
+    let result = Cli::try_parse_from(["locket", "init", "--no-passkey", "--register-passkey"]);
+    assert!(result.is_err(), "clap must reject --no-passkey + --register-passkey as a conflict");
 }

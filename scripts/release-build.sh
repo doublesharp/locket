@@ -46,6 +46,8 @@ set -euo pipefail
 cargo_bin="${CARGO:-cargo}"
 cargo_auditable_cmd="${CARGO_AUDITABLE:-cargo auditable}"
 cargo_audit_cmd="${CARGO_AUDIT:-cargo audit}"
+source "$(dirname "${BASH_SOURCE[0]}")/cargo-jobs.sh"
+jobs="$(cargo_jobs)"
 target_dir="${CARGO_TARGET_DIR:-target}"
 release_dir="${target_dir}/release"
 runner_attested="${LOCKET_RELEASE_RUNNER_ATTESTED:-}"
@@ -110,9 +112,9 @@ require_tool() {
 
 build_auditable() {
   local crate="$1"
-  echo "==> cargo auditable build --release -p ${crate}"
+  echo "==> cargo auditable build --release -p ${crate} -j ${jobs}"
   # shellcheck disable=SC2086
-  ${cargo_auditable_cmd} build --release -p "${crate}"
+  ${cargo_auditable_cmd} build --release -p "${crate}" -j "${jobs}"
 }
 
 audit_binary() {

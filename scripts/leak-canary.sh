@@ -2,7 +2,8 @@
 set -euo pipefail
 
 cargo_bin="${CARGO:-cargo}"
-jobs="${CARGO_JOBS:-12}"
+source "$(dirname "${BASH_SOURCE[0]}")/cargo-jobs.sh"
+jobs="$(cargo_jobs)"
 offline="${OFFLINE:-1}"
 
 offline_args=()

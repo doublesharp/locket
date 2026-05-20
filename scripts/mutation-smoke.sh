@@ -29,7 +29,8 @@ set -euo pipefail
 
 cargo_bin="${CARGO:-cargo}"
 cargo_mutants="${CARGO_MUTANTS:-cargo mutants}"
-jobs="${CARGO_JOBS:-12}"
+source "$(dirname "${BASH_SOURCE[0]}")/cargo-jobs.sh"
+jobs="$(cargo_jobs)"
 offline="${OFFLINE:-1}"
 strict="${STRICT:-0}"
 mutation_timeout="${MUTATION_TIMEOUT:-60}"

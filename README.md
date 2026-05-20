@@ -113,14 +113,14 @@ locket scan --require-known .
 ### Project Setup
 
 ```bash
-locket init [--name <name>] [--profile <profile>]
+locket init [--name <name>] [--profile <profile>] [--recovery-code]
 locket new --from-template <name>
 locket bootstrap
 locket status
 locket emit-example
 ```
 
-`locket init` creates the project configuration, prepares the local vault, updates `.gitignore`, and creates a managed `.env.example` block.
+`locket init` creates the project configuration, prepares the local vault, updates `.gitignore`, and creates a managed `.env.example` block. Pass `--recovery-code` when you want an offline backup code during setup; otherwise you can add or rotate one later with `locket recovery rotate`.
 
 ### Secrets And Profiles
 

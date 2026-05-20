@@ -3,7 +3,8 @@ set -euo pipefail
 umask 0077
 
 cargo_bin="${CARGO:-cargo}"
-jobs="${CARGO_JOBS:-12}"
+source "$(dirname "${BASH_SOURCE[0]}")/cargo-jobs.sh"
+jobs="$(cargo_jobs)"
 offline="${OFFLINE:-1}"
 build_profile="${PERF_AGENT_IDLE_BUILD_PROFILE:-release}"
 samples="${PERF_AGENT_IDLE_SAMPLES:-5}"

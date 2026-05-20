@@ -3,6 +3,8 @@ set -euo pipefail
 
 mode="${1:-smoke}"
 cargo_fuzz="${CARGO_FUZZ:-cargo +nightly fuzz}"
+source "$(dirname "${BASH_SOURCE[0]}")/cargo-jobs.sh"
+jobs="$(cargo_jobs)"
 strict="${STRICT:-0}"
 seconds="${FUZZ_TIME:-60}"
 max_len="${FUZZ_MAX_LEN:-65536}"
@@ -110,5 +112,5 @@ for target in ${targets}; do
   fi
   echo "fuzz smoke: ${target} (${seconds}s)"
   echo "fuzz artifacts: fuzz/artifacts/${target}/"
-  ${cargo_fuzz} run "${sanitizer_args[@]}" "${target}" -- "${run_args[@]}"
+  ${cargo_fuzz} run "${sanitizer_args[@]}" -j "${jobs}" "${target}" -- "${run_args[@]}"
 done

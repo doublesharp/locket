@@ -47,7 +47,7 @@ pub fn init(
 
     if let Some(resolved) = resolve_project(&context.cwd)? {
         let state = inspect_init_state(&store, &resolved.config, &resolved.root)?;
-        if state.is_complete() {
+        if state.is_complete(args.recovery_code) {
             writeln!(
                 output,
                 "locket: project already initialized ({})",
@@ -70,6 +70,7 @@ pub fn init(
             &resolved.config,
             &resolved.root,
             timestamp,
+            args.recovery_code,
             args.no_device,
             args.register_passkey,
             args.no_passkey,
@@ -113,6 +114,7 @@ pub fn init(
         &config,
         &context.cwd,
         timestamp,
+        args.recovery_code,
         args.no_device,
         args.register_passkey,
         args.no_passkey,
@@ -140,12 +142,12 @@ struct InitState {
 }
 
 impl InitState {
-    const fn is_complete(self) -> bool {
+    const fn is_complete(self, recovery_required: bool) -> bool {
         self.project_present
             && self.profile_present
             && self.project_keys_complete
             && self.profile_keys_complete
-            && self.recovery_ready
+            && (!recovery_required || self.recovery_ready)
     }
 }
 
@@ -385,20 +387,24 @@ fn complete_init(
     config: &ProjectConfig,
     root: &Path,
     timestamp: i64,
+    recovery_code: bool,
     no_device: bool,
     register_passkey: bool,
     no_passkey: bool,
 ) -> Result<InitCompletion, CliError> {
     ensure_project_metadata(store, config, timestamp)?;
     let key_material = ensure_project_key_material(context, store, config, timestamp)?;
-    let recovery_code =
-        ensure_initial_recovery_envelope(root, config, &key_material.master_key, timestamp)?;
+    let recovery_code_bytes = if recovery_code {
+        ensure_initial_recovery_envelope(root, config, &key_material.master_key, timestamp)?
+    } else {
+        None
+    };
     trust_root(store, config, root, timestamp)?;
     maybe_init_device(context, output, no_device);
     maybe_register_passkey(context, output, register_passkey, no_passkey);
     ensure_gitignore(root)?;
     ensure_example_file(root)?;
-    if let Some(code_bytes) = recovery_code {
+    if let Some(code_bytes) = recovery_code_bytes {
         display_initial_recovery_code(context, output, config, &code_bytes)?;
     }
     write_init_audit(
@@ -406,7 +412,7 @@ fn complete_init(
         store,
         config,
         timestamp,
-        recovery_code.is_some(),
+        recovery_code_bytes.is_some(),
         root.join(GITIGNORE_FILE).exists(),
         root.join(EXAMPLE_FILE).exists(),
     )?;
