@@ -176,6 +176,12 @@ pub enum PolicyParseError {
         /// Invalid path scope.
         path: String,
     },
+    /// Multiple path scope table keys normalized to the same project-relative path.
+    #[error("path scope {path} is defined more than once after normalization")]
+    DuplicatePathScope {
+        /// Normalized path scope.
+        path: String,
+    },
     /// A path scope body was not a table.
     #[error("path scope {path} must be a table")]
     PathScopeMustBeTable {

@@ -155,6 +155,7 @@ required_secrets = ["ADMIN_TOKEN"]
             root_scope.optional_secrets.iter().map(ToString::to_string).collect::<Vec<_>>(),
             ["ROOT_TOKEN"]
         );
+        assert!(document.path_scope_for(root, std::path::Path::new("/other/apps/api")).is_none());
         Ok(())
     }
 
@@ -170,6 +171,25 @@ required_secrets = ["TOKEN"]
         assert_eq!(
             result,
             Err(PolicyParseError::InvalidPathScope { path: "../outside".to_owned() })
+        );
+    }
+
+    #[test]
+    fn rejects_path_scopes_that_duplicate_after_normalization() {
+        let result = PolicyDocument::from_toml_str(
+            r#"
+schema_version = 1
+
+[paths."apps/api"]
+required_secrets = ["DATABASE_URL"]
+
+[paths."./apps/api"]
+optional_secrets = ["STRIPE_SECRET_KEY"]
+"#,
+        );
+        assert_eq!(
+            result,
+            Err(PolicyParseError::DuplicatePathScope { path: "apps/api".to_owned() })
         );
     }
 

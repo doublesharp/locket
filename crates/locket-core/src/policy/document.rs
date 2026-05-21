@@ -95,9 +95,11 @@ impl PolicyDocument {
     /// When multiple scopes match, the deepest project-relative path wins.
     #[must_use]
     pub fn path_scope_for(&self, project_root: &Path, cwd: &Path) -> Option<&PathEnvSet> {
-        let relative_cwd =
-            cwd.strip_prefix(project_root).ok().filter(|path| !path.as_os_str().is_empty());
-        let relative_cwd = relative_cwd.unwrap_or_else(|| Path::new("."));
+        let relative_cwd = match cwd.strip_prefix(project_root) {
+            Ok(path) if path.as_os_str().is_empty() => Path::new("."),
+            Ok(path) => path,
+            Err(_) => return None,
+        };
         self.path_scopes
             .values()
             .filter(|scope| scope.matches(relative_cwd))
@@ -134,8 +136,13 @@ fn parse_path_scopes(
     };
 
     let mut parsed = BTreeMap::new();
+    let mut normalized_paths = BTreeMap::new();
     for (path, body) in paths {
         let scope = PathEnvSet::from_toml_value(path, body.clone())?;
+        let normalized = scope.path.to_string_lossy().into_owned();
+        if normalized_paths.insert(normalized.clone(), path.clone()).is_some() {
+            return Err(PolicyParseError::DuplicatePathScope { path: normalized });
+        }
         parsed.insert(path.clone(), scope);
     }
     Ok(parsed)
