@@ -1,8 +1,6 @@
 name: fuzz-nightly
 
 on:
-  schedule:
-    - cron: "17 9 * * *"
   workflow_dispatch:
 
 permissions:
@@ -59,4 +57,3 @@ jobs:
             fuzz/corpus/**
           if-no-files-found: ignore
           retention-days: 14
-

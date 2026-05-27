@@ -36,7 +36,7 @@ Fuzz findings must become regression tests before the fuzz target is considered 
 Fuzzing is not optional background work; it is part of the release bar:
 
 - Pull requests that touch a fuzzed parser, decoder, scanner, redactor, env merge path, bundle reader, recovery envelope, audit canonicalizer, or agent protocol frame must run `make fuzz-smoke`. The smoke job runs each affected target against its seed corpus and a short randomized budget of at least 60 seconds per target.
-- Nightly CI runs every required fuzz target for at least 15 minutes per target with sanitizer instrumentation enabled. The job stores crashing inputs, minimized reproducers, and corpus growth as CI artifacts.
+- The manual `fuzz-nightly` workflow runs every required fuzz target for at least 15 minutes per target with sanitizer instrumentation enabled when a maintainer starts it. The job stores crashing inputs, minimized reproducers, and corpus growth as CI artifacts, but it is not scheduled automatically.
 - Before a public release, every required fuzz target must complete at least 8 cumulative CPU-hours since the previous release without unresolved crashes, timeouts, OOMs, or sanitizer findings.
 - Fuzz corpora live under versioned `fuzz/corpus/<target>` directories. Large generated corpora may be stored as CI artifacts, but every fixed bug must add a small minimized reproducer to the repository.
 - Fuzz failures block merge or release until the crashing input is minimized, a regression test is added, and the affected target passes its required budget.
