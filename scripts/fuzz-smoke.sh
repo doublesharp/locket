@@ -111,6 +111,16 @@ for target in ${targets}; do
     exit 1
   fi
   echo "fuzz smoke: ${target} (${seconds}s)"
-  echo "fuzz artifacts: fuzz/artifacts/${target}/"
+  artifact_dir="fuzz/artifacts/${target}"
+  echo "fuzz artifacts: ${artifact_dir}/"
+  marker="$(mktemp)"
   ${cargo_fuzz} run "${sanitizer_args[@]}" -j "${jobs}" "${target}" -- "${run_args[@]}"
+  if find "${artifact_dir}" -type f \
+    \( -name 'crash-*' -o -name 'timeout-*' -o -name 'oom-*' \) \
+    -newer "${marker}" -print -quit | grep -q .; then
+    rm -f "${marker}"
+    echo "fuzz target ${target} produced a failure artifact" >&2
+    exit 1
+  fi
+  rm -f "${marker}"
 done

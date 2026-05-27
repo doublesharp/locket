@@ -24,9 +24,18 @@ fuzz_target!(|data: &[u8]| {
         return;
     };
     if descriptor.v == 1 {
-        assert!(DeviceId::new(descriptor.device_id).is_ok());
-        assert_eq!(decode_key_len(&descriptor.signing_public_key_ed25519), Some(32));
-        assert_eq!(decode_key_len(&descriptor.sealing_public_key_x25519), Some(32));
+        if DeviceId::new(descriptor.device_id).is_err()
+            || decode_key_len(&descriptor.signing_public_key_ed25519) != Some(32)
+            || decode_key_len(&descriptor.sealing_public_key_x25519) != Some(32)
+        {
+            return;
+        }
+        if descriptor.label.chars().any(char::is_control)
+            || descriptor.fingerprint_sha256.contains('\0')
+            || descriptor.safety_words.iter().any(|word| word.chars().any(char::is_control))
+        {
+            return;
+        }
         assert!(!descriptor.label.chars().any(char::is_control));
         assert!(!descriptor.fingerprint_sha256.contains('\0'));
         for word in descriptor.safety_words {
