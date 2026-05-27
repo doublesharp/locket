@@ -211,7 +211,6 @@ pub fn handle_read_config(request: &RequestEnvelope) -> ResponseEnvelope {
 }
 
 /// Handles a `WriteConfig` request.
-#[cfg(unix)]
 pub async fn handle_write_config(
     request: &RequestEnvelope,
     state: &crate::server::AgentSocketState,
@@ -252,7 +251,6 @@ fn read_settings(request: &ReadConfigRequest) -> Result<AgentConfigSettings, Con
     )
 }
 
-#[cfg(unix)]
 async fn write_settings(
     request: &WriteConfigRequest,
     state: &crate::server::AgentSocketState,
@@ -347,7 +345,6 @@ async fn write_settings(
     Ok(WriteConfigResponse { settings, changed_keys })
 }
 
-#[cfg(unix)]
 async fn audit_key_for_project(
     state: &crate::server::AgentSocketState,
     project_id: &str,

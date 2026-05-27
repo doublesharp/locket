@@ -19,7 +19,6 @@ pub(crate) use protocol::{envelope, error, framing, method};
 pub(crate) use state::{
     grant, ide_env_session, runtime_sessions, session_lock, status, status_stream, unlock_cache,
 };
-#[cfg(unix)]
 pub(crate) use transport::peer_cred;
 #[cfg(any(unix, target_os = "windows"))]
 pub(crate) use transport::server;
@@ -58,8 +57,9 @@ pub use ide_env_session::{
     MAX_IDE_ENV_SESSION_TTL_SECONDS, RegisterIdeEnvSessionRequest, RegisterIdeEnvSessionResponse,
 };
 pub use method::{AgentMethod, UnknownMethod};
+pub use peer_cred::current_process_uid;
 #[cfg(unix)]
-pub use peer_cred::{current_process_uid, validate_peer_stream, validate_peer_uid};
+pub use peer_cred::{validate_peer_stream, validate_peer_uid};
 pub use policies::{
     CommandPolicyRow, CommandPolicySnapshot, ListPoliciesRequest, ListPoliciesResponse,
     PolicyDoctorRequest, PolicyDoctorResponse, RegisterCommandPoliciesRequest,

@@ -113,7 +113,6 @@ pub struct CopyResponse {
 }
 
 /// Handler for `Reveal`.
-#[cfg(unix)]
 pub async fn handle_reveal(
     request: &RequestEnvelope,
     state: &crate::server::AgentSocketState,
@@ -138,7 +137,6 @@ pub async fn handle_reveal(
 }
 
 /// Handler for `Copy`.
-#[cfg(unix)]
 pub async fn handle_copy(
     request: &RequestEnvelope,
     state: &crate::server::AgentSocketState,
@@ -162,7 +160,6 @@ pub async fn handle_copy(
     .await
 }
 
-#[cfg(unix)]
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 async fn handle_value_access(
     request: &RequestEnvelope,

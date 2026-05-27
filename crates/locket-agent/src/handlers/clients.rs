@@ -86,7 +86,6 @@ pub struct RevokeClientResponse {
 }
 
 /// Handler for `RegisterClient`.
-#[cfg(unix)]
 pub async fn handle_register_client(
     request: &RequestEnvelope,
     state: &crate::server::AgentSocketState,
@@ -177,7 +176,6 @@ pub async fn handle_register_client(
 }
 
 /// Handler for `RevokeClient`.
-#[cfg(unix)]
 pub async fn handle_revoke_client(
     request: &RequestEnvelope,
     state: &crate::server::AgentSocketState,
@@ -274,7 +272,6 @@ pub async fn handle_revoke_client(
     )
 }
 
-#[cfg(unix)]
 async fn audit_key_for_project(
     state: &crate::server::AgentSocketState,
     project_id: &str,

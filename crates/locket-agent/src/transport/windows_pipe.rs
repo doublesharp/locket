@@ -3,6 +3,23 @@
 //! This module owns the Tokio named-pipe construction and request
 //! handling points. It reuses the shared agent dispatcher so Windows
 //! and Unix transports expose the same unary RPC surface.
+//!
+//! # Safety audit
+//!
+//! This is the only Windows transport module that needs raw Windows
+//! security-descriptor APIs. Tokio's named-pipe security-attributes
+//! constructor and `windows-sys` descriptor conversion/free functions are
+//! exposed as unsafe FFI. The unsafe blocks below are limited to:
+//!
+//! - passing a live `SECURITY_ATTRIBUTES` pointer into a synchronous pipe
+//!   creation call;
+//! - converting a NUL-terminated SDDL string into an OS-owned security
+//!   descriptor;
+//! - freeing that descriptor exactly once with `LocalFree`.
+//!
+//! All safe callers receive ordinary `io::Result` values and never observe
+//! raw pointers.
+#![allow(unsafe_code)]
 
 use std::ffi::c_void;
 use std::io;

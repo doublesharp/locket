@@ -1,4 +1,3 @@
-#[cfg(unix)]
 pub mod peer_cred;
 #[cfg(any(unix, target_os = "windows"))]
 pub mod server;

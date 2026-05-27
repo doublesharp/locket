@@ -314,7 +314,6 @@ pub fn replace_project_snapshots(
 /// callers cannot mutate snapshots for projects they have not unlocked.
 /// On success a metadata-only `POLICY_UPDATE` audit row with
 /// `operation: "snapshot"` is appended to the project audit chain.
-#[cfg(unix)]
 pub async fn handle_register_command_policies(
     request: &RequestEnvelope,
     state: &crate::server::AgentSocketState,
@@ -404,7 +403,6 @@ pub async fn handle_register_command_policies(
 ///
 /// Does not panic; malformed payloads and store errors are converted to
 /// protocol error envelopes.
-#[cfg(unix)]
 pub async fn handle_policy_doctor(
     request: &RequestEnvelope,
     state: &crate::server::AgentSocketState,
@@ -511,7 +509,6 @@ pub async fn handle_policy_doctor(
     )
 }
 
-#[cfg(unix)]
 fn reference_points_to_active_secret(
     store: &Store,
     request: &PolicyDoctorRequest,

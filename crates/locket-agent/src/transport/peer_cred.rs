@@ -14,16 +14,25 @@
 #[cfg(unix)]
 use tokio::net::UnixStream;
 
+#[cfg(unix)]
 use crate::server::SocketServerError;
 
 /// Returns the effective UID of the running process.
 ///
 /// Used as the canonical "daemon UID" against which connecting peers
-/// are validated.
+/// are validated. On non-Unix platforms the daemon-UID concept does not
+/// apply and a fixed sentinel is returned so call sites that thread the
+/// value through portable code still compile.
 #[cfg(unix)]
 #[must_use]
 pub fn current_process_uid() -> u32 {
     rustix::process::getuid().as_raw()
+}
+
+#[cfg(not(unix))]
+#[must_use]
+pub const fn current_process_uid() -> u32 {
+    0
 }
 
 /// Reads the connecting peer's effective UID from a Tokio
@@ -50,6 +59,7 @@ pub fn validate_peer_stream(stream: &UnixStream, daemon_uid: u32) -> Result<(), 
 ///
 /// Returns [`SocketServerError::PeerCredentialDenied`] when the two
 /// UIDs differ.
+#[cfg(unix)]
 pub const fn validate_peer_uid(peer_uid: u32, daemon_uid: u32) -> Result<(), SocketServerError> {
     if peer_uid == daemon_uid {
         Ok(())
@@ -58,7 +68,7 @@ pub const fn validate_peer_uid(peer_uid: u32, daemon_uid: u32) -> Result<(), Soc
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 #[allow(clippy::panic)]
 #[allow(clippy::unwrap_used)]
 mod tests {

@@ -87,7 +87,6 @@ pub struct SetSecretResponse {
 }
 
 /// Handler for `SetSecret`.
-#[cfg(unix)]
 pub async fn handle_set_secret(
     request: &RequestEnvelope,
     state: &crate::server::AgentSocketState,

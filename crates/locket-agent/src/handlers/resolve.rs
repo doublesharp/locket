@@ -83,7 +83,6 @@ pub struct ResolveResponse {
 }
 
 /// Handler for `ResolveReference`.
-#[cfg(unix)]
 #[allow(clippy::too_many_lines)]
 pub async fn handle_resolve(
     request: &RequestEnvelope,
