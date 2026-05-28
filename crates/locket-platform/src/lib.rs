@@ -78,6 +78,8 @@ pub use macos_local_authentication::{LocalAuthError, evaluate_local_user};
 pub use macos_user_verifier::MacosLocalUserVerifier;
 
 #[cfg(target_os = "windows")]
+pub use agent_pipe::create_agent_pipe_server_with_sddl;
+#[cfg(target_os = "windows")]
 pub use agent_pipe::{current_user_sid_string, default_agent_pipe_name};
 #[cfg(target_os = "windows")]
 pub use windows_local_authentication::{

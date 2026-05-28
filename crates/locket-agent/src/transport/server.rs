@@ -6,6 +6,7 @@
 //! construction lives in `windows_pipe`.
 
 use std::collections::BTreeMap;
+#[cfg(unix)]
 use std::io;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -22,8 +23,10 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{Mutex, Notify};
 
+#[cfg(unix)]
 use crate::DEFAULT_MAX_MESSAGE_SIZE;
 use crate::envelope::{ErrorEnvelope, RequestEnvelope, ResponseEnvelope, SuccessEnvelope};
+#[cfg(unix)]
 use crate::framing::{decode_request_frame, encode_frame};
 use crate::method::AgentMethod;
 use crate::session_lock::{

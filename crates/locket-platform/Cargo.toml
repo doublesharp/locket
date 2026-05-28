@@ -12,13 +12,10 @@ version.workspace = true
 
 # NOTE: this crate cannot use `lints.workspace = true` because the
 # workspace `unsafe_code = "forbid"` lint cannot be overridden, and the
-# macOS LocalAuthentication backend in `src/macos_local_authentication.rs`
-# requires a single, isolated `unsafe` block to call into Apple's
-# Objective-C framework. The lints below mirror the workspace lints
-# (see the workspace `Cargo.toml`) but downgrade `unsafe_code` to
-# `deny`. See the `SAFETY-AUDIT` comment at the top of
-# `macos_local_authentication.rs`, which cites
-# `docs/specs/crypto.md:192-218`.
+# platform backends require isolated `unsafe` blocks to call OS APIs.
+# The lints below mirror the workspace lints (see the workspace
+# `Cargo.toml`) but downgrade `unsafe_code` to `deny` so audited
+# platform modules can locally allow reviewed FFI boundaries.
 [lints.rust]
 missing_docs = "warn"
 unsafe_code = "deny"
@@ -58,6 +55,7 @@ zeroize = { workspace = true }
 rustix = { workspace = true, features = ["mm", "process"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
+tokio = { workspace = true, features = ["net"] }
 windows = { version = "0.62", features = ["Security_Credentials_UI"] }
 windows-sys = { version = "0.61", features = [
   "Win32_Foundation",

@@ -3,39 +3,15 @@
 //! This module owns the Tokio named-pipe construction and request
 //! handling points. It reuses the shared agent dispatcher so Windows
 //! and Unix transports expose the same unary RPC surface.
-//!
-//! # Safety audit
-//!
-//! This is the only Windows transport module that needs raw Windows
-//! security-descriptor APIs. Tokio's named-pipe security-attributes
-//! constructor and `windows-sys` descriptor conversion/free functions are
-//! exposed as unsafe FFI. The unsafe blocks below are limited to:
-//!
-//! - passing a live `SECURITY_ATTRIBUTES` pointer into a synchronous pipe
-//!   creation call;
-//! - converting a NUL-terminated SDDL string into an OS-owned security
-//!   descriptor;
-//! - freeing that descriptor exactly once with `LocalFree`.
-//!
-//! All safe callers receive ordinary `io::Result` values and never observe
-//! raw pointers.
-#![allow(unsafe_code)]
 
-use std::ffi::c_void;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::ptr::{NonNull, null_mut};
 use std::time::Duration;
 
 use tokio::net::windows::named_pipe::{
     ClientOptions, NamedPipeClient, NamedPipeServer, ServerOptions,
 };
 use tokio::time::sleep;
-use windows_sys::Win32::Foundation::{HLOCAL, LocalFree};
-use windows_sys::Win32::Security::Authorization::{
-    ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
-};
-use windows_sys::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
 
 /// Windows error code returned when all pipe instances are busy.
 const ERROR_PIPE_BUSY: i32 = 231;
@@ -105,16 +81,11 @@ fn create_named_pipe_server(
 ) -> io::Result<NamedPipeServer> {
     let options = named_pipe_server_options(first_instance);
     if let Some(sddl) = config.security_descriptor_sddl.as_deref() {
-        let mut attributes = SecurityAttributes::from_sddl(sddl)?;
-        // SAFETY: `attributes.as_mut_ptr()` points at a live
-        // SECURITY_ATTRIBUTES whose security descriptor remains owned
-        // by `attributes` for the duration of this synchronous create call.
-        unsafe {
-            options.create_with_security_attributes_raw(
-                config.pipe_name.as_os_str(),
-                attributes.as_mut_ptr(),
-            )
-        }
+        locket_platform::create_agent_pipe_server_with_sddl(
+            &options,
+            config.pipe_name.as_os_str(),
+            sddl,
+        )
     } else {
         options.create(config.pipe_name.as_os_str())
     }
@@ -124,54 +95,6 @@ fn named_pipe_server_options(first_instance: bool) -> ServerOptions {
     let mut options = ServerOptions::new();
     options.first_pipe_instance(first_instance).reject_remote_clients(true);
     options
-}
-
-struct SecurityAttributes {
-    descriptor: NonNull<c_void>,
-    attributes: SECURITY_ATTRIBUTES,
-}
-
-impl SecurityAttributes {
-    fn from_sddl(sddl: &str) -> io::Result<Self> {
-        let wide = sddl.encode_utf16().chain(std::iter::once(0)).collect::<Vec<_>>();
-        let mut descriptor: PSECURITY_DESCRIPTOR = null_mut();
-        // SAFETY: `wide` is NUL-terminated UTF-16, `descriptor`
-        // points to writable storage for the allocated descriptor, and
-        // Windows owns the allocation until released with `LocalFree`.
-        let converted = unsafe {
-            ConvertStringSecurityDescriptorToSecurityDescriptorW(
-                wide.as_ptr(),
-                SDDL_REVISION_1,
-                &mut descriptor,
-                null_mut(),
-            )
-        };
-        if converted == 0 {
-            return Err(io::Error::last_os_error());
-        }
-        let descriptor =
-            NonNull::new(descriptor.cast::<c_void>()).ok_or_else(io::Error::last_os_error)?;
-        let attributes = SECURITY_ATTRIBUTES {
-            nLength: u32::try_from(std::mem::size_of::<SECURITY_ATTRIBUTES>()).unwrap_or(u32::MAX),
-            lpSecurityDescriptor: descriptor.as_ptr(),
-            bInheritHandle: 0,
-        };
-        Ok(Self { descriptor, attributes })
-    }
-
-    fn as_mut_ptr(&mut self) -> *mut c_void {
-        (&mut self.attributes as *mut SECURITY_ATTRIBUTES).cast::<c_void>()
-    }
-}
-
-impl Drop for SecurityAttributes {
-    fn drop(&mut self) {
-        // SAFETY: `descriptor` was allocated by
-        // `ConvertStringSecurityDescriptorToSecurityDescriptorW`.
-        unsafe {
-            LocalFree(self.descriptor.as_ptr() as HLOCAL);
-        }
-    }
 }
 
 /// Opens a client connection to the agent pipe, retrying while all
@@ -206,7 +129,7 @@ pub async fn handle_named_pipe_connection(
     mut stream: NamedPipeServer,
     state: crate::server::AgentSocketState,
 ) -> io::Result<()> {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::io::AsyncWriteExt;
 
     let mut buffer = Vec::with_capacity(4 * 1024);
     loop {

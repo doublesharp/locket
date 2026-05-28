@@ -1,8 +1,9 @@
 //! Windows named-pipe path and ACL helpers for the local agent.
 //!
-//! The full Windows transport is owned by `locket-agent`, but the path
-//! and security descriptor rules live here so CLI, desktop, and tests
-//! can share one contract.
+//! The Windows request loop is owned by `locket-agent`, but the path,
+//! security descriptor rules, and raw security-attribute pipe creation
+//! live here so CLI, desktop, and tests can share one contract while
+//! platform-specific unsafe code stays in the platform crate.
 
 use std::borrow::Cow;
 
@@ -73,15 +74,40 @@ pub fn default_agent_pipe_name() -> Result<String, PlatformError> {
     agent_pipe_name_for_sid(&current_user_sid_string()?)
 }
 
+/// Creates a Windows named-pipe server with a protected DACL SDDL.
+///
+/// `locket-agent` owns the request loop, but this helper keeps the
+/// reviewed `SECURITY_ATTRIBUTES` FFI boundary in `locket-platform`.
+///
+/// # Errors
+///
+/// Returns any SDDL conversion or named-pipe creation OS error.
+#[cfg(target_os = "windows")]
+pub fn create_agent_pipe_server_with_sddl(
+    options: &tokio::net::windows::named_pipe::ServerOptions,
+    pipe_name: &std::ffi::OsStr,
+    sddl: &str,
+) -> std::io::Result<tokio::net::windows::named_pipe::NamedPipeServer> {
+    windows_impl::create_agent_pipe_server_with_sddl(options, pipe_name, sddl)
+}
+
 #[cfg(target_os = "windows")]
 mod windows_impl {
     #![allow(unsafe_code)]
 
-    use std::ptr::null_mut;
+    use std::ffi::{OsStr, c_void};
+    use std::io;
+    use std::ptr::{NonNull, null_mut};
 
     use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, HANDLE, HLOCAL, LocalFree};
-    use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
-    use windows_sys::Win32::Security::{GetTokenInformation, TOKEN_QUERY, TOKEN_USER, TokenUser};
+    use windows_sys::Win32::Security::Authorization::{
+        ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
+        SDDL_REVISION_1,
+    };
+    use windows_sys::Win32::Security::{
+        GetTokenInformation, PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER,
+        TokenUser,
+    };
     use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
     use windows_sys::core::PWSTR;
 
@@ -169,6 +195,68 @@ mod windows_impl {
     fn last_os_error_code() -> u32 {
         // SAFETY: `GetLastError` has no preconditions.
         unsafe { GetLastError() }
+    }
+
+    pub(super) fn create_agent_pipe_server_with_sddl(
+        options: &tokio::net::windows::named_pipe::ServerOptions,
+        pipe_name: &OsStr,
+        sddl: &str,
+    ) -> io::Result<tokio::net::windows::named_pipe::NamedPipeServer> {
+        let mut attributes = SecurityAttributes::from_sddl(sddl)?;
+        // SAFETY: `attributes.as_mut_ptr()` points at a live
+        // SECURITY_ATTRIBUTES whose security descriptor remains owned
+        // by `attributes` for the duration of this synchronous create call.
+        unsafe { options.create_with_security_attributes_raw(pipe_name, attributes.as_mut_ptr()) }
+    }
+
+    struct SecurityAttributes {
+        descriptor: NonNull<c_void>,
+        attributes: SECURITY_ATTRIBUTES,
+    }
+
+    impl SecurityAttributes {
+        fn from_sddl(sddl: &str) -> io::Result<Self> {
+            let wide = sddl.encode_utf16().chain(std::iter::once(0)).collect::<Vec<_>>();
+            let mut descriptor: PSECURITY_DESCRIPTOR = null_mut();
+            // SAFETY: `wide` is NUL-terminated UTF-16, `descriptor`
+            // points to writable storage for the allocated descriptor,
+            // and Windows owns the allocation until released with
+            // `LocalFree`.
+            let converted = unsafe {
+                ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                    wide.as_ptr(),
+                    SDDL_REVISION_1,
+                    &mut descriptor,
+                    null_mut(),
+                )
+            };
+            if converted == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let descriptor =
+                NonNull::new(descriptor.cast::<c_void>()).ok_or_else(io::Error::last_os_error)?;
+            let attributes = SECURITY_ATTRIBUTES {
+                nLength: u32::try_from(std::mem::size_of::<SECURITY_ATTRIBUTES>())
+                    .unwrap_or(u32::MAX),
+                lpSecurityDescriptor: descriptor.as_ptr(),
+                bInheritHandle: 0,
+            };
+            Ok(Self { descriptor, attributes })
+        }
+
+        fn as_mut_ptr(&mut self) -> *mut c_void {
+            (&mut self.attributes as *mut SECURITY_ATTRIBUTES).cast::<c_void>()
+        }
+    }
+
+    impl Drop for SecurityAttributes {
+        fn drop(&mut self) {
+            // SAFETY: `descriptor` was allocated by
+            // `ConvertStringSecurityDescriptorToSecurityDescriptorW`.
+            unsafe {
+                LocalFree(self.descriptor.as_ptr() as HLOCAL);
+            }
+        }
     }
 }
 
