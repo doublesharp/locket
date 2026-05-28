@@ -3331,6 +3331,7 @@ fn assert_team_accept_denial_audit(
     Ok(())
 }
 
+#[cfg(unix)]
 #[test]
 fn e2e_greenfield_init_set_get_with_audit_chain_and_file_modes()
 -> Result<(), Box<dyn std::error::Error>> {

@@ -29,6 +29,7 @@ pub fn current_process_uid() -> u32 {
     rustix::process::getuid().as_raw()
 }
 
+/// Returns a sentinel UID on platforms without Unix peer credentials.
 #[cfg(not(unix))]
 #[must_use]
 pub const fn current_process_uid() -> u32 {

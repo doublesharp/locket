@@ -52,7 +52,6 @@ tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "signa
 [target.'cfg(target_os = "windows")'.dependencies]
 locket-agent = { version = "0.1.0", path = "../locket-agent" }
 tokio = { workspace = true, features = ["io-util", "net", "rt", "time"] }
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading"] }
 
 [dev-dependencies]
 proptest = { workspace = true }

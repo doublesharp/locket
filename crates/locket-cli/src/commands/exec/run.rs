@@ -34,10 +34,9 @@ use crate::support::secret_helpers::{
     PolicySecretSelection, decrypt_secret_version, policy_secret_selections,
 };
 use crate::{
-    ResolvedProject, RunArgs, agent_socket_path, effective_policy_profile,
-    ensure_trusted_project_root, load_effective_command_policy, now_unix_nanos, open_store,
-    require_project, write_runtime_policy_audit_if_available,
-    write_runtime_policy_denial_audit_if_available,
+    ResolvedProject, RunArgs, effective_policy_profile, ensure_trusted_project_root,
+    load_effective_command_policy, now_unix_nanos, open_store, require_project,
+    write_runtime_policy_audit_if_available, write_runtime_policy_denial_audit_if_available,
 };
 
 /// Inputs needed to run a prepared command under a runtime session record.
@@ -927,7 +926,7 @@ fn agent_invoke_value(
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::UnixStream;
 
-    let socket_path = agent_socket_path(context);
+    let socket_path = crate::agent_socket_path(context);
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
     runtime.block_on(async move {
         let mut stream = UnixStream::connect(&socket_path)

@@ -56,6 +56,8 @@ pub use process::{
     ProcessBinding, current_process_binding, process_binding_for_pid,
     process_binding_matches_live_process,
 };
+#[cfg(target_os = "windows")]
+pub use process::{terminate_windows_process, windows_process_is_live};
 pub use recovery::{
     RECOVERY_KDF_TOML_VERSION, RecoveryEnvelope, RecoveryEnvelopeEntry, RecoveryKdfToml,
     load_recovery_envelope, load_recovery_kdf_toml, save_recovery_envelope, save_recovery_kdf_toml,

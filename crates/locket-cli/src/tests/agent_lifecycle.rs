@@ -12,6 +12,7 @@
 #[allow(unused_imports)]
 use super::*;
 
+#[cfg(unix)]
 use std::time::{Duration, Instant};
 
 #[cfg(unix)]

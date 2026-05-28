@@ -70,6 +70,23 @@ pub fn process_binding_matches_live_process(
     }
 }
 
+/// Returns whether a Windows process id currently refers to a live process.
+#[cfg(target_os = "windows")]
+#[must_use]
+pub fn windows_process_is_live(pid: u32) -> bool {
+    windows_process_impl::process_is_live(pid)
+}
+
+/// Terminates a Windows process by id.
+///
+/// # Errors
+///
+/// Returns the OS error from opening or terminating the process.
+#[cfg(target_os = "windows")]
+pub fn terminate_windows_process(pid: u32) -> Result<(), PlatformError> {
+    windows_process_impl::terminate_process(pid).map_err(PlatformError::Io)
+}
+
 #[cfg(target_os = "linux")]
 fn process_start_time_for_pid(pid: u32) -> Result<String, PlatformError> {
     let stat = fs::read_to_string(format!("/proc/{pid}/stat"))?;
@@ -165,6 +182,58 @@ fn process_start_time_for_pid(pid: u32) -> Result<String, PlatformError> {
         return Err(PlatformError::ProcessStartTimeUnavailable);
     }
     Ok(rendered.to_owned())
+}
+
+#[cfg(target_os = "windows")]
+mod windows_process_impl {
+    #![allow(unsafe_code)]
+
+    use std::io;
+
+    use windows_sys::Win32::Foundation::{CloseHandle, WAIT_TIMEOUT};
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
+        TerminateProcess, WaitForSingleObject,
+    };
+
+    pub(super) fn process_is_live(pid: u32) -> bool {
+        // SAFETY: `OpenProcess` is called with query/synchronize
+        // access for a PID read from the user-scoped pid file. A null
+        // handle means not live.
+        let handle =
+            unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE, 0, pid) };
+        if handle.is_null() {
+            return false;
+        }
+        // SAFETY: `handle` is valid until closed below.
+        let wait = unsafe { WaitForSingleObject(handle, 0) };
+        // SAFETY: `handle` was opened by `OpenProcess`.
+        unsafe {
+            CloseHandle(handle);
+        }
+        wait == WAIT_TIMEOUT
+    }
+
+    pub(super) fn terminate_process(pid: u32) -> io::Result<()> {
+        // SAFETY: `OpenProcess` is called with terminate access for a
+        // PID supplied by the caller.
+        let handle = unsafe { OpenProcess(PROCESS_TERMINATE, 0, pid) };
+        if handle.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: `handle` is a process handle opened with
+        // PROCESS_TERMINATE.
+        let terminated = unsafe { TerminateProcess(handle, 0) };
+        let terminate_error = if terminated == 0 { Some(io::Error::last_os_error()) } else { None };
+        // SAFETY: `handle` was opened by `OpenProcess`.
+        unsafe {
+            CloseHandle(handle);
+        }
+        if let Some(error) = terminate_error {
+            return Err(error);
+        }
+        Ok(())
+    }
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]

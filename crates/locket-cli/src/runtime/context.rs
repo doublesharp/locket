@@ -82,12 +82,7 @@ impl MasterKeyCache {
         guard.get(project_id).map(|(key, source)| (key.clone(), *source))
     }
 
-    pub fn insert(
-        &self,
-        project_id: &str,
-        key: Zeroizing<KeyBytes>,
-        source: MasterKeySource,
-    ) {
+    pub fn insert(&self, project_id: &str, key: Zeroizing<KeyBytes>, source: MasterKeySource) {
         if let Ok(mut guard) = self.entries.lock() {
             guard.insert(project_id.to_owned(), (key, source));
         }
@@ -176,8 +171,11 @@ fn resolve_agent_data_dir_for_platform(
 
 #[cfg(test)]
 mod tests {
-    use super::{MasterKeyCache, MasterKeySource, resolve_agent_data_dir_for_platform};
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    use super::resolve_agent_data_dir_for_platform;
+    use super::{MasterKeyCache, MasterKeySource};
     use locket_crypto::KEY_LEN;
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     use std::path::Path;
     use zeroize::Zeroizing;
 
@@ -195,22 +193,14 @@ mod tests {
     #[test]
     fn master_key_cache_misses_for_unknown_project() {
         let cache = MasterKeyCache::new();
-        cache.insert(
-            "lk_proj_alpha",
-            Zeroizing::new([0; KEY_LEN]),
-            MasterKeySource::OsKeyStore,
-        );
+        cache.insert("lk_proj_alpha", Zeroizing::new([0; KEY_LEN]), MasterKeySource::OsKeyStore);
         assert!(cache.get("lk_proj_other").is_none());
     }
 
     #[test]
     fn master_key_cache_clear_drops_entries() {
         let cache = MasterKeyCache::new();
-        cache.insert(
-            "lk_proj_alpha",
-            Zeroizing::new([0; KEY_LEN]),
-            MasterKeySource::OsKeyStore,
-        );
+        cache.insert("lk_proj_alpha", Zeroizing::new([0; KEY_LEN]), MasterKeySource::OsKeyStore);
         cache.clear();
         assert!(cache.get("lk_proj_alpha").is_none());
     }
@@ -226,7 +216,6 @@ mod tests {
         );
         assert!(cache_b.get("lk_proj_alpha").is_some());
     }
-
 
     #[test]
     #[cfg(target_os = "linux")]

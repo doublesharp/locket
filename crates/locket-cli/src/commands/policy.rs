@@ -13,8 +13,6 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 
-use crate::agent_socket_path;
-
 use crate::commands::config::spec::{
     config_get_value, read_user_config, validate_config_key, validate_stored_config_value,
 };
@@ -1162,7 +1160,7 @@ fn pump_policies_unix(context: &RuntimeContext, payload: serde_json::Value) -> R
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::UnixStream;
 
-    let socket_path = agent_socket_path(context);
+    let socket_path = crate::agent_socket_path(context);
     if !socket_path.exists() {
         return Err(format!("agent socket missing at {}", socket_path.display()));
     }

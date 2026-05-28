@@ -423,24 +423,7 @@ const fn process_is_live(_pid: u32) -> bool {
 
 #[cfg(target_os = "windows")]
 fn process_is_live(pid: u32) -> bool {
-    use windows_sys::Win32::Foundation::{CloseHandle, WAIT_TIMEOUT};
-    use windows_sys::Win32::System::Threading::{
-        OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, SYNCHRONIZE, WaitForSingleObject,
-    };
-
-    // SAFETY: `OpenProcess` is called with query/synchronize access for
-    // a PID read from the user-scoped pid file. A null handle means not live.
-    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, 0, pid) };
-    if handle.is_null() {
-        return false;
-    }
-    // SAFETY: `handle` is valid until closed below.
-    let wait = unsafe { WaitForSingleObject(handle, 0) };
-    // SAFETY: `handle` was opened by `OpenProcess`.
-    unsafe {
-        CloseHandle(handle);
-    }
-    wait == WAIT_TIMEOUT
+    locket_platform::windows_process_is_live(pid)
 }
 
 #[cfg(unix)]
@@ -473,25 +456,9 @@ fn request_agent_shutdown_or_signal(_socket_path: &Path, pid: u32) -> Result<(),
 
 #[cfg(target_os = "windows")]
 fn terminate_windows_agent(pid: u32) -> Result<(), CliError> {
-    use windows_sys::Win32::Foundation::CloseHandle;
-    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_TERMINATE, TerminateProcess};
-
     // Compatibility fallback for older daemons that predate the
     // in-band Shutdown RPC.
-    let handle = unsafe { OpenProcess(PROCESS_TERMINATE, 0, pid) };
-    if handle.is_null() {
-        return Err(io::Error::last_os_error().into());
-    }
-    // SAFETY: `handle` is a process handle opened with PROCESS_TERMINATE.
-    let terminated = unsafe { TerminateProcess(handle, 0) };
-    // SAFETY: `handle` was opened by `OpenProcess`.
-    unsafe {
-        CloseHandle(handle);
-    }
-    if terminated == 0 {
-        return Err(io::Error::last_os_error().into());
-    }
-    Ok(())
+    locket_platform::terminate_windows_process(pid).map_err(CliError::from)
 }
 
 #[cfg(not(any(unix, target_os = "windows")))]
@@ -729,7 +696,7 @@ pub fn run_internal_agent_serve(args: &InternalAgentServeArgs) -> Result<(), Cli
             .map_err(|error| io::Error::other(error.to_string()))?;
         let mut listener = locket_agent::bind_named_pipe_listener(&config)?;
         let state = locket_agent::AgentSocketState::locked(env!("CARGO_PKG_VERSION"));
-        write_pid_file(&args.pid_file)?;
+        write_pid_file(&args.pid_file).map_err(|error| io::Error::other(error.to_string()))?;
         loop {
             tokio::select! {
                 connected = listener.connect() => {
