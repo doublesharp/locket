@@ -547,7 +547,9 @@ pub struct ExecArgs {
 #[derive(Debug, Args)]
 #[command(after_help = "With one argument, runs [commands.<policy>] from locket.toml.\n\
                         With a supported runner and target, such as `locket run npm dev`,\n\
-                        Locket expands the runner command and applies any matching path scope.")]
+                        Locket expands the runner command and applies any matching path scope.\n\
+                        Secret ACLs in [secrets.<NAME>] can further limit delivery by command identity,\n\
+                        structured argv pattern, and project-relative path.")]
 pub struct RunArgs {
     /// Command policy name, or a runner adapter such as npm, pnpm, yarn, bun, cargo, make, just, task, poetry, uv, or python.
     pub policy: String,
@@ -2557,6 +2559,7 @@ pub(crate) fn load_effective_command_policy(
     if let Some(scope) = path_scope.as_ref() {
         apply_path_scope_to_policy(&mut policy, scope);
     }
+    enforce_secret_access_policies(&policy_document, &policy, &resolved.root, &canonical_cwd)?;
     Ok(EffectiveCommandPolicy {
         policy,
         path_scope_profile: path_scope.as_ref().and_then(|scope| scope.profile.clone()),
@@ -2593,6 +2596,7 @@ pub(crate) fn load_effective_command_policy_for_argv(
     if let Some(scope) = path_scope.as_ref() {
         apply_path_scope_to_policy(&mut policy, scope);
     }
+    enforce_secret_access_policies(&policy_document, &policy, &resolved.root, &canonical_cwd)?;
     Ok(EffectiveCommandPolicy {
         policy,
         path_scope_profile: path_scope.as_ref().and_then(|scope| scope.profile.clone()),
@@ -2611,6 +2615,40 @@ pub(crate) fn effective_policy_profile(
             .ok_or_else(|| profile_not_found_error("path scope profile not found"));
     }
     default_profile(store, &resolved.config)
+}
+
+fn enforce_secret_access_policies(
+    document: &PolicyDocument,
+    policy: &CommandPolicy,
+    project_root: &Path,
+    canonical_cwd: &Path,
+) -> Result<(), CliError> {
+    let relative_cwd = canonical_cwd.strip_prefix(project_root).unwrap_or_else(|_| Path::new("."));
+    let relative_cwd =
+        if relative_cwd.as_os_str().is_empty() { Path::new(".") } else { relative_cwd };
+    let argv = match &policy.command {
+        CommandSpec::Argv(argv) => Some(argv.as_slice()),
+        CommandSpec::Shell(_) => None,
+    };
+    let denied = policy
+        .allowed_secrets
+        .iter()
+        .filter(|name| {
+            document
+                .secret_access
+                .get(name.as_str())
+                .is_some_and(|access| !access.allows(&policy.name, argv, relative_cwd))
+        })
+        .map(locket_core::SecretName::as_str)
+        .collect::<Vec<_>>();
+    if denied.is_empty() {
+        return Ok(());
+    }
+    Err(invalid_policy_error(format!(
+        "secret ACL denied command {} for: {}",
+        policy.name,
+        denied.join(",")
+    )))
 }
 
 fn apply_path_scope_to_policy(policy: &mut CommandPolicy, scope: &PathEnvSet) {

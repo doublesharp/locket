@@ -24,6 +24,7 @@ Non-negotiable product decisions:
 - Raw `sha256(secret_value)` fingerprints are forbidden. Use profile-scoped HMAC-SHA256 fingerprints and decrypt known values only in memory for exact-match scanning.
 - `locket.toml` contains the stable `project_id`. Trusted root hashes protect against copied or moved project files silently accessing an existing local vault.
 - `locket.toml` may contain path-scoped env sets under `[paths."relative/path"]`. They are metadata-only policy extensions; they name authorized environment variables for a subtree and must never contain values or wrapped key material.
+- `locket.toml` may contain secret ACLs under `[secrets.<NAME>]`. They are metadata-only restrictions; they may narrow access by command identity, structured argv pattern, and project-relative path, but they must never store values or wrapped key material.
 - The desktop UI and VS Code extension are administration and status surfaces, not secret browsing apps.
 - The local agent is part of the core developer experience. Without it, repeated keychain prompts and Argon2 runs make shell/editor workflows poor.
 

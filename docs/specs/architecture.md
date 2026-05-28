@@ -54,7 +54,7 @@ This spec describes the intended v1 product surface for Locket. A conforming imp
 - Signed automation-client identities for scoped local agent requests.
 - Shell integration through `shellenv`, `hook`, `allow`, and `deny`.
 - VS Code extension backed by the local agent.
-- Command policies, path-scoped env sets for monorepos, and `locket run`.
+- Command policies, secret ACLs, path-scoped env sets for monorepos, and `locket run`.
 - Config management through `locket config`.
 - `lk://` reference URI resolution through the agent.
 - `locket exec` with explicit `--secret`, `--all`, conservative env isolation, argv commands, explicit shell commands, and policy enforcement.

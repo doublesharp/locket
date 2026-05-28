@@ -238,6 +238,7 @@ fn execution_help_mentions_path_scope_merge_points() {
     assert!(run_help.contains("locket run npm dev"), "{run_help}");
     assert!(run_help.contains("runner adapter"), "{run_help}");
     assert!(run_help.contains("path scope"), "{run_help}");
+    assert!(run_help.contains("Secret ACLs"), "{run_help}");
 
     let mut command = Cli::command();
     let env_help = command.find_subcommand_mut("env").expect("env subcommand");

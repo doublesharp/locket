@@ -153,6 +153,13 @@ struct CommandPolicy {
     ttl: Option<Duration>,
 }
 
+struct SecretAccessPolicy {
+    name: String, // derived from the [secrets.<NAME>] table key; not serialized in the table body
+    allow_commands: Vec<String>, // command identity globs, e.g. "dev" or "npm:*"
+    allow_argv: Vec<Vec<String>>, // structured argv token patterns; "*" is token-local, "**" matches argv tail
+    allow_paths: Vec<String>, // project-relative path or subtree patterns
+}
+
 struct UserVerificationPolicy {
     unlock: bool,
     reveal: bool,

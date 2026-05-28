@@ -153,11 +153,14 @@ Run a saved policy or inject explicit secrets into one child process:
 
 ```bash
 locket run dev
+locket run npm dev
 locket env inspect --policy dev
 locket exec --secret DATABASE_URL -- <command> [args...]
 locket env docker --policy dev -- docker run ...
 locket compose run --policy dev -- docker compose up
 ```
+
+`locket run` accepts either a saved policy name or a supported runner adapter. For example, `locket run npm dev` expands to `npm run dev`, validates the `dev` script when `package.json` is present, and uses the command identity `npm:dev` for ACL checks and audit metadata. Other adapters include `pnpm`, `yarn`, `bun`, `cargo`, `make`, `just`, `task`, `poetry`, `uv`, and `python`.
 
 In monorepos, path scopes extend the selected command policy by current directory:
 
@@ -174,6 +177,17 @@ required_secrets = ["NEXT_PUBLIC_API_URL"]
 ```
 
 The deepest matching `[paths."..."]` entry wins. A path scope can add `required_secrets`, add `optional_secrets`, and optionally set `profile = "dev"` for commands run from that subtree. It never stores values; it only names what the selected policy may receive. Run `locket env inspect --policy dev` from a package directory to see the active `path_scope` and final metadata-only injection plan.
+
+Secret ACLs can further limit where an authorized secret may be delivered:
+
+```toml
+[secrets.DATABASE_URL]
+allow_commands = ["dev", "npm:dev"]
+allow_argv = [["npm", "run", "dev"], ["cargo", "test", "**"]]
+allow_paths = ["apps/api/**"]
+```
+
+When a secret has an ACL, every configured dimension must match: command identity, structured argv pattern, and project-relative path. `*` matches inside one command or argv token; `**` is supported as a full argv token to match the remaining arguments. Plain `allow_paths` entries match that directory and its descendants, while `apps/api/**` is the explicit subtree form.
 
 Execution commands prepare the child process environment for that invocation only. They do not export secrets into the parent shell.
 

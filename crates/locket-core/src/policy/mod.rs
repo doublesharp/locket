@@ -5,12 +5,14 @@ mod document;
 mod env_source;
 mod error;
 mod path_scope;
+mod secret_acl;
 
 pub use command::{CommandPolicy, CommandSpec, MAX_COMMAND_POLICY_TTL_SECONDS, PolicyFieldSource};
 pub use document::PolicyDocument;
 pub use env_source::ExternalEnvSource;
 pub use error::PolicyParseError;
 pub use path_scope::PathEnvSet;
+pub use secret_acl::SecretAccessPolicy;
 
 #[cfg(test)]
 mod tests {
@@ -160,6 +162,48 @@ required_secrets = ["ADMIN_TOKEN"]
     }
 
     #[test]
+    fn parses_secret_access_policies_and_matches_command_argv_and_path()
+    -> Result<(), Box<dyn Error>> {
+        let document = PolicyDocument::from_toml_str(
+            r#"
+schema_version = 1
+
+[commands.dev]
+argv = ["npm", "run", "dev"]
+required_secrets = ["DATABASE_URL"]
+
+[secrets.DATABASE_URL]
+allow_commands = ["dev", "npm:*"]
+allow_argv = [["npm", "run", "dev"], ["cargo", "test", "**"]]
+allow_paths = ["apps/api/**"]
+"#,
+        )?;
+
+        let access = document.secret_access.get("DATABASE_URL").ok_or("missing ACL")?;
+        assert!(access.allows(
+            "dev",
+            Some(&["npm".to_owned(), "run".to_owned(), "dev".to_owned()]),
+            std::path::Path::new("apps/api/src"),
+        ));
+        assert!(access.allows(
+            "npm:dev",
+            Some(&["npm".to_owned(), "run".to_owned(), "dev".to_owned()]),
+            std::path::Path::new("apps/api"),
+        ));
+        assert!(!access.allows(
+            "dev",
+            Some(&["npm".to_owned(), "run".to_owned(), "build".to_owned()]),
+            std::path::Path::new("apps/api/src"),
+        ));
+        assert!(!access.allows(
+            "dev",
+            Some(&["npm".to_owned(), "run".to_owned(), "dev".to_owned()]),
+            std::path::Path::new("apps/web"),
+        ));
+        Ok(())
+    }
+
+    #[test]
     fn rejects_path_scope_that_escapes_project_root() {
         let result = PolicyDocument::from_toml_str(
             r#"
@@ -191,6 +235,40 @@ optional_secrets = ["STRIPE_SECRET_KEY"]
             result,
             Err(PolicyParseError::DuplicatePathScope { path: "apps/api".to_owned() })
         );
+    }
+
+    #[test]
+    fn rejects_invalid_secret_access_policies() {
+        let cases = [
+            (
+                r#"schema_version = 1
+[secrets.database_url]
+allow_commands = ["dev"]
+"#,
+                PolicyParseError::InvalidSecretAclName { secret: "database_url".to_owned() },
+            ),
+            (
+                r"schema_version = 1
+[secrets.DATABASE_URL]
+",
+                PolicyParseError::EmptySecretAcl { secret: "DATABASE_URL".to_owned() },
+            ),
+            (
+                r#"schema_version = 1
+[secrets.DATABASE_URL]
+allow_paths = ["../outside"]
+"#,
+                PolicyParseError::InvalidSecretAclPattern {
+                    secret: "DATABASE_URL".to_owned(),
+                    field: "allow_paths",
+                    pattern: "../outside".to_owned(),
+                },
+            ),
+        ];
+
+        for (input, expected) in cases {
+            assert_eq!(PolicyDocument::from_toml_str(input), Err(expected));
+        }
     }
 
     #[test]

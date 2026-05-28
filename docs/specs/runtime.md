@@ -75,6 +75,7 @@ External env compatibility:
 - Locket must not edit, delete, or rewrite external env files except `.env.example` and explicit migration flows.
 - `locket run` must print a metadata-only warning when a Locket secret name conflicts with an existing env var and the policy does not explicitly choose an override mode.
 - `locket env inspect --policy <name>` prints names, sources, conflicts, and final injection decisions only. It is a diagnostic command, not an export mechanism.
+- Secret ACLs are evaluated after command policy and path-scope merging but before external env resolution, agent grants, or value decryption. If a requested secret has a `[secrets.<NAME>]` ACL and the active command identity, structured argv, or project-relative path does not satisfy every configured ACL dimension, execution fails with `InvalidPolicy` and no secret values are read. ACL denial metadata must name only the command identity and denied secret names.
 
 Docker and Compose:
 

@@ -28,6 +28,7 @@ Behavior:
 - UI policy editing must expose argv vs shell mode clearly and warn when shell mode is selected.
 - Docker/Compose policy editing must expose `allow_remote_docker` clearly. The default is `false`; enabling it requires typed confirmation because remote Docker contexts deliver local secrets to another machine.
 - Monorepos may define path-scoped environment sets under `[paths."<project-relative-directory>"]`. The current working directory is resolved under the project root, the deepest matching path scope wins, and its `required_secrets` / `optional_secrets` are merged into the selected command policy before policy execution, external-env resolution, `env inspect`, Docker, or Compose preparation. A scope may set `profile = "<profile>"` to use that profile for executions from the matching subtree. Path keys must be project-relative and must not contain `..` or absolute roots.
+- Projects may define secret-level ACLs under `[secrets.<SECRET_NAME>]`. ACLs never grant access by themselves; they only narrow access already requested by `required_secrets` or `optional_secrets`. Supported fields are `allow_commands`, `allow_argv`, and `allow_paths`. If more than one field is present, every configured dimension must match before the secret can be delivered.
 
 Example:
 
@@ -42,12 +43,26 @@ optional_secrets = ["STRIPE_SECRET_KEY"]
 
 [paths."apps/web"]
 required_secrets = ["NEXT_PUBLIC_API_URL"]
+
+[secrets.DATABASE_URL]
+allow_commands = ["dev", "npm:dev"]
+allow_argv = [["pnpm", "dev"], ["npm", "run", "dev"]]
+allow_paths = ["apps/api/**"]
 ```
+
+Command ACL semantics:
+
+- `allow_commands` matches the saved policy name for `locket run <policy>` and the generated runner identity for adapter invocations such as `npm:dev`, `pnpm:test`, `cargo:test`, or `make:deploy`.
+- `allow_argv` matches structured argv tokens only. `*` matches within one token, so `release:*` matches `release:prod`; `**` may appear as a whole token to match the remaining argv tail, such as `["cargo", "test", "**"]`.
+- `allow_argv` does not match `shell = "..."` policies because shell strings are not parsed into trusted argv tokens. Use `allow_commands` for shell policies, and keep high-risk secrets behind `confirm` or `require_user_verification`.
+- `allow_paths` entries are project-relative. A plain entry such as `apps/api` matches that directory and descendants; `apps/api/**` is accepted as the explicit subtree form. Absolute paths and `..` are rejected.
+- A `[secrets.<NAME>]` table with no ACL fields is invalid. Omitting the table means the secret has no extra command/path ACL beyond the selected policy and path scope.
 
 Policy source of truth:
 
 - Project command policies are canonical in `locket.toml` under `[commands.<name>]` so they can be reviewed in Git and shared with teammates without exporting secret values.
 - Project path scopes are canonical in `locket.toml` under `[paths.<relative-path>]` so subproject env boundaries are reviewable without exporting secret values.
+- Project secret ACLs are canonical in `locket.toml` under `[secrets.<SECRET_NAME>]` so per-secret command and path limits are reviewable without exporting secret values.
 - The SQLite `command_policies` table stores a normalized local index/cache used by the agent, UI, tray, VS Code, and policy doctor.
 - `policy add`, `policy allow`, `policy require`, `policy edit`, and `policy delete` update `locket.toml` first, then refresh the SQLite index in the same user-visible operation.
 - If `locket.toml` and SQLite disagree, `locket.toml` wins after a successful parse; invalid TOML fails closed and leaves the prior SQLite index read-only for diagnostics only.

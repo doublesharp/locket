@@ -755,6 +755,98 @@ optional_secrets = ["STRIPE_SECRET_KEY"]
 }
 
 #[test]
+fn secret_acls_allow_named_policy_and_deny_other_commands() -> Result<(), Box<dyn std::error::Error>>
+{
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(directory.path().join("locket.toml"))?
+        .write_all(
+            br#"
+[commands.dev]
+argv = ["npm", "run", "dev"]
+required_secrets = ["DATABASE_URL"]
+
+[commands.build]
+argv = ["npm", "run", "build"]
+required_secrets = ["DATABASE_URL"]
+
+[secrets.DATABASE_URL]
+allow_commands = ["dev"]
+"#,
+        )?;
+
+    let resolved = crate::require_project(&context)?;
+    let dev = crate::load_effective_command_policy(&resolved, "dev", &context.cwd)?;
+    assert_eq!(dev.policy.name, "dev");
+
+    let result = crate::load_effective_command_policy(&resolved, "build", &context.cwd);
+    let Err(error) = result else {
+        return Err("build policy must be denied by secret ACL".into());
+    };
+    assert_eq!(error.exit_code(), locket_core::LocketError::InvalidPolicy.exit_code());
+    assert!(error.to_string().contains("secret ACL denied command build"));
+    Ok(())
+}
+
+#[test]
+fn secret_acls_apply_to_runner_identity_argv_and_path_scope()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    let api_dir = directory.path().join("apps").join("api");
+    std::fs::create_dir_all(&api_dir)?;
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(directory.path().join("locket.toml"))?
+        .write_all(
+            br#"
+[paths."apps/api"]
+required_secrets = ["DATABASE_URL"]
+
+[secrets.DATABASE_URL]
+allow_commands = ["npm:dev"]
+allow_argv = [["npm", "run", "dev"]]
+allow_paths = ["apps/api/**"]
+"#,
+        )?;
+
+    let api_context = RuntimeContext { cwd: api_dir, ..context };
+    let resolved = crate::require_project(&api_context)?;
+    let allowed = crate::load_effective_command_policy_for_argv(
+        &resolved,
+        "npm:dev",
+        vec!["npm".to_owned(), "run".to_owned(), "dev".to_owned()],
+        &api_context.cwd,
+    )?;
+    assert_eq!(allowed.policy.name, "npm:dev");
+
+    let denied = crate::load_effective_command_policy_for_argv(
+        &resolved,
+        "npm:build",
+        vec!["npm".to_owned(), "run".to_owned(), "build".to_owned()],
+        &api_context.cwd,
+    );
+    let Err(error) = denied else {
+        return Err("npm:build must be denied by secret ACL".into());
+    };
+    assert_eq!(error.exit_code(), locket_core::LocketError::InvalidPolicy.exit_code());
+    assert!(error.to_string().contains("DATABASE_URL"));
+    Ok(())
+}
+
+#[test]
 fn file_external_env_source_rejects_absolute_path() -> Result<(), Box<dyn std::error::Error>> {
     let document = locket_core::PolicyDocument::from_toml_str(
         r#"

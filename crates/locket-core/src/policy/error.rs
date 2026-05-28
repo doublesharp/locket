@@ -20,6 +20,9 @@ pub enum PolicyParseError {
     /// The top-level `paths` value was not a table.
     #[error("paths must be a table")]
     PathsMustBeTable,
+    /// The top-level `secrets` value was not a table.
+    #[error("secrets must be a table")]
+    SecretsMustBeTable,
     /// A command table key was empty.
     #[error("command name must not be empty")]
     EmptyCommandName,
@@ -201,5 +204,43 @@ pub enum PolicyParseError {
     InvalidPathScopeProfile {
         /// Path scope key.
         path: String,
+    },
+    /// A secret ACL table key was not a valid secret name.
+    #[error("secret ACL name {secret} is invalid")]
+    InvalidSecretAclName {
+        /// Secret ACL table key.
+        secret: String,
+    },
+    /// A secret ACL body was not a table.
+    #[error("secret ACL {secret} must be a table")]
+    SecretAclMustBeTable {
+        /// Secret ACL table key.
+        secret: String,
+    },
+    /// A secret ACL body did not match the v1 schema.
+    #[error("secret ACL {secret} schema error: {message}")]
+    SecretAclSchema {
+        /// Secret ACL table key.
+        secret: String,
+        /// Deserializer error message.
+        message: String,
+    },
+    /// A secret ACL did not contain any constraints.
+    #[error(
+        "secret ACL {secret} must define at least one allow_commands, allow_argv, or allow_paths entry"
+    )]
+    EmptySecretAcl {
+        /// Secret ACL table key.
+        secret: String,
+    },
+    /// A secret ACL pattern was empty or escaped the project root.
+    #[error("secret ACL {secret} field {field} contains invalid pattern {pattern}")]
+    InvalidSecretAclPattern {
+        /// Secret ACL table key.
+        secret: String,
+        /// ACL field name.
+        field: &'static str,
+        /// Invalid ACL pattern.
+        pattern: String,
     },
 }

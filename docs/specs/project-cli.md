@@ -152,12 +152,17 @@ Execution:
 locket exec --secret DATABASE_URL -- <cmd>
 locket exec --all -- <cmd>
 locket run api
+locket run npm dev
 locket env inspect --policy api
 locket env docker --policy api -- docker run ...
 locket compose run --policy api -- docker compose up
 ```
 
 `locket run <policy>`, `locket env inspect --policy <policy>`, `locket env docker --policy <policy>`, and `locket compose run --policy <policy>` first resolve the project from the current directory, then merge the deepest matching path scope into the named command policy. This lets a monorepo reuse one policy name, such as `dev`, while exposing package-specific env names only inside `apps/api`, `apps/web`, or another configured subtree. Scope keys are relative to the project root and must not be absolute or contain `..`.
+
+`locket run <runner> <target...>` is a convenience path for common project runners. `npm`, `pnpm`, `yarn`, and `bun` insert `run` when omitted, so `locket run npm dev` executes `npm run dev`; `cargo`, `make`, `just`, `task`, and `python` pass the target directly; `poetry` and `uv` insert `run` when omitted. Runner invocations create an ephemeral command policy with a stable identity such as `npm:dev`, `cargo:test`, or `make:deploy`, then apply the same path-scope and secret-ACL rules as a saved policy.
+
+Secret ACLs under `[secrets.<KEY>]` narrow where named secrets may be delivered. `allow_commands` matches saved policy names and runner identities. `allow_argv` matches structured argv token patterns, where `*` matches inside one token and `**` as a whole token matches the remaining argv tail. `allow_paths` matches project-relative directories or subtrees. If multiple ACL fields are present, all configured dimensions must match; otherwise execution fails closed with `InvalidPolicy` before secret resolution.
 
 `locket env inspect` is metadata-only. It shows the names, sources, conflicts, and policy decisions that would apply to an execution, but it never prints secret values and never emits shell `export` statements. Locket must not support `eval "$(locket ...)"` as a normal delivery path because that would create a global shell export and violate process-scoped injection.
 

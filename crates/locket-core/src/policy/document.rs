@@ -7,9 +7,11 @@ use std::str::FromStr;
 use super::command::CommandPolicy;
 use super::error::PolicyParseError;
 use super::path_scope::PathEnvSet;
+use super::secret_acl::SecretAccessPolicy;
 
 const COMMANDS_TABLE: &str = "commands";
 const PATHS_TABLE: &str = "paths";
+const SECRETS_TABLE: &str = "secrets";
 const SCHEMA_VERSION_FIELD: &str = "schema_version";
 
 /// Currently supported `locket.toml` policy document schema version.
@@ -26,6 +28,7 @@ const ALLOWED_ROOT_KEYS: &[&str] = &[
     SCHEMA_VERSION_FIELD,
     COMMANDS_TABLE,
     PATHS_TABLE,
+    SECRETS_TABLE,
     "project_id",
     "name",
     "default_profile",
@@ -43,6 +46,8 @@ pub struct PolicyDocument {
     pub commands: BTreeMap<String, CommandPolicy>,
     /// Path-scoped environment sets keyed by `[paths."<relative-path>"]`.
     pub path_scopes: BTreeMap<String, PathEnvSet>,
+    /// Secret-level command/path ACLs keyed by `[secrets.<NAME>]`.
+    pub secret_access: BTreeMap<String, SecretAccessPolicy>,
 }
 
 impl PolicyDocument {
@@ -86,8 +91,9 @@ impl PolicyDocument {
 
         let commands = parse_commands(root)?;
         let path_scopes = parse_path_scopes(root)?;
+        let secret_access = parse_secret_access(root)?;
 
-        Ok(Self { schema_version, commands, path_scopes })
+        Ok(Self { schema_version, commands, path_scopes, secret_access })
     }
 
     /// Finds the path scope that best matches `cwd` under `project_root`.
@@ -105,6 +111,24 @@ impl PolicyDocument {
             .filter(|scope| scope.matches(relative_cwd))
             .max_by_key(|scope| scope.depth())
     }
+}
+
+fn parse_secret_access(
+    root: &toml::value::Table,
+) -> Result<BTreeMap<String, SecretAccessPolicy>, PolicyParseError> {
+    let Some(secrets) = root.get(SECRETS_TABLE) else {
+        return Ok(BTreeMap::new());
+    };
+    let Some(secrets) = secrets.as_table() else {
+        return Err(PolicyParseError::SecretsMustBeTable);
+    };
+
+    let mut parsed = BTreeMap::new();
+    for (name, body) in secrets {
+        let access = SecretAccessPolicy::from_toml_value(name, body.clone())?;
+        parsed.insert(name.clone(), access);
+    }
+    Ok(parsed)
 }
 
 fn parse_commands(
