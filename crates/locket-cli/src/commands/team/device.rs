@@ -44,6 +44,7 @@ pub fn device_command(
     }
 }
 
+#[allow(clippy::redundant_pub_crate)]
 pub(crate) fn device_init_command(
     context: &RuntimeContext,
     output: &mut impl Write,
@@ -878,7 +879,7 @@ fn update_recovery_envelope_for_replacement_device(
         sealing_private_key,
     )?);
     let new_envelope = RecoveryEnvelope {
-        kdf_profile_id: kdf.kdf_profile_id.clone(),
+        kdf_profile_id: kdf.kdf_profile_id,
         created_at_unix_nanos: old_envelope.created_at_unix_nanos,
         entries,
     };

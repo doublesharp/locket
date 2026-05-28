@@ -649,6 +649,7 @@ fn collect_query_plan(
     Ok(rows)
 }
 
+#[allow(clippy::too_many_lines)]
 fn create_legacy_v1_schema(connection: &rusqlite::Connection) -> Result<(), Box<dyn Error>> {
     connection.execute_batch(
         r"

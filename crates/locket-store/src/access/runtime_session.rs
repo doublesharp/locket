@@ -176,8 +176,8 @@ fn runtime_session_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Runtime
         ended_at: row.get(7)?,
         exit_status: row.get(8)?,
         secret_names,
-        spawn_audit_sequence: row.get::<_, Option<i64>>(10)?.map(|value| value as u64),
-        completion_audit_sequence: row.get::<_, Option<i64>>(11)?.map(|value| value as u64),
+        spawn_audit_sequence: row.get::<_, Option<i64>>(10)?.map(i64::cast_unsigned),
+        completion_audit_sequence: row.get::<_, Option<i64>>(11)?.map(i64::cast_unsigned),
     })
 }
 
@@ -252,8 +252,8 @@ impl Store {
                 session.ended_at,
                 session.exit_status,
                 secret_names_json,
-                session.spawn_audit_sequence.map(|value| value as i64),
-                session.completion_audit_sequence.map(|value| value as i64),
+                session.spawn_audit_sequence.map(u64::cast_signed),
+                session.completion_audit_sequence.map(u64::cast_signed),
             ],
         )?;
         Ok(())
@@ -280,7 +280,7 @@ impl Store {
                  exit_status = ?3,
                  completion_audit_sequence = ?4
              WHERE id = ?1 AND ended_at IS NULL",
-            params![id, ended_at, exit_status, completion_audit_sequence.map(|value| value as i64)],
+            params![id, ended_at, exit_status, completion_audit_sequence.map(u64::cast_signed)],
         )?;
         Ok(updated > 0)
     }

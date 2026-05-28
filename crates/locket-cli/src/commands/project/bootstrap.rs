@@ -618,7 +618,11 @@ fn run_smoke_policy_if_configured(
     if !report.smoke_policy_present {
         return Ok(());
     }
-    crate::commands::exec::run::run_command(context, output, &RunArgs { policy: name.clone() })?;
+    crate::commands::exec::run::run_command(
+        context,
+        output,
+        &RunArgs { policy: name.clone(), runner_args: Vec::new() },
+    )?;
     writeln!(output, "smoke_policy_run: passed ({name})")?;
     Ok(())
 }

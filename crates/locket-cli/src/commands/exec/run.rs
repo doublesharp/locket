@@ -35,8 +35,9 @@ use crate::support::secret_helpers::{
 };
 use crate::{
     ResolvedProject, RunArgs, effective_policy_profile, ensure_trusted_project_root,
-    load_effective_command_policy, now_unix_nanos, open_store, require_project,
-    write_runtime_policy_audit_if_available, write_runtime_policy_denial_audit_if_available,
+    load_effective_command_policy, load_effective_command_policy_for_argv, now_unix_nanos,
+    open_store, require_project, write_runtime_policy_audit_if_available,
+    write_runtime_policy_denial_audit_if_available,
 };
 
 /// Inputs needed to run a prepared command under a runtime session record.
@@ -101,6 +102,12 @@ struct PreparedPolicyExecution {
     prepared: locket_exec::PreparedExecution,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ExpandedRunnerCommand {
+    policy_name: String,
+    argv: Vec<String>,
+}
+
 #[allow(clippy::redundant_pub_crate)]
 pub(crate) struct AgentPolicyAccess {
     resolve_grant_id: Option<String>,
@@ -118,7 +125,11 @@ pub fn run_command(
     run_args: &RunArgs,
 ) -> Result<(), CliError> {
     let resolved = require_project(context)?;
-    let effective = load_command_policy_or_audit_denial(context, &resolved, &run_args.policy)?;
+    let effective = if run_args.runner_args.is_empty() {
+        load_command_policy_or_audit_denial(context, &resolved, &run_args.policy)?
+    } else {
+        load_runner_policy(context, &resolved, run_args)?
+    };
     let policy = &effective.policy;
 
     let confirmation_source = if policy.confirm {
@@ -155,7 +166,7 @@ pub fn run_command(
     let profile = effective_policy_profile(&store, &resolved, &effective)?;
     ensure_agent_running_for_execution(context)?;
     let prepared_policy =
-        match prepare_policy_execution(context, output, &store, &resolved, &profile, &policy) {
+        match prepare_policy_execution(context, output, &store, &resolved, &profile, policy) {
             Ok(prepared) => prepared,
             Err(error) => {
                 let failure_reason = denial_failure_reason(&error);
@@ -164,7 +175,7 @@ pub fn run_command(
                     &mut store,
                     &resolved,
                     Some(&profile),
-                    Some(&policy),
+                    Some(policy),
                     &policy.name,
                     failure_reason,
                 );
@@ -191,7 +202,7 @@ pub fn run_command(
         &mut store,
         &resolved,
         &profile,
-        &policy,
+        policy,
         audit_status,
         &prepared_policy.selections,
         &prepared_policy.external_env_names,
@@ -206,6 +217,129 @@ pub fn run_command(
 
     writeln!(output, "child exited with status {status}")?;
     Err(child_exit_error(status))
+}
+
+fn load_runner_policy(
+    context: &RuntimeContext,
+    resolved: &ResolvedProject,
+    run_args: &RunArgs,
+) -> Result<crate::EffectiveCommandPolicy, CliError> {
+    let expanded = expand_runner_command(&run_args.policy, &run_args.runner_args, &resolved.root)?;
+    load_effective_command_policy_for_argv(
+        resolved,
+        expanded.policy_name,
+        expanded.argv,
+        &context.cwd,
+    )
+}
+
+fn expand_runner_command(
+    runner: &str,
+    runner_args: &[String],
+    project_root: &Path,
+) -> Result<ExpandedRunnerCommand, CliError> {
+    if runner_args.is_empty() {
+        return Err(invalid_policy_error(format!("runner {runner} requires a target")));
+    }
+    let command_argv = match runner {
+        "npm" | "pnpm" | "yarn" | "bun" => expand_node_runner(runner, runner_args, project_root)?,
+        "cargo" | "make" | "just" | "task" | "python" => {
+            let mut command_argv = Vec::with_capacity(runner_args.len() + 1);
+            command_argv.push(runner.to_owned());
+            command_argv.extend(runner_args.iter().cloned());
+            command_argv
+        }
+        "poetry" | "uv" => expand_run_prefix_runner(runner, runner_args),
+        _ => {
+            return Err(invalid_policy_error(format!(
+                "unsupported runner adapter: {runner}; use `locket run <policy>` or `locket exec -- <command>`"
+            )));
+        }
+    };
+    Ok(ExpandedRunnerCommand {
+        policy_name: runner_policy_name(runner, runner_args),
+        argv: command_argv,
+    })
+}
+
+fn expand_node_runner(
+    runner: &str,
+    runner_args: &[String],
+    project_root: &Path,
+) -> Result<Vec<String>, CliError> {
+    let (script, command_argv) = if runner_args.first().is_some_and(|value| value == "run") {
+        let Some(script) = runner_args.get(1) else {
+            return Err(invalid_policy_error(format!("{runner} run requires a script name")));
+        };
+        let mut command_argv = Vec::with_capacity(runner_args.len() + 1);
+        command_argv.push(runner.to_owned());
+        command_argv.extend(runner_args.iter().cloned());
+        (script.as_str(), command_argv)
+    } else {
+        let script = runner_args[0].as_str();
+        let mut command_argv = Vec::with_capacity(runner_args.len() + 2);
+        command_argv.push(runner.to_owned());
+        command_argv.push("run".to_owned());
+        command_argv.extend(runner_args.iter().cloned());
+        (script, command_argv)
+    };
+    validate_package_script(project_root, script)?;
+    Ok(command_argv)
+}
+
+fn expand_run_prefix_runner(runner: &str, runner_args: &[String]) -> Vec<String> {
+    let mut command_argv = Vec::with_capacity(runner_args.len() + 2);
+    command_argv.push(runner.to_owned());
+    if runner_args.first().is_none_or(|value| value != "run") {
+        command_argv.push("run".to_owned());
+    }
+    command_argv.extend(runner_args.iter().cloned());
+    command_argv
+}
+
+fn validate_package_script(project_root: &Path, script: &str) -> Result<(), CliError> {
+    let package_json = project_root.join("package.json");
+    if !package_json.exists() {
+        return Ok(());
+    }
+    let content = fs::read_to_string(&package_json)?;
+    let manifest: Value = serde_json::from_str(&content)?;
+    if manifest
+        .get("scripts")
+        .and_then(Value::as_object)
+        .is_some_and(|scripts| scripts.contains_key(script))
+    {
+        return Ok(());
+    }
+    Err(invalid_policy_error(format!(
+        "npm script not found in {}: {script}",
+        package_json.display()
+    )))
+}
+
+fn runner_policy_name(runner: &str, args: &[String]) -> String {
+    let target = if args.first().is_some_and(|value| value == "run") {
+        args.get(1).map_or("run", String::as_str)
+    } else {
+        args.first().map_or("run", String::as_str)
+    };
+    format!("{runner}:{target}")
+}
+
+#[cfg(test)]
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) fn expand_runner_command_for_tests(
+    runner: &str,
+    args: &[String],
+    project_root: &Path,
+) -> Result<Vec<String>, CliError> {
+    expand_runner_command(runner, args, project_root).map(|expanded| expanded.argv)
+}
+
+#[cfg(test)]
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) fn runner_policy_name_for_tests(runner: &str, args: &[String]) -> String {
+    runner_policy_name(runner, args)
 }
 
 fn prepare_policy_execution(

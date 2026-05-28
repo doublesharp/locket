@@ -601,6 +601,7 @@ fn init_creates_project_metadata_files_and_profiles() -> Result<(), Box<dyn std:
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn device_commands_initialize_describe_add_list_and_revoke_metadata_only()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempdir()?;

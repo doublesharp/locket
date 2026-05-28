@@ -385,7 +385,7 @@ fn init_recovery_files_ready(root: &Path) -> bool {
     recovery_dir.join("kdf.toml").exists() && recovery_dir.join("envelope.bin").exists()
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
 fn complete_init(
     context: &RuntimeContext,
     output: &mut impl Write,
@@ -461,16 +461,13 @@ fn maybe_register_passkey(
     let should_register = if register_passkey {
         true
     } else if io::stdin().is_terminal() && io::stderr().is_terminal() {
-        match context
+        context
             .confirmation_reader
             .read_confirmation("Register a passkey for this device? [y/N] ")
-        {
-            Ok(response) => {
+            .is_ok_and(|response| {
                 let trimmed = response.trim().to_lowercase();
                 matches!(trimmed.as_str(), "y" | "yes")
-            }
-            Err(_) => false,
-        }
+            })
     } else {
         false
     };

@@ -419,7 +419,7 @@ fn write_client_private_key_recovery_envelope(
         private_key,
     )?);
     let envelope = RecoveryEnvelope {
-        kdf_profile_id: kdf.kdf_profile_id.clone(),
+        kdf_profile_id: kdf.kdf_profile_id,
         created_at_unix_nanos: envelope.created_at_unix_nanos,
         entries,
     };

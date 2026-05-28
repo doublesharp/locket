@@ -36,6 +36,7 @@ pub fn passkey_command(
     }
 }
 
+#[allow(clippy::redundant_pub_crate, clippy::too_many_lines)]
 pub(crate) fn passkey_register_command(
     context: &RuntimeContext,
     output: &mut impl Write,
@@ -78,7 +79,7 @@ pub(crate) fn passkey_register_command(
             let credential = PasskeyCredentialRecord {
                 id: passkey_id,
                 project_id: project_id.to_owned(),
-                device_id: local_device.id.clone(),
+                device_id: local_device.id,
                 member_id,
                 label: label.to_owned(),
                 credential_id: registration.credential_id.clone(),

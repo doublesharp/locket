@@ -80,6 +80,7 @@ struct InviteSealedCommandPolicyV1 {
     ttl_seconds: u64,
 }
 
+#[allow(clippy::struct_field_names)]
 #[derive(Clone, Copy, Debug, Default)]
 struct InviteApplyCounts {
     profile_count: usize,
@@ -611,6 +612,7 @@ fn validate_invite_sealed_payload(
     Ok(())
 }
 
+#[allow(clippy::too_many_lines, clippy::needless_pass_by_ref_mut)]
 fn apply_invite_plaintext_payload(
     context: &RuntimeContext,
     store: &mut locket_store::Store,
@@ -665,7 +667,7 @@ fn apply_invite_plaintext_payload(
         let existing_key =
             store.get_key_by_scope(project_id, Some(&profile.id), purpose.as_str())?;
         let receiver_key_id = existing_key.as_ref().map_or_else(
-            || KeyId::generate().map(|id| id.into_string()).map_err(|_| CliError::Time),
+            || KeyId::generate().map(KeyId::into_string).map_err(|_| CliError::Time),
             |record| Ok(record.id.clone()),
         )?;
         let wrapped = rewrap_imported_profile_key(

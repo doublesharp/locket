@@ -48,7 +48,7 @@ pub use pgp_word_list::{
 };
 pub use policy::{
     CommandPolicy, CommandSpec, ExternalEnvSource, MAX_COMMAND_POLICY_TTL_SECONDS, PathEnvSet,
-    PolicyDocument, PolicyParseError,
+    PolicyDocument, PolicyFieldSource, PolicyParseError,
 };
 pub use privacy::privacy_alias;
 pub use profile_name::{InvalidProfileName, MAX_PROFILE_NAME_LEN, ProfileName};

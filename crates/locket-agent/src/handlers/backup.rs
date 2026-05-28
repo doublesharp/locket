@@ -1,5 +1,13 @@
 //! Desktop backup/recovery RPC request and response types.
 
+#![allow(
+    clippy::manual_let_else,
+    clippy::needless_pass_by_value,
+    clippy::significant_drop_tightening,
+    clippy::struct_excessive_bools,
+    clippy::too_many_lines
+)]
+
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -837,7 +845,7 @@ fn bundle_command_policy(policy: &CommandPolicy) -> SealedBundleCommandPolicyV1 
     }
 }
 
-fn command_type(command: &CommandSpec) -> &'static str {
+const fn command_type(command: &CommandSpec) -> &'static str {
     match command {
         CommandSpec::Argv(_) => "argv",
         CommandSpec::Shell(_) => "shell",

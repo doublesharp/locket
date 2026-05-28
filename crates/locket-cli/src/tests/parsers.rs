@@ -155,6 +155,10 @@ fn parses_core_secret_commands() {
         &["locket", "debug", "bundle", "--redacted", "--output", "bundle.json"],
         &["locket", "exec", "--secret", "DATABASE_URL", "--", "/bin/sh", "-c", "true"],
         &["locket", "run", "dev"],
+        &["locket", "run", "npm", "dev"],
+        &["locket", "run", "npm", "run", "dev", "--", "--watch"],
+        &["locket", "run", "cargo", "test"],
+        &["locket", "run", "make", "dev"],
         &["locket", "env", "inspect", "--policy", "dev"],
         &["locket", "env", "docker", "--policy", "dev", "--", "docker", "run", "alpine"],
         &[
@@ -226,12 +230,14 @@ fn help_mentions_path_scoped_env_sets() {
 }
 
 #[test]
+#[allow(clippy::expect_used)]
 fn execution_help_mentions_path_scope_merge_points() {
     let mut command = Cli::command();
     let run_help =
         command.find_subcommand_mut("run").expect("run subcommand").render_long_help().to_string();
-    assert!(run_help.contains("path-scope merging"), "{run_help}");
-    assert!(run_help.contains("required_secrets"), "{run_help}");
+    assert!(run_help.contains("locket run npm dev"), "{run_help}");
+    assert!(run_help.contains("runner adapter"), "{run_help}");
+    assert!(run_help.contains("path scope"), "{run_help}");
 
     let mut command = Cli::command();
     let env_help = command.find_subcommand_mut("env").expect("env subcommand");

@@ -90,6 +90,7 @@ const fn is_secret_name_rest(value: char) -> bool {
 }
 
 #[cfg(test)]
+#[allow(clippy::panic)]
 mod tests {
     use std::str::FromStr;
 
@@ -121,14 +122,18 @@ mod tests {
 
     #[test]
     fn empty_name_reports_empty_reason() {
-        let err = SecretName::new("").expect_err("empty must error");
+        let Err(err) = SecretName::new("") else {
+            panic!("empty must error");
+        };
         assert!(matches!(err, super::InvalidSecretName::Empty));
         assert_eq!(err.to_string(), "invalid secret name: empty");
     }
 
     #[test]
     fn lowercase_start_reports_invalid_start_char() {
-        let err = SecretName::new("foo").expect_err("lowercase start must error");
+        let Err(err) = SecretName::new("foo") else {
+            panic!("lowercase start must error");
+        };
         assert!(matches!(err, super::InvalidSecretName::InvalidStartChar('f')));
         assert!(err.to_string().contains("must start with A-Z or '_'"));
         assert!(err.to_string().contains("'f'"));
@@ -136,13 +141,17 @@ mod tests {
 
     #[test]
     fn digit_start_reports_invalid_start_char() {
-        let err = SecretName::new("1FOO").expect_err("digit start must error");
+        let Err(err) = SecretName::new("1FOO") else {
+            panic!("digit start must error");
+        };
         assert!(matches!(err, super::InvalidSecretName::InvalidStartChar('1')));
     }
 
     #[test]
     fn invalid_mid_char_reports_invalid_char() {
-        let err = SecretName::new("FOO-BAR").expect_err("hyphen must error");
+        let Err(err) = SecretName::new("FOO-BAR") else {
+            panic!("hyphen must error");
+        };
         assert!(matches!(err, super::InvalidSecretName::InvalidChar('-')));
         assert!(err.to_string().contains("contains invalid character"));
         assert!(err.to_string().contains("'-'"));

@@ -6,7 +6,7 @@ mod env_source;
 mod error;
 mod path_scope;
 
-pub use command::{CommandPolicy, CommandSpec, MAX_COMMAND_POLICY_TTL_SECONDS};
+pub use command::{CommandPolicy, CommandSpec, MAX_COMMAND_POLICY_TTL_SECONDS, PolicyFieldSource};
 pub use document::PolicyDocument;
 pub use env_source::ExternalEnvSource;
 pub use error::PolicyParseError;

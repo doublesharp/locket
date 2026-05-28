@@ -59,11 +59,7 @@ pub fn status(context: &RuntimeContext, output: &mut impl Write) -> Result<(), C
         .map_or_else(|| context.cwd.display().to_string(), |path| path.display().to_string());
     let cwd_matches_root = canonical_cwd.as_deref() == Some(&resolved.root);
     writeln!(output, "cwd: {cwd_display}")?;
-    writeln!(
-        output,
-        "cwd_matches_root: {}",
-        if cwd_matches_root { "yes" } else { "no" }
-    )?;
+    writeln!(output, "cwd_matches_root: {}", if cwd_matches_root { "yes" } else { "no" })?;
     if !cwd_matches_root {
         writeln!(
             output,

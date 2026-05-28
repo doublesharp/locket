@@ -1,5 +1,7 @@
 //! Small ANSI presentation helpers for interactive CLI output.
 
+#![allow(clippy::redundant_pub_crate)]
+
 use std::env;
 use std::fmt;
 use std::io::{self, IsTerminal, Write};

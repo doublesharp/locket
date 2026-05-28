@@ -8,6 +8,7 @@
 //! path for offline flows; this surface is the agent-mediated equivalent
 //! that thin clients can use without holding the audit key themselves.
 
+use std::fmt::Write as _;
 use std::path::PathBuf;
 
 use locket_core::ClientId;
@@ -113,9 +114,9 @@ pub async fn handle_register_client(
         Err(message) => return metadata_invalid(request, message),
     };
 
-    let audit_key = match audit_key_for_project(state, &payload.project_id, now_unix_nanos).await {
-        Some(key) => key,
-        None => return unlock_required(request, "unlock required to register automation client"),
+    let Some(audit_key) = audit_key_for_project(state, &payload.project_id, now_unix_nanos).await
+    else {
+        return unlock_required(request, "unlock required to register automation client");
     };
 
     let mut store = match Store::open(&payload.store_path) {
@@ -186,9 +187,9 @@ pub async fn handle_revoke_client(
         Err(_) => return protocol_error(request, "invalid RevokeClient payload"),
     };
 
-    let audit_key = match audit_key_for_project(state, &payload.project_id, now_unix_nanos).await {
-        Some(key) => key,
-        None => return unlock_required(request, "unlock required to revoke automation client"),
+    let Some(audit_key) = audit_key_for_project(state, &payload.project_id, now_unix_nanos).await
+    else {
+        return unlock_required(request, "unlock required to revoke automation client");
     };
 
     let mut store = match Store::open(&payload.store_path) {
@@ -289,7 +290,7 @@ fn client_public_key_fingerprint(public_key: &[u8; 32]) -> String {
     let digest = Sha256::digest(public_key);
     let mut out = String::with_capacity(32);
     for byte in &digest[..16] {
-        out.push_str(&format!("{byte:02x}"));
+        let _ = write!(out, "{byte:02x}");
     }
     out
 }

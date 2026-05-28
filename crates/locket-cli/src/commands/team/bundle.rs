@@ -1407,7 +1407,7 @@ fn insert_imported_audit_chain(
                 project_id,
                 source_device_fingerprint,
                 bundle_digest.as_slice(),
-                audit_chain.checkpoint_sequence as i64,
+                audit_chain.checkpoint_sequence.cast_signed(),
                 checkpoint_hmac_bytes,
                 encrypted_rows,
                 nonce,

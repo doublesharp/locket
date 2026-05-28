@@ -664,6 +664,97 @@ optional_secrets = ["STRIPE_SECRET_KEY"]
 }
 
 #[test]
+fn run_runner_adapters_expand_common_dev_commands() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    std::fs::write(
+        directory.path().join("package.json"),
+        r#"{"scripts":{"dev":"vite","test":"vitest"}}"#,
+    )?;
+
+    let dev = crate::expand_runner_command_for_tests("npm", &["dev".to_owned()], directory.path())?;
+    assert_eq!(dev, ["npm", "run", "dev"]);
+
+    let explicit = crate::expand_runner_command_for_tests(
+        "npm",
+        &["run".to_owned(), "test".to_owned(), "--".to_owned(), "--watch".to_owned()],
+        directory.path(),
+    )?;
+    assert_eq!(explicit, ["npm", "run", "test", "--", "--watch"]);
+
+    let cargo =
+        crate::expand_runner_command_for_tests("cargo", &["test".to_owned()], directory.path())?;
+    assert_eq!(cargo, ["cargo", "test"]);
+
+    let uv = crate::expand_runner_command_for_tests(
+        "uv",
+        &["pytest".to_owned(), "-q".to_owned()],
+        directory.path(),
+    )?;
+    assert_eq!(uv, ["uv", "run", "pytest", "-q"]);
+
+    Ok(())
+}
+
+#[test]
+fn run_runner_adapter_rejects_missing_package_script() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    std::fs::write(directory.path().join("package.json"), r#"{"scripts":{"dev":"vite"}}"#)?;
+
+    let result =
+        crate::expand_runner_command_for_tests("npm", &["build".to_owned()], directory.path());
+    let Err(error) = result else {
+        return Err("missing package script must fail".into());
+    };
+    assert_eq!(error.exit_code(), locket_core::LocketError::InvalidPolicy.exit_code());
+    assert!(error.to_string().contains("npm script not found"));
+    Ok(())
+}
+
+#[test]
+fn path_scoped_env_sets_extend_runner_policy_from_matching_subdirectory()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey", "--name", "app"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    let api_dir = directory.path().join("apps").join("api");
+    std::fs::create_dir_all(&api_dir)?;
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(directory.path().join("locket.toml"))?
+        .write_all(
+            br#"
+[paths."apps/api"]
+required_secrets = ["DATABASE_URL"]
+optional_secrets = ["STRIPE_SECRET_KEY"]
+"#,
+        )?;
+
+    let api_context = RuntimeContext { cwd: api_dir, ..context };
+    let resolved = crate::require_project(&api_context)?;
+    let effective = crate::load_effective_command_policy_for_argv(
+        &resolved,
+        crate::runner_policy_name_for_tests("cargo", &["test".to_owned()]),
+        vec!["cargo".to_owned(), "test".to_owned()],
+        &api_context.cwd,
+    )?;
+    assert_eq!(effective.policy.name, "cargo:test");
+    assert_eq!(
+        effective.policy.command,
+        locket_core::CommandSpec::Argv(vec!["cargo".to_owned(), "test".to_owned(),])
+    );
+    assert_eq!(effective.path_scope_path.as_deref(), Some(std::path::Path::new("apps/api")));
+    assert!(effective.policy.required_secrets.iter().any(|name| name.as_str() == "DATABASE_URL"));
+    assert!(
+        effective.policy.optional_secrets.iter().any(|name| name.as_str() == "STRIPE_SECRET_KEY")
+    );
+    Ok(())
+}
+
+#[test]
 fn file_external_env_source_rejects_absolute_path() -> Result<(), Box<dyn std::error::Error>> {
     let document = locket_core::PolicyDocument::from_toml_str(
         r#"

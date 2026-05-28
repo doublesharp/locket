@@ -52,9 +52,10 @@ pub(crate) use commands::exec::docker::{
 };
 #[cfg(test)]
 pub(crate) use commands::exec::run::{
-    ComposeConfigCommand, ide_env_source_context_for_tests, prepare_agent_policy_access_for_tests,
-    resolve_external_env_ide_with_session_id, resolve_policy_external_env,
-    resolve_policy_external_env_with_compose_config_command,
+    ComposeConfigCommand, expand_runner_command_for_tests, ide_env_source_context_for_tests,
+    prepare_agent_policy_access_for_tests, resolve_external_env_ide_with_session_id,
+    resolve_policy_external_env, resolve_policy_external_env_with_compose_config_command,
+    runner_policy_name_for_tests,
 };
 pub(crate) use commands::project::install_hooks::git_dir_for_worktree;
 pub(crate) use commands::scan::context::privacy_redact_names_enabled;
@@ -86,10 +87,10 @@ pub(crate) use commands::vault::recovery::{
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::Shell as CompletionShell;
 use locket_core::{
-    CommandPolicy, CommandSpec, Duration as LocketDuration, ExternalEnvSource, KeyId,
-    MetadataPrivacyFinding, MetadataValidationError, PROJECT_CONFIG_SCHEMA_VERSION, PathEnvSet,
-    PolicyDocument, ProfileId, ProfileName, ProjectConfig, SecretId, SecretName,
-    validate_metadata_field,
+    CommandPolicy, CommandSpec, Duration as LocketDuration, EnvMode, EnvOverrideMode,
+    ExternalEnvSource, KeyId, MetadataPrivacyFinding, MetadataValidationError,
+    PROJECT_CONFIG_SCHEMA_VERSION, PathEnvSet, PolicyDocument, PolicyFieldSource, ProfileId,
+    ProfileName, ProjectConfig, SecretId, SecretName, validate_metadata_field,
 };
 use locket_crypto::{
     EncryptedSecretValue, HkdfWrapInfo, KeyPurpose, KeyWrapAad, KeyWrapPurpose,
@@ -370,6 +371,7 @@ struct DoctorArgs {
 }
 
 #[derive(Debug, Args)]
+#[allow(clippy::struct_excessive_bools)]
 pub(crate) struct InitArgs {
     /// Project display name.
     #[arg(long)]
@@ -543,12 +545,15 @@ pub struct ExecArgs {
 
 /// Arguments for the `locket run` command.
 #[derive(Debug, Args)]
-#[command(after_help = "If the current directory is inside a [paths.\"relative/path\"] scope,\n\
-                        Locket merges that scope's required_secrets, optional_secrets, and\n\
-                        optional profile into the selected command policy before spawning.")]
+#[command(after_help = "With one argument, runs [commands.<policy>] from locket.toml.\n\
+                        With a supported runner and target, such as `locket run npm dev`,\n\
+                        Locket expands the runner command and applies any matching path scope.")]
 pub struct RunArgs {
-    /// Command policy name from [commands.<policy>], before path-scope merging.
+    /// Command policy name, or a runner adapter such as npm, pnpm, yarn, bun, cargo, make, just, task, poetry, uv, or python.
     pub policy: String,
+    /// Runner target and arguments. For example, `locket run npm dev` executes `npm run dev`.
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+    pub runner_args: Vec<String>,
 }
 
 /// Subcommands for `locket env`.
@@ -2547,6 +2552,42 @@ pub(crate) fn load_effective_command_policy(
     let mut policy = policy_document.commands.get(policy_name).cloned().ok_or_else(|| {
         policy_not_found_error(format!("command policy not found: {policy_name}"))
     })?;
+    let canonical_cwd = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
+    let path_scope = policy_document.path_scope_for(&resolved.root, &canonical_cwd).cloned();
+    if let Some(scope) = path_scope.as_ref() {
+        apply_path_scope_to_policy(&mut policy, scope);
+    }
+    Ok(EffectiveCommandPolicy {
+        policy,
+        path_scope_profile: path_scope.as_ref().and_then(|scope| scope.profile.clone()),
+        path_scope_path: path_scope.map(|scope| scope.path),
+    })
+}
+
+pub(crate) fn load_effective_command_policy_for_argv(
+    resolved: &ResolvedProject,
+    policy_name: impl Into<String>,
+    argv: Vec<String>,
+    cwd: &Path,
+) -> Result<EffectiveCommandPolicy, CliError> {
+    let mut policy = CommandPolicy {
+        name: policy_name.into(),
+        command: CommandSpec::Argv(argv),
+        allowed_secrets: Vec::new(),
+        required_secrets: Vec::new(),
+        optional_secrets: Vec::new(),
+        inherit_env: Vec::new(),
+        env_mode: EnvMode::Minimal,
+        override_behavior: EnvOverrideMode::Locket,
+        override_source: PolicyFieldSource::Defaulted,
+        external_env_sources: Vec::new(),
+        allow_remote_docker: false,
+        confirm: false,
+        require_user_verification: false,
+        require_agent: false,
+        ttl: LocketDuration::from_secs(15 * 60),
+    };
+    let policy_document = read_policy_document(&resolved.root.join(LOCKET_TOML))?;
     let canonical_cwd = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
     let path_scope = policy_document.path_scope_for(&resolved.root, &canonical_cwd).cloned();
     if let Some(scope) = path_scope.as_ref() {

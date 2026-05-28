@@ -145,6 +145,7 @@ pub fn resolve_default_agent_data_dir(home: &std::path::Path) -> Option<PathBuf>
     resolve_agent_data_dir_for_platform(home, std::env::var_os("XDG_RUNTIME_DIR"))
 }
 
+#[allow(clippy::unnecessary_wraps)]
 fn resolve_agent_data_dir_for_platform(
     home: &std::path::Path,
     _xdg_runtime_dir: Option<std::ffi::OsString>,
@@ -170,6 +171,7 @@ fn resolve_agent_data_dir_for_platform(
 }
 
 #[cfg(test)]
+#[allow(clippy::panic)]
 mod tests {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     use super::resolve_agent_data_dir_for_platform;
@@ -185,7 +187,9 @@ mod tests {
         let key = Zeroizing::new([0x42_u8; KEY_LEN]);
         cache.insert("lk_proj_alpha", key, MasterKeySource::PassphraseFallback);
 
-        let (got, source) = cache.get("lk_proj_alpha").expect("entry");
+        let Some((got, source)) = cache.get("lk_proj_alpha") else {
+            panic!("entry");
+        };
         assert_eq!(*got, [0x42_u8; KEY_LEN]);
         assert_eq!(source, MasterKeySource::PassphraseFallback);
     }
