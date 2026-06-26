@@ -11,6 +11,7 @@ import {
   defaultRotateForm,
   defaultSetForm,
   deleteFormToRequest,
+  deleteSecretCliCommand,
   deleteUnavailableNotice,
   rotateFormToPayload,
   rotateSecretSuccessNotice,
@@ -81,11 +82,14 @@ describe('desktop editor smoke flow', () => {
     expect(
       deleteFormToRequest(deleteForm, { projectId: PROJECT_ID, profileId: PROFILE_ID }),
     ).toEqual({
-        project_id: PROJECT_ID,
-        profile_id: PROFILE_ID,
-        secret_name: SECRET_NAME,
-        typed_confirmation: SECRET_NAME,
+      project_id: PROJECT_ID,
+      profile_id: PROFILE_ID,
+      secret_name: SECRET_NAME,
+      typed_confirmation: SECRET_NAME,
     });
+    expect(deleteSecretCliCommand(SECRET_NAME)).toBe('locket rm DATABASE_URL');
     expect(deleteUnavailableNotice(SECRET_NAME)).not.toContain(CANARY_VALUE);
+    expect(deleteUnavailableNotice(SECRET_NAME)).toContain('locket rm DATABASE_URL');
+    expect(deleteUnavailableNotice(SECRET_NAME)).not.toMatch(/RPC|not yet|ships/i);
   });
 });

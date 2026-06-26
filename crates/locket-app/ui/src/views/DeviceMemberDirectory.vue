@@ -1,8 +1,4 @@
 <script setup lang="ts">
-// TODO(desktop-search-filter): add filter controls for kind
-// (device vs member), role (owner/maintainer/developer/read-only), and
-// status (active/revoked/removed/pending). Today only free-text search
-// runs over device-and-member metadata.
 import { computed, ref } from 'vue';
 
 import type { DeviceMemberRow } from '../types/views';
@@ -39,13 +35,7 @@ const filteredRows = computed<DeviceMemberRow[]>(() => {
     if (needle.length === 0) {
       return true;
     }
-    const haystack = [
-      displayName(row),
-      fingerprintLabel(row),
-      row.kind,
-      row.role ?? '',
-      row.status,
-    ]
+    const haystack = [displayName(row), fingerprintLabel(row), row.kind, row.role ?? '', row.status]
       .join(' ')
       .toLocaleLowerCase();
     return haystack.includes(needle);

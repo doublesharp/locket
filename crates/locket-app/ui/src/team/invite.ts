@@ -5,12 +5,9 @@
 // these helpers so the form behavior is unit-testable without spinning
 // up jsdom.
 //
-// `team_invites` and the issue/accept/revoke RPCs are not yet exposed on
-// the agent wire (see `crates/locket-agent/src/method.rs`). The desktop
-// surfaces the create/accept/revoke forms today; the Tauri commands
-// thread through `unsupported-method` for those flows. List view is
-// reconstructed from `TEAM_INVITE` audit rows so the UI is useful even
-// before the agent ships the dedicated RPCs.
+// Desktop invite history is reconstructed from `TEAM_INVITE` audit
+// rows. The forms use the same validation rules as the CLI so the user
+// gets local feedback before switching to the CLI for invite changes.
 
 import type { AuditWireRow } from '../agent/types';
 
@@ -89,6 +86,10 @@ export interface TeamInviteRevokePayload {
 const DEVICE_DESCRIPTOR_PREFIX = 'lkdev1_';
 const PROFILE_NAME_PATTERN = /^[A-Za-z0-9._-]+$/;
 const FINGERPRINT_HEX_PATTERN = /^[0-9a-f]{64}$/i;
+
+export const TEAM_INVITE_DESKTOP_NOTICE =
+  'Desktop invite history is reconstructed from metadata-only audit rows. ' +
+  'Use the Locket CLI to issue, accept, or revoke team invites.';
 
 export function defaultIssueForm(): TeamInviteIssueFormState {
   return {
@@ -183,9 +184,7 @@ export function validateIssueForm(state: TeamInviteIssueFormState): TeamInviteIs
 }
 
 /** Whether the dangerous-profile typed gate must be satisfied before submit. */
-export function issueRequiresDangerousConfirmation(
-  validation: TeamInviteIssueValidation,
-): boolean {
+export function issueRequiresDangerousConfirmation(validation: TeamInviteIssueValidation): boolean {
   return validation.dangerousMatches.length > 0;
 }
 
@@ -206,8 +205,7 @@ export function issueFormToPayload(state: TeamInviteIssueFormState): TeamInviteC
   const dangerous = new Set(parseProfileList(state.dangerousProfiles));
   const dangerousMatches = profiles.filter((profile) => dangerous.has(profile));
   const expiresAt = state.expiresAt.trim();
-  const expiresAtUnixNanos =
-    expiresAt.length === 0 ? null : Date.parse(expiresAt) * 1_000_000;
+  const expiresAtUnixNanos = expiresAt.length === 0 ? null : Date.parse(expiresAt) * 1_000_000;
   return {
     recipient_label: state.recipientLabel.trim(),
     device_descriptor: state.deviceDescriptor.trim(),
@@ -274,6 +272,38 @@ export function revokeFormToPayload(state: TeamInviteRevokeFormState): TeamInvit
   return { invite_id: state.inviteId.trim() };
 }
 
+export function teamInviteIssueCliCommand(state: TeamInviteIssueFormState): string {
+  const profiles = parseProfileList(state.profiles)
+    .map((profile) => `--profile ${shellQuote(profile)}`)
+    .join(' ');
+  return [
+    'locket team invite',
+    shellQuote(state.recipientLabel.trim()),
+    '--device',
+    shellQuote(state.deviceDescriptor.trim()),
+    profiles,
+    '--role',
+    state.role,
+  ]
+    .filter((part) => part.length > 0)
+    .join(' ');
+}
+
+export function teamInviteAcceptCliCommand(invitePath: string): string {
+  return `locket team accept ${shellQuote(invitePath.trim())}`;
+}
+
+export function teamInviteRevokeCliCommand(inviteId: string): string {
+  return `locket team revoke-invite ${shellQuote(inviteId.trim())}`;
+}
+
+function shellQuote(value: string): string {
+  if (/^[A-Za-z0-9_./:@%+=,-]+$/.test(value)) {
+    return value;
+  }
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
 export type TeamInviteDirection = 'issued' | 'received' | 'unknown';
 export type TeamInviteStatus = 'pending' | 'accepted' | 'revoked' | 'expired' | 'unknown';
 
@@ -304,8 +334,7 @@ interface AuditMetadata {
 
 /**
  * Reconstruct a metadata-only invite row list from `TEAM_INVITE`
- * audit rows. Used until the dedicated `ListTeamInvites` agent RPC
- * lands (see top-of-file note).
+ * audit rows.
  */
 export function teamInviteRowsFromAudit(
   rows: ReadonlyArray<AuditWireRow>,
@@ -342,7 +371,9 @@ export function teamInviteRowsFromAudit(
     }
   }
 
-  return orderedIds.map((id) => byId.get(id)).filter((row): row is TeamInviteRow => row !== undefined);
+  return orderedIds
+    .map((id) => byId.get(id))
+    .filter((row): row is TeamInviteRow => row !== undefined);
 }
 
 function parseAuditMetadata(command: string | null | undefined): AuditMetadata {

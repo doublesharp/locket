@@ -7,11 +7,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { SecretRowMeta } from '../types/views';
-import {
-  defaultSecretFilter,
-  filterSecretRows,
-  isSecretFilterActive,
-} from './filter';
+import { defaultSecretFilter, filterSecretRows, isSecretFilterActive } from './filter';
 
 function row(overrides: Partial<SecretRowMeta>): SecretRowMeta {
   return {
@@ -39,27 +35,27 @@ describe('filterSecretRows', () => {
   });
 
   it('filters by source', () => {
-    expect(
-      filterSecretRows(rows, { ...defaultSecretFilter(), source: 'team' }),
-    ).toEqual([rows[0]]);
+    expect(filterSecretRows(rows, { ...defaultSecretFilter(), source: 'team' })).toEqual([rows[0]]);
   });
 
   it('filters by required vs optional', () => {
-    expect(
-      filterSecretRows(rows, { ...defaultSecretFilter(), required: 'required' }),
-    ).toEqual([rows[0]]);
-    expect(
-      filterSecretRows(rows, { ...defaultSecretFilter(), required: 'optional' }),
-    ).toEqual([rows[1], rows[2]]);
+    expect(filterSecretRows(rows, { ...defaultSecretFilter(), required: 'required' })).toEqual([
+      rows[0],
+    ]);
+    expect(filterSecretRows(rows, { ...defaultSecretFilter(), required: 'optional' })).toEqual([
+      rows[1],
+      rows[2],
+    ]);
   });
 
   it('filters by deprecated grace', () => {
-    expect(
-      filterSecretRows(rows, { ...defaultSecretFilter(), deprecation: 'deprecated' }),
-    ).toEqual([rows[2]]);
-    expect(
-      filterSecretRows(rows, { ...defaultSecretFilter(), deprecation: 'current' }),
-    ).toEqual([rows[0], rows[1]]);
+    expect(filterSecretRows(rows, { ...defaultSecretFilter(), deprecation: 'deprecated' })).toEqual(
+      [rows[2]],
+    );
+    expect(filterSecretRows(rows, { ...defaultSecretFilter(), deprecation: 'current' })).toEqual([
+      rows[0],
+      rows[1],
+    ]);
   });
 
   it('combines independent filters', () => {
@@ -79,14 +75,10 @@ describe('isSecretFilterActive', () => {
   });
 
   it('reports true when any filter is non-default', () => {
-    expect(
-      isSecretFilterActive({ ...defaultSecretFilter(), source: 'team' }),
-    ).toBe(true);
-    expect(
-      isSecretFilterActive({ ...defaultSecretFilter(), required: 'required' }),
-    ).toBe(true);
-    expect(
-      isSecretFilterActive({ ...defaultSecretFilter(), deprecation: 'deprecated' }),
-    ).toBe(true);
+    expect(isSecretFilterActive({ ...defaultSecretFilter(), source: 'team' })).toBe(true);
+    expect(isSecretFilterActive({ ...defaultSecretFilter(), required: 'required' })).toBe(true);
+    expect(isSecretFilterActive({ ...defaultSecretFilter(), deprecation: 'deprecated' })).toBe(
+      true,
+    );
   });
 });

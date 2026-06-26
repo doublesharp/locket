@@ -141,7 +141,9 @@ function onDismiss(): void {
             spellcheck="false"
             data-testid="policy-form-name"
           />
-          <span v-if="validation.errors.name" class="modal__error">{{ validation.errors.name }}</span>
+          <span v-if="validation.errors.name" class="modal__error">{{
+            validation.errors.name
+          }}</span>
         </label>
 
         <label class="modal__field">
@@ -215,7 +217,8 @@ function onDismiss(): void {
             <input v-model="form.confirm" type="checkbox" /> Require typed confirmation
           </label>
           <label class="modal__check">
-            <input v-model="form.requireUserVerification" type="checkbox" /> Require user verification
+            <input v-model="form.requireUserVerification" type="checkbox" /> Require user
+            verification
           </label>
           <label class="modal__check">
             <input v-model="form.allowRemoteDocker" type="checkbox" /> Allow remote Docker
@@ -243,10 +246,15 @@ function onDismiss(): void {
       </template>
 
       <p v-else class="modal__caption">
-        Delete <strong>{{ props.row?.name ?? form.name }}</strong>?
+        Delete <strong>{{ props.row?.name ?? form.name }}</strong
+        >?
       </p>
 
-      <label v-if="requiresConfirmation" class="modal__field" data-testid="policy-form-confirmation">
+      <label
+        v-if="requiresConfirmation"
+        class="modal__field"
+        data-testid="policy-form-confirmation"
+      >
         <span>Type the active profile name ({{ props.profileLabel }}) to confirm</span>
         <input v-model="confirmation" type="text" autocomplete="off" spellcheck="false" />
       </label>
@@ -254,10 +262,15 @@ function onDismiss(): void {
       <p v-if="props.errorMessage" class="modal__error" role="alert">{{ props.errorMessage }}</p>
 
       <div class="modal__actions">
-        <button type="button" class="modal__btn modal__btn--ghost" @click="onDismiss">Cancel</button>
+        <button type="button" class="modal__btn modal__btn--ghost" @click="onDismiss">
+          Cancel
+        </button>
         <button
           type="submit"
-          :class="['modal__btn', props.mode === 'delete' ? 'modal__btn--danger' : 'modal__btn--primary']"
+          :class="[
+            'modal__btn',
+            props.mode === 'delete' ? 'modal__btn--danger' : 'modal__btn--primary',
+          ]"
           :disabled="!canSubmit"
           data-testid="policy-form-submit"
         >

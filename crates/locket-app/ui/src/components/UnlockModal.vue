@@ -45,7 +45,11 @@ function onDismiss(): void {
         <button type="button" class="modal__btn modal__btn--ghost" @click="onDismiss">
           Cancel
         </button>
-        <button type="submit" class="modal__btn modal__btn--primary" :disabled="passphrase.length === 0">
+        <button
+          type="submit"
+          class="modal__btn modal__btn--primary"
+          :disabled="passphrase.length === 0"
+        >
           Unlock
         </button>
       </div>

@@ -198,8 +198,6 @@ const profileLabel = computed<string>(() =>
   ),
 );
 
-// Slice 4-5/9-11 land the remaining real data sources. The execution
-// monitor is populated from the agent's metadata-only session RPC.
 const secrets = ref<SecretRowMeta[]>([]);
 const versions = ref<VersionHistoryRow[]>([]);
 const sessions = ref<RuntimeSessionRow[]>([]);
@@ -208,7 +206,6 @@ const auditRows = ref<AuditLogRow[]>([]);
 const findings = ref<ScanFindingRow[]>([]);
 const policies = ref<CommandPolicyRow[]>([]);
 const rawAuditRows = ref<AuditWireRow[]>([]);
-const teamInviteNotice = ref<string | null>(null);
 const secretsLoading = ref<boolean>(false);
 const secretsError = ref<string | null>(null);
 const secretsLastRefreshed = ref<string | undefined>(undefined);
@@ -238,12 +235,7 @@ const backupError = ref<string | null>(null);
 const auditChainOk = ref<boolean>(true);
 
 const secretRows = computed<SecretRowMeta[]>(() =>
-  secretRowsWithDeprecationWarnings(
-    secrets.value,
-    versions.value,
-    policies.value,
-    nowUnixNanos(),
-  ),
+  secretRowsWithDeprecationWarnings(secrets.value, versions.value, policies.value, nowUnixNanos()),
 );
 
 const settings = ref<SettingsState>({
@@ -1362,22 +1354,6 @@ async function handleEditorReveal(row: SecretRowMeta): Promise<void> {
   await handleRevealSelectedSecret();
 }
 
-const TEAM_INVITE_RPC_MISSING =
-  'Agent does not yet expose ListTeamInvites/CreateTeamInvite/AcceptTeamInvite/RevokeTeamInvite. ' +
-  'Form input validated; submit blocked until the agent ships those RPCs.';
-
-function handleTeamInviteIssue(): void {
-  teamInviteNotice.value = TEAM_INVITE_RPC_MISSING;
-}
-
-function handleTeamInviteAccept(): void {
-  teamInviteNotice.value = TEAM_INVITE_RPC_MISSING;
-}
-
-function handleTeamInviteRevoke(): void {
-  teamInviteNotice.value = TEAM_INVITE_RPC_MISSING;
-}
-
 onMounted(() => {
   void listen<TrayMenuAction>('tray-menu-action', (event) => {
     void handleTrayMenuAction(event.payload);
@@ -1573,12 +1549,9 @@ onUnmounted(() => {
         :dangerous-profiles="settings.dangerousProfileFlag ? (status?.profile_name ?? '') : ''"
         :require-accept-user-verification="settings.requireUserVerification"
         :loading="auditLoading"
-        :error-message="auditError ?? teamInviteNotice"
+        :error-message="auditError"
         :last-refreshed-at="auditLastRefreshed"
         @refresh="refreshAuditLog"
-        @issue="handleTeamInviteIssue"
-        @accept="handleTeamInviteAccept"
-        @revoke="handleTeamInviteRevoke"
       />
 
       <template v-else-if="currentView === 'recovery'">

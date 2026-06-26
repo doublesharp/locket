@@ -33,9 +33,9 @@ describe('profileEntries', () => {
       }),
     );
     expect(entries.map((entry) => entry.name)).toEqual(['dev', 'stage', 'prod']);
-    expect(entries.every((entry) => entry.dangerous === (entry.name === 'dev' ? false : false))).toBe(
-      true,
-    );
+    expect(
+      entries.every((entry) => entry.dangerous === (entry.name === 'dev' ? false : false)),
+    ).toBe(true);
   });
 
   it('returns an empty list when no active profile and no targets', () => {

@@ -1,18 +1,7 @@
 <script setup lang="ts">
-// Desktop view for the gated secret set/rotate/delete + TTL-bound reveal flow.
-//
-// - `set` and `rotate` go through `agent_set_secret` / `agent_rotate_secret`
-//   Tauri commands which wrap the agent's existing `SetSecret` RPC. The
-//   webview never holds the encrypted blob; it just passes the typed
-//   plaintext through a single Tauri invoke and receives metadata-only
-//   audit identifiers in return.
-// - `delete` is staged in the UI but the agent does not yet expose a
-//   `DeleteSecret` / `PurgeSecret` RPC (see `crates/locket-agent/src/method.rs`).
-//   The submit button surfaces a typed "agent surface missing" notice
-//   so the dangerous-typed-confirmation path is reviewable today.
-// - Reveal goes through the existing `RevealModal` which in turn calls
-//   `agent_reveal`; the value is held only inside the modal's TTL
-//   countdown and is scrubbed on view switch.
+// Desktop view for gated secret set/rotate, CLI-directed delete, and
+// TTL-bound reveal. Plaintext enters the webview only for an active form
+// submission or reveal modal and is cleared when the flow completes.
 
 import { computed, ref } from 'vue';
 
@@ -21,7 +10,7 @@ import {
   defaultDeleteForm,
   defaultRotateForm,
   defaultSetForm,
-  deleteFormToRequest,
+  deleteSecretCliCommand,
   deleteUnavailableNotice,
   rotateSecretSuccessNotice,
   rotateFormToPayload,
@@ -77,7 +66,6 @@ const rotateSubmitting = ref<boolean>(false);
 
 const setError = ref<string | null>(null);
 const rotateError = ref<string | null>(null);
-const deleteError = ref<string | null>(null);
 
 const setNotice = ref<string | null>(null);
 const rotateNotice = ref<string | null>(null);
@@ -105,17 +93,26 @@ const setValidation = computed(() => validateSetForm(setForm.value));
 const rotateValidation = computed(() => validateRotateForm(rotateForm.value));
 const deleteValidation = computed(() => validateDeleteForm(deleteForm.value));
 
-const canSubmitSet = computed<boolean>(() =>
-  setValidation.value.valid && !setSubmitting.value && hasContext.value,
+const canSubmitSet = computed<boolean>(
+  () => setValidation.value.valid && !setSubmitting.value && hasContext.value,
 );
-const canSubmitRotate = computed<boolean>(() =>
-  rotateValidation.value.valid && !rotateSubmitting.value && hasContext.value,
+const canSubmitRotate = computed<boolean>(
+  () => rotateValidation.value.valid && !rotateSubmitting.value && hasContext.value,
 );
-const canSubmitDelete = computed<boolean>(() => deleteValidation.value.valid);
+const deleteCliCommand = computed<string | null>(() => {
+  if (!deleteValidation.value.valid) {
+    return null;
+  }
+  return deleteSecretCliCommand(deleteForm.value.name);
+});
+const deleteNotice = computed<string | null>(() => {
+  if (deleteCliCommand.value === null) {
+    return null;
+  }
+  return deleteUnavailableNotice(deleteForm.value.name);
+});
 
-const hasContext = computed<boolean>(
-  () => Boolean(props.projectId) && Boolean(props.profileId),
-);
+const hasContext = computed<boolean>(() => Boolean(props.projectId) && Boolean(props.profileId));
 
 function rotateSourceFor(name: string): SecretSource {
   const trimmed = name.trim();
@@ -206,19 +203,6 @@ async function onRotate(): Promise<void> {
   rotateNotice.value = rotateSecretSuccessNotice(payload.secret_name, result.value.version);
   rotateForm.value = defaultRotateForm();
   refresh();
-}
-
-function onDelete(): void {
-  if (!canSubmitDelete.value) {
-    return;
-  }
-  // Stage the typed-confirmation request even though no agent RPC is
-  // wired yet, so the dangerous-typed-confirmation path is reviewable.
-  const request = deleteFormToRequest(deleteForm.value, {
-    projectId: props.projectId ?? '',
-    profileId: props.profileId ?? '',
-  });
-  deleteError.value = deleteUnavailableNotice(request.secret_name);
 }
 
 function onReveal(row: SecretRowMeta): void {
@@ -424,10 +408,10 @@ function errorLabel(error: AgentClientError): string {
     <section aria-labelledby="secret-editor-delete-heading" class="view__panel">
       <h3 id="secret-editor-delete-heading" class="view__panel-heading">Delete secret</h3>
       <p class="view__muted">
-        Agent <code>DeleteSecret</code> / <code>PurgeSecret</code> RPCs are not yet wired.
-        The form below validates the typed-confirmation but submit stays blocked.
+        Secret deletion is available from the Locket CLI. This form validates the typed confirmation
+        and shows the command to run in a terminal.
       </p>
-      <form @submit.prevent="onDelete">
+      <form @submit.prevent>
         <label class="view__field">
           <span>Secret name</span>
           <input
@@ -455,16 +439,12 @@ function errorLabel(error: AgentClientError): string {
             {{ deleteValidation.errors.confirmation }}
           </span>
         </label>
-        <p v-if="deleteError" class="view__error" role="alert">{{ deleteError }}</p>
+        <p v-if="deleteNotice" class="view__notice" role="note">{{ deleteNotice }}</p>
         <div class="view__form-actions">
-          <button
-            type="submit"
-            class="view__button view__button--danger"
-            :disabled="!canSubmitDelete"
-            data-testid="secret-editor-delete-submit"
-          >
-            Delete secret
-          </button>
+          <code v-if="deleteCliCommand" data-testid="secret-editor-delete-cli-command">
+            {{ deleteCliCommand }}
+          </code>
+          <span v-else class="view__muted">Complete the confirmation to show the CLI command.</span>
         </div>
       </form>
     </section>

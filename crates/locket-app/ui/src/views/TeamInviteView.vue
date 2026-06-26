@@ -1,31 +1,20 @@
 <script setup lang="ts">
-// Desktop view for issuing, accepting, and revoking team invites.
-//
-// The agent does not yet expose dedicated `ListTeamInvites`,
-// `CreateTeamInvite`, `AcceptTeamInvite`, or `RevokeTeamInvite` RPCs
-// (see `crates/locket-agent/src/method.rs`). Until those land:
-//   - The list is reconstructed from `TEAM_INVITE` audit rows owned by
-//     the active project. Rows include only metadata; no secret values
-//     ever pass through the webview.
-//   - Issue/accept/revoke submits are surfaced as typed
-//     "agent surface missing" notices so the user is never silently
-//     dropped on the floor and the desktop UX is reviewable today.
-//
-// The form models (`../team/invite.ts`) own validation, dangerous-
-// profile gating, and payload construction so they stay testable
-// without spinning up jsdom.
+// Desktop view for metadata-only team invite history and validated
+// invite forms. Secret values and wrapped keys never pass through the
+// webview; invite mutations remain available through the CLI.
 
 import { computed, ref, watch } from 'vue';
 
 import {
-  acceptFormToPayload,
   defaultAcceptForm,
   defaultIssueForm,
   defaultRevokeForm,
   issueDangerousConfirmationMatches,
-  issueFormToPayload,
   issueRequiresDangerousConfirmation,
-  revokeFormToPayload,
+  teamInviteAcceptCliCommand,
+  teamInviteIssueCliCommand,
+  TEAM_INVITE_DESKTOP_NOTICE,
+  teamInviteRevokeCliCommand,
   teamInviteRowsFromAudit,
   validateAcceptForm,
   validateIssueForm,
@@ -53,20 +42,14 @@ const props = defineProps<Props>();
 
 const emit = defineEmits<{
   (event: 'refresh'): void;
-  (event: 'issue', payload: ReturnType<typeof issueFormToPayload>): void;
-  (event: 'accept', payload: ReturnType<typeof acceptFormToPayload>): void;
-  (event: 'revoke', payload: ReturnType<typeof revokeFormToPayload>): void;
 }>();
 
 const issueForm = ref<TeamInviteIssueFormState>(defaultIssueForm());
 const issueDangerousConfirmation = ref<string>('');
-const issueSubmitError = ref<string | null>(null);
 
 const acceptForm = ref<TeamInviteAcceptFormState>(defaultAcceptForm());
-const acceptSubmitError = ref<string | null>(null);
 
 const revokeForm = ref<TeamInviteRevokeFormState>(defaultRevokeForm());
-const revokeSubmitError = ref<string | null>(null);
 
 const searchQuery = ref<string>('');
 
@@ -132,41 +115,15 @@ const acceptCanSubmit = computed<boolean>(() => acceptValidation.value.valid);
 const revokeValidation = computed(() => validateRevokeForm(revokeForm.value));
 const revokeCanSubmit = computed<boolean>(() => revokeValidation.value.valid);
 
-function onIssue(): void {
-  if (!issueCanSubmit.value) {
-    return;
-  }
-  issueSubmitError.value = null;
-  try {
-    emit('issue', issueFormToPayload(issueForm.value));
-  } catch (error) {
-    issueSubmitError.value = error instanceof Error ? error.message : 'Issue failed.';
-  }
-}
-
-function onAccept(): void {
-  if (!acceptCanSubmit.value) {
-    return;
-  }
-  acceptSubmitError.value = null;
-  try {
-    emit('accept', acceptFormToPayload(acceptForm.value));
-  } catch (error) {
-    acceptSubmitError.value = error instanceof Error ? error.message : 'Accept failed.';
-  }
-}
-
-function onRevoke(): void {
-  if (!revokeCanSubmit.value) {
-    return;
-  }
-  revokeSubmitError.value = null;
-  try {
-    emit('revoke', revokeFormToPayload(revokeForm.value));
-  } catch (error) {
-    revokeSubmitError.value = error instanceof Error ? error.message : 'Revoke failed.';
-  }
-}
+const issueCliCommand = computed<string | null>(() =>
+  issueCanSubmit.value ? teamInviteIssueCliCommand(issueForm.value) : null,
+);
+const acceptCliCommand = computed<string | null>(() =>
+  acceptCanSubmit.value ? teamInviteAcceptCliCommand('<invite-file>') : null,
+);
+const revokeCliCommand = computed<string | null>(() =>
+  revokeCanSubmit.value ? teamInviteRevokeCliCommand(revokeForm.value.inviteId) : null,
+);
 
 function refresh(): void {
   emit('refresh');
@@ -215,11 +172,7 @@ function statusBadge(status: TeamInviteRow['status']): string {
     <p v-if="errorMessage" class="view__error">{{ errorMessage }}</p>
 
     <p class="view__notice" role="note">
-      Agent invite RPCs (<code>ListTeamInvites</code>, <code>CreateTeamInvite</code>,
-      <code>AcceptTeamInvite</code>, <code>RevokeTeamInvite</code>) are not yet wired.
-      The list below is reconstructed from <code>TEAM_INVITE</code> audit rows. Submit buttons
-      enqueue requests against the desktop bridge, which currently surfaces an
-      <code>unsupported-method</code> response until the agent ships those RPCs.
+      {{ TEAM_INVITE_DESKTOP_NOTICE }}
     </p>
 
     <section aria-labelledby="team-invite-list-heading" class="view__panel">
@@ -273,7 +226,7 @@ function statusBadge(status: TeamInviteRow['status']): string {
 
     <section aria-labelledby="team-invite-issue-heading" class="view__panel">
       <h3 id="team-invite-issue-heading" class="view__panel-heading">Issue invite</h3>
-      <form @submit.prevent="onIssue">
+      <form @submit.prevent>
         <label class="view__field">
           <span>Recipient label</span>
           <input
@@ -338,8 +291,8 @@ function statusBadge(status: TeamInviteRow['status']): string {
         </label>
         <p v-if="issueRequiresConfirmation" class="view__warn" role="status">
           This invite includes the dangerous profile(s):
-          <strong>{{ issueValidation.dangerousMatches.join(', ') }}</strong>. Type each
-          dangerous profile name to confirm.
+          <strong>{{ issueValidation.dangerousMatches.join(', ') }}</strong
+          >. Type each dangerous profile name to confirm.
         </p>
         <label v-if="issueRequiresConfirmation" class="view__field">
           <span>Type dangerous profile name(s)</span>
@@ -351,23 +304,18 @@ function statusBadge(status: TeamInviteRow['status']): string {
             data-testid="team-invite-dangerous-confirmation"
           />
         </label>
-        <p v-if="issueSubmitError" class="view__error" role="alert">{{ issueSubmitError }}</p>
         <div class="view__form-actions">
-          <button
-            type="submit"
-            class="view__button view__button--primary"
-            :disabled="!issueCanSubmit"
-            data-testid="team-invite-issue"
-          >
-            Issue invite
-          </button>
+          <code v-if="issueCliCommand" data-testid="team-invite-issue-cli-command">
+            {{ issueCliCommand }}
+          </code>
+          <span v-else class="view__muted">Complete the fields to show the CLI command.</span>
         </div>
       </form>
     </section>
 
     <section aria-labelledby="team-invite-accept-heading" class="view__panel">
       <h3 id="team-invite-accept-heading" class="view__panel-heading">Accept invite</h3>
-      <form @submit.prevent="onAccept">
+      <form @submit.prevent>
         <label class="view__field">
           <span>Paste invite text</span>
           <textarea
@@ -396,22 +344,17 @@ function statusBadge(status: TeamInviteRow['status']): string {
         </label>
         <label v-if="acceptForm.requireUserVerification" class="view__check">
           <input v-model="acceptForm.userVerified" type="checkbox" />
-          I have completed local user verification (platform prompt / hardware key /
-          passphrase fallback).
+          I have completed local user verification (platform prompt / hardware key / passphrase
+          fallback).
           <span v-if="acceptValidation.errors.userVerified" class="view__error">
             {{ acceptValidation.errors.userVerified }}
           </span>
         </label>
-        <p v-if="acceptSubmitError" class="view__error" role="alert">{{ acceptSubmitError }}</p>
         <div class="view__form-actions">
-          <button
-            type="submit"
-            class="view__button view__button--primary"
-            :disabled="!acceptCanSubmit"
-            data-testid="team-invite-accept"
-          >
-            Accept invite
-          </button>
+          <code v-if="acceptCliCommand" data-testid="team-invite-accept-cli-command">
+            {{ acceptCliCommand }}
+          </code>
+          <span v-else class="view__muted">Complete the checks to show the CLI command.</span>
         </div>
       </form>
     </section>
@@ -419,7 +362,7 @@ function statusBadge(status: TeamInviteRow['status']): string {
     <section aria-labelledby="team-invite-revoke-heading" class="view__panel">
       <h3 id="team-invite-revoke-heading" class="view__panel-heading">Revoke invite</h3>
       <p class="view__muted">Owners and the issuing maintainer may revoke an outstanding invite.</p>
-      <form @submit.prevent="onRevoke">
+      <form @submit.prevent>
         <label class="view__field">
           <span>Invite id</span>
           <input
@@ -446,16 +389,11 @@ function statusBadge(status: TeamInviteRow['status']): string {
             {{ revokeValidation.errors.confirmation }}
           </span>
         </label>
-        <p v-if="revokeSubmitError" class="view__error" role="alert">{{ revokeSubmitError }}</p>
         <div class="view__form-actions">
-          <button
-            type="submit"
-            class="view__button view__button--danger"
-            :disabled="!revokeCanSubmit"
-            data-testid="team-invite-revoke"
-          >
-            Revoke invite
-          </button>
+          <code v-if="revokeCliCommand" data-testid="team-invite-revoke-cli-command">
+            {{ revokeCliCommand }}
+          </code>
+          <span v-else class="view__muted">Complete the confirmation to show the CLI command.</span>
         </div>
       </form>
     </section>

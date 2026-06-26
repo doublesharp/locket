@@ -163,7 +163,9 @@ function onKey(event: KeyboardEvent, row: SecretRowMeta): void {
     </header>
 
     <fieldset class="view__filters" aria-labelledby="secret-filter-legend">
-      <legend id="secret-filter-legend" class="view__filters-legend">Filters (metadata only)</legend>
+      <legend id="secret-filter-legend" class="view__filters-legend">
+        Filters (metadata only)
+      </legend>
       <div class="view__filter-group" role="group" aria-label="Filter by source">
         <span class="view__filter-label">Source</span>
         <button
@@ -175,7 +177,10 @@ function onKey(event: KeyboardEvent, row: SecretRowMeta): void {
           ] as const"
           :key="option.value"
           type="button"
-          :class="['view__filter-chip', { 'view__filter-chip--active': filterState.source === option.value }]"
+          :class="[
+            'view__filter-chip',
+            { 'view__filter-chip--active': filterState.source === option.value },
+          ]"
           :aria-pressed="filterState.source === option.value"
           @click="setSourceFilter(option.value)"
         >
@@ -192,7 +197,10 @@ function onKey(event: KeyboardEvent, row: SecretRowMeta): void {
           ] as const"
           :key="option.value"
           type="button"
-          :class="['view__filter-chip', { 'view__filter-chip--active': filterState.required === option.value }]"
+          :class="[
+            'view__filter-chip',
+            { 'view__filter-chip--active': filterState.required === option.value },
+          ]"
           :aria-pressed="filterState.required === option.value"
           @click="setRequiredFilter(option.value)"
         >
@@ -209,7 +217,10 @@ function onKey(event: KeyboardEvent, row: SecretRowMeta): void {
           ] as const"
           :key="option.value"
           type="button"
-          :class="['view__filter-chip', { 'view__filter-chip--active': filterState.deprecation === option.value }]"
+          :class="[
+            'view__filter-chip',
+            { 'view__filter-chip--active': filterState.deprecation === option.value },
+          ]"
           :aria-pressed="filterState.deprecation === option.value"
           @click="setDeprecationFilter(option.value)"
         >

@@ -67,9 +67,5 @@ function matchesFilter(row: SecretRowMeta, state: SecretFilterState): boolean {
 
 /** Whether any non-default filter is currently applied. */
 export function isSecretFilterActive(state: SecretFilterState): boolean {
-  return (
-    state.source !== 'all' ||
-    state.required !== 'all' ||
-    state.deprecation !== 'all'
-  );
+  return state.source !== 'all' || state.required !== 'all' || state.deprecation !== 'all';
 }

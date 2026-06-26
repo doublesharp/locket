@@ -91,9 +91,7 @@ onBeforeUnmount(() => {
 });
 
 const visible = computed<boolean>(() => state.value.kind === 'visible');
-const value = computed<string>(() =>
-  state.value.kind === 'visible' ? state.value.value : '',
-);
+const value = computed<string>(() => (state.value.kind === 'visible' ? state.value.value : ''));
 const secretLabel = computed<string>(() =>
   state.value.kind === 'visible' ? state.value.secretLabel : '',
 );
@@ -114,9 +112,7 @@ const secretLabel = computed<string>(() =>
       </header>
       <pre class="reveal__value" data-testid="reveal-value">{{ value }}</pre>
       <footer class="reveal__foot">
-        <span class="reveal__ttl" aria-live="polite"
-          >Hides in {{ remaining }}s</span
-        >
+        <span class="reveal__ttl" aria-live="polite">Hides in {{ remaining }}s</span>
         <button type="button" class="reveal__close" @click="onClose">Close</button>
       </footer>
     </div>

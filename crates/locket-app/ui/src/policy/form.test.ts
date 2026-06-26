@@ -100,11 +100,7 @@ describe('policyFormToSnapshot', () => {
   });
 
   it('truncates the TTL to a non-negative integer', () => {
-    const snapshot = policyFormToSnapshot(
-      validForm({ ttlSeconds: 30.7 }),
-      'project-123',
-      0,
-    );
+    const snapshot = policyFormToSnapshot(validForm({ ttlSeconds: 30.7 }), 'project-123', 0);
     expect(snapshot.ttl_seconds).toBe(30);
   });
 });

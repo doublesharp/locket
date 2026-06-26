@@ -84,9 +84,21 @@ describe('trayActionAgentCommand', () => {
 
 describe('trayActionEnablement', () => {
   const matrix: Array<[TraySelectionState, boolean, string | null]> = [
-    [{ vault_unlocked: false, secret_selected: false }, false, 'Unlock the vault to use this action.'],
-    [{ vault_unlocked: false, secret_selected: true }, false, 'Unlock the vault to use this action.'],
-    [{ vault_unlocked: true, secret_selected: false }, false, 'Select a secret in the desktop list first.'],
+    [
+      { vault_unlocked: false, secret_selected: false },
+      false,
+      'Unlock the vault to use this action.',
+    ],
+    [
+      { vault_unlocked: false, secret_selected: true },
+      false,
+      'Unlock the vault to use this action.',
+    ],
+    [
+      { vault_unlocked: true, secret_selected: false },
+      false,
+      'Select a secret in the desktop list first.',
+    ],
     [{ vault_unlocked: true, secret_selected: true }, true, null],
   ];
 

@@ -160,19 +160,12 @@ function versionKey(name: string, version: number): string {
 }
 
 function warningKey(key: WarningKey): string {
-  return [
-    key.rowName,
-    key.version.toString(),
-    key.status,
-    key.surface,
-    key.graceUntil ?? '',
-  ].join('\u0000');
+  return [key.rowName, key.version.toString(), key.status, key.surface, key.graceUntil ?? ''].join(
+    '\u0000',
+  );
 }
 
-function compareWarnings(
-  left: SecretDeprecationWarning,
-  right: SecretDeprecationWarning,
-): number {
+function compareWarnings(left: SecretDeprecationWarning, right: SecretDeprecationWarning): number {
   if (left.status !== right.status) {
     return left.status === 'expired-grace' ? -1 : 1;
   }

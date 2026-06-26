@@ -7,10 +7,7 @@
 
 import { describe, expect, it, vi } from 'vitest';
 
-import {
-  RevealModalModel,
-  type RevealModalEvent,
-} from './model';
+import { RevealModalModel, type RevealModalEvent } from './model';
 
 describe('RevealModalModel', () => {
   it('shows a request value and emits a `shown` event', () => {
@@ -26,9 +23,7 @@ describe('RevealModalModel', () => {
       expect(snap.value).toBe('postgres://x');
       expect(snap.ttlSeconds).toBe(30);
     }
-    expect(events).toEqual([
-      { kind: 'shown', secretLabel: 'DATABASE_URL', ttlSeconds: 30 },
-    ]);
+    expect(events).toEqual([{ kind: 'shown', secretLabel: 'DATABASE_URL', ttlSeconds: 30 }]);
   });
 
   it('defaults the TTL to 30 seconds when missing or non-positive', () => {

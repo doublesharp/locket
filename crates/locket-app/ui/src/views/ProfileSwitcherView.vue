@@ -1,7 +1,4 @@
 <script setup lang="ts">
-// TODO(desktop-search-filter): add a search input and a dangerous-flag
-// filter so large profile lists stay manageable; today only the
-// recent-targets list is surfaced and free-text search is missing.
 import { computed, ref } from 'vue';
 
 import {
@@ -126,7 +123,9 @@ function onSubmit(): void {
         >
           <span class="profile-list__name">{{ entryLabel(entry) }}</span>
           <span v-if="entry.dangerous" class="badge badge--warning">dangerous</span>
-          <span v-if="entry.name === props.state.activeProfile" class="badge badge--ok">active</span>
+          <span v-if="entry.name === props.state.activeProfile" class="badge badge--ok"
+            >active</span
+          >
         </button>
       </li>
     </ul>

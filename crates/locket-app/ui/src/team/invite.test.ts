@@ -17,6 +17,10 @@ import {
   issueRequiresDangerousConfirmation,
   parseProfileList,
   revokeFormToPayload,
+  teamInviteAcceptCliCommand,
+  teamInviteIssueCliCommand,
+  TEAM_INVITE_DESKTOP_NOTICE,
+  teamInviteRevokeCliCommand,
   teamInviteRowsFromAudit,
   validateAcceptForm,
   validateIssueForm,
@@ -26,6 +30,42 @@ import {
 describe('parseProfileList', () => {
   it('trims, dedupes, and skips empties', () => {
     expect(parseProfileList(' dev , prod, dev ,, qa ')).toEqual(['dev', 'prod', 'qa']);
+  });
+});
+
+describe('desktop notice copy', () => {
+  it('keeps invite availability user-facing', () => {
+    expect(TEAM_INVITE_DESKTOP_NOTICE).toContain('Locket CLI');
+    expect(TEAM_INVITE_DESKTOP_NOTICE).not.toMatch(/RPC|unsupported|not yet|ships/i);
+  });
+
+  it('builds CLI commands for handoff actions', () => {
+    expect(
+      teamInviteIssueCliCommand({
+        ...defaultIssueForm(),
+        recipientLabel: 'Alice Smith',
+        deviceDescriptor: 'lkdev1_abcdef0123456789abcdef',
+        role: 'developer',
+        profiles: 'dev, qa',
+      }),
+    ).toBe(
+      "locket team invite 'Alice Smith' --device lkdev1_abcdef0123456789abcdef --profile dev --profile qa --role developer",
+    );
+    expect(teamInviteAcceptCliCommand('/tmp/alice invite.locket-invite')).toBe(
+      "locket team accept '/tmp/alice invite.locket-invite'",
+    );
+    expect(teamInviteRevokeCliCommand('lk_invite_123')).toBe(
+      'locket team revoke-invite lk_invite_123',
+    );
+    expect(
+      teamInviteIssueCliCommand({
+        ...defaultIssueForm(),
+        recipientLabel: "$(touch '/tmp/pwned')",
+        deviceDescriptor: 'lkdev1_abcdef0123456789abcdef',
+        role: 'developer',
+        profiles: 'dev',
+      }),
+    ).toContain("'$(touch '\\''/tmp/pwned'\\'')'");
   });
 });
 

@@ -1,8 +1,4 @@
 <script setup lang="ts">
-// TODO(desktop-search-filter): add filter controls for command kind
-// (argv vs shell), env mode, override mode, and dangerous gates
-// (require_user_verification / allow_remote_docker / confirm). Today
-// only free-text search runs over policy metadata.
 import { computed, ref } from 'vue';
 
 import type { CommandPolicyRow } from '../types/views';
@@ -156,12 +152,7 @@ function startDelete(): void {
           />
         </label>
         <button type="button" class="view__button" @click="startCreate">New policy</button>
-        <button
-          type="button"
-          class="view__button"
-          :disabled="!selectedPolicy"
-          @click="startEdit"
-        >
+        <button type="button" class="view__button" :disabled="!selectedPolicy" @click="startEdit">
           Edit
         </button>
         <button
@@ -213,7 +204,9 @@ function startDelete(): void {
               <span class="view__name">{{ policyLabel(row) }}</span>
             </td>
             <td>
-              <span :class="['badge', row.commandKind === 'shell' ? 'badge--warning' : 'badge--ok']">
+              <span
+                :class="['badge', row.commandKind === 'shell' ? 'badge--warning' : 'badge--ok']"
+              >
                 {{ row.commandKind }}
               </span>
             </td>

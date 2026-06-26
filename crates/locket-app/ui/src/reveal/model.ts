@@ -59,9 +59,8 @@ export class RevealModalModel {
 
   /** Show the modal with a freshly resolved value. */
   show(request: RevealRequest, nowMs: number = nowMonotonic()): void {
-    const ttl = request.ttlSeconds && request.ttlSeconds > 0
-      ? request.ttlSeconds
-      : DEFAULT_TTL_SECONDS;
+    const ttl =
+      request.ttlSeconds && request.ttlSeconds > 0 ? request.ttlSeconds : DEFAULT_TTL_SECONDS;
     this.state = {
       kind: 'visible',
       secretLabel: request.secretLabel,

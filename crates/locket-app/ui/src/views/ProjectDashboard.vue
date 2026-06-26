@@ -47,7 +47,8 @@ const failedSessionCount = computed<number>(
   () => props.sessions.filter((row) => row.state === 'failed' || row.state === 'stale').length,
 );
 const scanWarningCount = computed<number>(
-  () => props.findings.filter((row) => row.severity === 'high' || row.severity === 'critical').length,
+  () =>
+    props.findings.filter((row) => row.severity === 'high' || row.severity === 'critical').length,
 );
 const auditIssueCount = computed<number>(
   () => props.auditRows.filter((row) => row.status !== 'OK' || !row.hmacOk).length,
@@ -184,21 +185,30 @@ function refresh(): void {
         <div class="dashboard__search-scopes" aria-label="Filter project and profile results">
           <button
             type="button"
-            :class="['dashboard__scope', { 'dashboard__scope--active': projectProfileSearchScope === 'all' }]"
+            :class="[
+              'dashboard__scope',
+              { 'dashboard__scope--active': projectProfileSearchScope === 'all' },
+            ]"
             @click="projectProfileSearchScope = 'all'"
           >
             All
           </button>
           <button
             type="button"
-            :class="['dashboard__scope', { 'dashboard__scope--active': projectProfileSearchScope === 'project' }]"
+            :class="[
+              'dashboard__scope',
+              { 'dashboard__scope--active': projectProfileSearchScope === 'project' },
+            ]"
             @click="projectProfileSearchScope = 'project'"
           >
             Projects
           </button>
           <button
             type="button"
-            :class="['dashboard__scope', { 'dashboard__scope--active': projectProfileSearchScope === 'profile' }]"
+            :class="[
+              'dashboard__scope',
+              { 'dashboard__scope--active': projectProfileSearchScope === 'profile' },
+            ]"
             @click="projectProfileSearchScope = 'profile'"
           >
             Profiles
