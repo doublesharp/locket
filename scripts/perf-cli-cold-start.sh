@@ -16,8 +16,8 @@
 # Budgets:
 #   metadata_p95_ms = 100   (per docs/specs/performance.md, metadata-only CLIs)
 # `locket get FOO` is currently routed through the agent path; this harness
-# emits the raw mean+p95 plus a TODO marker until the named reference runner
-# publishes a calibrated `lk://` resolution number.
+# emits raw mean and p95 data until the named reference runner publishes a
+# calibrated `lk://` resolution number.
 
 set -euo pipefail
 
@@ -104,65 +104,34 @@ hyperfine "${hyperfine_args[@]}"
 # budgets. p95 from a 20-run sample is wide; the bench-smoke harness owns the
 # full p95 calculation. This script just emits the per-scenario mean and a
 # soft warning if it exceeds the documented metadata budget.
-python_or_perl_summary() {
-  if command -v python3 >/dev/null 2>&1; then
-    python3 - "$@" <<'PY'
-import json
-import sys
+node_summary() {
+  node - "$@" <<'JS'
+const fs = require("node:fs");
 
-path, budget_ms = sys.argv[1], float(sys.argv[2])
-with open(path, "r", encoding="utf-8") as fh:
-    data = json.load(fh)
+const [path, budgetArg] = process.argv.slice(2);
+const budgetMs = Number(budgetArg);
+const data = JSON.parse(fs.readFileSync(path, "utf8"));
 
-print()
-print("perf-cli-cold-start summary (mean ± stddev, seconds):")
-metadata_names = {"locket --help", "locket status"}
-exit_code = 0
-for entry in data.get("results", []):
-    name = entry.get("command", "?")
-    mean_s = entry.get("mean", 0.0)
-    stddev_s = entry.get("stddev", 0.0)
-    print(f"  {name}: {mean_s*1000:.2f} ms ± {stddev_s*1000:.2f} ms")
-    if name in metadata_names and mean_s * 1000.0 > budget_ms:
-        print(f"    FAIL: exceeds metadata budget {budget_ms:.0f} ms")
-        exit_code = 1
-
-print()
-print("# TODO(named-reference-runner): calibrate `locket get FOO` budget once")
-print("# the named reference runner publishes lk:// resolution numbers per")
-print("# docs/specs/performance.md.")
-sys.exit(exit_code)
-PY
-  else
-    perl - "$@" <<'PERL'
-use strict;
-use warnings;
-use JSON::PP;
-my ($path, $budget_ms) = @ARGV;
-open my $fh, "<", $path or die "open $path: $!";
-local $/;
-my $json = JSON::PP->new->decode(<$fh>);
-print "\n";
-print "perf-cli-cold-start summary (mean ± stddev, seconds):\n";
-my %metadata = map { $_ => 1 } ("locket --help", "locket status");
-my $exit = 0;
-for my $entry (@{ $json->{results} }) {
-  my $name = $entry->{command} // "?";
-  my $mean = $entry->{mean} // 0.0;
-  my $stddev = $entry->{stddev} // 0.0;
-  printf "  %s: %.2f ms ± %.2f ms\n", $name, $mean * 1000, $stddev * 1000;
-  if ($metadata{$name} && $mean * 1000 > $budget_ms) {
-    printf "    FAIL: exceeds metadata budget %.0f ms\n", $budget_ms;
-    $exit = 1;
+console.log();
+console.log("perf-cli-cold-start summary (mean ± stddev, seconds):");
+const metadataNames = new Set(["locket --help", "locket status"]);
+let exitCode = 0;
+for (const entry of data.results ?? []) {
+  const name = entry.command ?? "?";
+  const meanS = entry.mean ?? 0.0;
+  const stddevS = entry.stddev ?? 0.0;
+  console.log(`  ${name}: ${(meanS * 1000).toFixed(2)} ms ± ${(stddevS * 1000).toFixed(2)} ms`);
+  if (metadataNames.has(name) && meanS * 1000.0 > budgetMs) {
+    console.log(`    FAIL: exceeds metadata budget ${budgetMs.toFixed(0)} ms`);
+    exitCode = 1;
   }
 }
-print "\n";
-print "# TODO(named-reference-runner): calibrate `locket get FOO` budget once\n";
-print "# the named reference runner publishes lk:// resolution numbers per\n";
-print "# docs/specs/performance.md.\n";
-exit $exit;
-PERL
-  fi
+
+console.log();
+console.log("# reference-runner calibration pending for `locket get FOO`");
+console.log("# lk:// resolution numbers are recorded per docs/specs/performance.md.");
+process.exit(exitCode);
+JS
 }
 
-python_or_perl_summary "${output_json}" "${metadata_budget_ms}"
+node_summary "${output_json}" "${metadata_budget_ms}"

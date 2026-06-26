@@ -8,10 +8,10 @@
 # ----- Budget reference -----
 #
 # `LOCKET_KEY_DERIVATION_WARM_NS` is the warm-call ns/op budget. The default
-# (15000 ns ≈ 15 µs) is a deliberately liberal placeholder. HKDF-SHA256
-# expansion of a 32-byte key is well under 1 µs on the docs/specs/performance.md
-# reference runner, so the gate purposefully has slack until a named reference
-# runner publishes a measured baseline.
+# (15000 ns ≈ 15 µs) is a conservative interim threshold. HKDF-SHA256 expansion
+# of a 32-byte key is well under 1 µs on the docs/specs/performance.md reference
+# runner, so the gate keeps enough headroom for noisy local and CI hosts until
+# the named reference runner publishes a measured baseline.
 #
 # How to update:
 #

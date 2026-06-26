@@ -35,7 +35,7 @@ else
 CARGO_OFFLINE_FLAG :=
 endif
 
-.PHONY: ci ci-local ci-strict fmt fmt-check clippy test nextest coverage coverage-html coverage-branch mutation supply-chain supply-chain-local audit deny vet unsafe-inventory sbom supply-chain-exceptions dependency-hygiene machete udeps bench-fixtures bench bench-ci bench-report bench-regression perf-agent-idle-memory perf-passphrase-unlock perf-recovery-envelope-unlock perf-cli-cold-start slsa-provenance fuzz-list fuzz-smoke fuzz fuzz-nightly fuzz-minimize leak-canary docs-check distribution-check app-ui-install app-ui-check app-ui-build vscode-vsix-package release-auditable release-auditable-print-deps clean
+.PHONY: ci ci-local ci-strict fmt fmt-check clippy test nextest coverage coverage-html coverage-branch mutation supply-chain supply-chain-local audit deny vet unsafe-inventory sbom third-party-notices supply-chain-exceptions dependency-hygiene machete udeps bench-fixtures bench bench-ci bench-report bench-regression perf-agent-idle-memory perf-passphrase-unlock perf-recovery-envelope-unlock perf-cli-cold-start slsa-provenance fuzz-list fuzz-smoke fuzz fuzz-nightly fuzz-minimize leak-canary docs-check distribution-check app-ui-install app-ui-check app-ui-build vscode-vsix-package release-auditable release-auditable-print-deps clean
 
 # Local default gate. It avoids network by default and skips missing optional tools
 # with explicit warnings. Use `make ci-strict OFFLINE=0 STRICT=1` for release-style
@@ -96,6 +96,9 @@ unsafe-inventory:
 sbom:
 	scripts/supply-chain.sh sbom
 
+third-party-notices:
+	scripts/supply-chain.sh notices
+
 supply-chain-exceptions:
 	scripts/supply-chain.sh exceptions
 
@@ -109,7 +112,7 @@ udeps:
 	CARGO_UDEPS="$(CARGO_UDEPS)" STRICT="$(STRICT)" scripts/dependency-hygiene.sh udeps
 
 bench-fixtures:
-	scripts/bench-fixtures.pl --profile "$(BENCH_FIXTURE_PROFILE)" --out "$(BENCH_FIXTURE_OUT)"
+	scripts/bench-fixtures.mjs --profile "$(BENCH_FIXTURE_PROFILE)" --out "$(BENCH_FIXTURE_OUT)"
 
 bench: BENCH_FIXTURE_PROFILE = release
 bench: bench-fixtures
@@ -145,7 +148,7 @@ slsa-provenance:
 	@if [ -z "$(SLSA_ARTIFACT)" ] || [ -z "$(SLSA_PROVENANCE)" ] || [ -z "$(SLSA_EXPECTED_REPOSITORY)" ] || [ -z "$(SLSA_EXPECTED_BUILDER)" ] || [ -z "$(SLSA_EXPECTED_BUILD_TYPE)" ] || [ -z "$(SLSA_EXPECTED_WORKFLOW)" ]; then \
 		echo "skip: set SLSA_ARTIFACT, SLSA_PROVENANCE, SLSA_EXPECTED_REPOSITORY, SLSA_EXPECTED_BUILDER, SLSA_EXPECTED_BUILD_TYPE, and SLSA_EXPECTED_WORKFLOW"; \
 	else \
-		scripts/slsa-provenance-policy.pl \
+		scripts/slsa-provenance-policy.mjs \
 			--artifact "$(SLSA_ARTIFACT)" \
 			--provenance "$(SLSA_PROVENANCE)" \
 			--expected-repository "$(SLSA_EXPECTED_REPOSITORY)" \
@@ -176,7 +179,7 @@ leak-canary:
 	scripts/leak-canary.sh
 
 docs-check:
-	scripts/docs-check.pl
+	scripts/docs-check.mjs
 
 distribution-check:
 	scripts/validate-distribution.sh

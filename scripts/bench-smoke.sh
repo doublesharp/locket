@@ -113,12 +113,11 @@ reference_setup_field() {
     printf '%s\n' "${default_value}"
     return
   fi
-  perl -MJSON::PP -e '
-    my ($path, $field) = @ARGV;
-    open my $fh, "<", $path or die "open $path: $!";
-    local $/;
-    my $doc = decode_json(<$fh>);
-    print $doc->{$field} // "unknown";
+  node -e '
+    const fs = require("node:fs");
+    const [path, field] = process.argv.slice(1);
+    const doc = JSON.parse(fs.readFileSync(path, "utf8"));
+    process.stdout.write(String(doc[field] ?? "unknown"));
   ' "${reference_setup}" "${field}"
 }
 
@@ -135,7 +134,7 @@ reference_setup_sha256() {
 }
 
 now_seconds() {
-  perl -MTime::HiRes=time -e 'printf "%.6f\n", time'
+  node -e 'console.log((Date.now() / 1000).toFixed(6))'
 }
 
 elapsed_ms() {
@@ -266,45 +265,30 @@ write_report() {
     echo "by docs/specs/performance.md and includes the PR smoke surfaces for"
     echo "metadata commands and staged scans."
   } > "${report}"
-  perl -MJSON::PP -e '
-    my ($path, $mode, $policy_mode, $profile, $cli_samples, $cli_p95,
-        $agent_samples, $agent_p95, $scan_samples, $scan_p95,
-        $setup_path, $setup_sha, $setup_class, $setup_mode) = @ARGV;
-    open my $fh, ">", $path or die "open $path: $!";
-    print {$fh} JSON::PP->new->canonical->pretty->encode({
-      mode => $mode,
-      policy_mode => $policy_mode,
-      build_profile => $profile,
-      reference_runner_setup => {
-        path => $setup_path,
-        sha256 => $setup_sha,
-        setup_class => $setup_class,
-        apply_mode => $setup_mode,
+  node -e '
+    const fs = require("node:fs");
+    const [
+      path, mode, policyMode, profile, cliSamples, cliP95,
+      agentSamples, agentP95, scanSamples, scanP95,
+      setupPath, setupSha, setupClass, setupMode
+    ] = process.argv.slice(1);
+    const doc = {
+      mode,
+      policy_mode: policyMode,
+      build_profile: profile,
+      reference_runner_setup: {
+        path: setupPath,
+        sha256: setupSha,
+        setup_class: setupClass,
+        apply_mode: setupMode,
       },
-      benchmarks => [
-        {
-          name => "cli_help",
-          kind => "latency_ms",
-          budget_ms => 100,
-          samples => 0 + $cli_samples,
-          p95_ms => 0 + $cli_p95,
-        },
-        {
-          name => "agent_status",
-          kind => "latency_ms",
-          budget_ms => 100,
-          samples => 0 + $agent_samples,
-          p95_ms => 0 + $agent_p95,
-        },
-        {
-          name => "scan_staged",
-          kind => "latency_ms",
-          budget_ms => 500,
-          samples => 0 + $scan_samples,
-          p95_ms => 0 + $scan_p95,
-        },
+      benchmarks: [
+        { name: "cli_help", kind: "latency_ms", budget_ms: 100, samples: Number(cliSamples), p95_ms: Number(cliP95) },
+        { name: "agent_status", kind: "latency_ms", budget_ms: 100, samples: Number(agentSamples), p95_ms: Number(agentP95) },
+        { name: "scan_staged", kind: "latency_ms", budget_ms: 500, samples: Number(scanSamples), p95_ms: Number(scanP95) },
       ],
-    });
+    };
+    fs.writeFileSync(path, `${JSON.stringify(doc, null, 2)}\n`);
   ' "${summary}" "${mode}" "${policy_mode}" "${build_profile}" \
     "${cli_samples}" "${cli_p95}" \
     "${agent_samples}" "${agent_p95}" \
@@ -370,5 +354,5 @@ fi
 if [[ -n "${accepted_regression_note}" ]]; then
   policy_args+=(--accepted-regression-note "${accepted_regression_note}")
 fi
-scripts/bench-policy.pl "${policy_args[@]}"
+scripts/bench-policy.mjs "${policy_args[@]}"
 cat "${report}"

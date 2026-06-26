@@ -135,23 +135,22 @@ print_embedded_deps() {
     exit 1
   fi
   # `cargo audit bin --json` round-trips the embedded SBOM. We pipe through
-  # a tiny Perl filter to extract just the package list so the output is
+  # a tiny Node filter to extract just the package list so the output is
   # deterministic and easy to diff in CI.
   echo "==> embedded dependencies in ${binary_path}"
   # shellcheck disable=SC2086
   ${cargo_audit_cmd} bin --json "${binary_path}" \
-    | perl -MJSON::PP -e '
-        local $/;
-        my $report = decode_json(<STDIN>);
-        my $lockfile = $report->{lockfile} // {};
-        my @packages = @{ $lockfile->{packages} // [] };
-        @packages = sort {
-          $a->{name} cmp $b->{name} || $a->{version} cmp $b->{version}
-        } @packages;
-        for my $pkg (@packages) {
-          printf "%s %s\n", $pkg->{name}, $pkg->{version};
-        }
-        printf "# total: %d packages\n", scalar @packages;
+    | node -e '
+        let input = "";
+        process.stdin.setEncoding("utf8");
+        process.stdin.on("data", chunk => { input += chunk; });
+        process.stdin.on("end", () => {
+          const report = JSON.parse(input);
+          const packages = [...(report.lockfile?.packages ?? [])]
+            .sort((a, b) => String(a.name).localeCompare(String(b.name)) || String(a.version).localeCompare(String(b.version)));
+          for (const pkg of packages) console.log(`${pkg.name} ${pkg.version}`);
+          console.log(`# total: ${packages.length} packages`);
+        });
       '
 }
 

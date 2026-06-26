@@ -16,11 +16,30 @@ allow = [
   "Unicode-3.0",
   "Zlib",
 ]
-exceptions = []
+exceptions = [
+  # Boost Software License 1.0 is permissive. These are transitive desktop
+  # clipboard dependencies and do not impose source-publication terms.
+  { allow = ["BSL-1.0"], crate = "clipboard-win" },
+  { allow = ["BSL-1.0"], crate = "error-code" },
+
+  # MPL-2.0 is accepted only for unmodified third-party crates. Release
+  # artifacts must include target/quality/THIRD_PARTY_NOTICES.md or an
+  # equivalent notice/source-availability document generated from Cargo.lock.
+  { allow = ["MPL-2.0"], crate = "cssparser" },
+  { allow = ["MPL-2.0"], crate = "cssparser-macros" },
+  { allow = ["MPL-2.0"], crate = "dtoa-short" },
+  { allow = ["MPL-2.0"], crate = "option-ext" },
+  { allow = ["MPL-2.0"], crate = "selectors" },
+
+  # target-lexicon is Apache-2.0 with the LLVM exception; most other
+  # LLVM-exception expressions in the graph can choose MIT or plain Apache-2.0.
+  { allow = ["Apache-2.0 WITH LLVM-exception"], crate = "target-lexicon" },
+]
 
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
+allow-wildcard-paths = true
 highlight = "all"
 skip = []
 skip-tree = []

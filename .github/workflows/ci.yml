@@ -54,6 +54,9 @@ jobs:
       - name: Check supply-chain exception ledger
         run: make supply-chain-exceptions
 
+      - name: Generate third-party notices
+        run: make third-party-notices
+
       - name: Validate distribution package definitions
         run: make distribution-check
 

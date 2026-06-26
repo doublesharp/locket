@@ -34,9 +34,15 @@ metadata() {
 }
 
 exception_ledger() {
-  scripts/supply-chain-exceptions.pl \
+  scripts/supply-chain-exceptions.mjs \
     supply-chain-exceptions.json \
     "${quality_dir}/supply-chain-exceptions.md"
+}
+
+third_party_notices() {
+  scripts/third-party-notices.mjs \
+    "${quality_dir}/cargo-metadata.json" \
+    "${quality_dir}/THIRD_PARTY_NOTICES.md"
 }
 
 deny_local() {
@@ -104,7 +110,7 @@ audit_with_policy() {
     exit "${status}"
   fi
 
-  scripts/rustsec-policy.pl \
+  scripts/rustsec-policy.mjs \
     "${audit_json}" \
     "${quality_dir}/cargo-metadata.json" \
     "${report}"
@@ -148,85 +154,7 @@ unsafe_inventory() {
 unsafe_inventory_fallback() {
   local report="$1"
 
-  perl -MJSON::PP -MFile::Find=find -MFile::Basename=dirname -MFile::Spec -e '
-    use strict;
-    use warnings;
-
-    my ($metadata_path, $report_path) = @ARGV;
-    open my $metadata_fh, "<", $metadata_path or die "open $metadata_path: $!";
-    local $/;
-    my $metadata = decode_json(<$metadata_fh>);
-    close $metadata_fh;
-
-    my %workspace_members = map { $_ => 1 } @{ $metadata->{workspace_members} // [] };
-    my @rows;
-
-    for my $package (@{ $metadata->{packages} // [] }) {
-      my $manifest = $package->{manifest_path} // next;
-      my $root = dirname($manifest);
-      next unless -d $root;
-
-      my ($files, $tokens) = (0, 0);
-      find(
-        {
-          wanted => sub {
-            return unless -f $_;
-            return unless /\.rs\z/;
-            ++$files;
-            open my $fh, "<", $_ or die "open $_: $!";
-            while (my $line = <$fh>) {
-              while ($line =~ /\bunsafe\b/g) {
-                ++$tokens;
-              }
-            }
-            close $fh;
-          },
-          no_chdir => 1,
-        },
-        $root,
-      );
-
-      push @rows, {
-        name => $package->{name},
-        version => $package->{version},
-        scope => $workspace_members{$package->{id}} ? "workspace" : "dependency",
-        files => $files,
-        tokens => $tokens,
-      };
-    }
-
-    @rows = sort {
-      ($b->{scope} eq "workspace") <=> ($a->{scope} eq "workspace")
-        || $a->{name} cmp $b->{name}
-        || $a->{version} cmp $b->{version}
-    } @rows;
-
-    my $total_files = 0;
-    my $total_tokens = 0;
-    for my $row (@rows) {
-      $total_files += $row->{files};
-      $total_tokens += $row->{tokens};
-    }
-
-    open my $out, ">", $report_path or die "open $report_path: $!";
-    print {$out} "# Unsafe Inventory\n\n";
-    print {$out} "- Tool: lexical unsafe-token inventory fallback\n";
-    print {$out} "- Scope: Cargo.lock packages from cargo metadata --offline --locked\n";
-    print {$out} "- Metadata: target/quality/cargo-metadata.json\n";
-    print {$out} "- Review trigger: run before public releases and after crypto, IPC, platform-verification, or storage dependency changes.\n";
-    print {$out} "- Note: fallback counts `unsafe` tokens in Rust source and does not classify callsites like cargo-geiger.\n\n";
-    print {$out} "| Package | Version | Scope | Rust files | unsafe tokens |\n";
-    print {$out} "| --- | --- | --- | ---: | ---: |\n";
-    for my $row (@rows) {
-      print {$out} "| $row->{name} | $row->{version} | $row->{scope} | $row->{files} | $row->{tokens} |\n";
-    }
-    print {$out} "\n";
-    print {$out} "Total Rust files: $total_files\n\n";
-    print {$out} "Total unsafe tokens: $total_tokens\n";
-    close $out;
-
-    print "wrote $report_path\n";
-  ' "${quality_dir}/cargo-metadata.json" "${report}"
+  scripts/unsafe-inventory-fallback.mjs "${quality_dir}/cargo-metadata.json" "${report}"
 }
 
 sbom() {
@@ -248,6 +176,7 @@ case "${mode}" in
   local)
     exception_ledger
     metadata
+    third_party_notices
     deny_local
     audit_local
     ;;
@@ -275,12 +204,17 @@ case "${mode}" in
   sbom)
     sbom
     ;;
+  notices)
+    metadata
+    third_party_notices
+    ;;
   exceptions)
     exception_ledger
     ;;
   strict)
     exception_ledger
     metadata
+    third_party_notices
     deny_strict
     audit_strict
     vet
