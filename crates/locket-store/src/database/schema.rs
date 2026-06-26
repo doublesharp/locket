@@ -7,7 +7,7 @@ use rusqlite::{Connection, OptionalExtension};
 use crate::error::StoreError;
 
 /// Current storage schema version.
-pub const SCHEMA_VERSION: u32 = 2;
+pub const SCHEMA_VERSION: u32 = 3;
 
 /// Audit action written for each schema migration step when project context is available.
 pub const AUDIT_ACTION_SCHEMA_MIGRATE: &str = "SCHEMA_MIGRATE";
@@ -72,7 +72,7 @@ pub fn initialize_schema(
             for version in 1..=SCHEMA_VERSION {
                 insert_schema_migration_row(&transaction, version)?;
             }
-            applied_steps.push("schema.bootstrap_v2");
+            applied_steps.push("schema.bootstrap_v3");
         }
         Some(version) => {
             transaction.execute_batch(SCHEMA_MIGRATIONS_SQL)?;
@@ -80,6 +80,11 @@ pub fn initialize_schema(
                 migrate_v2_recent_schema_alignment(&transaction)?;
                 insert_schema_migration_row(&transaction, 2)?;
                 applied_steps.push("schema.migrate_v2_recent_schema_alignment");
+            }
+            if version < 3 {
+                migrate_v3_team_member_profiles(&transaction)?;
+                insert_schema_migration_row(&transaction, 3)?;
+                applied_steps.push("schema.migrate_v3_team_member_profiles");
             }
             transaction.execute_batch(SCHEMA_SQL)?;
         }
@@ -172,6 +177,16 @@ fn migrate_v2_recent_schema_alignment(connection: &Connection) -> Result<(), Sto
     add_column_if_missing(connection, "devices", "label", "label TEXT NOT NULL DEFAULT ''")?;
 
     migrate_empty_legacy_passkey_credentials(connection)?;
+    Ok(())
+}
+
+fn migrate_v3_team_member_profiles(connection: &Connection) -> Result<(), StoreError> {
+    add_column_if_missing(
+        connection,
+        "team_members",
+        "profiles_json",
+        "profiles_json TEXT CHECK (profiles_json IS NULL OR (json_valid(profiles_json) AND json_type(profiles_json) = 'array'))",
+    )?;
     Ok(())
 }
 
@@ -542,6 +557,7 @@ CREATE TABLE IF NOT EXISTS team_members (
   device_id TEXT REFERENCES devices(id) ON DELETE SET NULL,
   display_name TEXT NOT NULL,
   role TEXT NOT NULL CHECK (role IN ('owner', 'maintainer', 'developer', 'read-only')),
+  profiles_json TEXT CHECK (profiles_json IS NULL OR (json_valid(profiles_json) AND json_type(profiles_json) = 'array')),
   joined_at INTEGER NOT NULL,
   removed_at INTEGER,
   CHECK (removed_at IS NULL OR removed_at >= joined_at),

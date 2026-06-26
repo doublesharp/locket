@@ -984,7 +984,13 @@ fn team_remove_command(
     writeln!(output, "remove member: {} ({})", member.display_name, member.role)?;
     writeln!(output, "trusted_devices: {}", member.trusted_device_count)?;
     let redact_names = privacy_redact_names_enabled(context, false)?;
-    write_rotation_checklist(output, &store, project_id, redact_names)?;
+    write_rotation_checklist(
+        output,
+        &store,
+        project_id,
+        rotation_scope_for_member(&member),
+        redact_names,
+    )?;
 
     // Typed confirmation: must type the display name exactly.
     let confirmation = context.confirmation_reader.read_confirmation(&member.display_name)?;
@@ -1086,7 +1092,13 @@ fn team_revoke_device_command(
     writeln!(output, "device_id: {}", device.id)?;
     writeln!(output, "fingerprint: {}", device.fingerprint)?;
     let redact_names = privacy_redact_names_enabled(context, false)?;
-    write_rotation_checklist(output, &store, project_id, redact_names)?;
+    write_rotation_checklist(
+        output,
+        &store,
+        project_id,
+        target_member.as_ref().and_then(rotation_scope_for_member),
+        redact_names,
+    )?;
     writeln!(output, "metadata_only: yes")?;
     Ok(())
 }
@@ -1834,11 +1846,10 @@ fn authorize_team_device_revoke(
     }
 }
 
-/// Emits a metadata-only rotation checklist for every profile in the
-/// project, listing the count of active secrets that an Owner-level
-/// principal could have accessed. Member-to-profile scoping is
-/// approximated as "all project profiles" until invite-issued profile
-/// lists are persisted; the placeholder below tracks the gap.
+/// Emits a metadata-only rotation checklist for profiles in the member's
+/// known scope, listing the count of active secrets that principal could
+/// have accessed. Legacy members without persisted scope fall back to every
+/// project profile.
 ///
 /// Output shape (one block, never a value):
 ///
@@ -1848,19 +1859,25 @@ fn authorize_team_device_revoke(
 ///   ...
 ///   total_active_secrets=N
 ///   action: rotate listed secrets in each profile and `team revoke-device` any associated devices
-///   scope_note: profile membership not yet persisted; checklist covers all project profiles
+///   scope_note: checklist covers accepted invite profile scope
 /// ```
 fn write_rotation_checklist(
     output: &mut impl Write,
     store: &locket_store::Store,
     project_id: &str,
+    profile_scope: Option<&[String]>,
     redact_names: bool,
 ) -> Result<(), CliError> {
-    let profiles = store.list_profiles(project_id)?;
+    let mut profiles = store.list_profiles(project_id)?;
+    if let Some(scope) = profile_scope {
+        let scope = scope.iter().map(String::as_str).collect::<std::collections::BTreeSet<_>>();
+        profiles.retain(|profile| scope.contains(profile.name.as_str()));
+    }
     writeln!(output, "rotation_checklist:")?;
     if profiles.is_empty() {
         writeln!(output, "  (no profiles)")?;
         writeln!(output, "  total_active_secrets=0")?;
+        write_rotation_scope_note(output, profile_scope)?;
         return Ok(());
     }
     let mut total: usize = 0;
@@ -1876,9 +1893,26 @@ fn write_rotation_checklist(
         output,
         "  action: rotate listed secrets in each profile and `team revoke-device` any associated devices"
     )?;
-    writeln!(
-        output,
-        "  scope_note: profile membership not yet persisted; checklist covers all project profiles"
-    )?;
+    write_rotation_scope_note(output, profile_scope)?;
+    Ok(())
+}
+
+fn rotation_scope_for_member(member: &TeamMemberListRecord) -> Option<&[String]> {
+    if member.role == "owner" {
+        return None;
+    }
+    member.profiles.as_deref()
+}
+
+fn write_rotation_scope_note(
+    output: &mut impl Write,
+    profile_scope: Option<&[String]>,
+) -> Result<(), CliError> {
+    let note = if profile_scope.is_some() {
+        "checklist covers accepted invite profile scope"
+    } else {
+        "membership scope unavailable; checklist covers all project profiles"
+    };
+    writeln!(output, "  scope_note: {note}")?;
     Ok(())
 }

@@ -2,6 +2,7 @@
 
 use rusqlite::types::Type;
 use rusqlite::{OptionalExtension, params};
+use std::collections::BTreeSet;
 
 use crate::Store;
 use crate::audit::{AuditContext, append_optional_audit};
@@ -31,6 +32,8 @@ pub struct TeamMemberListRecord {
     pub display_name: String,
     /// Team role label.
     pub role: String,
+    /// Profile names this member may access, or `None` for legacy unknown scope.
+    pub profiles: Option<Vec<String>>,
     /// Number of currently trusted devices for this member.
     pub trusted_device_count: i64,
     /// Join timestamp in nanoseconds since the Unix epoch.
@@ -117,13 +120,22 @@ fn team_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<TeamRecord>
 fn team_member_list_record_from_row(
     row: &rusqlite::Row<'_>,
 ) -> rusqlite::Result<TeamMemberListRecord> {
+    let profiles_json = row.get::<_, Option<String>>(3)?;
+    let profiles = profiles_json
+        .map(|raw| {
+            serde_json::from_str::<Vec<String>>(&raw).map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(3, Type::Text, Box::new(error))
+            })
+        })
+        .transpose()?;
     Ok(TeamMemberListRecord {
         id: row.get(0)?,
         display_name: row.get(1)?,
         role: row.get(2)?,
-        trusted_device_count: row.get(3)?,
-        joined_at: row.get(4)?,
-        removed_at: row.get(5)?,
+        profiles,
+        trusted_device_count: row.get(4)?,
+        joined_at: row.get(5)?,
+        removed_at: row.get(6)?,
     })
 }
 
@@ -222,13 +234,14 @@ impl Store {
                m.id,
                m.display_name,
                m.role,
+               m.profiles_json,
                COUNT(d.id) AS trusted_device_count,
                m.joined_at,
                m.removed_at
              FROM team_members m
              LEFT JOIN devices d ON d.id = m.device_id AND d.revoked_at IS NULL
              WHERE m.team_id = ?1
-             GROUP BY m.id, m.display_name, m.role, m.joined_at, m.removed_at
+             GROUP BY m.id, m.display_name, m.role, m.profiles_json, m.joined_at, m.removed_at
              ORDER BY m.joined_at, m.id",
         )?;
         let members = statement
@@ -252,6 +265,7 @@ impl Store {
                m.id,
                m.display_name,
                m.role,
+               m.profiles_json,
                COUNT(d.id) AS trusted_device_count,
                m.joined_at,
                m.removed_at
@@ -259,7 +273,7 @@ impl Store {
              LEFT JOIN devices d ON d.id = m.device_id AND d.revoked_at IS NULL
              WHERE m.team_id = ?1
                AND (m.id = ?2 OR m.display_name = ?2)
-             GROUP BY m.id, m.display_name, m.role, m.joined_at, m.removed_at
+             GROUP BY m.id, m.display_name, m.role, m.profiles_json, m.joined_at, m.removed_at
              LIMIT 1",
         )?;
         statement
@@ -283,6 +297,7 @@ impl Store {
                m.id,
                m.display_name,
                m.role,
+               m.profiles_json,
                COUNT(d.id) AS trusted_device_count,
                m.joined_at,
                m.removed_at
@@ -291,7 +306,7 @@ impl Store {
              WHERE m.team_id = ?1
                AND m.device_id = ?2
                AND m.removed_at IS NULL
-             GROUP BY m.id, m.display_name, m.role, m.joined_at, m.removed_at
+             GROUP BY m.id, m.display_name, m.role, m.profiles_json, m.joined_at, m.removed_at
              LIMIT 1",
         )?;
         statement
@@ -331,6 +346,7 @@ impl Store {
                m.id,
                m.display_name,
                m.role,
+               m.profiles_json,
                COUNT(d.id) AS trusted_device_count,
                m.joined_at,
                m.removed_at
@@ -339,7 +355,7 @@ impl Store {
              WHERE m.team_id = ?1
                AND m.device_id = ?2
                AND m.removed_at IS NULL
-             GROUP BY m.id, m.display_name, m.role, m.joined_at, m.removed_at
+             GROUP BY m.id, m.display_name, m.role, m.profiles_json, m.joined_at, m.removed_at
              LIMIT 1",
         )?;
         statement
@@ -366,6 +382,25 @@ impl Store {
             "INSERT INTO team_members(id, team_id, device_id, display_name, role, joined_at, removed_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL)",
             params![member_id, team_id, device_id, display_name, role, joined_at],
+        )?;
+        Ok(())
+    }
+
+    /// Persists the profile-name scope for an existing team member.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] when JSON serialization fails or `SQLite`
+    /// cannot update the member row.
+    pub fn set_team_member_profiles(
+        &self,
+        member_id: &str,
+        profiles: &[String],
+    ) -> Result<(), StoreError> {
+        let profiles_json = serde_json::to_string(&dedupe_profiles(profiles))?;
+        self.connection.execute(
+            "UPDATE team_members SET profiles_json = ?1 WHERE id = ?2",
+            params![profiles_json.as_str(), member_id],
         )?;
         Ok(())
     }
@@ -624,4 +659,15 @@ impl Store {
             .collect::<Result<Vec<_>, _>>()?;
         Ok(invites)
     }
+}
+
+fn dedupe_profiles(profiles: &[String]) -> Vec<String> {
+    let mut seen = BTreeSet::new();
+    let mut out = Vec::new();
+    for profile in profiles {
+        if seen.insert(profile.as_str()) {
+            out.push(profile.clone());
+        }
+    }
+    out
 }

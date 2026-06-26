@@ -163,6 +163,30 @@ fn accept_team_invite_first_call_sets_accepted_at() -> Result<(), Box<dyn Error>
 }
 
 #[test]
+fn team_member_profiles_round_trip_through_member_lookup() -> Result<(), Box<dyn Error>> {
+    let test = open_initialized_store()?;
+    insert_project_profile(&test.store)?;
+    insert_team_with_pending_invite(&test.store, "lk_invite_scope")?;
+    test.store.connection().execute(
+        "INSERT INTO team_members(id, team_id, display_name, role, joined_at)
+         VALUES (
+           'lk_member_recipient', 'lk_team_test', 'Recipient', 'developer', 700
+         )",
+        [],
+    )?;
+
+    test.store.set_team_member_profiles(
+        "lk_member_recipient",
+        &["dev".to_owned(), "qa".to_owned(), "dev".to_owned()],
+    )?;
+    let member =
+        test.store.get_team_member("lk_team_test", "lk_member_recipient")?.ok_or("member")?;
+
+    assert_eq!(member.profiles, Some(vec!["dev".to_owned(), "qa".to_owned()]));
+    Ok(())
+}
+
+#[test]
 fn invite_replay_detected_maps_to_locket_replay_detected() -> Result<(), Box<dyn Error>> {
     let test = open_initialized_store()?;
     insert_project_profile(&test.store)?;
@@ -200,6 +224,7 @@ fn active_team_member_can_be_found_by_device_id() -> Result<(), Box<dyn Error>> 
         .ok_or("member missing")?;
     assert_eq!(member.id, "lk_member_lookup");
     assert_eq!(member.role, "maintainer");
+    assert_eq!(member.profiles, None);
     assert_eq!(member.trusted_device_count, 1);
 
     test.store

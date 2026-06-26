@@ -132,6 +132,30 @@ fn team_required_tables_enforce_metadata_constraints() -> Result<(), Box<dyn Err
         [],
     )?;
     connection.execute(
+        "UPDATE team_members
+            SET profiles_json = '[\"dev\"]'
+          WHERE id = 'lk_member_schema'",
+        [],
+    )?;
+    let bad_member_profiles = connection.execute(
+        "INSERT INTO team_members(id, team_id, display_name, role, profiles_json, joined_at)
+         VALUES (
+           'lk_member_bad_profiles', 'lk_team_schema', 'Bad Profiles', 'developer',
+           'not-json', 1
+         )",
+        [],
+    );
+    assert!(bad_member_profiles.is_err());
+    let bad_member_profile_shape = connection.execute(
+        "INSERT INTO team_members(id, team_id, display_name, role, profiles_json, joined_at)
+         VALUES (
+           'lk_member_bad_profile_shape', 'lk_team_schema', 'Bad Profile Shape', 'developer',
+           '{}', 1
+         )",
+        [],
+    );
+    assert!(bad_member_profile_shape.is_err());
+    connection.execute(
         "INSERT INTO devices(
            id, project_id, name, signing_public_key, sealing_public_key, fingerprint,
            safety_words_json, local, created_at
@@ -291,7 +315,7 @@ fn fresh_initialize_reports_pending_schema_migration() -> Result<(), Box<dyn Err
     assert!(outcome.advanced(), "fresh store must advance the ledger");
     assert_eq!(outcome.before, None);
     assert_eq!(outcome.after, SCHEMA_VERSION);
-    assert_eq!(outcome.applied_steps.as_slice(), &["schema.bootstrap_v2"]);
+    assert_eq!(outcome.applied_steps.as_slice(), &["schema.bootstrap_v3"]);
 
     Ok(())
 }
@@ -308,7 +332,10 @@ fn v1_store_migrates_recent_schema_alignment_columns_and_indexes() -> Result<(),
     assert!(outcome.advanced(), "v1 store must advance to current schema");
     assert_eq!(outcome.before, Some(1));
     assert_eq!(outcome.after, SCHEMA_VERSION);
-    assert_eq!(outcome.applied_steps.as_slice(), &["schema.migrate_v2_recent_schema_alignment"]);
+    assert_eq!(
+        outcome.applied_steps.as_slice(),
+        &["schema.migrate_v2_recent_schema_alignment", "schema.migrate_v3_team_member_profiles"]
+    );
     assert_eq!(store.current_schema_version()?, Some(i64::from(SCHEMA_VERSION)));
 
     for (table, column) in [
@@ -316,6 +343,7 @@ fn v1_store_migrates_recent_schema_alignment_columns_and_indexes() -> Result<(),
         ("directory_grants", "revoked_at"),
         ("devices", "member_id"),
         ("devices", "label"),
+        ("team_members", "profiles_json"),
         ("passkey_credentials", "device_id"),
         ("passkey_credentials", "member_id"),
         ("passkey_credentials", "public_key"),
@@ -371,7 +399,7 @@ fn record_schema_migrate_audit_writes_row_for_advancement() -> Result<(), Box<dy
     let mut test_store = open_initialized_store()?;
     insert_project_profile(&test_store.store)?;
 
-    // Simulate the fresh-initialize outcome (`before = None`, `after = 2`)
+    // Simulate the fresh-initialize outcome (`before = None`, `after = 3`)
     // produced when the schema bootstrap actually advanced the ledger. The
     // outcome is constructed directly because v1 is the only schema family
     // and the ledger created during fresh initialization has no project
@@ -379,7 +407,7 @@ fn record_schema_migrate_audit_writes_row_for_advancement() -> Result<(), Box<dy
     let outcome = crate::SchemaMigrationOutcome {
         before: None,
         after: SCHEMA_VERSION,
-        applied_steps: vec!["schema.bootstrap_v2"],
+        applied_steps: vec!["schema.bootstrap_v3"],
     };
 
     let wrote = test_store.store.record_schema_migrate_audit(
@@ -405,7 +433,7 @@ fn record_schema_migrate_audit_writes_row_for_advancement() -> Result<(), Box<dy
     assert_eq!(metadata["schema_versions"]["before"], serde_json::Value::Null);
     assert_eq!(metadata["schema_versions"]["after"], SCHEMA_VERSION);
     assert_eq!(metadata["migration_count"], 1);
-    assert_eq!(metadata["check_names"][0], "schema.bootstrap_v2");
+    assert_eq!(metadata["check_names"][0], "schema.bootstrap_v3");
     assert_eq!(metadata["status"], "SUCCESS");
 
     Ok(())
@@ -419,7 +447,10 @@ fn record_schema_migrate_audit_writes_row_for_stale_schema() -> Result<(), Box<d
     let outcome = crate::SchemaMigrationOutcome {
         before: Some(0),
         after: SCHEMA_VERSION,
-        applied_steps: vec!["schema.migrate_v2_recent_schema_alignment"],
+        applied_steps: vec![
+            "schema.migrate_v2_recent_schema_alignment",
+            "schema.migrate_v3_team_member_profiles",
+        ],
     };
 
     let wrote = test_store.store.record_schema_migrate_audit(
@@ -441,7 +472,7 @@ fn record_schema_migrate_audit_writes_row_for_stale_schema() -> Result<(), Box<d
     let metadata: serde_json::Value = serde_json::from_str(&metadata_json)?;
     assert_eq!(metadata["schema_versions"]["before"], 0);
     assert_eq!(metadata["schema_versions"]["after"], SCHEMA_VERSION);
-    assert_eq!(metadata["migration_count"], 1);
+    assert_eq!(metadata["migration_count"], 2);
 
     Ok(())
 }
@@ -556,7 +587,7 @@ fn schema_migrations_applied_at_is_positive_integer() -> Result<(), Box<dyn Erro
 
 #[test]
 fn schema_version_constant_is_current() {
-    assert_eq!(SCHEMA_VERSION, 2);
+    assert_eq!(SCHEMA_VERSION, 3);
 }
 
 #[test]

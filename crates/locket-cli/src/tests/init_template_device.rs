@@ -1037,6 +1037,7 @@ fn team_remove_member_sets_removed_at_and_writes_team_remove_audit()
     // active-secret count so the operator can rotate accessible secrets.
     assert!(output.contains("rotation_checklist:"));
     assert!(output.contains("profile dev:"));
+    assert!(output.contains("profile prod:"));
     assert!(output.contains("rotate_active_secrets="));
     assert!(output.contains("total_active_secrets="));
 
@@ -1113,6 +1114,47 @@ fn team_revoke_device_sets_revoked_at_and_writes_device_revoke_audit()
     assert!(metadata.contains("\"action\":\"DEVICE_REVOKE\""));
     assert!(metadata.contains("\"command\":\"team revoke-device\""));
     assert!(metadata.contains("\"device_id\":\"lk_dev_team_owner\""));
+    Ok(())
+}
+
+#[test]
+fn team_remove_rotation_checklist_uses_accepted_invite_profile_scope()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from([
+            "locket",
+            "init",
+            "--no-device",
+            "--no-passkey",
+            "--name",
+            "app",
+            "--profile",
+            "dev",
+        ])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    seed_scoped_developer_rotation_fixture(&directory)?;
+
+    let remove_context = context_with_confirmation(&context, "Scoped Developer\n");
+    let mut output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "team", "remove", "Scoped Developer"])?,
+        &remove_context,
+        &mut output,
+    )?;
+
+    let output = String::from_utf8(output)?;
+    assert!(output.contains("team_remove: success"), "{output}");
+    assert!(output.contains("profile dev: rotate_active_secrets=1"), "{output}");
+    assert!(!output.contains("profile prod:"), "{output}");
+    assert!(output.contains("total_active_secrets=1"), "{output}");
+    assert!(
+        output.contains("scope_note: checklist covers accepted invite profile scope"),
+        "{output}"
+    );
     Ok(())
 }
 
@@ -1548,6 +1590,23 @@ fn seed_team_members_with_two_owners(
     let store = locket_store::Store::open(directory.path().join("store.db"))?;
     let project_id =
         crate::read_project_config(&directory.path().join("locket.toml"))?.project_id.into_string();
+    let dev_profile =
+        store.get_profile_by_name(project_id.as_str(), "dev")?.ok_or("dev profile missing")?;
+    store.connection().execute(
+        "INSERT INTO profiles(id, project_id, name, dangerous, created_at)
+         VALUES ('lk_prof_owner_prod', ?1, 'prod', 0, 2)",
+        [project_id.as_str()],
+    )?;
+    store.connection().execute(
+        "INSERT INTO secrets(
+           id, project_id, profile_id, name, source, origin, required, current_version, state,
+           created_at, updated_at
+         )
+         VALUES
+           ('lk_sec_owner_dev', ?1, ?2, 'OWNER_DEV', 'team-managed', 'manual', 0, 1, 'active', 3, 3),
+           ('lk_sec_owner_prod', ?1, 'lk_prof_owner_prod', 'OWNER_PROD', 'team-managed', 'manual', 0, 1, 'active', 4, 4)",
+        (project_id.as_str(), dev_profile.id.as_str()),
+    )?;
     store.connection().execute(
         "INSERT INTO devices(
            id, project_id, name, signing_public_key, sealing_public_key, fingerprint,
@@ -1574,14 +1633,99 @@ fn seed_team_members_with_two_owners(
         ("lk_team_two", project_id.as_str(), "Two Owners", 1_i64, 2_i64),
     )?;
     store.connection().execute(
-        "INSERT INTO team_members(id, team_id, device_id, display_name, role, joined_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        ("lk_member_owner", "lk_team_two", "lk_dev_owner_one", "Alice Owner", "owner", 10_i64),
+        "INSERT INTO team_members(
+           id, team_id, device_id, display_name, role, profiles_json, joined_at
+         )
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        (
+            "lk_member_owner",
+            "lk_team_two",
+            "lk_dev_owner_one",
+            "Alice Owner",
+            "owner",
+            "[\"dev\"]",
+            10_i64,
+        ),
     )?;
     store.connection().execute(
         "INSERT INTO team_members(id, team_id, display_name, role, joined_at)
          VALUES (?1, ?2, ?3, ?4, ?5)",
         ("lk_member_owner2", "lk_team_two", "Bob Owner", "owner", 20_i64),
+    )?;
+    Ok(())
+}
+
+fn seed_scoped_developer_rotation_fixture(
+    directory: &tempfile::TempDir,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let project_id =
+        crate::read_project_config(&directory.path().join("locket.toml"))?.project_id.into_string();
+    let dev_profile =
+        store.get_profile_by_name(project_id.as_str(), "dev")?.ok_or("dev profile missing")?;
+    store.connection().execute(
+        "INSERT INTO profiles(id, project_id, name, dangerous, created_at)
+         VALUES ('lk_prof_prod_scope', ?1, 'prod', 0, 2)",
+        [project_id.as_str()],
+    )?;
+    store.connection().execute(
+        "INSERT INTO secrets(
+           id, project_id, profile_id, name, source, origin, required, current_version, state,
+           created_at, updated_at
+         )
+         VALUES
+           ('lk_sec_dev_scope', ?1, ?2, 'DEV_ONLY', 'team-managed', 'manual', 0, 1, 'active', 3, 3),
+           ('lk_sec_prod_scope', ?1, 'lk_prof_prod_scope', 'PROD_ONLY', 'team-managed', 'manual', 0, 1, 'active', 4, 4)",
+        (project_id.as_str(), dev_profile.id.as_str()),
+    )?;
+    let owner_fingerprint = crate::device_fingerprint_hex(&[41; 32], &[42; 32]);
+    let developer_fingerprint = crate::device_fingerprint_hex(&[43; 32], &[44; 32]);
+    store.connection().execute(
+        "INSERT INTO devices(
+           id, project_id, name, signing_public_key, sealing_public_key, fingerprint,
+           safety_words_json, local, created_at, last_seen_at, revoked_at
+         )
+         VALUES
+           ('lk_dev_scope_owner', ?1, 'owner laptop', ?2, ?3, ?4, ?5, 1, 5, 6, NULL),
+           ('lk_dev_scope_dev', ?1, 'developer laptop', ?6, ?7, ?8, ?9, 0, 7, 8, NULL)",
+        (
+            project_id.as_str(),
+            vec![41_u8; 32],
+            vec![42_u8; 32],
+            owner_fingerprint.as_str(),
+            serde_json::to_string(&vec!["owner".to_owned(), "scope".to_owned()])?,
+            vec![43_u8; 32],
+            vec![44_u8; 32],
+            developer_fingerprint.as_str(),
+            serde_json::to_string(&vec!["developer".to_owned(), "scope".to_owned()])?,
+        ),
+    )?;
+    store.connection().execute(
+        "INSERT INTO teams(id, project_id, name, created_at, updated_at)
+         VALUES ('lk_team_scope', ?1, 'Scoped Team', 9, 9)",
+        [project_id.as_str()],
+    )?;
+    store.connection().execute(
+        "INSERT INTO team_members(
+           id, team_id, device_id, display_name, role, profiles_json, joined_at, removed_at
+         )
+         VALUES
+           ('lk_member_scope_owner', 'lk_team_scope', 'lk_dev_scope_owner', 'Scope Owner',
+            'owner', '[\"dev\",\"prod\"]', 10, NULL),
+           ('lk_member_scope_dev', 'lk_team_scope', 'lk_dev_scope_dev', 'Scoped Developer',
+            'developer', '[\"dev\"]', 11, NULL)",
+        [],
+    )?;
+    store.connection().execute(
+        "INSERT INTO team_invites(
+           id, team_id, issuer_member_id, recipient_device_fingerprint, role, profiles_json,
+           nonce, created_at, expires_at, accepted_at
+         )
+         VALUES (
+           'lk_invite_scope_dev', 'lk_team_scope', 'lk_member_scope_owner', ?1,
+           'developer', '[\"dev\"]', zeroblob(24), 10, 1000, 11
+         )",
+        [developer_fingerprint.as_str()],
     )?;
     Ok(())
 }
