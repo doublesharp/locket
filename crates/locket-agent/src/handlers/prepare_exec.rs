@@ -103,8 +103,7 @@ pub struct PrepareExecResponse {
 /// Looks up the named policy for the active project, validates that
 /// the agent is unlocked, issues a live grant for
 /// [`GrantAction::PrepareExec`], and returns the policy's allowed env
-/// names plus the grant TTL. The grant id is currently retained
-/// in-memory only; see the TODO below for the planned wire field.
+/// names, command kind, grant TTL, and live grant id.
 pub async fn handle_prepare_exec(
     request: &RequestEnvelope,
     state: &crate::server::AgentSocketState,

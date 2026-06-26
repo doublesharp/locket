@@ -129,6 +129,7 @@ export interface GrantBinding {
 export interface PrepareExecResponse {
   allowed_env_names: string[];
   command_kind: string;
+  grant_id: string;
   ttl_seconds: number;
 }
 

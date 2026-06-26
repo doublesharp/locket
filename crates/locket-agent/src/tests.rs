@@ -3298,26 +3298,26 @@ async fn register_command_policies_replaces_project_snapshot_and_runs_prepare_ex
         snapshot.iter().find(|s| s.project_id == "p-pump" && s.name == "deploy").expect("snapshot");
     assert_eq!(entry.ttl_seconds, 600);
 
-    // PrepareExec on the agent is still a stub, but RequestGrant resolves
-    // the policy ttl, which is the moral equivalent of "prepare-exec
-    // resolves correctly" in this build.
     drop(snapshot);
-    let grant_request = RequestEnvelope::new(
-        "g-1",
-        AgentMethod::RequestGrant,
+    let prepare_request = RequestEnvelope::new(
+        "pe-1",
+        AgentMethod::PrepareExec,
         json!({
             "project_id": "p-pump",
             "profile_id": "prof-1",
             "policy_name": "deploy",
-            "action": "RunPolicy",
-            "ttl_seconds": 1,
             "binding": { "pid": std::process::id(), "process_start_time": "0" }
         }),
     );
-    let ResponseEnvelope::Success(success) = dispatch(&grant_request, &state).await else {
-        unreachable!("grant for pumped policy must succeed");
+    let ResponseEnvelope::Success(success) = dispatch(&prepare_request, &state).await else {
+        unreachable!("PrepareExec for pumped policy must succeed");
     };
-    assert!(success.payload["grant_id"].as_str().is_some());
+    let decoded: crate::prepare_exec::PrepareExecResponse =
+        serde_json::from_value(success.payload)?;
+    assert_eq!(decoded.allowed_env_names, vec!["DATABASE_URL"]);
+    assert_eq!(decoded.command_kind, "argv");
+    assert_eq!(decoded.ttl_seconds, 600);
+    assert!(decoded.grant_id.starts_with("lk_grant_"));
 
     Ok(())
 }

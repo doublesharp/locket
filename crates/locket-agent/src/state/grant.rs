@@ -44,14 +44,6 @@ pub enum GrantAction {
     Redact,
     /// Export secret values through a gated bulk path.
     Export,
-    // SPEC-DEVIATION: `SetSecret` is not in the canonical `GrantAction` enum at
-    // `docs/specs/data-model.md:386-395`. It is currently relied on by the
-    // `agent-set-secret` RPC flow (see `crates/locket-agent/src/set_secret.rs`)
-    // to gate creation/rotation of one secret value through a process-bound
-    // grant. A spec amendment to add `SetSecret` (or a refactor to fold the
-    // `agent-set-secret` flow under another action) is pending; until that
-    // lands the variant is retained here so the existing RPC continues to
-    // function. Do not extend `SetSecret` to new call sites.
     /// Create or rotate one secret value through a gated path.
     SetSecret,
 }
@@ -601,7 +593,12 @@ mod tests {
     #[test]
     fn issued_grants_carry_new_spec_actions() -> Result<(), locket_core::id::IdGenerationError> {
         let mut table = GrantTable::default();
-        for action in [GrantAction::PrepareExec, GrantAction::Redact, GrantAction::Export] {
+        for action in [
+            GrantAction::PrepareExec,
+            GrantAction::Redact,
+            GrantAction::Export,
+            GrantAction::SetSecret,
+        ] {
             let record = table.issue(
                 RequestGrantPayload {
                     project_id: "p-1".to_owned(),
@@ -626,6 +623,7 @@ mod tests {
             (GrantAction::PrepareExec, "\"PrepareExec\""),
             (GrantAction::Redact, "\"Redact\""),
             (GrantAction::Export, "\"Export\""),
+            (GrantAction::SetSecret, "\"SetSecret\""),
         ] {
             let encoded = serde_json::to_string(&action)?;
             assert_eq!(encoded, expected);

@@ -89,7 +89,7 @@ Required agent RPC methods:
 - `RevokeGrant`: revokes a live grant and writes an `AGENT_REVOKE` audit row.
 - `ExpireGrant`: records `GRANT_EXPIRED` lazily when an expired grant is observed during use, explicit cleanup, or status refresh. The agent must not run a background sweeper that writes `GRANT_EXPIRED` rows solely because time passed; that would add audit noise and make expiration logs depend on daemon scheduling.
 - `ResolveReference`: resolves authorized `lk://` references for an execution/reveal/copy/redaction context.
-- `PrepareExec`: resolves a command policy, allowed env names, and scoped secret values for a trusted CLI execution path.
+- `PrepareExec`: resolves a command policy into allowed env names, command kind, TTL, and a process-bound `PrepareExec` grant id; secret values are resolved only by follow-up `ResolveReference` calls.
 - `ScanKnownValues`: provides in-memory known-secret matching for scanner calls without persisting values.
 - `Reveal` and `Copy`: perform gated value access for CLI/UI/tray/VS Code flows.
 - `SubscribeStatus`: streams metadata-only status updates to UI, tray, shell, and VS Code.

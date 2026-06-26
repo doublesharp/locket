@@ -303,7 +303,7 @@ struct AutomationClient {
     fingerprint: String,
     // v1 automation clients may contain only RunPolicy, ResolveReference,
     // ScanKnownValues, and Redact. PrepareExec is agent-internal through
-    // RunPolicy; Reveal, Copy, and Export are human-gated in v1. Client
+    // RunPolicy; SetSecret, Reveal, Copy, and Export are human-gated in v1. Client
     // registration, bundle import, and policy-index refresh must reject
     // excluded variants.
     allowed_actions: Vec<GrantAction>,
@@ -400,6 +400,7 @@ enum GrantAction {
     Copy,
     Redact,
     Export,
+    SetSecret,
 }
 ```
 
