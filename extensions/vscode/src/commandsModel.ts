@@ -350,8 +350,13 @@ export function uuidV4FromBytes(bytes: Uint8Array): string {
   const buffer = new Uint8Array(16);
   buffer.set(bytes.subarray(0, 16));
   // Set version (4) and variant (RFC 4122) bits per the v4 spec.
-  buffer[6] = (buffer[6]! & 0x0f) | 0x40;
-  buffer[8] = (buffer[8]! & 0x3f) | 0x80;
+  const versionByte = buffer[6];
+  const variantByte = buffer[8];
+  if (versionByte === undefined || variantByte === undefined) {
+    throw new Error('uuidV4FromBytes requires at least 16 bytes');
+  }
+  buffer[6] = (versionByte & 0x0f) | 0x40;
+  buffer[8] = (variantByte & 0x3f) | 0x80;
   const hex = Array.from(buffer, (byte) => byte.toString(16).padStart(2, '0')).join('');
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
 }

@@ -82,8 +82,9 @@ test('first unlock attempt sends passphrase: null and announces vault unlocked o
 
     assert.equal(outcome.status, 'unlocked');
     assert.equal(observed.length, 1);
-    assert.equal(observed[0]!.kind, 'Unlock');
-    const payload = observed[0]!.payload as Record<string, unknown>;
+    const unlockRequest = requiredAt(observed, 0);
+    assert.equal(unlockRequest.kind, 'Unlock');
+    const payload = unlockRequest.payload as Record<string, unknown>;
     // Wire shape from agent-real-unlock: { project_id, passphrase, ttl_seconds, audit }.
     assert.equal(payload.project_id, PROJECT_ID);
     assert.equal(payload.passphrase, null);
@@ -141,8 +142,8 @@ test('UnlockRequired triggers a passphrase prompt and a retry that includes the 
 
     assert.equal(outcome.status, 'unlocked');
     assert.equal(observed.length, 2);
-    const first = observed[0]!.payload as Record<string, unknown>;
-    const second = observed[1]!.payload as Record<string, unknown>;
+    const first = requiredAt(observed, 0).payload as Record<string, unknown>;
+    const second = requiredAt(observed, 1).payload as Record<string, unknown>;
     assert.equal(first.passphrase, null, 'first attempt must omit passphrase');
     assert.equal(second.passphrase, PASSPHRASE, 'retry must carry the user input');
     // Both attempts target the same project + audit metadata.
@@ -224,7 +225,7 @@ test('non-UnlockRequired errors short-circuit before prompting for a passphrase'
     assert.equal(ui.passphrasePrompts.count, 0);
     assert.equal(ui.info.length, 0);
     assert.equal(ui.errors.length, 1);
-    assert.match(ui.errors[0]!, /unavailable/iu);
+    assert.match(requiredAt(ui.errors, 0), /unavailable/iu);
   } finally {
     server.close();
     await cleanup();
@@ -286,4 +287,12 @@ function encodeResponse(response: object): Buffer {
   frame.writeUInt32LE(payload.length, 0);
   payload.copy(frame, 4);
   return frame;
+}
+
+function requiredAt<T>(values: ReadonlyArray<T>, index: number): T {
+  const value = values[index];
+  if (value === undefined) {
+    assert.fail(`expected value at index ${index.toString()}`);
+  }
+  return value;
 }

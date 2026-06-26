@@ -110,7 +110,10 @@ test('handleOpenTerminal injects LOCKET_IDE_ENV_SESSION and fires a RequestGrant
     ]);
     const grantRequest = observed.find((r) => r.kind === 'RequestGrant');
     assert.notEqual(grantRequest, undefined);
-    const body = grantRequest!.payload as Record<string, unknown>;
+    const body = required(grantRequest, 'expected RequestGrant payload').payload as Record<
+      string,
+      unknown
+    >;
     assert.equal(body.action, 'ResolveReference');
     assert.equal(body.project_id, 'lk_proj_demo');
     assert.equal(body.profile_id, 'prof-dev');
@@ -187,7 +190,7 @@ test('requestDirectoryGrant fires a once-per-session warning on agent rejection'
     await requestDirectoryGrant(baseDeps, grantPayload);
 
     assert.equal(warnings.length, 1);
-    assert.match(warnings[0]!, /not trusted/u);
+    assert.match(requiredAt(warnings, 0), /not trusted/u);
   } finally {
     server.close();
     await cleanup();
@@ -200,6 +203,21 @@ function createBarrier(): { readonly promise: Promise<void>; readonly resolve: (
     resolveFn = resolve;
   });
   return { promise, resolve: () => resolveFn() };
+}
+
+function required<T>(value: T | undefined, message: string): T {
+  if (value === undefined) {
+    assert.fail(message);
+  }
+  return value;
+}
+
+function requiredAt<T>(values: ReadonlyArray<T>, index: number): T {
+  const value = values[index];
+  if (value === undefined) {
+    assert.fail(`expected value at index ${index.toString()}`);
+  }
+  return value;
 }
 
 async function temporarySocketPath(): Promise<{ socketPath: string; cleanup: () => Promise<void> }> {

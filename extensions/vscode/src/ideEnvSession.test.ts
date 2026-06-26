@@ -78,18 +78,21 @@ test('registerIdeEnvSessionWithAgent posts ListPolicies then RegisterIdeEnvSessi
       sessionIdFactory: () => 'session-uuid',
     });
     assert.notEqual(result, undefined);
-    assert.equal(result!.sessionId, 'session-uuid');
-    assert.deepEqual(result!.envNames, ['DATABASE_URL', 'REDIS_URL', 'API_KEY']);
+    const session = required(result, 'expected IDE environment session');
+    assert.equal(session.sessionId, 'session-uuid');
+    assert.deepEqual(session.envNames, ['DATABASE_URL', 'REDIS_URL', 'API_KEY']);
 
     // Two requests observed in order.
     assert.equal(observed.length, 2);
-    assert.equal(observed[0]!.kind, 'ListPolicies');
-    assert.deepEqual(observed[0]!.payload, {
+    const listPoliciesRequest = requiredAt(observed, 0);
+    const registerRequest = requiredAt(observed, 1);
+    assert.equal(listPoliciesRequest.kind, 'ListPolicies');
+    assert.deepEqual(listPoliciesRequest.payload, {
       project_id: 'lk_proj_demo',
       privacy_redact_names: false,
     });
-    assert.equal(observed[1]!.kind, 'RegisterIdeEnvSession');
-    const body = observed[1]!.payload as Record<string, unknown>;
+    assert.equal(registerRequest.kind, 'RegisterIdeEnvSession');
+    const body = registerRequest.payload as Record<string, unknown>;
     assert.equal(body.session_id, 'session-uuid');
     assert.equal(body.project_id, 'lk_proj_demo');
     assert.equal(body.store_path, '/tmp/store.db');
@@ -242,4 +245,19 @@ function encodeResponse(response: object): Buffer {
   frame.writeUInt32LE(payload.length, 0);
   payload.copy(frame, 4);
   return frame;
+}
+
+function required<T>(value: T | undefined, message: string): T {
+  if (value === undefined) {
+    assert.fail(message);
+  }
+  return value;
+}
+
+function requiredAt<T>(values: ReadonlyArray<T>, index: number): T {
+  const value = values[index];
+  if (value === undefined) {
+    assert.fail(`expected value at index ${index.toString()}`);
+  }
+  return value;
 }

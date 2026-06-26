@@ -1,4 +1,5 @@
-import * as vscode from 'vscode';
+import { createRequire } from 'node:module';
+import type * as vscode from 'vscode';
 
 import { AgentClient, AgentClientError, StatusEvent } from './agentClient';
 import {
@@ -11,12 +12,17 @@ import {
 } from './statusBarModel';
 
 export function registerLocketStatusBar(agentClient: AgentClient): vscode.Disposable {
-  const item = vscode.window.createStatusBarItem('locket.status', vscode.StatusBarAlignment.Left, 100);
+  const vscodeApi = loadVscodeApi();
+  const item = vscodeApi.window.createStatusBarItem(
+    'locket.status',
+    vscodeApi.StatusBarAlignment.Left,
+    100,
+  );
   item.name = 'Locket Agent Status';
   item.command = 'locket.revealSecret';
   const controller = new LocketStatusBarController(agentClient, {
     showItem: () => item.show(),
-    apply: (plan) => applyPlanTo(item, plan),
+    apply: (plan) => applyPlanTo(vscodeApi, item, plan),
     setTimeout: (handler, ms) => globalThis.setTimeout(handler, ms),
     clearTimeout: (handle) => {
       // The host abstraction stores the handle as `unknown` so tests
@@ -141,13 +147,22 @@ export class LocketStatusBarController implements vscode.Disposable {
   }
 }
 
-function applyPlanTo(item: vscode.StatusBarItem, plan: StatusBarPlan): void {
+function applyPlanTo(
+  vscodeApi: typeof import('vscode'),
+  item: vscode.StatusBarItem,
+  plan: StatusBarPlan,
+): void {
   item.text = plan.text;
   item.tooltip = plan.tooltip;
   item.backgroundColor =
     plan.background === 'warning'
-      ? new vscode.ThemeColor('statusBarItem.warningBackground')
+      ? new vscodeApi.ThemeColor('statusBarItem.warningBackground')
       : undefined;
+}
+
+function loadVscodeApi(): typeof import('vscode') {
+  const moduleRequire = createRequire(__filename);
+  return moduleRequire('vscode') as typeof import('vscode');
 }
 
 function toAgentClientError(error: unknown): AgentClientError {

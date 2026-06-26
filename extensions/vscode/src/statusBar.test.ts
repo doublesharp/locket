@@ -16,7 +16,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { AgentClient, RequestEnvelope } from './agentClient';
-import { LocketStatusBarController, StatusBarHost } from './statusBar';
+import type { StatusBarHost } from './statusBar';
 import { StatusBarPlan } from './statusBarModel';
 
 interface ScheduledTimer {
@@ -72,7 +72,14 @@ function recordingHost(): RecordingHost {
   return host;
 }
 
+test('status bar controller module loads under plain Node', async () => {
+  const statusBar = await loadStatusBarModule();
+
+  assert.equal(typeof statusBar.LocketStatusBarController, 'function');
+});
+
 test('controller subscribes to SubscribeStatus and renders status events', async () => {
+  const { LocketStatusBarController } = await loadStatusBarModule();
   const { socketPath, cleanup } = await temporarySocketPath();
   const observed: RequestEnvelope[] = [];
   const server = net.createServer((socket) => {
@@ -107,11 +114,17 @@ test('controller subscribes to SubscribeStatus and renders status events', async
     controller.start();
 
     await waitFor(() => host.plans.length >= 2);
+    const connectingPlan = requiredAt(host.plans, 0);
+    const statusPlan = requiredAt(host.plans, 1);
     assert.equal(host.shown, true);
-    assert.equal(host.plans[0]!.text, '$(sync~spin) Locket', 'first plan is the connecting placeholder');
-    assert.equal(host.plans[1]!.text, '$(key) Locket');
-    assert.match(host.plans[1]!.tooltip, /unlocked/u);
-    assert.match(host.plans[1]!.tooltip, /sequence 1/u);
+    assert.equal(
+      connectingPlan.text,
+      '$(sync~spin) Locket',
+      'first plan is the connecting placeholder',
+    );
+    assert.equal(statusPlan.text, '$(key) Locket');
+    assert.match(statusPlan.tooltip, /unlocked/u);
+    assert.match(statusPlan.tooltip, /sequence 1/u);
     const subscribeRequest = observed.find((r) => r.kind === 'SubscribeStatus');
     assert.ok(subscribeRequest, 'controller must send SubscribeStatus');
 
@@ -124,6 +137,7 @@ test('controller subscribes to SubscribeStatus and renders status events', async
 });
 
 test('heartbeat events refresh the tooltip without flipping the badge text', async () => {
+  const { LocketStatusBarController } = await loadStatusBarModule();
   const { socketPath, cleanup } = await temporarySocketPath();
   const server = net.createServer((socket) => {
     socket.on('data', (frame: Buffer) => {
@@ -170,8 +184,8 @@ test('heartbeat events refresh the tooltip without flipping the badge text', asy
     controller.start();
 
     await waitFor(() => host.plans.length >= 3);
-    const status = host.plans[1]!;
-    const heartbeat = host.plans[2]!;
+    const status = requiredAt(host.plans, 1);
+    const heartbeat = requiredAt(host.plans, 2);
     assert.equal(status.text, '$(key) Locket');
     assert.equal(heartbeat.text, status.text, 'heartbeat must keep the existing badge text');
     assert.equal(heartbeat.background, status.background);
@@ -185,6 +199,7 @@ test('heartbeat events refresh the tooltip without flipping the badge text', asy
 });
 
 test('controller schedules a reconnect with backoff after the stream errors', async () => {
+  const { LocketStatusBarController } = await loadStatusBarModule();
   const { socketPath, cleanup } = await temporarySocketPath();
   let connections = 0;
   const server = net.createServer((socket) => {
@@ -222,7 +237,11 @@ test('controller schedules a reconnect with backoff after the stream errors', as
     controller.start();
 
     await waitFor(() => host.timers.length >= 1);
-    assert.equal(host.timers[0]!.delay, 500, 'first reconnect uses the 500ms base delay');
+    assert.equal(
+      requiredAt(host.timers, 0).delay,
+      500,
+      'first reconnect uses the 500ms base delay',
+    );
     // Plan history should include the connecting placeholder followed
     // by the unavailable warning before the reconnect runs.
     assert.ok(
@@ -242,6 +261,7 @@ test('controller schedules a reconnect with backoff after the stream errors', as
 });
 
 test('dispose sends CancelSubscription and tears down the stream', async () => {
+  const { LocketStatusBarController } = await loadStatusBarModule();
   const { socketPath, cleanup } = await temporarySocketPath();
   const observed: string[] = [];
   const server = net.createServer((socket) => {
@@ -334,4 +354,16 @@ function encodeResponse(response: object): Buffer {
   frame.writeUInt32LE(payload.length, 0);
   payload.copy(frame, 4);
   return frame;
+}
+
+function loadStatusBarModule(): Promise<typeof import('./statusBar')> {
+  return import('./statusBar');
+}
+
+function requiredAt<T>(values: ReadonlyArray<T>, index: number): T {
+  const value = values[index];
+  if (value === undefined) {
+    assert.fail(`expected value at index ${index.toString()}`);
+  }
+  return value;
 }

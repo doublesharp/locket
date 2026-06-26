@@ -69,7 +69,7 @@ function firstWorkspaceFolderPath(): string | undefined {
   if (folders === undefined || folders.length === 0) {
     return undefined;
   }
-  return folders[0]!.uri.fsPath;
+  return folders[0]?.uri.fsPath;
 }
 
 function hostProcessStartTime(): string {
