@@ -71,7 +71,7 @@ This spec describes the intended v1 product surface for Locket. A conforming imp
 
 ## Delivery Shape
 
-The app should be built in slices without pretending the whole spec exists from day one:
+The v1 surface is organized by dependency boundary:
 
 1. Foundation: typed core models, validation, error taxonomy, project resolution, storage migrations, crypto envelopes, and audit chain.
 2. Local CLI MVP: `init`, `set`, metadata-only `get`, `list`, `rotate`, `rm`, `purge`, `.env` import, `.env.example`, and scan/redact basics.
@@ -79,4 +79,4 @@ The app should be built in slices without pretending the whole spec exists from 
 4. Desktop and integrations: Tauri v2 app/tray, shell hook, VS Code extension, status streams, and local user-verification gates.
 5. Team and distribution: sealed bundles, invite flows, signed packages, update manifests, and release provenance.
 
-An implementation slice may ship internally only when the behaviors it exposes meet the corresponding specs, tests, and failure modes. Public release readiness requires the full v1 surface or an explicitly documented reduced edition.
+Each supported surface may ship only when its behaviors meet the corresponding specs, tests, and failure modes. Public release readiness requires the full v1 surface or an explicitly documented reduced edition.

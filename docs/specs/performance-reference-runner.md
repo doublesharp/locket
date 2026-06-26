@@ -1,16 +1,14 @@
 # Performance Reference Runner
 
-This file is part of the normative planned Locket implementation spec. Start at
-[index.md](index.md). It satisfies the
+This file is part of the normative Locket v1 specification. Start at [index.md](index.md). It satisfies the
 [performance.md](performance.md) requirement that "the project must define a
 named reference runner before public release" by pinning the hardware classes,
 operating system images, CPU governor, filesystem, power policy, and background
 state used to record release-blocking benchmark numbers.
 
-This document is structural. Numeric budgets are not invented here; they remain
-in [performance.md](performance.md). The
-`# TODO(perf-budget-table-revision)` section below tracks how those budgets are
-re-validated once the named runners are physically online.
+This document is structural. Numeric budgets are defined in
+[performance.md](performance.md). The calibration table below maps each budget
+to the release runner and harness that records the blocking number.
 
 ## Named reference runners
 
@@ -110,26 +108,30 @@ When invoking benchmarks on a reference runner, the operator must:
    `target/quality/bench-report.md`, and each `target/quality/perf-*.md` to
    the release artifact bucket alongside the runner-setup fingerprint.
 
-## TODO(perf-budget-table-revision)
+## Calibration Status
 
-The following budgets in [performance.md](performance.md) currently use
-placeholder thresholds tuned for "developer laptop or CI runner with at least
-4 physical CPU cores, 16 GB RAM". Once both reference runners above are
-provisioned, re-record p95 / throughput on each runner and revise the budget
-table. Until then, the values below are the placeholder defaults; the spec
-text remains canonical.
+The following budgets in [performance.md](performance.md) use conservative
+developer-runner thresholds until both named reference runners publish
+release-blocking samples. Before a public artifact is cut, every row must have
+a recorded runner result or an accepted release note that explicitly scopes the
+budget out of that artifact.
 
-| Spec budget | Harness env var (current default) | Script |
+| Spec budget | Harness status | Script |
 | --- | --- | --- |
 | Metadata-only CLI commands p95 < 100 ms (`list`, `profile list`, `agent status`, `project list-roots`) | `BENCH_SAMPLES=50` (cli_help, agent_status budgets hard-coded to 100 ms in `bench-smoke.sh`) | `scripts/bench-smoke.sh` |
-| `locket run <policy>` preparation overhead p95 < 150 ms | not yet wired; will use `LOCKET_RUN_PREP_BUDGET_MS=150` | TBD |
-| `lk://` resolution through agent p95 < 25 ms | not yet wired; will use `LOCKET_LK_RESOLVE_BUDGET_MS=25` | TBD |
+| `locket run <policy>` preparation overhead p95 < 150 ms | Release-runner sample required; not covered by the local smoke harness. | Pending release-runner harness |
+| `lk://` resolution through agent p95 < 25 ms | Release-runner sample required; not covered by the local smoke harness. | Pending release-runner harness |
 | `locket scan --staged` p95 < 500 ms | hard-coded 500 ms in `bench-smoke.sh` | `scripts/bench-smoke.sh` |
-| Full repository scan throughput >= 25 MB/s | not yet wired; will use `LOCKET_FULL_SCAN_MIN_MBPS=25` | TBD |
-| Locked-vault pattern / entropy / provider-token / `.env` scans (same throughput as full scan) | not yet wired; will use `LOCKET_LOCKED_SCAN_MIN_MBPS=25` | TBD |
+| Full repository scan throughput >= 25 MB/s | Release-runner sample required; not covered by the local smoke harness. | Pending release-runner harness |
+| Locked-vault pattern / entropy / provider-token / `.env` scans (same throughput as full scan) | Release-runner sample required; not covered by the local smoke harness. | Pending release-runner harness |
 | Argon2id passphrase fallback p95 < 300 ms | `PERF_PASSPHRASE_BUDGET_MS=300` | `scripts/perf-passphrase-unlock.sh` |
 | Recovery-envelope Argon2 unlock p95 < 2000 ms | `PERF_RECOVERY_BUDGET_MS=2000` | `scripts/perf-recovery-envelope-unlock.sh` |
 | Agent idle memory < 50 MB | `PERF_AGENT_IDLE_BUDGET_MB=50` | `scripts/perf-agent-idle-memory.sh` |
+
+Rows marked `Pending release-runner harness` are not measured by
+`scripts/bench-smoke.sh`; release notes and benchmark reports must not
+claim those budgets passed until a reference-runner artifact records samples
+for them.
 
 When the named runners are online, each row above must either:
 
@@ -139,6 +141,5 @@ When the named runners are online, each row above must either:
   runner-class p95s minus a 10% pull-request tolerance, with a paired ADR
   recording the revision.
 
-The follow-on task list that enumerates the wiring of the rows currently
-marked "not yet wired" lives at
+Detailed performance-harness requirements live at
 [../superpowers/specs/2026-04-30-perf-budget-tasks.md](../superpowers/specs/2026-04-30-perf-budget-tasks.md).

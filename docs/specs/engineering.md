@@ -39,7 +39,7 @@ The implementation should expose these checks through `make` targets so local de
 
 ## Commit Discipline
 
-- Commit coherent progress slices.
+- Commit coherent, reviewable changes.
 - Do not include coauthor trailers.
 - Keep generated output, formatting churn, and unrelated edits out of feature commits.
 - Every commit that changes behavior should include tests or document why tests are not applicable.
@@ -120,10 +120,12 @@ Desktop dependency direction:
 
 Release and supply-chain tooling:
 
+- Project-owned scripts should use Bash for orchestration and Node `.mjs` for JSON parsing, report generation, and release metadata validation. Do not add new Perl tooling.
 - Use `cargo deny` for license/advisory/source policy.
 - Use `cargo audit` or the RustSec advisory database in CI.
 - Use `cargo vet` or an equivalent third-party crate review record before public release; all direct dependencies in security-sensitive crates need an explicit trust/review entry or a documented temporary exception.
 - Generate SBOMs for public release artifacts.
+- Generate third-party notices from locked dependency metadata; release artifacts that contain MPL-2.0 covered crates must include `target/quality/THIRD_PARTY_NOTICES.md` or an equivalent notice/source-availability document.
 - Build release binaries with dependency metadata embedded through `cargo auditable` or an equivalent mechanism where supported.
 - Sign release artifacts and update manifests.
 - Generate and verify SLSA v1.2-compatible provenance for release builds where the package ecosystem supports it; target Build L3 controls for public release artifacts where hosted isolated runners make that practical.
@@ -137,7 +139,7 @@ Supply-chain checks are blocking:
 - `cargo deny` must fail on yanked crates, unknown registries, git dependencies without an explicit exception, duplicate security-sensitive crates where one version can be removed, licenses outside the project allowlist, and denied advisories.
 - High and critical RustSec advisories fail CI. Medium advisories fail CI for runtime dependencies and require an issue-linked exception for dev-only dependencies. Low advisories require triage before release.
 - Supply-chain exceptions must name the package, version, reason, compensating controls, owner, and expiration date. Exceptions without expiration are invalid.
-- Release builds must additionally generate SBOMs, verify provenance, run unsafe inventory checks, run the public artifact signing flow, and verify the signed update manifest before publishing.
+- Release builds must additionally generate SBOMs and third-party notices, verify provenance, run unsafe inventory checks, run the public artifact signing flow, and verify the signed update manifest before publishing.
 
 Fuzz targets should use `cargo-fuzz`/`libFuzzer` where available. Fuzz harnesses live outside release crates and must not require real keychain, biometric, Docker, or desktop services.
 

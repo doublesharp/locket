@@ -43,11 +43,10 @@ Make `locket` work the way a first-time user expects:
   wrap. Requires an active local device. Triggers a platform passkey
   ceremony (Touch ID, FIDO2, etc.).
 - The passphrase prompt (`"locket passphrase: "`) is emitted unconditionally
-  from [prompts.rs:60](../../../crates/locket-cli/src/runtime/prompts.rs#L60)
+  from [prompts.rs](../../../crates/locket-cli/src/runtime/prompts.rs)
   via `rpassword::prompt_password`. The two call sites in
-  [key_access.rs:39](../../../crates/locket-cli/src/runtime/key_access.rs#L39)
-  (new passphrase) and [key_access.rs:83](../../../crates/locket-cli/src/runtime/key_access.rs#L83)
-  (existing passphrase) print no preceding explanation.
+  [key_access.rs](../../../crates/locket-cli/src/runtime/key_access.rs)
+  for new and existing passphrases print no preceding explanation.
 - `locket status` ([status.rs:15-68](../../../crates/locket-cli/src/commands/project/status.rs))
   prints `root:` (the directory containing `locket.toml`) and
   `trusted_root: yes|no`, but does not print the user's cwd.
@@ -199,7 +198,7 @@ passkey paths.
 
 ### Change 4 — Better error from `passkey register` when no device exists
 
-**Where:** [crates/locket-cli/src/commands/vault/passkey.rs:56-58](../../../crates/locket-cli/src/commands/vault/passkey.rs#L56-L58).
+**Where:** [crates/locket-cli/src/commands/vault/passkey.rs](../../../crates/locket-cli/src/commands/vault/passkey.rs).
 
 **Today:**
 

@@ -126,7 +126,7 @@ Are you a dev team of 2-20?
          └─ No → Locket.
 ```
 
-The terminal node "No" + "No" + "No" is the segment Locket exists to serve. If that's you, [get started](../README.md#quick-start).
+The terminal node "No" + "No" + "No" is the segment Locket exists to serve. If that's you, [get started](../README.md).
 
 ## Sources
 

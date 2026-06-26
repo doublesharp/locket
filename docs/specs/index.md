@@ -1,14 +1,14 @@
-# Locket Planned Implementation Spec
+# Locket v1 Specification
 
-This spec describes the app Locket is intended to become. It is a pre-development target, not documentation for an existing shipped product. Normative terms such as `must`, `should`, and `may` describe requirements for future implementation and release readiness.
+This spec defines the Locket v1 product contract. Normative terms such as `must`, `should`, and `may` describe required behavior for supported release surfaces and local development workflows.
 
 The Locket spec is split by implementation boundary. These files are normative as a set; do not duplicate rules across files. When behavior crosses boundaries, the owning file should hold the rule and other files should link to it.
 
 ## Freshness Baseline
 
-Last reviewed: 2026-04-29.
+Last reviewed: 2026-06-26.
 
-Initial implementation should start from current stable foundations, not legacy defaults:
+Release builds should use current stable foundations, not legacy defaults:
 
 - Rust 2024 edition with the repository-pinned stable toolchain in `rust-toolchain.toml` (`1.94.0` at this review). Reference: [Rust 1.85 / Rust 2024](https://blog.rust-lang.org/2025/02/20/Rust-1.85.0/).
 - Tauri v2 for the desktop app and tray surface; start from the latest stable v2 minor at scaffolding time (`2.10.x` at this review), not legacy v1 or beta/RC APIs. Reference: [Tauri v2 releases](https://tauri.app/release/tauri/v2.10.1/).
@@ -16,7 +16,7 @@ Initial implementation should start from current stable foundations, not legacy 
 - OWASP secrets-management guidance for lifecycle, rotation, audit, redaction, and CI boundaries. Reference: [OWASP Secrets Management Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Secrets_Management_Cheat_Sheet.html).
 - NIST SP 800-63-4 guidance for local user verification and syncable authenticator/passkey tradeoffs. Reference: [NIST SP 800-63B](https://pages.nist.gov/800-63-4/sp800-63b.html).
 
-Before the first public release, refresh this section against primary sources and update dependency versions, release signing, and platform-authenticator assumptions. Prefer current stable releases over release candidates unless a written design note explains the risk and migration plan.
+Before cutting a public artifact, refresh this section against primary sources and update dependency versions, release signing, and platform-authenticator assumptions. Prefer current stable releases over release candidates unless a written design note explains the risk and migration plan.
 
 ## Reading Order
 
@@ -37,6 +37,7 @@ Before the first public release, refresh this section against primary sources an
 - [Team, Recovery & Sync](team-sync-recovery.md)
 - [Diagnostics & Distribution](operations.md)
 - [Performance Budgets](performance.md)
+- [Performance Reference Runner](performance-reference-runner.md)
 - [Errors & Failure Modes](errors.md)
 - [Engineering Standards & Dependencies](engineering.md)
 - [Testing Strategy](testing.md)

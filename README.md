@@ -4,7 +4,7 @@
 
 # Locket
 
-### A local-first secrets control plane for development environments.
+### A local-first secrets control plane for development and AI-agent workflows.
 
 <p>
   <img alt="local-first" src="https://img.shields.io/badge/local--first-✓-3b82f6?style=flat-square" />
@@ -19,7 +19,7 @@
 <br/>
 
 <sub>
-  🔐&nbsp;Encrypted&nbsp;&nbsp;·&nbsp;&nbsp;🎯&nbsp;Capability-scoped&nbsp;&nbsp;·&nbsp;&nbsp;🧭&nbsp;Project&nbsp;+&nbsp;Profile&nbsp;&nbsp;·&nbsp;&nbsp;🪪&nbsp;Passkey&nbsp;Sync&nbsp;&nbsp;·&nbsp;&nbsp;🚫&nbsp;No&nbsp;Telemetry
+  🔐&nbsp;Encrypted&nbsp;&nbsp;·&nbsp;&nbsp;🎯&nbsp;Capability-scoped&nbsp;&nbsp;·&nbsp;&nbsp;🧭&nbsp;Project&nbsp;+&nbsp;Profile&nbsp;&nbsp;·&nbsp;&nbsp;🤖&nbsp;AI-safe&nbsp;local&nbsp;context&nbsp;&nbsp;·&nbsp;&nbsp;🚫&nbsp;No&nbsp;Telemetry
 </sub>
 
 </div>
@@ -36,11 +36,11 @@
 - 🎯 **Capability-scoped delivery** — `locket run`, `locket exec`, Docker, and Compose helpers inject secrets into one child process and nowhere else.
 - 📋 **Explicit command policies** — declare which secrets a command may receive, and Locket enforces it.
 - 🧭 **Project + profile workflows** — keep `dev`, `staging`, and per-machine secrets cleanly separated.
-- 🛠️ **Shell, editor, desktop, and tray integrations** — local status, approvals, and `lk://` reference resolution.
+- 🛠️ **Shell, editor, desktop, and tray integrations** — local status, approvals, metadata history, and `lk://` reference resolution.
 - 🔄 **Rotation, history, and diffs** — change values safely; compare profiles without revealing them.
-- 🧹 **Scanner, pre-commit, redaction, AI-safe tools** — keep secrets out of code, logs, and prompts.
-- 🪪 **Recovery and passkey support** — first-class multi-machine sync without a hosted service.
-- 👥 **Local-first team onboarding** — encrypted invites, roles, bootstrap checks; no cloud required.
+- 🧹 **Scanner, pre-commit, redaction, AI-safe tools** — keep secrets out of code, logs, and prompts before sharing context with local AI agents.
+- 🪪 **Recovery and device trust** — local verification, recovery rotation, and sealed export/import without a hosted service.
+- 👥 **CLI-first team onboarding** — encrypted invites, roles, bootstrap checks; no cloud required.
 - 🧾 **Metadata-only audit and diagnostics** — report what happened, never the values.
 - 🚫 **No telemetry, no analytics** — only opt-in update checks or explicit sealed sync/export/import.
 
@@ -53,6 +53,12 @@
 - `.gitignore` is updated to keep plaintext local env files out of Git.
 
 > Locket is intentionally local-first. CI and production should use their platform-native secret stores; Locket is for local development workflows.
+
+## Release Scope
+
+This release is prepared for local development with AI agents through the CLI, local agent, scanner, redaction, policy execution, VS Code status integration, and desktop metadata views. Secret values stay local, redacted reports are metadata-only, and `locket context` / `locket ai-safe` are the supported paths for preparing project context before handing it to an agent.
+
+Desktop set/rotate/reveal and metadata history are available. Team invite changes and secret deletion are CLI-directed in this release; the desktop validates the forms and points users back to the CLI instead of duplicating those lifecycle operations in the webview.
 
 ## Install From Source
 
@@ -294,6 +300,7 @@ make deny
 make audit
 make unsafe-inventory
 make sbom
+make third-party-notices
 make supply-chain-exceptions
 make fuzz-smoke
 ```
@@ -301,6 +308,18 @@ make fuzz-smoke
 Release-style checks should be run explicitly when the required tools and
 network-backed advisory data are available. `make ci-strict` includes the
 unsafe inventory and SBOM release artifacts under `target/quality/`.
+
+For release candidates, run the local gate plus the surfaces used by AI-agent
+development:
+
+```bash
+make docs-check
+make supply-chain-local
+pnpm --dir extensions/vscode run test
+pnpm --dir crates/locket-app/ui run test
+pnpm --dir crates/locket-app/ui run build
+make leak-canary
+```
 
 ```bash
 make ci-strict OFFLINE=0 STRICT=1
@@ -312,6 +331,9 @@ they must not print, snapshot, or persist secret values. Generated reports are
 written under `target/quality/` or `coverage/` and are ignored by Git. RustSec
 advisory policy output is written to `target/quality/rustsec-policy.md`.
 Supply-chain exceptions are tracked in `supply-chain-exceptions.json` and
-validated by `make supply-chain-exceptions`.
+validated by `make supply-chain-exceptions`. Third-party notices for MPL-2.0
+covered Rust crates are generated from locked Cargo metadata at
+`target/quality/THIRD_PARTY_NOTICES.md`; release artifacts must include that
+file or an equivalent notice/source-availability document.
 
 Full design specs live in [`docs/specs/index.md`](docs/specs/index.md).

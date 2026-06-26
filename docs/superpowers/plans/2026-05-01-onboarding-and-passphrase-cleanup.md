@@ -403,7 +403,7 @@ passkey (interactive only). New flags: --no-device, --register-passkey,
 
 ### Step 4.1 — Update the error message
 
-Change [crates/locket-cli/src/commands/vault/passkey.rs:56-58](../../../crates/locket-cli/src/commands/vault/passkey.rs#L56-L58)
+Change [crates/locket-cli/src/commands/vault/passkey.rs](../../../crates/locket-cli/src/commands/vault/passkey.rs)
 from:
 
 ```rust
