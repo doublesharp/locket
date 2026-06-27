@@ -84,8 +84,13 @@ export interface TeamInviteRevokePayload {
 }
 
 const DEVICE_DESCRIPTOR_PREFIX = 'lkdev1_';
+const INVITE_ID_PREFIX = 'lk_invite_';
 const PROFILE_NAME_PATTERN = /^[A-Za-z0-9._-]+$/;
 const FINGERPRINT_HEX_PATTERN = /^[0-9a-f]{64}$/i;
+
+interface TeamInviteIssueCommandOptions {
+  nowMs?: number;
+}
 
 export const TEAM_INVITE_DESKTOP_NOTICE =
   'Desktop invite history is reconstructed from metadata-only audit rows. ' +
@@ -256,6 +261,10 @@ export function validateRevokeForm(state: TeamInviteRevokeFormState): TeamInvite
   const id = state.inviteId.trim();
   if (id.length === 0) {
     errors.inviteId = 'Invite id is required.';
+  } else if (hasControlCharacter(id)) {
+    errors.inviteId = 'Invite id must not contain control characters.';
+  } else if (!id.startsWith(INVITE_ID_PREFIX) || id.length === INVITE_ID_PREFIX.length) {
+    errors.inviteId = `Invite id must begin with ${INVITE_ID_PREFIX}.`;
   }
 
   const confirmation = state.confirmation.trim();
@@ -272,10 +281,14 @@ export function revokeFormToPayload(state: TeamInviteRevokeFormState): TeamInvit
   return { invite_id: state.inviteId.trim() };
 }
 
-export function teamInviteIssueCliCommand(state: TeamInviteIssueFormState): string {
+export function teamInviteIssueCliCommand(
+  state: TeamInviteIssueFormState,
+  options: TeamInviteIssueCommandOptions = {},
+): string {
   const profiles = parseProfileList(state.profiles)
     .map((profile) => `--profile ${shellQuote(profile)}`)
     .join(' ');
+  const expiresIn = expiresAtToDurationArgument(state.expiresAt, options.nowMs ?? Date.now());
   return [
     'locket team invite',
     shellQuote(state.recipientLabel.trim()),
@@ -284,17 +297,69 @@ export function teamInviteIssueCliCommand(state: TeamInviteIssueFormState): stri
     profiles,
     '--role',
     state.role,
+    expiresIn === null ? '' : '--expires-in',
+    expiresIn === null ? '' : shellQuote(expiresIn),
   ]
     .filter((part) => part.length > 0)
     .join(' ');
 }
 
-export function teamInviteAcceptCliCommand(invitePath: string): string {
-  return `locket team accept ${shellQuote(invitePath.trim())}`;
+export function teamInviteAcceptCliCommand(inviteText: string): string {
+  const text = inviteText.trim();
+  const delimiter = heredocDelimiterFor(text);
+  return `cat <<'${delimiter}' | locket team accept -\n${text}\n${delimiter}`;
 }
 
 export function teamInviteRevokeCliCommand(inviteId: string): string {
   return `locket team revoke-invite ${shellQuote(inviteId.trim())}`;
+}
+
+export function expiresAtToDurationArgument(
+  expiresAt: string,
+  nowMs: number = Date.now(),
+): string | null {
+  const trimmed = expiresAt.trim();
+  if (trimmed.length === 0) {
+    return null;
+  }
+  const parsed = Date.parse(trimmed);
+  if (Number.isNaN(parsed) || parsed <= nowMs) {
+    return null;
+  }
+  const seconds = Math.max(1, Math.ceil((parsed - nowMs) / 1_000));
+  const units: Array<[suffix: string, seconds: number]> = [
+    ['w', 604_800],
+    ['d', 86_400],
+    ['h', 3_600],
+    ['m', 60],
+  ];
+  for (const [suffix, unitSeconds] of units) {
+    if (seconds % unitSeconds === 0) {
+      return `${(seconds / unitSeconds).toString()}${suffix}`;
+    }
+  }
+  return `${seconds.toString()}s`;
+}
+
+function heredocDelimiterFor(text: string): string {
+  const usedLines = new Set(text.split(/\r?\n/));
+  let delimiter = 'LOCKET_INVITE';
+  let suffix = 0;
+  while (usedLines.has(delimiter)) {
+    suffix += 1;
+    delimiter = `LOCKET_INVITE_${suffix.toString()}`;
+  }
+  return delimiter;
+}
+
+function hasControlCharacter(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code < 0x20 || code === 0x7f) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function shellQuote(value: string): string {

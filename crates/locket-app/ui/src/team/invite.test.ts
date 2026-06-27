@@ -12,6 +12,7 @@ import {
   defaultAcceptForm,
   defaultIssueForm,
   defaultRevokeForm,
+  expiresAtToDurationArgument,
   issueDangerousConfirmationMatches,
   issueFormToPayload,
   issueRequiresDangerousConfirmation,
@@ -51,8 +52,14 @@ describe('desktop notice copy', () => {
     ).toBe(
       "locket team invite 'Alice Smith' --device lkdev1_abcdef0123456789abcdef --profile dev --profile qa --role developer",
     );
-    expect(teamInviteAcceptCliCommand('/tmp/alice invite.locket-invite')).toBe(
-      "locket team accept '/tmp/alice invite.locket-invite'",
+    expect(
+      teamInviteAcceptCliCommand('-----BEGIN LOCKET TEAM INVITE-----\nabc123\n-----END-----'),
+    ).toBe(
+      "cat <<'LOCKET_INVITE' | locket team accept -\n" +
+        '-----BEGIN LOCKET TEAM INVITE-----\n' +
+        'abc123\n' +
+        '-----END-----\n' +
+        'LOCKET_INVITE',
     );
     expect(teamInviteRevokeCliCommand('lk_invite_123')).toBe(
       'locket team revoke-invite lk_invite_123',
@@ -66,6 +73,38 @@ describe('desktop notice copy', () => {
         profiles: 'dev',
       }),
     ).toContain("'$(touch '\\''/tmp/pwned'\\'')'");
+  });
+
+  it('adds an expires-in duration when the issue expiry field is set', () => {
+    const nowMs = Date.parse('2026-06-26T12:00:00.000Z');
+    const command = teamInviteIssueCliCommand(
+      {
+        ...defaultIssueForm(),
+        recipientLabel: 'Alice Smith',
+        deviceDescriptor: 'lkdev1_abcdef0123456789abcdef',
+        role: 'developer',
+        profiles: 'dev',
+        expiresAt: '2026-06-28T12:00:00.000Z',
+      },
+      { nowMs },
+    );
+    expect(command).toContain('--expires-in 2d');
+  });
+
+  it('normalizes ISO expiry values to the CLI duration grammar', () => {
+    const nowMs = Date.parse('2026-06-26T12:00:00.000Z');
+    expect(expiresAtToDurationArgument('2026-06-26T12:45:00.000Z', nowMs)).toBe('45m');
+    expect(expiresAtToDurationArgument('2026-06-26T12:00:30.000Z', nowMs)).toBe('30s');
+    expect(expiresAtToDurationArgument('2026-07-10T12:00:00.000Z', nowMs)).toBe('2w');
+  });
+
+  it('chooses a safe heredoc delimiter for pasted invite text', () => {
+    const command = teamInviteAcceptCliCommand(
+      'header\nLOCKET_INVITE\nLOCKET_INVITE_1\npayload\nfooter',
+    );
+    expect(command).toContain("cat <<'LOCKET_INVITE_2' | locket team accept -\n");
+    expect(command).toContain('\nLOCKET_INVITE_2');
+    expect(command).not.toContain('<invite-file>');
   });
 });
 
@@ -193,24 +232,53 @@ describe('acceptFormToPayload', () => {
 describe('validateRevokeForm', () => {
   it('requires the typed confirmation to match the id exactly', () => {
     expect(
-      validateRevokeForm({ ...defaultRevokeForm(), inviteId: 'inv-1', confirmation: '' }).valid,
-    ).toBe(false);
-    expect(
-      validateRevokeForm({ ...defaultRevokeForm(), inviteId: 'inv-1', confirmation: 'inv-2' })
+      validateRevokeForm({ ...defaultRevokeForm(), inviteId: 'lk_invite_1', confirmation: '' })
         .valid,
     ).toBe(false);
     expect(
-      validateRevokeForm({ ...defaultRevokeForm(), inviteId: 'inv-1', confirmation: 'inv-1' })
-        .valid,
+      validateRevokeForm({
+        ...defaultRevokeForm(),
+        inviteId: 'lk_invite_1',
+        confirmation: 'lk_invite_2',
+      }).valid,
+    ).toBe(false);
+    expect(
+      validateRevokeForm({
+        ...defaultRevokeForm(),
+        inviteId: 'lk_invite_1',
+        confirmation: 'lk_invite_1',
+      }).valid,
     ).toBe(true);
+  });
+
+  it('requires an lk_invite id without control characters', () => {
+    const wrongPrefix = validateRevokeForm({
+      ...defaultRevokeForm(),
+      inviteId: 'invite_123',
+      confirmation: 'invite_123',
+    });
+    expect(wrongPrefix.valid).toBe(false);
+    expect(wrongPrefix.errors.inviteId).toMatch(/lk_invite_/);
+
+    const controlCharacter = validateRevokeForm({
+      ...defaultRevokeForm(),
+      inviteId: 'lk_invite_12\n34',
+      confirmation: 'lk_invite_12\n34',
+    });
+    expect(controlCharacter.valid).toBe(false);
+    expect(controlCharacter.errors.inviteId).toMatch(/control characters/);
   });
 });
 
 describe('revokeFormToPayload', () => {
   it('returns the typed invite id', () => {
     expect(
-      revokeFormToPayload({ ...defaultRevokeForm(), inviteId: ' inv-99 ', confirmation: 'inv-99' }),
-    ).toEqual({ invite_id: 'inv-99' });
+      revokeFormToPayload({
+        ...defaultRevokeForm(),
+        inviteId: ' lk_invite_99 ',
+        confirmation: 'lk_invite_99',
+      }),
+    ).toEqual({ invite_id: 'lk_invite_99' });
   });
 });
 

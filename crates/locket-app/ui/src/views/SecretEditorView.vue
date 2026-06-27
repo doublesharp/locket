@@ -5,6 +5,7 @@
 
 import { computed, ref } from 'vue';
 
+import CommandHandoff from '../components/CommandHandoff.vue';
 import RevealModal from '../components/RevealModal.vue';
 import {
   defaultDeleteForm,
@@ -441,9 +442,12 @@ function errorLabel(error: AgentClientError): string {
         </label>
         <p v-if="deleteNotice" class="view__notice" role="note">{{ deleteNotice }}</p>
         <div class="view__form-actions">
-          <code v-if="deleteCliCommand" data-testid="secret-editor-delete-cli-command">
-            {{ deleteCliCommand }}
-          </code>
+          <CommandHandoff
+            v-if="deleteCliCommand"
+            :command="deleteCliCommand"
+            label="Delete secret command"
+            data-testid="secret-editor-delete-cli-command"
+          />
           <span v-else class="view__muted">Complete the confirmation to show the CLI command.</span>
         </div>
       </form>

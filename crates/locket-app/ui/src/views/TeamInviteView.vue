@@ -5,6 +5,7 @@
 
 import { computed, ref, watch } from 'vue';
 
+import CommandHandoff from '../components/CommandHandoff.vue';
 import {
   defaultAcceptForm,
   defaultIssueForm,
@@ -119,7 +120,7 @@ const issueCliCommand = computed<string | null>(() =>
   issueCanSubmit.value ? teamInviteIssueCliCommand(issueForm.value) : null,
 );
 const acceptCliCommand = computed<string | null>(() =>
-  acceptCanSubmit.value ? teamInviteAcceptCliCommand('<invite-file>') : null,
+  acceptCanSubmit.value ? teamInviteAcceptCliCommand(acceptForm.value.inviteText) : null,
 );
 const revokeCliCommand = computed<string | null>(() =>
   revokeCanSubmit.value ? teamInviteRevokeCliCommand(revokeForm.value.inviteId) : null,
@@ -305,9 +306,12 @@ function statusBadge(status: TeamInviteRow['status']): string {
           />
         </label>
         <div class="view__form-actions">
-          <code v-if="issueCliCommand" data-testid="team-invite-issue-cli-command">
-            {{ issueCliCommand }}
-          </code>
+          <CommandHandoff
+            v-if="issueCliCommand"
+            :command="issueCliCommand"
+            label="Issue invite command"
+            data-testid="team-invite-issue-cli-command"
+          />
           <span v-else class="view__muted">Complete the fields to show the CLI command.</span>
         </div>
       </form>
@@ -351,9 +355,12 @@ function statusBadge(status: TeamInviteRow['status']): string {
           </span>
         </label>
         <div class="view__form-actions">
-          <code v-if="acceptCliCommand" data-testid="team-invite-accept-cli-command">
-            {{ acceptCliCommand }}
-          </code>
+          <CommandHandoff
+            v-if="acceptCliCommand"
+            :command="acceptCliCommand"
+            label="Accept pasted invite command"
+            data-testid="team-invite-accept-cli-command"
+          />
           <span v-else class="view__muted">Complete the checks to show the CLI command.</span>
         </div>
       </form>
@@ -390,9 +397,12 @@ function statusBadge(status: TeamInviteRow['status']): string {
           </span>
         </label>
         <div class="view__form-actions">
-          <code v-if="revokeCliCommand" data-testid="team-invite-revoke-cli-command">
-            {{ revokeCliCommand }}
-          </code>
+          <CommandHandoff
+            v-if="revokeCliCommand"
+            :command="revokeCliCommand"
+            label="Revoke invite command"
+            data-testid="team-invite-revoke-cli-command"
+          />
           <span v-else class="view__muted">Complete the confirmation to show the CLI command.</span>
         </div>
       </form>
