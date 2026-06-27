@@ -5,17 +5,21 @@ use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 use std::time::{Duration as StdDuration, Instant};
 
+use clap::ValueEnum;
 use serde_json::Value;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
+use crate::commands::team::{device, members};
 use crate::runtime::error::typed_cli_error;
 use crate::{
-    AGENT_LOG_FOLLOW_SLEEP_MS, AgentCommand, AgentLogsArgs, CliError, InternalAgentServeArgs,
-    NANOS_PER_SECOND, RuntimeContext, agent_data_dir, agent_log_path, agent_log_paths_oldest_first,
-    agent_pid_path, agent_socket_path, append_agent_log, metadata_invalid_error,
-    prepare_agent_log_dir, read_agent_pid, resolve_project, sanitize_agent_log_line,
-    set_user_only_file_permissions, write_agent_paths,
+    AGENT_LOG_FOLLOW_SLEEP_MS, AgentCommand, AgentInviteCommand, AgentInviteCreateArgs,
+    AgentInviteRequestArgs, AgentLogsArgs, CliError, InternalAgentServeArgs, NANOS_PER_SECOND,
+    RuntimeContext, TeamAcceptArgs, TeamCommand, TeamInviteArgs, agent_data_dir, agent_log_path,
+    agent_log_paths_oldest_first, agent_pid_path, agent_socket_path, append_agent_log,
+    metadata_invalid_error, now_unix_nanos, prepare_agent_log_dir, read_agent_pid, require_project,
+    resolve_project, sanitize_agent_log_line, set_user_only_file_permissions,
+    unix_nanos_to_rfc3339, write_agent_paths,
 };
 
 pub fn agent_command(
@@ -28,6 +32,7 @@ pub fn agent_command(
         AgentCommand::Status => agent_status_command(context, output),
         AgentCommand::Stop => agent_stop_command(context, output),
         AgentCommand::Logs(args) => agent_logs_command(context, output, &args),
+        AgentCommand::Invite { command } => agent_invite_command(context, output, command),
     }
 }
 
@@ -39,6 +44,188 @@ const AGENT_START_POLL_INTERVAL: StdDuration = StdDuration::from_millis(25);
 const AGENT_STOP_WAIT: StdDuration = StdDuration::from_secs(5);
 /// Polling interval while `agent stop` waits for the daemon to exit.
 const AGENT_STOP_POLL_INTERVAL: StdDuration = StdDuration::from_millis(50);
+const AGENT_INVITE_HEREDOC: &str = "LOCKET_INVITE";
+
+fn agent_invite_command(
+    context: &RuntimeContext,
+    output: &mut impl Write,
+    command: AgentInviteCommand,
+) -> Result<(), CliError> {
+    match command {
+        AgentInviteCommand::Request(args) => agent_invite_request_command(context, output, &args),
+        AgentInviteCommand::Create(args) => agent_invite_create_command(context, output, &args),
+        AgentInviteCommand::Accept(args) => agent_invite_accept_command(context, output, &args),
+    }
+}
+
+fn agent_invite_request_command(
+    context: &RuntimeContext,
+    output: &mut impl Write,
+    args: &AgentInviteRequestArgs,
+) -> Result<(), CliError> {
+    let resolved = require_project(context)?;
+    let request_device = resolve_agent_invite_request_device(context, args.device.as_deref())?;
+    let label = args.label.as_deref().unwrap_or(request_device.label.as_str()).trim();
+    let label = if label.is_empty() { "agent" } else { label };
+    let profiles = if args.profiles.is_empty() {
+        vec![resolved.config.default_profile.to_string()]
+    } else {
+        args.profiles.clone()
+    };
+    let command =
+        build_agent_invite_create_command(label, &request_device.descriptor, &profiles, args);
+
+    writeln!(output, "agent_invite_request: ready")?;
+    writeln!(output, "recipient_label: {label}")?;
+    writeln!(output, "device_id: {}", request_device.device_id)?;
+    writeln!(output, "fingerprint: {}", request_device.fingerprint)?;
+    writeln!(output, "safety_words: {}", request_device.safety_words.join(" "))?;
+    writeln!(output, "descriptor: {}", request_device.descriptor)?;
+    writeln!(output, "paste_for_inviter:")?;
+    writeln!(output, "{command}")?;
+    writeln!(output, "metadata_only: yes")?;
+    Ok(())
+}
+
+struct AgentInviteRequestDevice {
+    device_id: String,
+    label: String,
+    fingerprint: String,
+    safety_words: Vec<String>,
+    descriptor: String,
+}
+
+fn resolve_agent_invite_request_device(
+    context: &RuntimeContext,
+    descriptor: Option<&str>,
+) -> Result<AgentInviteRequestDevice, CliError> {
+    if let Some(descriptor) = descriptor {
+        let decoded = device::decode_device_descriptor(descriptor)?;
+        let signing_public_key =
+            device::decode_descriptor_key(&decoded.signing_public_key_ed25519)?;
+        let sealing_public_key = device::decode_descriptor_key(&decoded.sealing_public_key_x25519)?;
+        let fingerprint = device::device_fingerprint_hex(&signing_public_key, &sealing_public_key);
+        if fingerprint != decoded.fingerprint_sha256 {
+            return Err(metadata_invalid_error("device descriptor fingerprint mismatch"));
+        }
+        return Ok(AgentInviteRequestDevice {
+            device_id: decoded.device_id,
+            label: decoded.label,
+            fingerprint,
+            safety_words: decoded.safety_words,
+            descriptor: descriptor.trim().to_owned(),
+        });
+    }
+
+    let (device, descriptor, _) = device::active_local_device_descriptor(context)?;
+    Ok(AgentInviteRequestDevice {
+        device_id: device.id,
+        label: device.name,
+        fingerprint: device.fingerprint,
+        safety_words: device.safety_words,
+        descriptor,
+    })
+}
+
+fn agent_invite_create_command(
+    context: &RuntimeContext,
+    output: &mut impl Write,
+    args: &AgentInviteCreateArgs,
+) -> Result<(), CliError> {
+    let output_path = match args.output.clone() {
+        Some(path) => path,
+        None => default_agent_invite_output_path(context)?,
+    };
+    let team_args = TeamInviteArgs {
+        name: args.name.clone(),
+        device: args.device.clone(),
+        profiles: args.profiles.clone(),
+        role: args.role,
+        expires_in: args.expires_in.clone(),
+        output: Some(output_path.clone()),
+    };
+
+    members::team_command(context, output, TeamCommand::Invite(team_args))?;
+    let invite_text = fs::read_to_string(&output_path)?;
+    write_agent_invite_accept_handoff(output, invite_text.trim())?;
+    Ok(())
+}
+
+fn agent_invite_accept_command(
+    context: &RuntimeContext,
+    output: &mut impl Write,
+    args: &TeamAcceptArgs,
+) -> Result<(), CliError> {
+    members::team_command(context, output, TeamCommand::Accept(args.clone()))
+}
+
+fn default_agent_invite_output_path(
+    context: &RuntimeContext,
+) -> Result<std::path::PathBuf, CliError> {
+    let timestamp = now_unix_nanos()?;
+    let rendered = unix_nanos_to_rfc3339(timestamp)
+        .map_or_else(|| timestamp.to_string(), |value| value.replace(':', "-"));
+    Ok(context.cwd.join(format!("locket-agent-invite-{rendered}.locket-invite")))
+}
+
+fn write_agent_invite_accept_handoff(
+    output: &mut impl Write,
+    invite_text: &str,
+) -> Result<(), CliError> {
+    writeln!(output, "agent_invite_handoff: paste_to_recipient")?;
+    writeln!(output, "paste_for_recipient:")?;
+    writeln!(output, "cat <<'{AGENT_INVITE_HEREDOC}' | locket agent invite accept -")?;
+    writeln!(output, "{invite_text}")?;
+    writeln!(output, "{AGENT_INVITE_HEREDOC}")?;
+    writeln!(output, "metadata_only: yes")?;
+    Ok(())
+}
+
+fn build_agent_invite_create_command(
+    label: &str,
+    descriptor: &str,
+    profiles: &[String],
+    args: &AgentInviteRequestArgs,
+) -> String {
+    let mut parts = vec![
+        "locket".to_owned(),
+        "agent".to_owned(),
+        "invite".to_owned(),
+        "create".to_owned(),
+        shell_quote(label),
+        "--device".to_owned(),
+        shell_quote(descriptor),
+    ];
+    for profile in profiles {
+        parts.push("--profile".to_owned());
+        parts.push(shell_quote(profile));
+    }
+    parts.push("--role".to_owned());
+    parts.push(
+        args.role
+            .to_possible_value()
+            .map_or_else(|| "developer".to_owned(), |value| value.get_name().to_owned()),
+    );
+    if let Some(expires_in) = args.expires_in.as_deref() {
+        parts.push("--expires-in".to_owned());
+        parts.push(shell_quote(expires_in));
+    }
+    parts.join(" ")
+}
+
+fn shell_quote(value: &str) -> String {
+    if value.chars().all(is_shell_safe_char) {
+        return value.to_owned();
+    }
+    if value.is_empty() {
+        return "''".to_owned();
+    }
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+const fn is_shell_safe_char(value: char) -> bool {
+    value.is_ascii_alphanumeric() || matches!(value, '_' | '-' | '.' | '/' | ':' | '@' | '%' | '+')
+}
 
 fn agent_start_command(context: &RuntimeContext, output: &mut impl Write) -> Result<(), CliError> {
     let report = ensure_agent_running_with_launcher(context, &ProcessAgentDaemonLauncher)?;

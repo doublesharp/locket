@@ -849,6 +849,12 @@ enum AgentCommand {
     Stop,
     /// Print redacted agent logs.
     Logs(AgentLogsArgs),
+    /// Exchange paste-friendly setup invites between local agents.
+    Invite {
+        /// Agent invite command.
+        #[command(subcommand)]
+        command: AgentInviteCommand,
+    },
 }
 
 #[derive(Clone, Debug, Args)]
@@ -862,6 +868,56 @@ struct AgentLogsArgs {
     /// Stream new log entries until interrupted.
     #[arg(long)]
     follow: bool,
+}
+
+#[derive(Clone, Debug, Subcommand)]
+enum AgentInviteCommand {
+    /// Print this device descriptor and a pasteable invite command for an issuer.
+    Request(AgentInviteRequestArgs),
+    /// Create a sealed invite and print a pasteable accept command for the recipient.
+    Create(AgentInviteCreateArgs),
+    /// Accept a sealed invite file or stdin payload.
+    Accept(TeamAcceptArgs),
+}
+
+#[derive(Clone, Debug, Args)]
+struct AgentInviteRequestArgs {
+    /// Device descriptor to package into a request. Defaults to the active local device.
+    #[arg(long)]
+    device: Option<String>,
+    /// Recipient label to suggest in the issuer's create command.
+    #[arg(long)]
+    label: Option<String>,
+    /// Profile name to request. May be repeated; defaults to the active project profile.
+    #[arg(long = "profile")]
+    profiles: Vec<String>,
+    /// Role to request from the issuer.
+    #[arg(long, value_enum, default_value = "developer")]
+    role: TeamRoleArg,
+    /// Suggested invite validity duration, for example 5m, 2h, or 30d.
+    #[arg(long)]
+    expires_in: Option<String>,
+}
+
+#[derive(Clone, Debug, Args)]
+struct AgentInviteCreateArgs {
+    /// Human-readable recipient agent or device label.
+    name: String,
+    /// Recipient device descriptor emitted by `locket agent invite request`.
+    #[arg(long)]
+    device: String,
+    /// Profile name to include in the invite. May be repeated.
+    #[arg(long = "profile", required = true)]
+    profiles: Vec<String>,
+    /// Role to grant when the invite is accepted.
+    #[arg(long, value_enum)]
+    role: TeamRoleArg,
+    /// Invite validity duration, for example 5m, 2h, or 30d.
+    #[arg(long)]
+    expires_in: Option<String>,
+    /// Write the invite file to this path.
+    #[arg(long)]
+    output: Option<PathBuf>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -1007,7 +1063,7 @@ pub(crate) struct TeamRevokeInviteArgs {
     pub invite_id: String,
 }
 
-#[derive(Debug, Args)]
+#[derive(Clone, Debug, Args)]
 pub(crate) struct TeamAcceptArgs {
     /// Invite file to accept.
     pub invite: PathBuf,

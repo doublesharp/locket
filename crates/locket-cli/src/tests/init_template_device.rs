@@ -3888,6 +3888,155 @@ fn e2e_team_invite_accept_happy_path_and_revoked_invite_failure()
 }
 
 #[test]
+fn agent_invite_request_prints_pasteable_create_command() -> Result<(), Box<dyn std::error::Error>>
+{
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from([
+            "locket",
+            "init",
+            "--no-device",
+            "--no-passkey",
+            "--name",
+            "app",
+            "--profile",
+            "dev",
+        ])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+
+    let (recipient, _) = e2e_recipient_device(&directory)?;
+    let descriptor = crate::encode_device_descriptor(&recipient)?;
+    let mut output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from([
+            "locket",
+            "agent",
+            "invite",
+            "request",
+            "--device",
+            descriptor.as_str(),
+            "--label",
+            "Build Agent",
+            "--profile",
+            "dev",
+            "--role",
+            "developer",
+            "--expires-in",
+            "7d",
+        ])?,
+        &context,
+        &mut output,
+    )?;
+    let output = String::from_utf8(output)?;
+
+    assert!(output.contains("agent_invite_request: ready"), "{output}");
+    assert!(output.contains("paste_for_inviter:"), "{output}");
+    assert!(output.contains(&format!("descriptor: {descriptor}")), "{output}");
+    assert!(output.contains(&format!(
+        "locket agent invite create 'Build Agent' --device {descriptor} --profile dev --role developer --expires-in 7d"
+    )), "{output}");
+    assert!(output.contains("metadata_only: yes"), "{output}");
+    assert!(!output.contains("private_key"), "{output}");
+    Ok(())
+}
+
+#[test]
+fn e2e_agent_invite_create_handoff_and_accept_wrapper() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+
+    run_with_context(
+        Cli::try_parse_from([
+            "locket",
+            "init",
+            "--no-device",
+            "--no-passkey",
+            "--name",
+            "app",
+            "--profile",
+            "dev",
+        ])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    run_with_context(
+        Cli::try_parse_from(["locket", "device", "init"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    run_with_context(
+        Cli::try_parse_from(["locket", "team", "init", "platform-team"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+
+    let (recipient, recipient_private_key) = e2e_recipient_device(&directory)?;
+    let descriptor = crate::encode_device_descriptor(&recipient)?;
+    let invite_path = directory.path().join("agent-create.locket-invite");
+    let mut create_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from([
+            "locket",
+            "agent",
+            "invite",
+            "create",
+            "Build Agent",
+            "--device",
+            descriptor.as_str(),
+            "--profile",
+            "dev",
+            "--role",
+            "developer",
+            "--expires-in",
+            "7d",
+            "--output",
+            invite_path.to_str().ok_or("non-utf8 invite path")?,
+        ])?,
+        &context,
+        &mut create_output,
+    )?;
+    let create_output = String::from_utf8(create_output)?;
+    let invite_text = std::fs::read_to_string(&invite_path)?;
+    let invite = locket_core::SignedInvite::decode(invite_text.trim())?;
+
+    assert!(create_output.contains("team_invite: created"), "{create_output}");
+    assert!(create_output.contains("agent_invite_handoff: paste_to_recipient"), "{create_output}");
+    assert!(
+        create_output.contains("cat <<'LOCKET_INVITE' | locket agent invite accept -"),
+        "{create_output}"
+    );
+    assert!(create_output.contains(invite_text.trim()), "{create_output}");
+    assert!(!create_output.contains("private_key"), "{create_output}");
+
+    insert_e2e_local_recipient_device(&context, &directory, &recipient, &recipient_private_key)?;
+    let accept_context = context_with_confirmation(
+        &context,
+        &format!("{}\n", invite.payload.issuer_device_fingerprint),
+    );
+    let mut accept_output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from([
+            "locket",
+            "agent",
+            "invite",
+            "accept",
+            invite_path.to_str().ok_or("non-utf8 invite path")?,
+        ])?,
+        &accept_context,
+        &mut accept_output,
+    )?;
+    let accept_output = String::from_utf8(accept_output)?;
+
+    assert!(accept_output.contains("team_accept: pending"), "{accept_output}");
+    assert!(accept_output.contains("team_accept: accepted"), "{accept_output}");
+    assert!(accept_output.contains("metadata_only: yes"), "{accept_output}");
+    Ok(())
+}
+
+#[test]
 fn team_accept_dash_decodes_signed_invite_text_from_stdin_reader()
 -> Result<(), Box<dyn std::error::Error>> {
     let fixture = team_accept_invite_fixture(

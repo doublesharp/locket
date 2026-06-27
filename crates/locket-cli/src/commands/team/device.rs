@@ -184,6 +184,21 @@ fn device_pubkey_command(
     context: &RuntimeContext,
     output: &mut impl Write,
 ) -> Result<(), CliError> {
+    let (device, descriptor, derived_public) = active_local_device_descriptor(context)?;
+
+    writeln!(output, "device_id: {}", device.id)?;
+    writeln!(output, "fingerprint: {}", device.fingerprint)?;
+    writeln!(output, "safety_words: {}", device.safety_words.join(" "))?;
+    writeln!(output, "sealing_public_key_x25519: {}", BASE64URL_NOPAD.encode(&derived_public))?;
+    writeln!(output, "descriptor: {descriptor}")?;
+    writeln!(output, "private_key_storage: wrapped-local-file")?;
+    writeln!(output, "metadata_only: yes")?;
+    Ok(())
+}
+
+pub fn active_local_device_descriptor(
+    context: &RuntimeContext,
+) -> Result<(DeviceRecord, String, [u8; 32]), CliError> {
     let resolved = require_project(context)?;
     let store = open_store(context)?;
     let project_id = resolved.config.project_id.as_str();
@@ -204,15 +219,7 @@ fn device_pubkey_command(
     if derived_public != stored_public {
         return Err(corrupt_db_error("device private key does not match stored public key"));
     }
-
-    writeln!(output, "device_id: {}", device.id)?;
-    writeln!(output, "fingerprint: {}", device.fingerprint)?;
-    writeln!(output, "safety_words: {}", device.safety_words.join(" "))?;
-    writeln!(output, "sealing_public_key_x25519: {}", BASE64URL_NOPAD.encode(&derived_public))?;
-    writeln!(output, "descriptor: {descriptor}")?;
-    writeln!(output, "private_key_storage: wrapped-local-file")?;
-    writeln!(output, "metadata_only: yes")?;
-    Ok(())
+    Ok((device, descriptor, derived_public))
 }
 
 fn device_add_command(
