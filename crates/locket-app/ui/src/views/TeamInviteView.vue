@@ -10,6 +10,9 @@ import {
   defaultAcceptForm,
   defaultIssueForm,
   defaultRevokeForm,
+  agentInviteAcceptCliCommand,
+  agentInviteCreateCliCommand,
+  agentInviteRequestCliCommand,
   issueDangerousConfirmationMatches,
   issueRequiresDangerousConfirmation,
   teamInviteAcceptCliCommand,
@@ -124,6 +127,17 @@ const acceptCliCommand = computed<string | null>(() =>
 );
 const revokeCliCommand = computed<string | null>(() =>
   revokeCanSubmit.value ? teamInviteRevokeCliCommand(revokeForm.value.inviteId) : null,
+);
+const agentRequestCliCommand = computed<string | null>(() =>
+  issueForm.value.deviceDescriptor.trim().length > 0
+    ? agentInviteRequestCliCommand(issueForm.value.deviceDescriptor)
+    : null,
+);
+const agentIssueCliCommand = computed<string | null>(() =>
+  issueCanSubmit.value ? agentInviteCreateCliCommand(issueForm.value) : null,
+);
+const agentAcceptCliCommand = computed<string | null>(() =>
+  acceptCanSubmit.value ? agentInviteAcceptCliCommand(acceptForm.value.inviteText) : null,
 );
 
 function refresh(): void {
@@ -312,6 +326,18 @@ function statusBadge(status: TeamInviteRow['status']): string {
             label="Issue invite command"
             data-testid="team-invite-issue-cli-command"
           />
+          <CommandHandoff
+            v-if="agentRequestCliCommand"
+            :command="agentRequestCliCommand"
+            label="Agent request command"
+            data-testid="agent-invite-request-cli-command"
+          />
+          <CommandHandoff
+            v-if="agentIssueCliCommand"
+            :command="agentIssueCliCommand"
+            label="Agent invite command"
+            data-testid="agent-invite-create-cli-command"
+          />
           <span v-else class="view__muted">Complete the fields to show the CLI command.</span>
         </div>
       </form>
@@ -360,6 +386,12 @@ function statusBadge(status: TeamInviteRow['status']): string {
             :command="acceptCliCommand"
             label="Accept pasted invite command"
             data-testid="team-invite-accept-cli-command"
+          />
+          <CommandHandoff
+            v-if="agentAcceptCliCommand"
+            :command="agentAcceptCliCommand"
+            label="Accept pasted agent invite command"
+            data-testid="agent-invite-accept-cli-command"
           />
           <span v-else class="view__muted">Complete the checks to show the CLI command.</span>
         </div>
