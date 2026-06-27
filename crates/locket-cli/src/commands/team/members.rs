@@ -1,15 +1,16 @@
 use std::collections::BTreeSet;
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 
 use data_encoding::BASE64URL_NOPAD;
 use ed25519_dalek::SigningKey;
 use locket_core::{
-    CommandPolicy, CommandSpec, InviteId, InvitePayload, KeyId, LocketError, MemberId, ProjectId,
-    SealedInvitePayloadV1, SealedInvitePlaintextCounts, SignedInvite, TeamId, TeamRole,
-    decrypt_bundle_payload_with_x25519_secret, device_fingerprint_v1,
-    encrypt_bundle_payload_for_age_recipients, fingerprint_hex,
+    CommandPolicy, CommandSpec, Duration as LocketDuration, InviteId, InvitePayload, KeyId,
+    LocketError, MemberId, ProjectId, SealedInvitePayloadV1, SealedInvitePlaintextCounts,
+    SignedInvite, TeamId, TeamRole, decrypt_bundle_payload_with_x25519_secret,
+    device_fingerprint_v1, encrypt_bundle_payload_for_age_recipients, fingerprint_hex,
 };
 use locket_crypto::{AAD_SCHEMA_V1, KeyPurpose, generate_key};
 use locket_platform::LocalDevicePrivateKeyStorage;
@@ -34,7 +35,9 @@ use crate::{
     team_role_denied_error, unix_nanos_to_rfc3339,
 };
 
-const DEFAULT_INVITE_TTL_SECONDS: i64 = 7 * 24 * 60 * 60;
+const DEFAULT_INVITE_TTL_SECONDS: u64 = 7 * 24 * 60 * 60;
+const MIN_INVITE_TTL_SECONDS: u64 = 5 * 60;
+const MAX_INVITE_TTL_SECONDS: u64 = 30 * 24 * 60 * 60;
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 struct InviteSealedPlaintextV1 {
@@ -207,9 +210,13 @@ fn team_invite_command(
     confirm_dangerous_profiles(context, output, &store, project_id, &profiles)?;
 
     let created_at = now_unix_nanos()?;
+    let ttl_seconds = invite_ttl_seconds(args.expires_in.as_deref())?;
     let expires_at = created_at
         .checked_add(
-            DEFAULT_INVITE_TTL_SECONDS.checked_mul(NANOS_PER_SECOND).ok_or(CliError::Time)?,
+            i64::try_from(ttl_seconds)
+                .ok()
+                .and_then(|seconds| seconds.checked_mul(NANOS_PER_SECOND))
+                .ok_or(CliError::Time)?,
         )
         .ok_or(CliError::Time)?;
     let sealed_payload = build_invite_sealed_payload(
@@ -394,9 +401,30 @@ fn team_accept_command(
 }
 
 fn read_signed_invite(path: &Path) -> Result<SignedInvite, CliError> {
-    let invite_text = fs::read_to_string(path)?;
+    read_signed_invite_from_reader(path, io::stdin())
+}
+
+fn read_signed_invite_from_reader(
+    path: &Path,
+    mut stdin: impl Read,
+) -> Result<SignedInvite, CliError> {
+    let invite_text = if path == Path::new("-") {
+        let mut text = String::new();
+        stdin.read_to_string(&mut text)?;
+        text
+    } else {
+        fs::read_to_string(path)?
+    };
     SignedInvite::decode(invite_text.trim())
         .map_err(|error| invite_signature_invalid_error(format!("invite decode failed: {error}")))
+}
+
+#[cfg(test)]
+pub(crate) fn read_signed_invite_for_tests(
+    path: &Path,
+    stdin: impl Read,
+) -> Result<SignedInvite, CliError> {
+    read_signed_invite_from_reader(path, stdin)
 }
 
 struct TeamAcceptPreflight {
@@ -785,9 +813,15 @@ fn accept_invite_with_audit(
         metadata_json: &metadata,
         timestamp: accepted_at,
     };
-    store.accept_team_invite(
+    let accepted_member_id = MemberId::generate().map_err(|_| CliError::Time)?.into_string();
+    store.accept_team_invite_with_member_scope(
         invite_id,
         accepted_at,
+        &accepted_member_id,
+        &local_device.id,
+        &local_device.name,
+        role_label_from_payload(invite.payload.role),
+        &invite.payload.profiles,
         Some(AuditContext { key: audit_key.as_ref(), write: &audit }),
     )?;
     Ok(())
@@ -1096,7 +1130,7 @@ fn team_revoke_device_command(
         output,
         &store,
         project_id,
-        target_member.as_ref().and_then(rotation_scope_for_member),
+        target_member.as_ref().map_or(RotationScope::LegacyUnknown, rotation_scope_for_member),
         redact_names,
     )?;
     writeln!(output, "metadata_only: yes")?;
@@ -1142,10 +1176,11 @@ fn write_members(
     for member in members {
         writeln!(
             output,
-            "- id={} display={} role={} trusted_devices={} joined_at={} removed_at={}",
+            "- id={} display={} role={} profiles={} trusted_devices={} joined_at={} removed_at={}",
             member_id_label(member, redact_names),
             member_display_label(member, redact_names),
             member.role,
+            member_profiles_label(member, redact_names),
             member.trusted_device_count,
             member.joined_at,
             optional_timestamp_label(member.removed_at),
@@ -1588,6 +1623,22 @@ fn validate_invitee_name(name: &str) -> Result<(), CliError> {
     Ok(())
 }
 
+fn invite_ttl_seconds(value: Option<&str>) -> Result<u64, CliError> {
+    let duration = match value {
+        Some(value) => LocketDuration::from_str(value)
+            .map_err(|_| metadata_invalid_error("invalid invite expiry duration"))?,
+        None => LocketDuration::from_secs(DEFAULT_INVITE_TTL_SECONDS),
+    };
+    let seconds = duration.as_secs();
+    if seconds < MIN_INVITE_TTL_SECONDS {
+        return Err(metadata_invalid_error("invite expiry must be at least 5m"));
+    }
+    if seconds > MAX_INVITE_TTL_SECONDS {
+        return Err(metadata_invalid_error("invite expiry must be 30d or less"));
+    }
+    Ok(seconds)
+}
+
 const fn role_from_arg(role: TeamRoleArg) -> TeamRole {
     match role {
         TeamRoleArg::Owner => TeamRole::Owner,
@@ -1736,6 +1787,17 @@ fn member_display_label(member: &TeamMemberListRecord, redact_names: bool) -> St
     }
 }
 
+fn member_profiles_label(member: &TeamMemberListRecord, redact_names: bool) -> String {
+    if member.role == "owner" {
+        return "all".to_owned();
+    }
+    match member.profiles.as_deref() {
+        Some([]) => "all".to_owned(),
+        Some(profiles) => profiles_label(profiles, redact_names),
+        None => "unknown".to_owned(),
+    }
+}
+
 fn invite_id_label(invite: &PendingTeamInviteRecord, redact_names: bool) -> String {
     if redact_names { privacy_alias("invite", &invite.id) } else { invite.id.clone() }
 }
@@ -1846,10 +1908,25 @@ fn authorize_team_device_revoke(
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+enum RotationScope<'a> {
+    AllProfiles,
+    LegacyUnknown,
+    Scoped(&'a [String]),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RotationScopeNote {
+    AllProfiles,
+    LegacyUnknown,
+    Scoped,
+    Stale,
+}
+
 /// Emits a metadata-only rotation checklist for profiles in the member's
 /// known scope, listing the count of active secrets that principal could
-/// have accessed. Legacy members without persisted scope fall back to every
-/// project profile.
+/// have accessed. Owners, legacy members without persisted scope, and stale
+/// stored scopes fall back to every project profile.
 ///
 /// Output shape (one block, never a value):
 ///
@@ -1865,19 +1942,33 @@ fn write_rotation_checklist(
     output: &mut impl Write,
     store: &locket_store::Store,
     project_id: &str,
-    profile_scope: Option<&[String]>,
+    profile_scope: RotationScope<'_>,
     redact_names: bool,
 ) -> Result<(), CliError> {
     let mut profiles = store.list_profiles(project_id)?;
-    if let Some(scope) = profile_scope {
-        let scope = scope.iter().map(String::as_str).collect::<std::collections::BTreeSet<_>>();
-        profiles.retain(|profile| scope.contains(profile.name.as_str()));
-    }
+    let note = match profile_scope {
+        RotationScope::AllProfiles => RotationScopeNote::AllProfiles,
+        RotationScope::LegacyUnknown => RotationScopeNote::LegacyUnknown,
+        RotationScope::Scoped(scope) if scope.is_empty() => RotationScopeNote::AllProfiles,
+        RotationScope::Scoped(scope) => {
+            let scope = scope.iter().map(String::as_str).collect::<std::collections::BTreeSet<_>>();
+            if profiles.iter().all(|profile| !scope.contains(profile.name.as_str()))
+                || !scope
+                    .iter()
+                    .all(|name| profiles.iter().any(|profile| profile.name.as_str() == *name))
+            {
+                RotationScopeNote::Stale
+            } else {
+                profiles.retain(|profile| scope.contains(profile.name.as_str()));
+                RotationScopeNote::Scoped
+            }
+        }
+    };
     writeln!(output, "rotation_checklist:")?;
     if profiles.is_empty() {
         writeln!(output, "  (no profiles)")?;
         writeln!(output, "  total_active_secrets=0")?;
-        write_rotation_scope_note(output, profile_scope)?;
+        write_rotation_scope_note(output, note)?;
         return Ok(());
     }
     let mut total: usize = 0;
@@ -1893,25 +1984,32 @@ fn write_rotation_checklist(
         output,
         "  action: rotate listed secrets in each profile and `team revoke-device` any associated devices"
     )?;
-    write_rotation_scope_note(output, profile_scope)?;
+    write_rotation_scope_note(output, note)?;
     Ok(())
 }
 
-fn rotation_scope_for_member(member: &TeamMemberListRecord) -> Option<&[String]> {
+fn rotation_scope_for_member(member: &TeamMemberListRecord) -> RotationScope<'_> {
     if member.role == "owner" {
-        return None;
+        return RotationScope::AllProfiles;
     }
-    member.profiles.as_deref()
+    member.profiles.as_deref().map_or(RotationScope::LegacyUnknown, RotationScope::Scoped)
 }
 
 fn write_rotation_scope_note(
     output: &mut impl Write,
-    profile_scope: Option<&[String]>,
+    note: RotationScopeNote,
 ) -> Result<(), CliError> {
-    let note = if profile_scope.is_some() {
-        "checklist covers accepted invite profile scope"
-    } else {
-        "membership scope unavailable; checklist covers all project profiles"
+    let note = match note {
+        RotationScopeNote::AllProfiles => {
+            "member has all-profile scope; checklist covers all project profiles"
+        }
+        RotationScopeNote::LegacyUnknown => {
+            "legacy member scope unknown; checklist covers all project profiles"
+        }
+        RotationScopeNote::Scoped => "checklist covers accepted invite profile scope",
+        RotationScopeNote::Stale => {
+            "stored member scope could not be resolved; checklist covers all project profiles"
+        }
     };
     writeln!(output, "  scope_note: {note}")?;
     Ok(())

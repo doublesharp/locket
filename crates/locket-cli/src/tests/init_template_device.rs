@@ -875,8 +875,10 @@ fn team_members_lists_members_and_pending_invites_metadata_only()
     assert!(members_output.contains("team_id: lk_team_cli"));
     assert!(members_output.contains("display=Alice Owner"));
     assert!(members_output.contains("role=owner"));
+    assert!(members_output.contains("profiles=all"));
     assert!(members_output.contains("trusted_devices=1"));
     assert!(members_output.contains("display=Bob Removed"));
+    assert!(members_output.contains("profiles=unknown"));
     assert!(members_output.contains("removed_at=30"));
     assert!(members_output.contains("pending_invites:"));
     assert!(members_output.contains("id=lk_invite_pending"));
@@ -1153,6 +1155,54 @@ fn team_remove_rotation_checklist_uses_accepted_invite_profile_scope()
     assert!(output.contains("total_active_secrets=1"), "{output}");
     assert!(
         output.contains("scope_note: checklist covers accepted invite profile scope"),
+        "{output}"
+    );
+    Ok(())
+}
+
+#[test]
+fn team_remove_rotation_checklist_fails_open_when_stored_scope_is_stale()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from([
+            "locket",
+            "init",
+            "--no-device",
+            "--no-passkey",
+            "--name",
+            "app",
+            "--profile",
+            "dev",
+        ])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    seed_scoped_developer_rotation_fixture(&directory)?;
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    store.connection().execute(
+        "UPDATE team_members SET profiles_json = '[\"stale-profile\"]'
+         WHERE id = 'lk_member_scope_dev'",
+        [],
+    )?;
+    drop(store);
+
+    let remove_context = context_with_confirmation(&context, "Scoped Developer\n");
+    let mut output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "team", "remove", "Scoped Developer"])?,
+        &remove_context,
+        &mut output,
+    )?;
+
+    let output = String::from_utf8(output)?;
+    assert!(output.contains("team_remove: success"), "{output}");
+    assert!(output.contains("profile dev: rotate_active_secrets=1"), "{output}");
+    assert!(output.contains("profile prod: rotate_active_secrets=1"), "{output}");
+    assert!(output.contains("total_active_secrets=2"), "{output}");
+    assert!(
+        output.contains("scope_note: stored member scope could not be resolved; checklist covers all project profiles"),
         "{output}"
     );
     Ok(())
@@ -2666,6 +2716,137 @@ fn team_invite_creates_signed_file_pending_row_and_audit() -> Result<(), Box<dyn
 }
 
 #[test]
+fn team_invite_expires_in_uses_duration_parser_and_documented_bounds()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from([
+            "locket",
+            "init",
+            "--no-device",
+            "--no-passkey",
+            "--name",
+            "app",
+            "--profile",
+            "dev",
+        ])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    run_with_context(
+        Cli::try_parse_from(["locket", "device", "init"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    run_with_context(
+        Cli::try_parse_from(["locket", "team", "init", "platform-team"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    let config = crate::read_project_config(&directory.path().join("locket.toml"))?;
+    let recipient = crate::DeviceRecord {
+        id: "lk_dev_expiring_recipient".to_owned(),
+        project_id: config.project_id.to_string(),
+        member_id: None,
+        name: "recipient laptop".to_owned(),
+        label: "recipient laptop".to_owned(),
+        signing_public_key: vec![31; 32],
+        sealing_public_key: vec![32; 32],
+        fingerprint: crate::device_fingerprint_hex(&[31; 32], &[32; 32]),
+        safety_words: vec!["ember".to_owned(), "fable".to_owned()],
+        local: false,
+        created_at: 10,
+        last_seen_at: None,
+        revoked_at: None,
+    };
+    let descriptor = crate::encode_device_descriptor(&recipient)?;
+    let output_path = directory.path().join("short-invite.locket-invite");
+
+    run_with_context(
+        Cli::try_parse_from([
+            "locket",
+            "team",
+            "invite",
+            "Teammate",
+            "--device",
+            descriptor.as_str(),
+            "--profile",
+            "dev",
+            "--role",
+            "developer",
+            "--expires-in",
+            "2h",
+            "--output",
+            output_path.to_str().ok_or("non-utf8 output path")?,
+        ])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let (created_at, expires_at): (i64, i64) = store.connection().query_row(
+        "SELECT created_at, expires_at FROM team_invites ORDER BY created_at DESC LIMIT 1",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    assert_eq!(expires_at - created_at, 2 * 60 * 60 * 1_000_000_000);
+
+    let too_short = run_with_context(
+        Cli::try_parse_from([
+            "locket",
+            "team",
+            "invite",
+            "Teammate",
+            "--device",
+            descriptor.as_str(),
+            "--profile",
+            "dev",
+            "--role",
+            "developer",
+            "--expires-in",
+            "4m",
+            "--output",
+            directory
+                .path()
+                .join("too-short.locket-invite")
+                .to_str()
+                .ok_or("non-utf8 output path")?,
+        ])?,
+        &context,
+        &mut Vec::new(),
+    );
+    assert_metadata_invalid(too_short, "invite expiry must be at least 5m")?;
+
+    let too_long = run_with_context(
+        Cli::try_parse_from([
+            "locket",
+            "team",
+            "invite",
+            "Teammate",
+            "--device",
+            descriptor.as_str(),
+            "--profile",
+            "dev",
+            "--role",
+            "developer",
+            "--expires-in",
+            "31d",
+            "--output",
+            directory
+                .path()
+                .join("too-long.locket-invite")
+                .to_str()
+                .ok_or("non-utf8 output path")?,
+        ])?,
+        &context,
+        &mut Vec::new(),
+    );
+    assert_metadata_invalid(too_long, "invite expiry must be 30d or less")?;
+    Ok(())
+}
+
+#[test]
 fn team_invite_rejects_bad_descriptor_without_file_or_audit()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempdir()?;
@@ -3668,6 +3849,22 @@ fn e2e_team_invite_accept_happy_path_and_revoked_invite_failure()
     assert!(accept_output.contains("issuer_safety_words:"), "{accept_output}");
     assert!(accept_output.contains("metadata_only: yes"), "{accept_output}");
 
+    let store = locket_store::Store::open(directory.path().join("store.db"))?;
+    let member_scope: Option<String> = store.connection().query_row(
+        "SELECT profiles_json
+         FROM team_members
+         WHERE device_id = ?1 AND role = 'developer' AND removed_at IS NULL
+         ORDER BY joined_at DESC
+         LIMIT 1",
+        [recipient.id.as_str()],
+        |row| row.get(0),
+    )?;
+    assert_eq!(
+        member_scope.as_deref().map(serde_json::from_str::<Vec<String>>).transpose()?,
+        Some(vec!["dev".to_owned()])
+    );
+    drop(store);
+
     let revoked_accept_context =
         context_with_confirmation(&context, &format!("{}\n", revoked_invite.issuer_fingerprint));
     let result = run_with_context(
@@ -3686,6 +3883,29 @@ fn e2e_team_invite_accept_happy_path_and_revoked_invite_failure()
     assert_eq!(error.exit_code(), locket_core::LocketError::ReplayDetected.exit_code());
 
     assert_invite_e2e_audit_shape(&directory, &accepted_invite.id, &revoked_invite.id)?;
+    Ok(())
+}
+
+#[test]
+fn team_accept_dash_decodes_signed_invite_text_from_stdin_reader()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = team_accept_invite_fixture(
+        "lk_invite_accept_stdin_reader",
+        4_102_444_800,
+        None,
+        None,
+        None,
+        None,
+    )?;
+    let invite_text = std::fs::read_to_string(&fixture.invite_path)?;
+
+    let invite = crate::commands::team::members::read_signed_invite_for_tests(
+        std::path::Path::new("-"),
+        invite_text.as_bytes(),
+    )?;
+
+    assert_eq!(invite.payload.invite_id.as_str(), fixture.invite_id);
+    assert_eq!(invite.payload.profiles, vec!["dev".to_owned()]);
     Ok(())
 }
 

@@ -583,6 +583,98 @@ impl Store {
         Ok(())
     }
 
+    /// Marks a team invite as accepted, creates or updates the recipient
+    /// member's active device binding, persists the accepted profile scope,
+    /// and appends an optional audit row in the same transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::InviteReplayDetected`] when the invite is already
+    /// accepted or revoked, [`StoreError::InviteNotFound`] when no row matches
+    /// `invite_id`, or [`StoreError`] when JSON serialization, `SQLite`, or
+    /// audit append fails.
+    #[allow(clippy::too_many_arguments)]
+    pub fn accept_team_invite_with_member_scope(
+        &mut self,
+        invite_id: &str,
+        accepted_at: i64,
+        member_id: &str,
+        device_id: &str,
+        display_name: &str,
+        role: &str,
+        profiles: &[String],
+        audit: Option<AuditContext<'_>>,
+    ) -> Result<(), StoreError> {
+        let exists: Option<(String, Option<i64>, Option<i64>)> = self
+            .connection
+            .query_row(
+                "SELECT team_id, accepted_at, revoked_at FROM team_invites WHERE id = ?1",
+                [invite_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()?;
+        let Some((team_id, existing_accepted_at, revoked_at)) = exists else {
+            return Err(StoreError::InviteNotFound { invite_id: invite_id.to_owned() });
+        };
+        if existing_accepted_at.is_some() || revoked_at.is_some() {
+            return Err(StoreError::InviteReplayDetected { invite_id: invite_id.to_owned() });
+        }
+
+        let profiles_json = serde_json::to_string(&dedupe_profiles(profiles))?;
+        let transaction = self.connection.transaction()?;
+        let updated = transaction.execute(
+            "UPDATE team_invites
+                SET accepted_at = ?1
+              WHERE id = ?2
+                AND accepted_at IS NULL
+                AND revoked_at IS NULL",
+            params![accepted_at, invite_id],
+        )?;
+        if updated == 0 {
+            return Err(StoreError::InviteReplayDetected { invite_id: invite_id.to_owned() });
+        }
+
+        let existing_member_id: Option<String> = transaction
+            .query_row(
+                "SELECT id
+                 FROM team_members
+                 WHERE team_id = ?1
+                   AND device_id = ?2
+                   AND removed_at IS NULL
+                 LIMIT 1",
+                params![team_id.as_str(), device_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if let Some(existing_member_id) = existing_member_id {
+            transaction.execute(
+                "UPDATE team_members
+                    SET profiles_json = ?1
+                  WHERE id = ?2",
+                params![profiles_json.as_str(), existing_member_id.as_str()],
+            )?;
+        } else {
+            transaction.execute(
+                "INSERT INTO team_members(
+                   id, team_id, device_id, display_name, role, profiles_json, joined_at, removed_at
+                 )
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL)",
+                params![
+                    member_id,
+                    team_id.as_str(),
+                    device_id,
+                    display_name,
+                    role,
+                    profiles_json.as_str(),
+                    accepted_at,
+                ],
+            )?;
+        }
+        append_optional_audit(&transaction, audit)?;
+        transaction.commit()?;
+        Ok(())
+    }
+
     /// Marks a team invite as revoked and appends an optional audit row in the
     /// same transaction.
     ///

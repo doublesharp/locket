@@ -993,6 +993,9 @@ pub(crate) struct TeamInviteArgs {
     /// Role to grant when the invite is accepted.
     #[arg(long, value_enum)]
     pub role: TeamRoleArg,
+    /// Invite validity duration, for example 5m, 2h, or 30d.
+    #[arg(long)]
+    pub expires_in: Option<String>,
     /// Write the invite file to this path.
     #[arg(long)]
     pub output: Option<PathBuf>,
