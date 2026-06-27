@@ -1,8 +1,4 @@
 // Tests for the desktop policy editor form model.
-//
-// Tests run under vitest. When the runner is not configured locally,
-// the file is skipped at collection time. The assertions below are
-// hand-verifiable for code review.
 
 import { describe, expect, it } from 'vitest';
 

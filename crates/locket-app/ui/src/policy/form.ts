@@ -12,6 +12,7 @@ import type {
   CommandPolicySnapshotWire,
 } from '../agent/types';
 import type { CommandPolicyRow } from '../types/views';
+import { parseCommaList } from '../utils/lists';
 
 export interface PolicyFormState {
   /** Saved command policy name (unique within the project). */
@@ -84,20 +85,7 @@ const COMMAND_PREVIEW_MAX = 4096;
 
 /** Normalize a `KEY, KEY2` list into a deduped, trimmed array. */
 export function parseSecretList(raw: string): string[] {
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const piece of raw.split(',')) {
-    const trimmed = piece.trim();
-    if (trimmed.length === 0) {
-      continue;
-    }
-    if (seen.has(trimmed)) {
-      continue;
-    }
-    seen.add(trimmed);
-    out.push(trimmed);
-  }
-  return out;
+  return parseCommaList(raw);
 }
 
 /** Run the same validation gate the form uses on submit. */

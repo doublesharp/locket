@@ -10,6 +10,7 @@
 // gets local feedback before switching to the CLI for invite changes.
 
 import type { AuditWireRow } from '../agent/types';
+import { parseCommaList } from '../utils/lists';
 
 export type TeamInviteRole = 'owner' | 'maintainer' | 'developer' | 'read-only';
 
@@ -122,20 +123,7 @@ export function defaultRevokeForm(): TeamInviteRevokeFormState {
 
 /** Normalize a `profile, profile2` list into a deduped, trimmed array. */
 export function parseProfileList(raw: string): string[] {
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const piece of raw.split(',')) {
-    const trimmed = piece.trim();
-    if (trimmed.length === 0) {
-      continue;
-    }
-    if (seen.has(trimmed)) {
-      continue;
-    }
-    seen.add(trimmed);
-    out.push(trimmed);
-  }
-  return out;
+  return parseCommaList(raw);
 }
 
 export function validateIssueForm(state: TeamInviteIssueFormState): TeamInviteIssueValidation {
@@ -285,29 +273,11 @@ export function teamInviteIssueCliCommand(
   state: TeamInviteIssueFormState,
   options: TeamInviteIssueCommandOptions = {},
 ): string {
-  const profiles = parseProfileList(state.profiles)
-    .map((profile) => `--profile ${shellQuote(profile)}`)
-    .join(' ');
-  const expiresIn = expiresAtToDurationArgument(state.expiresAt, options.nowMs ?? Date.now());
-  return [
-    'locket team invite',
-    shellQuote(state.recipientLabel.trim()),
-    '--device',
-    shellQuote(state.deviceDescriptor.trim()),
-    profiles,
-    '--role',
-    state.role,
-    expiresIn === null ? '' : '--expires-in',
-    expiresIn === null ? '' : shellQuote(expiresIn),
-  ]
-    .filter((part) => part.length > 0)
-    .join(' ');
+  return inviteCreateCliCommand('locket team invite', state, options);
 }
 
 export function teamInviteAcceptCliCommand(inviteText: string): string {
-  const text = inviteText.trim();
-  const delimiter = heredocDelimiterFor(text);
-  return `cat <<'${delimiter}' | locket team accept -\n${text}\n${delimiter}`;
+  return inviteAcceptCliCommand('locket team accept -', inviteText);
 }
 
 export function teamInviteRevokeCliCommand(inviteId: string): string {
@@ -322,12 +292,24 @@ export function agentInviteCreateCliCommand(
   state: TeamInviteIssueFormState,
   options: TeamInviteIssueCommandOptions = {},
 ): string {
+  return inviteCreateCliCommand('locket agent invite create', state, options);
+}
+
+export function agentInviteAcceptCliCommand(inviteText: string): string {
+  return inviteAcceptCliCommand('locket agent invite accept -', inviteText, 'LOCKET_AGENT_INVITE');
+}
+
+function inviteCreateCliCommand(
+  baseCommand: string,
+  state: TeamInviteIssueFormState,
+  options: TeamInviteIssueCommandOptions,
+): string {
   const profiles = parseProfileList(state.profiles)
     .map((profile) => `--profile ${shellQuote(profile)}`)
     .join(' ');
   const expiresIn = expiresAtToDurationArgument(state.expiresAt, options.nowMs ?? Date.now());
   return [
-    'locket agent invite create',
+    baseCommand,
     shellQuote(state.recipientLabel.trim()),
     '--device',
     shellQuote(state.deviceDescriptor.trim()),
@@ -341,10 +323,14 @@ export function agentInviteCreateCliCommand(
     .join(' ');
 }
 
-export function agentInviteAcceptCliCommand(inviteText: string): string {
+function inviteAcceptCliCommand(
+  command: string,
+  inviteText: string,
+  baseDelimiter = 'LOCKET_INVITE',
+): string {
   const text = inviteText.trim();
-  const delimiter = heredocDelimiterFor(text, 'LOCKET_AGENT_INVITE');
-  return `cat <<'${delimiter}' | locket agent invite accept -\n${text}\n${delimiter}`;
+  const delimiter = heredocDelimiterFor(text, baseDelimiter);
+  return `cat <<'${delimiter}' | ${command}\n${text}\n${delimiter}`;
 }
 
 export function expiresAtToDurationArgument(
@@ -417,6 +403,31 @@ export interface TeamInviteRow {
   createdAt: string;
   /** ISO 8601 timestamp parsed from invite metadata when present. */
   expiresAt?: string;
+}
+
+export function filterTeamInviteRows(
+  rows: readonly TeamInviteRow[],
+  query: string,
+): readonly TeamInviteRow[] {
+  const normalizedQuery = query.trim().toLowerCase();
+  if (normalizedQuery.length === 0) {
+    return rows;
+  }
+  return rows.filter((row) => teamInviteSearchText(row).includes(normalizedQuery));
+}
+
+function teamInviteSearchText(row: TeamInviteRow): string {
+  return [
+    row.id,
+    row.recipientLabel ?? '',
+    row.issuerLabel ?? '',
+    row.role ?? '',
+    row.status,
+    row.direction,
+    row.profiles.join(' '),
+  ]
+    .join(' ')
+    .toLowerCase();
 }
 
 interface AuditMetadata {

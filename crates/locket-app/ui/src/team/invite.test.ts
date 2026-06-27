@@ -1,8 +1,4 @@
 // Tests for the desktop team-invite form models.
-//
-// Tests run under vitest. When the runner is not configured locally,
-// the file is skipped at collection time. The assertions below are
-// hand-verifiable for code review.
 
 import { describe, expect, it } from 'vitest';
 
@@ -16,6 +12,7 @@ import {
   defaultIssueForm,
   defaultRevokeForm,
   expiresAtToDurationArgument,
+  filterTeamInviteRows,
   issueDangerousConfirmationMatches,
   issueFormToPayload,
   issueRequiresDangerousConfirmation,
@@ -29,11 +26,45 @@ import {
   validateAcceptForm,
   validateIssueForm,
   validateRevokeForm,
+  type TeamInviteRow,
 } from './invite';
 
 describe('parseProfileList', () => {
   it('trims, dedupes, and skips empties', () => {
     expect(parseProfileList(' dev , prod, dev ,, qa ')).toEqual(['dev', 'prod', 'qa']);
+  });
+});
+
+describe('filterTeamInviteRows', () => {
+  const rows: TeamInviteRow[] = [
+    {
+      id: 'lk_invite_alpha',
+      direction: 'issued',
+      status: 'pending',
+      recipientLabel: 'Build Agent',
+      role: 'developer',
+      profiles: ['dev', 'qa'],
+      createdAt: '2026-06-26T12:00:00.000Z',
+    },
+    {
+      id: 'lk_invite_beta',
+      direction: 'received',
+      status: 'accepted',
+      issuerLabel: 'Platform Team',
+      role: 'maintainer',
+      profiles: ['prod'],
+      createdAt: '2026-06-26T13:00:00.000Z',
+    },
+  ];
+
+  it('returns rows in original order for blank search', () => {
+    expect(filterTeamInviteRows(rows, '   ')).toEqual(rows);
+  });
+
+  it('matches invite metadata case-insensitively', () => {
+    expect(filterTeamInviteRows(rows, 'platform')).toEqual([rows[1]]);
+    expect(filterTeamInviteRows(rows, 'QA')).toEqual([rows[0]]);
+    expect(filterTeamInviteRows(rows, 'received')).toEqual([rows[1]]);
   });
 });
 

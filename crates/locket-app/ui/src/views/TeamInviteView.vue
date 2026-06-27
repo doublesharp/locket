@@ -13,6 +13,7 @@ import {
   agentInviteAcceptCliCommand,
   agentInviteCreateCliCommand,
   agentInviteRequestCliCommand,
+  filterTeamInviteRows,
   issueDangerousConfirmationMatches,
   issueRequiresDangerousConfirmation,
   teamInviteAcceptCliCommand,
@@ -75,26 +76,9 @@ watch(
 
 const inviteRows = computed<TeamInviteRow[]>(() => teamInviteRowsFromAudit(props.auditRows));
 
-const filteredRows = computed<TeamInviteRow[]>(() => {
-  const query = searchQuery.value.trim().toLowerCase();
-  if (query.length === 0) {
-    return inviteRows.value;
-  }
-  return inviteRows.value.filter((row) =>
-    [
-      row.id,
-      row.recipientLabel ?? '',
-      row.issuerLabel ?? '',
-      row.role ?? '',
-      row.status,
-      row.direction,
-      row.profiles.join(' '),
-    ]
-      .join(' ')
-      .toLowerCase()
-      .includes(query),
-  );
-});
+const filteredRows = computed<TeamInviteRow[]>(() => [
+  ...filterTeamInviteRows(inviteRows.value, searchQuery.value),
+]);
 
 const issueValidation = computed(() => validateIssueForm(issueForm.value));
 const issueRequiresConfirmation = computed<boolean>(() =>
