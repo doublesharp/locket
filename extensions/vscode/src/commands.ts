@@ -20,6 +20,7 @@ import {
   buildListAuditRequest,
   buildListPoliciesRequest,
   buildLockRequest,
+  buildPrepareExecRequest,
   buildScanKnownValuesRequest,
   buildSetActiveProfileRequest,
 } from './commandsModel';
@@ -55,6 +56,7 @@ export function registerLocketCommands(agentClient: AgentClient): vscode.Disposa
 async function promptForActiveProject(agentClient: AgentClient): Promise<{
   projectId: string;
   profileName: string | null;
+  profileId: string | null;
 } | undefined> {
   let status: StatusPayload | undefined;
   try {
@@ -62,21 +64,37 @@ async function promptForActiveProject(agentClient: AgentClient): Promise<{
   } catch {
     status = undefined;
   }
+  const resolvedProject = resolveFirstWorkspaceProject();
   const fromStatus = typeof status?.project_id === 'string' ? status.project_id : '';
+  const fromResolver = resolvedProject?.projectId ?? '';
   const projectId = await vscode.window.showInputBox({
     title: 'Locket',
     prompt: 'Project id',
-    placeHolder: fromStatus.length > 0 ? fromStatus : 'lk_proj_...',
-    value: fromStatus,
+    placeHolder: fromStatus.length > 0 ? fromStatus : fromResolver.length > 0 ? fromResolver : 'lk_proj_...',
+    value: fromStatus.length > 0 ? fromStatus : fromResolver,
     ignoreFocusOut: false,
   });
   if (projectId === undefined) {
     return undefined;
   }
+  const trimmedProjectId = projectId.trim();
+  const resolvedProfileId =
+    resolvedProject !== undefined && resolvedProject.projectId === trimmedProjectId
+      ? resolvedProject.defaultProfileId
+      : null;
   return {
     projectId,
     profileName: typeof status?.profile_name === 'string' ? status.profile_name : null,
+    profileId: resolvedProfileId,
   };
+}
+
+function resolveFirstWorkspaceProject(): ResolvedLocketProject | undefined {
+  const folder = vscode.workspace.workspaceFolders?.[0];
+  if (folder === undefined) {
+    return undefined;
+  }
+  return resolveLocketProject(folder.uri.fsPath);
 }
 
 async function revealSecret(agentClient: AgentClient): Promise<void> {
@@ -314,17 +332,43 @@ async function runPolicy(agentClient: AgentClient): Promise<void> {
   if (pick === undefined) {
     return;
   }
+  const profileId = await profileIdForRunPolicy(project);
+  if (profileId === undefined) {
+    return;
+  }
+  let prepareRequest;
   try {
-    await agentClient.invoke('PrepareExec', {
-      project_id: project.projectId,
-      policy_name: pick.label,
-    });
+    prepareRequest = buildPrepareExecRequest(project.projectId, profileId, pick.label);
+  } catch (error) {
+    void vscode.window.showWarningMessage(
+      error instanceof Error ? error.message : 'Locket run policy inputs were invalid.',
+    );
+    return;
+  }
+  try {
+    await agentClient.invoke('PrepareExec', prepareRequest);
     void vscode.window.showInformationMessage(
       `Locket prepared policy ${pick.label}. Run via the integrated terminal or CLI.`,
     );
   } catch (error) {
     void vscode.window.showErrorMessage(agentErrorMessage(error));
   }
+}
+
+async function profileIdForRunPolicy(project: {
+  readonly profileId: string | null;
+  readonly profileName: string | null;
+}): Promise<string | undefined> {
+  const resolvedProfileId = project.profileId?.trim() ?? '';
+  if (resolvedProfileId.length > 0) {
+    return resolvedProfileId;
+  }
+  return vscode.window.showInputBox({
+    title: 'Locket: Run Policy',
+    prompt: 'Profile id',
+    placeHolder: 'default',
+    ignoreFocusOut: false,
+  });
 }
 
 async function scanWorkspace(agentClient: AgentClient): Promise<void> {

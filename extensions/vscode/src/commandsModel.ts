@@ -49,6 +49,12 @@ export interface ListPoliciesRequestPayload {
   readonly privacy_redact_names: boolean;
 }
 
+export interface PrepareExecRequestPayload {
+  readonly project_id: string;
+  readonly profile_id: string;
+  readonly policy_name: string;
+}
+
 export interface ScanKnownValuesRequestPayload {
   readonly paths: readonly string[];
   readonly require_known: boolean;
@@ -203,6 +209,31 @@ export function buildListPoliciesRequest(projectId: string): ListPoliciesRequest
     throw new Error('project id is required');
   }
   return { project_id: trimmedProjectId, privacy_redact_names: false };
+}
+
+// Build a `PrepareExec` request for a saved command policy.
+export function buildPrepareExecRequest(
+  projectId: string,
+  profileId: string,
+  policyName: string,
+): PrepareExecRequestPayload {
+  const trimmedProjectId = projectId.trim();
+  const trimmedProfileId = profileId.trim();
+  const trimmedPolicyName = policyName.trim();
+  if (trimmedProjectId.length === 0) {
+    throw new Error('project id is required');
+  }
+  if (trimmedProfileId.length === 0) {
+    throw new Error('profile id is required');
+  }
+  if (trimmedPolicyName.length === 0) {
+    throw new Error('policy name is required');
+  }
+  return {
+    project_id: trimmedProjectId,
+    profile_id: trimmedProfileId,
+    policy_name: trimmedPolicyName,
+  };
 }
 
 // Build a `ScanKnownValues` request scoped to the workspace folder.

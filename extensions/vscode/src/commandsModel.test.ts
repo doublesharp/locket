@@ -11,6 +11,7 @@ import {
   buildListAuditRequest,
   buildListPoliciesRequest,
   buildLockRequest,
+  buildPrepareExecRequest,
   buildRegisterIdeEnvSessionPayload,
   buildScanKnownValuesRequest,
   buildSetActiveProfileRequest,
@@ -66,6 +67,17 @@ test('list policies request requires a project id', () => {
     privacy_redact_names: false,
   });
   assert.throws(() => buildListPoliciesRequest(''), /project id is required/u);
+});
+
+test('prepare exec request includes project id, profile id, and policy name', () => {
+  assert.deepEqual(buildPrepareExecRequest(' lk_proj_a ', ' prof-dev ', ' deploy '), {
+    project_id: 'lk_proj_a',
+    profile_id: 'prof-dev',
+    policy_name: 'deploy',
+  });
+  assert.throws(() => buildPrepareExecRequest('', 'prof-dev', 'deploy'), /project id is required/u);
+  assert.throws(() => buildPrepareExecRequest('lk_proj_a', '', 'deploy'), /profile id is required/u);
+  assert.throws(() => buildPrepareExecRequest('lk_proj_a', 'prof-dev', ''), /policy name is required/u);
 });
 
 test('scan workspace request filters blank paths and never sets require_known', () => {
