@@ -232,13 +232,7 @@ fn device_add_command(
     let mut store = open_store(context)?;
     let project_id = resolved.config.project_id.as_str();
     ensure_project_exists(&store, project_id)?;
-    let descriptor = decode_device_descriptor(&args.device)?;
-    let signing_public_key = decode_descriptor_key(&descriptor.signing_public_key_ed25519)?;
-    let sealing_public_key = decode_descriptor_key(&descriptor.sealing_public_key_x25519)?;
-    let fingerprint = device_fingerprint_hex(&signing_public_key, &sealing_public_key);
-    if fingerprint != descriptor.fingerprint_sha256 {
-        return Err(metadata_invalid_error("device descriptor fingerprint mismatch"));
-    }
+    let verified = decode_verified_device_descriptor(&args.device, "device descriptor")?;
     let user_verification = configured_user_verification(
         context,
         "user_verification_required_for.device_register",
@@ -246,18 +240,16 @@ fn device_add_command(
         format!("register device {}", args.name),
     )?;
     let device = DeviceRecord {
-        id: descriptor.device_id,
+        id: verified.descriptor.device_id,
         project_id: project_id.to_owned(),
         member_id: None,
         name: args.name.clone(),
-        // v1 device add does not collect a separate display label;
-        // mirror `name` so existing CLI/UI surfaces have a non-empty
-        // label until label-on-add is wired in a follow-up.
+        // Added devices use their registration name as the display label.
         label: args.name.clone(),
-        signing_public_key: signing_public_key.to_vec(),
-        sealing_public_key: sealing_public_key.to_vec(),
-        fingerprint,
-        safety_words: descriptor.safety_words,
+        signing_public_key: verified.signing_public_key.to_vec(),
+        sealing_public_key: verified.sealing_public_key.to_vec(),
+        fingerprint: verified.fingerprint,
+        safety_words: verified.descriptor.safety_words,
         local: false,
         created_at: now_unix_nanos()?,
         last_seen_at: None,
@@ -468,6 +460,27 @@ pub fn decode_device_descriptor(value: &str) -> Result<DeviceDescriptorV1, CliEr
     DeviceId::new(descriptor.device_id.clone())
         .map_err(|_| metadata_invalid_error("device descriptor id is invalid"))?;
     Ok(descriptor)
+}
+
+pub struct VerifiedDeviceDescriptor {
+    pub descriptor: DeviceDescriptorV1,
+    pub signing_public_key: [u8; 32],
+    pub sealing_public_key: [u8; 32],
+    pub fingerprint: String,
+}
+
+pub fn decode_verified_device_descriptor(
+    value: &str,
+    label: &str,
+) -> Result<VerifiedDeviceDescriptor, CliError> {
+    let descriptor = decode_device_descriptor(value)?;
+    let signing_public_key = decode_descriptor_key(&descriptor.signing_public_key_ed25519)?;
+    let sealing_public_key = decode_descriptor_key(&descriptor.sealing_public_key_x25519)?;
+    let fingerprint = device_fingerprint_hex(&signing_public_key, &sealing_public_key);
+    if fingerprint != descriptor.fingerprint_sha256 {
+        return Err(metadata_invalid_error(format!("{label} fingerprint mismatch")));
+    }
+    Ok(VerifiedDeviceDescriptor { descriptor, signing_public_key, sealing_public_key, fingerprint })
 }
 
 pub fn decode_descriptor_key(value: &str) -> Result<[u8; 32], CliError> {

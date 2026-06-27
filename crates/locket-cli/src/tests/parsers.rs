@@ -438,6 +438,37 @@ fn memory_clipboard_schedules_ttl_clear_only_for_original_value()
 }
 
 #[test]
+fn cli_handoff_helpers_quote_commands_and_avoid_heredoc_delimiter_collisions() {
+    use crate::support::handoff::{heredoc_command, shell_quote, shell_words_command};
+
+    assert_eq!(shell_quote("lkdev1_abc.DEF-123:/@%+"), "lkdev1_abc.DEF-123:/@%+");
+    assert_eq!(shell_quote(""), "''");
+    assert_eq!(shell_quote("Build Agent 'West'"), "'Build Agent '\\''West'\\'''");
+
+    assert_eq!(
+        shell_words_command([
+            "locket",
+            "agent",
+            "invite",
+            "create",
+            "Build Agent 'West'",
+            "--profile",
+            "dev",
+        ]),
+        "locket agent invite create 'Build Agent '\\''West'\\''' --profile dev"
+    );
+
+    assert_eq!(
+        heredoc_command(
+            "locket agent invite accept -",
+            "header\nLOCKET_INVITE\nLOCKET_INVITE_1\npayload",
+            "LOCKET_INVITE",
+        ),
+        "cat <<'LOCKET_INVITE_2' | locket agent invite accept -\nheader\nLOCKET_INVITE\nLOCKET_INVITE_1\npayload\nLOCKET_INVITE_2"
+    );
+}
+
+#[test]
 fn parses_profile_project_and_agent_commands() {
     for args in [
         ["locket", "profile", "create", "dev"].as_slice(),

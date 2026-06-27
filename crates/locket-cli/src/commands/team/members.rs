@@ -1503,14 +1503,11 @@ struct RecipientDevice {
 }
 
 fn decode_recipient_device(value: &str) -> Result<RecipientDevice, CliError> {
-    let descriptor = device::decode_device_descriptor(value)?;
-    let signing_public_key = device::decode_descriptor_key(&descriptor.signing_public_key_ed25519)?;
-    let sealing_public_key = device::decode_descriptor_key(&descriptor.sealing_public_key_x25519)?;
-    let fingerprint = device::device_fingerprint_hex(&signing_public_key, &sealing_public_key);
-    if fingerprint != descriptor.fingerprint_sha256 {
-        return Err(metadata_invalid_error("recipient device descriptor fingerprint mismatch"));
-    }
-    Ok(RecipientDevice { fingerprint, sealing_public_key })
+    let verified = device::decode_verified_device_descriptor(value, "recipient device descriptor")?;
+    Ok(RecipientDevice {
+        fingerprint: verified.fingerprint,
+        sealing_public_key: verified.sealing_public_key,
+    })
 }
 
 fn validate_invite_profiles(

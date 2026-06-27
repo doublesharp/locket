@@ -12,6 +12,7 @@ use time::format_description::well_known::Rfc3339;
 
 use crate::commands::team::{device, members};
 use crate::runtime::error::typed_cli_error;
+use crate::support::handoff::{heredoc_command, shell_words_command};
 use crate::{
     AGENT_LOG_FOLLOW_SLEEP_MS, AgentCommand, AgentInviteCommand, AgentInviteCreateArgs,
     AgentInviteRequestArgs, AgentLogsArgs, CliError, InternalAgentServeArgs, NANOS_PER_SECOND,
@@ -100,19 +101,12 @@ fn resolve_agent_invite_request_device(
     descriptor: Option<&str>,
 ) -> Result<AgentInviteRequestDevice, CliError> {
     if let Some(descriptor) = descriptor {
-        let decoded = device::decode_device_descriptor(descriptor)?;
-        let signing_public_key =
-            device::decode_descriptor_key(&decoded.signing_public_key_ed25519)?;
-        let sealing_public_key = device::decode_descriptor_key(&decoded.sealing_public_key_x25519)?;
-        let fingerprint = device::device_fingerprint_hex(&signing_public_key, &sealing_public_key);
-        if fingerprint != decoded.fingerprint_sha256 {
-            return Err(metadata_invalid_error("device descriptor fingerprint mismatch"));
-        }
+        let verified = device::decode_verified_device_descriptor(descriptor, "device descriptor")?;
         return Ok(AgentInviteRequestDevice {
-            device_id: decoded.device_id,
-            label: decoded.label,
-            fingerprint,
-            safety_words: decoded.safety_words,
+            device_id: verified.descriptor.device_id,
+            label: verified.descriptor.label,
+            fingerprint: verified.fingerprint,
+            safety_words: verified.descriptor.safety_words,
             descriptor: descriptor.trim().to_owned(),
         });
     }
@@ -174,9 +168,11 @@ fn write_agent_invite_accept_handoff(
 ) -> Result<(), CliError> {
     writeln!(output, "agent_invite_handoff: paste_to_recipient")?;
     writeln!(output, "paste_for_recipient:")?;
-    writeln!(output, "cat <<'{AGENT_INVITE_HEREDOC}' | locket agent invite accept -")?;
-    writeln!(output, "{invite_text}")?;
-    writeln!(output, "{AGENT_INVITE_HEREDOC}")?;
+    writeln!(
+        output,
+        "{}",
+        heredoc_command("locket agent invite accept -", invite_text, AGENT_INVITE_HEREDOC,)
+    )?;
     writeln!(output, "metadata_only: yes")?;
     Ok(())
 }
@@ -192,13 +188,13 @@ fn build_agent_invite_create_command(
         "agent".to_owned(),
         "invite".to_owned(),
         "create".to_owned(),
-        shell_quote(label),
+        label.to_owned(),
         "--device".to_owned(),
-        shell_quote(descriptor),
+        descriptor.to_owned(),
     ];
     for profile in profiles {
         parts.push("--profile".to_owned());
-        parts.push(shell_quote(profile));
+        parts.push(profile.clone());
     }
     parts.push("--role".to_owned());
     parts.push(
@@ -208,23 +204,9 @@ fn build_agent_invite_create_command(
     );
     if let Some(expires_in) = args.expires_in.as_deref() {
         parts.push("--expires-in".to_owned());
-        parts.push(shell_quote(expires_in));
+        parts.push(expires_in.to_owned());
     }
-    parts.join(" ")
-}
-
-fn shell_quote(value: &str) -> String {
-    if value.chars().all(is_shell_safe_char) {
-        return value.to_owned();
-    }
-    if value.is_empty() {
-        return "''".to_owned();
-    }
-    format!("'{}'", value.replace('\'', "'\\''"))
-}
-
-const fn is_shell_safe_char(value: char) -> bool {
-    value.is_ascii_alphanumeric() || matches!(value, '_' | '-' | '.' | '/' | ':' | '@' | '%' | '+')
+    shell_words_command(parts)
 }
 
 fn agent_start_command(context: &RuntimeContext, output: &mut impl Write) -> Result<(), CliError> {
@@ -940,15 +922,10 @@ fn socket_error_to_cli(error: locket_agent::SocketServerError) -> CliError {
                 "peer uid {peer_uid} does not match daemon uid {daemon_uid}; refusing cross-user connection"
             ),
         ),
-        // SocketPathTooWide is a configuration error (parent dir or
-        // socket file has wider permissions than 0o700/0o600). The
-        // closest existing typed variant is AgentSocketInUse, which is
-        // imprecise — the path is not in use, it is misconfigured.
-        // Adding `LocketError::AgentSocketParentTooPermissive` is
-        // tracked as a follow-up (cross-crate change to
-        // `locket-core::error` plus an exit-code-table entry). Until
-        // then, the formatted message retains the offending mode and
-        // path so users can act on it.
+        // This is a permissions failure rather than a bound-socket
+        // conflict. Reuse the closest existing typed error while keeping
+        // the formatted message specific enough to identify the path and
+        // mode that need repair.
         SocketServerError::SocketPathTooWide { path, mode, expected } => typed_cli_error(
             LocketError::AgentSocketInUse,
             format!(

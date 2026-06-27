@@ -3944,6 +3944,40 @@ fn agent_invite_request_prints_pasteable_create_command() -> Result<(), Box<dyn 
 }
 
 #[test]
+fn verified_device_descriptor_exposes_checked_keys_and_metadata()
+-> Result<(), Box<dyn std::error::Error>> {
+    let signing_public_key = [11; 32];
+    let sealing_public_key = [12; 32];
+    let recipient = crate::DeviceRecord {
+        id: "lk_dev_verified_descriptor".to_owned(),
+        project_id: "lk_proj_verified_descriptor".to_owned(),
+        member_id: None,
+        name: "recipient laptop".to_owned(),
+        label: "recipient laptop".to_owned(),
+        signing_public_key: signing_public_key.to_vec(),
+        sealing_public_key: sealing_public_key.to_vec(),
+        fingerprint: crate::device_fingerprint_hex(&signing_public_key, &sealing_public_key),
+        safety_words: vec!["amber".to_owned(), "basil".to_owned()],
+        local: false,
+        created_at: 10,
+        last_seen_at: None,
+        revoked_at: None,
+    };
+    let descriptor = crate::encode_device_descriptor(&recipient)?;
+
+    let verified = crate::commands::team::device::decode_verified_device_descriptor(
+        descriptor.as_str(),
+        "device descriptor",
+    )?;
+
+    assert_eq!(verified.descriptor.device_id, recipient.id);
+    assert_eq!(verified.fingerprint, recipient.fingerprint);
+    assert_eq!(verified.signing_public_key.as_slice(), recipient.signing_public_key.as_slice());
+    assert_eq!(verified.sealing_public_key.as_slice(), recipient.sealing_public_key.as_slice());
+    Ok(())
+}
+
+#[test]
 fn e2e_agent_invite_create_handoff_and_accept_wrapper() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempdir()?;
     let context = test_context(&directory);

@@ -261,7 +261,7 @@ struct VerifiedBundleDecryption {
     command_policy_count: usize,
 }
 
-/// Per-row-family count of rows newly written by the apply phase.
+/// Per-row-family count of rows newly written during bundle import.
 #[derive(Debug, Default, Clone, Copy)]
 #[allow(clippy::struct_field_names)]
 struct AppliedBundleCounts {
@@ -1574,17 +1574,13 @@ fn bundle_recipients(recipients: &[String]) -> Result<Vec<BundleRecipientV1>, Cl
     let mut seen = BTreeSet::new();
     let mut out = Vec::with_capacity(recipients.len());
     for recipient in recipients {
-        let descriptor = device::decode_device_descriptor(recipient)?;
-        let signing_public_key =
-            device::decode_descriptor_key(&descriptor.signing_public_key_ed25519)?;
-        let sealing_public_key =
-            device::decode_descriptor_key(&descriptor.sealing_public_key_x25519)?;
-        let fingerprint = device::device_fingerprint_hex(&signing_public_key, &sealing_public_key);
-        if fingerprint != descriptor.fingerprint_sha256 {
-            return Err(metadata_invalid_error("recipient device descriptor fingerprint mismatch"));
-        }
-        if seen.insert(fingerprint.clone()) {
-            out.push(BundleRecipientV1 { fingerprint, sealing_public_key });
+        let verified =
+            device::decode_verified_device_descriptor(recipient, "recipient device descriptor")?;
+        if seen.insert(verified.fingerprint.clone()) {
+            out.push(BundleRecipientV1 {
+                fingerprint: verified.fingerprint,
+                sealing_public_key: verified.sealing_public_key,
+            });
         }
     }
     Ok(out)
