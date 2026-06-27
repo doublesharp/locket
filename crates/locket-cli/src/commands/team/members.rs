@@ -420,7 +420,7 @@ fn read_signed_invite_from_reader(
 }
 
 #[cfg(test)]
-pub(crate) fn read_signed_invite_for_tests(
+pub fn read_signed_invite_for_tests(
     path: &Path,
     stdin: impl Read,
 ) -> Result<SignedInvite, CliError> {
@@ -1947,9 +1947,8 @@ fn write_rotation_checklist(
 ) -> Result<(), CliError> {
     let mut profiles = store.list_profiles(project_id)?;
     let note = match profile_scope {
-        RotationScope::AllProfiles => RotationScopeNote::AllProfiles,
+        RotationScope::AllProfiles | RotationScope::Scoped([]) => RotationScopeNote::AllProfiles,
         RotationScope::LegacyUnknown => RotationScopeNote::LegacyUnknown,
-        RotationScope::Scoped(scope) if scope.is_empty() => RotationScopeNote::AllProfiles,
         RotationScope::Scoped(scope) => {
             let scope = scope.iter().map(String::as_str).collect::<std::collections::BTreeSet<_>>();
             if profiles.iter().all(|profile| !scope.contains(profile.name.as_str()))
