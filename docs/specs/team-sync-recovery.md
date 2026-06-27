@@ -28,6 +28,18 @@ Maintainer invite flow:
 7. Locket imports only the profiles, profile secret/fingerprint keys, and command policies included in the invite, rewraps imported profile keys into the local `keys` table, and records audit events. `team accept` must run inside a directory containing a `locket.toml` whose `project_id` matches the invite. When that project is not yet present in the local store, `team accept` creates the local `Project`, `Profile`, `Team`, and `TeamMember` records, registers the issuer device as a trusted member device, and adds the current canonicalized root path to the project's trusted roots. When the current directory has no `locket.toml`, has a mismatched `project_id`, or already maps to a different local project, `team accept` fails closed with a typed error rather than silently creating or overwriting state. If no local device key exists in the OS keychain, `team accept` fails with `KeychainEntryMissing` and directs the user to run `locket device init` first.
 8. Teammate runs `locket bootstrap` to validate the environment and run setup checks.
 
+Agent invite handoff uses the same primitive with paste-friendly command wrappers:
+
+```bash
+locket agent invite request
+locket agent invite create <label> --device <descriptor> --profile dev --role developer [--expires-in 7d]
+cat <<'LOCKET_INVITE' | locket agent invite accept -
+<sealed invite block>
+LOCKET_INVITE
+```
+
+`locket agent invite request` initializes the local device when needed under the same rules as `locket device init`, prints a request block containing the device descriptor, fingerprint, safety words, and a ready-to-run maintainer command, and never includes secret material. `locket agent invite create` is a CLI and desktop handoff wrapper for `locket team invite`: it accepts the same device descriptor, profile, role, expiry, issuer authorization, dangerous-profile confirmation, and audit requirements, then emits a signed sealed invite block suitable for copying through chat, issue comments, or another user-mediated channel. `locket agent invite accept -` reads that block from stdin and applies the same verification, replay protection, user-verification policy, import, and audit behavior as `locket team accept`. These commands do not define a new cryptographic protocol, trust root, role model, or unattended grant path; they only package the existing team invite/accept flow for agent and desktop handoff surfaces.
+
 `locket bootstrap` must:
 
 - Verify `locket.toml` and trusted root state.

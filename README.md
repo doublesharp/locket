@@ -202,6 +202,9 @@ Execution commands prepare the child process environment for that invocation onl
 ```bash
 locket agent start
 locket agent status
+locket agent invite request
+locket agent invite create <label> --device <descriptor> --profile dev --role developer [--expires-in 7d]
+locket agent invite accept -
 locket shellenv
 locket hook
 locket allow
@@ -210,6 +213,14 @@ locket install-hooks
 ```
 
 The local agent backs unlock caching, live grants, shell prompts, editor status, `lk://` reference resolution, and desktop/tray workflows.
+
+For paste-friendly agent onboarding, the receiving machine runs `locket agent invite request` and sends the printed request block to a maintainer. The block includes the device descriptor plus the exact maintainer command to run. The maintainer creates a profile- and role-scoped invite with `locket agent invite create <label> --device <descriptor> --profile dev --role developer [--expires-in 7d]`, then sends the sealed invite text back. The receiver accepts it without saving an intermediate file:
+
+```bash
+cat <<'LOCKET_INVITE' | locket agent invite accept -
+<sealed invite block>
+LOCKET_INVITE
+```
 
 ### Scan And Redact
 
@@ -245,12 +256,15 @@ locket device pubkey
 locket team init
 locket team invite <name> --device <device-descriptor> --profile dev --role developer
 locket team accept <invite.locket>
+locket agent invite request
+locket agent invite create <label> --device <descriptor> --profile dev --role developer [--expires-in 7d]
+locket agent invite accept -
 locket team members
 locket export --sealed --recipient <device-descriptor> --profile dev
 locket import-bundle <bundle>
 ```
 
-Team and sync workflows use encrypted files addressed to trusted devices. They never require a hosted service or plaintext secret exchange.
+Team and sync workflows use encrypted files addressed to trusted devices. Agent invite commands are paste-friendly wrappers over the same team invite and accept primitives, so they never require a hosted service or plaintext secret exchange.
 
 ### Audit And Diagnostics
 
