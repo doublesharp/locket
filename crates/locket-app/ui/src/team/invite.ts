@@ -314,6 +314,39 @@ export function teamInviteRevokeCliCommand(inviteId: string): string {
   return `locket team revoke-invite ${shellQuote(inviteId.trim())}`;
 }
 
+export function agentInviteRequestCliCommand(deviceDescriptor: string): string {
+  return `locket agent invite request --device ${shellQuote(deviceDescriptor.trim())}`;
+}
+
+export function agentInviteCreateCliCommand(
+  state: TeamInviteIssueFormState,
+  options: TeamInviteIssueCommandOptions = {},
+): string {
+  const profiles = parseProfileList(state.profiles)
+    .map((profile) => `--profile ${shellQuote(profile)}`)
+    .join(' ');
+  const expiresIn = expiresAtToDurationArgument(state.expiresAt, options.nowMs ?? Date.now());
+  return [
+    'locket agent invite create',
+    shellQuote(state.recipientLabel.trim()),
+    '--device',
+    shellQuote(state.deviceDescriptor.trim()),
+    profiles,
+    '--role',
+    state.role,
+    expiresIn === null ? '' : '--expires-in',
+    expiresIn === null ? '' : shellQuote(expiresIn),
+  ]
+    .filter((part) => part.length > 0)
+    .join(' ');
+}
+
+export function agentInviteAcceptCliCommand(inviteText: string): string {
+  const text = inviteText.trim();
+  const delimiter = heredocDelimiterFor(text, 'LOCKET_AGENT_INVITE');
+  return `cat <<'${delimiter}' | locket agent invite accept -\n${text}\n${delimiter}`;
+}
+
 export function expiresAtToDurationArgument(
   expiresAt: string,
   nowMs: number = Date.now(),
@@ -341,13 +374,13 @@ export function expiresAtToDurationArgument(
   return `${seconds.toString()}s`;
 }
 
-function heredocDelimiterFor(text: string): string {
+function heredocDelimiterFor(text: string, baseDelimiter = 'LOCKET_INVITE'): string {
   const usedLines = new Set(text.split(/\r?\n/));
-  let delimiter = 'LOCKET_INVITE';
+  let delimiter = baseDelimiter;
   let suffix = 0;
   while (usedLines.has(delimiter)) {
     suffix += 1;
-    delimiter = `LOCKET_INVITE_${suffix.toString()}`;
+    delimiter = `${baseDelimiter}_${suffix.toString()}`;
   }
   return delimiter;
 }

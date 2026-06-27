@@ -9,6 +9,9 @@ import { describe, expect, it } from 'vitest';
 import type { AuditWireRow } from '../agent/types';
 import {
   acceptFormToPayload,
+  agentInviteAcceptCliCommand,
+  agentInviteCreateCliCommand,
+  agentInviteRequestCliCommand,
   defaultAcceptForm,
   defaultIssueForm,
   defaultRevokeForm,
@@ -105,6 +108,49 @@ describe('desktop notice copy', () => {
     expect(command).toContain("cat <<'LOCKET_INVITE_2' | locket team accept -\n");
     expect(command).toContain('\nLOCKET_INVITE_2');
     expect(command).not.toContain('<invite-file>');
+  });
+
+  it('builds an agent invite request command from a local device descriptor', () => {
+    expect(agentInviteRequestCliCommand(' lkdev1_abcdef0123456789abcdef ')).toBe(
+      'locket agent invite request --device lkdev1_abcdef0123456789abcdef',
+    );
+    expect(agentInviteRequestCliCommand("lkdev1_abc'quoted value")).toBe(
+      "locket agent invite request --device 'lkdev1_abc'\\''quoted value'",
+    );
+  });
+
+  it('builds an agent invite create command with shell-safe fields', () => {
+    const nowMs = Date.parse('2026-06-26T12:00:00.000Z');
+    const command = agentInviteCreateCliCommand(
+      {
+        ...defaultIssueForm(),
+        recipientLabel: "Build Agent 'West'",
+        deviceDescriptor: 'lkdev1_abcdef0123456789abcdef',
+        role: 'maintainer',
+        profiles: 'dev, qa-prod',
+        expiresAt: '2026-06-26T14:00:00.000Z',
+      },
+      { nowMs },
+    );
+
+    expect(command).toBe(
+      "locket agent invite create 'Build Agent '\\''West'\\''' --device lkdev1_abcdef0123456789abcdef --profile dev --profile qa-prod --role maintainer --expires-in 2h",
+    );
+  });
+
+  it('builds a heredoc stdin command for accepting pasted agent invite text', () => {
+    const command = agentInviteAcceptCliCommand(
+      '-----BEGIN LOCKET AGENT INVITE-----\nLOCKET_AGENT_INVITE\nsealed\n-----END-----',
+    );
+
+    expect(command).toBe(
+      "cat <<'LOCKET_AGENT_INVITE_1' | locket agent invite accept -\n" +
+        '-----BEGIN LOCKET AGENT INVITE-----\n' +
+        'LOCKET_AGENT_INVITE\n' +
+        'sealed\n' +
+        '-----END-----\n' +
+        'LOCKET_AGENT_INVITE_1',
+    );
   });
 });
 
