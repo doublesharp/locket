@@ -146,7 +146,12 @@ perf-cli-cold-start:
 
 slsa-provenance:
 	@if [ -z "$(SLSA_ARTIFACT)" ] || [ -z "$(SLSA_PROVENANCE)" ] || [ -z "$(SLSA_EXPECTED_REPOSITORY)" ] || [ -z "$(SLSA_EXPECTED_BUILDER)" ] || [ -z "$(SLSA_EXPECTED_BUILD_TYPE)" ] || [ -z "$(SLSA_EXPECTED_WORKFLOW)" ]; then \
-		echo "skip: set SLSA_ARTIFACT, SLSA_PROVENANCE, SLSA_EXPECTED_REPOSITORY, SLSA_EXPECTED_BUILDER, SLSA_EXPECTED_BUILD_TYPE, and SLSA_EXPECTED_WORKFLOW"; \
+		if [ "$(STRICT)" = "1" ]; then \
+			echo "SLSA provenance verification requires SLSA_ARTIFACT, SLSA_PROVENANCE, SLSA_EXPECTED_REPOSITORY, SLSA_EXPECTED_BUILDER, SLSA_EXPECTED_BUILD_TYPE, and SLSA_EXPECTED_WORKFLOW" >&2; \
+			exit 2; \
+		else \
+			echo "skip: set SLSA_ARTIFACT, SLSA_PROVENANCE, SLSA_EXPECTED_REPOSITORY, SLSA_EXPECTED_BUILDER, SLSA_EXPECTED_BUILD_TYPE, and SLSA_EXPECTED_WORKFLOW"; \
+		fi; \
 	else \
 		scripts/slsa-provenance-policy.mjs \
 			--artifact "$(SLSA_ARTIFACT)" \

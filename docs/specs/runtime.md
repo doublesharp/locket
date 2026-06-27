@@ -1,6 +1,6 @@
 # Runtime, References & Secret Lifecycle
 
-This file is part of the normative planned Locket implementation spec. Start at [index.md](index.md).
+This file is part of the normative Locket v1 specification. Start at [index.md](index.md).
 
 ## Runtime Execution
 

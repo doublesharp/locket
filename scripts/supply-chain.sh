@@ -113,6 +113,7 @@ audit_with_policy() {
   scripts/rustsec-policy.mjs \
     "${audit_json}" \
     "${quality_dir}/cargo-metadata.json" \
+    supply-chain-exceptions.json \
     "${report}"
 }
 
@@ -170,6 +171,15 @@ sbom() {
 
   echo "cargo-cyclonedx is not installed; writing metadata fallback only" >&2
   metadata
+  cat > "${quality_dir}/SBOM-FALLBACK.md" <<EOF
+# SBOM Fallback Metadata
+
+- Tool: cargo metadata
+- File: ${quality_dir}/cargo-metadata.json
+- Reason: cargo-cyclonedx is not installed, so a CycloneDX SBOM was not generated.
+
+Release consumers must treat this as fallback dependency metadata, not as a CycloneDX SBOM.
+EOF
 }
 
 case "${mode}" in
@@ -189,6 +199,7 @@ case "${mode}" in
     fi
     ;;
   audit)
+    exception_ledger
     if [[ "${strict}" == "1" ]]; then
       audit_strict
     else

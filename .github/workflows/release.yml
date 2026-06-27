@@ -58,6 +58,14 @@ jobs:
       - name: Validate package manifests and signing inputs
         run: make distribution-check
 
+      - name: Generate release quality artifacts
+        run: |
+          make supply-chain-exceptions
+          make third-party-notices
+          STRICT=1 make audit
+          make unsafe-inventory
+          make sbom
+
       - name: Build auditable binaries
         run: make release-auditable
 
@@ -78,3 +86,28 @@ jobs:
           subject-path: |
             target/release/locket
             target/release/locket-desktop
+
+      - name: Verify configured provenance policy
+        env:
+          SLSA_ARTIFACT: ${{ vars.LOCKET_SLSA_ARTIFACT }}
+          SLSA_PROVENANCE: ${{ vars.LOCKET_SLSA_PROVENANCE }}
+          SLSA_EXPECTED_REPOSITORY: ${{ vars.LOCKET_SLSA_EXPECTED_REPOSITORY }}
+          SLSA_EXPECTED_BUILDER: ${{ vars.LOCKET_SLSA_EXPECTED_BUILDER }}
+          SLSA_EXPECTED_BUILD_TYPE: ${{ vars.LOCKET_SLSA_EXPECTED_BUILD_TYPE }}
+          SLSA_EXPECTED_WORKFLOW: ${{ vars.LOCKET_SLSA_EXPECTED_WORKFLOW }}
+        run: |
+          if [ -n "${SLSA_ARTIFACT}${SLSA_PROVENANCE}${SLSA_EXPECTED_REPOSITORY}${SLSA_EXPECTED_BUILDER}${SLSA_EXPECTED_BUILD_TYPE}${SLSA_EXPECTED_WORKFLOW}" ]; then
+            make slsa-provenance STRICT=1
+          else
+            make slsa-provenance
+          fi
+
+      - name: Upload release quality reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: locket-release-quality-${{ github.ref_name }}
+          path: |
+            target/quality/**
+            supply-chain-exceptions.json
+          if-no-files-found: error

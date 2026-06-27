@@ -10,6 +10,13 @@ const requiredSpecs = [
   "performance.md", "performance-reference-runner.md", "errors.md", "engineering.md", "testing.md", "fuzzing.md",
 ];
 const requiredSpecSet = new Set(requiredSpecs);
+const publicStaleLanguage = [
+  "planned implementation",
+  "normative planned",
+  "(planned)",
+  "pre-development",
+  "later slice",
+];
 const errors = [];
 
 for (const spec of requiredSpecs) {
@@ -41,6 +48,7 @@ for (const file of markdownFiles) {
 
 for (const file of markdownFiles) {
   await checkMarkdownLint(file);
+  await checkPublicStaleLanguage(file);
   const content = await readFile(file, "utf8");
   const lines = content.split(/(?<=\n)/);
   for (const [index, line] of lines.entries()) {
@@ -144,6 +152,19 @@ async function checkMarkdownLint(file) {
   if (content.length === 0) errors.push(`${file} is empty`);
   if (content.length > 0 && !content.endsWith("\n")) errors.push(`${file} missing final newline`);
   if (inFence) errors.push(`${file}:${fenceLine} unclosed fenced code block`);
+}
+
+async function checkPublicStaleLanguage(file) {
+  if (file.startsWith("docs/agents/") || file.startsWith("docs/superpowers/")) return;
+  const lines = (await readFile(file, "utf8")).split(/(?<=\n)/);
+  lines.forEach((line, index) => {
+    const lower = line.toLowerCase();
+    for (const phrase of publicStaleLanguage) {
+      if (lower.includes(phrase)) {
+        errors.push(`${file}:${index + 1} stale public process language: ${phrase}`);
+      }
+    }
+  });
 }
 
 async function walkMarkdown(root) {

@@ -50,3 +50,31 @@ if grep -Fq "serde 1.0.228" "${report}"; then
   echo "permissive non-MPL dependency should not be listed in the MPL notice section" >&2
   exit 1
 fi
+
+cat >"${metadata}" <<'JSON'
+{
+  "packages": [
+    {
+      "name": "patched-mpl",
+      "version": "0.1.0",
+      "id": "path+file:///repo/vendor/patched-mpl#0.1.0",
+      "license": "MPL-2.0",
+      "source": null,
+      "repository": null
+    }
+  ]
+}
+JSON
+
+set +e
+scripts/third-party-notices.mjs "${metadata}" "${report}" >"${tmpdir}/stdout" 2>"${tmpdir}/stderr"
+status=$?
+set -e
+
+if [[ "${status}" -eq 0 ]]; then
+  echo "path/vendor MPL crates must not be labeled as unmodified without enforcement" >&2
+  cat "${report}" >&2
+  exit 1
+fi
+
+grep -Fq "MPL-2.0 path/vendor crates require an explicit source-availability exception" "${tmpdir}/stderr"

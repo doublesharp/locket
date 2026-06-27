@@ -12,13 +12,20 @@ if (!metadataPath || !reportPath) {
 const metadata = JSON.parse(await readFile(metadataPath, "utf8"));
 const packages = Array.isArray(metadata.packages) ? metadata.packages : [];
 
+const unsafeMplPackages = packages
+  .filter((pkg) => /\bMPL-2\.0\b/.test(pkg.license ?? "") && isPathOrVendorPackage(pkg))
+  .sort(comparePackage);
+
+if (unsafeMplPackages.length > 0) {
+  for (const pkg of unsafeMplPackages) {
+    console.error(`MPL-2.0 path/vendor crates require an explicit source-availability exception: ${pkg.name ?? "unknown"} ${pkg.version ?? ""}`);
+  }
+  process.exit(1);
+}
+
 const mplPackages = packages
   .filter((pkg) => pkg.source != null && /\bMPL-2\.0\b/.test(pkg.license ?? ""))
-  .sort((a, b) => {
-    const byName = String(a.name ?? "").localeCompare(String(b.name ?? ""));
-    if (byName !== 0) return byName;
-    return String(a.version ?? "").localeCompare(String(b.version ?? ""));
-  });
+  .sort(comparePackage);
 
 await writeFile(reportPath, renderReport(mplPackages));
 console.log(`wrote ${reportPath}`);
@@ -68,6 +75,18 @@ function sourceUrl(pkg) {
     return `https://crates.io/crates/${pkg.name}/${pkg.version}`;
   }
   return pkg.repository ?? "";
+}
+
+function isPathOrVendorPackage(pkg) {
+  const source = String(pkg.source ?? "");
+  const id = String(pkg.id ?? "");
+  return pkg.source == null || source.startsWith("path+") || id.startsWith("path+");
+}
+
+function comparePackage(a, b) {
+  const byName = String(a.name ?? "").localeCompare(String(b.name ?? ""));
+  if (byName !== 0) return byName;
+  return String(a.version ?? "").localeCompare(String(b.version ?? ""));
 }
 
 function markdownEscape(value) {

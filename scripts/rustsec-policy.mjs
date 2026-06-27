@@ -2,16 +2,18 @@
 import { readFile, writeFile } from "node:fs/promises";
 import process from "node:process";
 
-const [auditJson, metadataJson, reportPath] = process.argv.slice(2);
-if (!auditJson || !metadataJson || !reportPath) {
-  console.error("usage: rustsec-policy.mjs <cargo-audit-json> <cargo-metadata-json> <report.md>");
+const [auditJson, metadataJson, ledgerJson, reportPath] = process.argv.slice(2);
+if (!auditJson || !metadataJson || !ledgerJson || !reportPath) {
+  console.error("usage: rustsec-policy.mjs <cargo-audit-json> <cargo-metadata-json> <supply-chain-exceptions.json> <report.md>");
   process.exit(2);
 }
 
 const audit = JSON.parse(await readFile(auditJson, "utf8"));
 const metadata = JSON.parse(await readFile(metadataJson, "utf8"));
+const ledger = JSON.parse(await readFile(ledgerJson, "utf8"));
 
 const scopeByPackage = packageScopes(metadata);
+const exceptions = exceptionIndex(ledger);
 const findings = audit?.vulnerabilities?.list ?? [];
 const rows = [];
 let blocking = false;
@@ -22,7 +24,11 @@ for (const finding of findings) {
   const version = finding.package?.version ?? advisory.version ?? "";
   const scope = scopeFor(scopeByPackage, packageName, version);
   const severity = severityFor(advisory);
-  const [decision, blocks] = decisionFor(severity, scope);
+  const [decision, blocks] = decisionFor(severity, scope, exceptions, {
+    advisory: advisory.id ?? "unknown",
+    package: packageName,
+    version,
+  });
   blocking ||= blocks;
   rows.push({
     id: advisory.id ?? "unknown",
@@ -119,12 +125,55 @@ function severityFor(advisory) {
   return "unknown";
 }
 
-function decisionFor(severity, scope) {
+function exceptionIndex(ledger) {
+  if (!Array.isArray(ledger.exceptions)) {
+    throw new Error("supply-chain exception ledger must contain an exceptions array");
+  }
+
+  const today = process.env.LOCKET_TODAY ?? new Date().toISOString().slice(0, 10);
+  const index = new Set();
+  for (const entry of ledger.exceptions) {
+    if (!isObject(entry)) continue;
+    if (!nonEmptyString(entry.package) || !nonEmptyString(entry.version)) continue;
+    if (!nonEmptyString(entry.advisory)) continue;
+    if (!nonEmptyString(entry.reason) || !nonEmptyString(entry.owner)) continue;
+    if (!validFutureDate(entry.expires_at, today)) continue;
+    if (!Array.isArray(entry.compensating_controls) || entry.compensating_controls.some((control) => !nonEmptyString(control))) {
+      continue;
+    }
+    index.add(exceptionKey(entry.package, entry.version, entry.advisory));
+  }
+  return index;
+}
+
+function decisionFor(severity, scope, exceptions, finding) {
   if (severity === "critical" || severity === "high") return ["block", true];
   if (severity === "medium" && scope !== "dev-only") return ["block", true];
-  if (severity === "medium") return ["dev-only exception required", false];
+  if (severity === "medium") {
+    if (exceptions.has(exceptionKey(finding.package, finding.version, finding.advisory))) {
+      return ["dev-only exception accepted", false];
+    }
+    return ["block: missing dev-only exception", true];
+  }
   if (severity === "low") return ["triage before release", false];
   return ["block: unknown severity", true];
+}
+
+function exceptionKey(packageName, version, advisory) {
+  return `${packageName ?? ""}\u0000${version ?? ""}\u0000${advisory ?? ""}`;
+}
+
+function isObject(value) {
+  return value != null && typeof value === "object" && !Array.isArray(value);
+}
+
+function nonEmptyString(value) {
+  return typeof value === "string" && /\S/.test(value);
+}
+
+function validFutureDate(value, today) {
+  if (!nonEmptyString(value) || !/^([0-9]{4})-([0-9]{2})-([0-9]{2})$/.test(value)) return false;
+  return value >= today;
 }
 
 function renderReport(rows, blocking) {
@@ -132,7 +181,7 @@ function renderReport(rows, blocking) {
     "# RustSec Advisory Policy",
     "",
     "- High and critical advisories block.",
-    "- Medium runtime advisories block; medium dev-only advisories require an issue-linked exception.",
+    "- Medium runtime advisories block; medium dev-only advisories require a matching, unexpired supply-chain exception.",
     "- Low advisories require triage before release.",
     "- Unknown severity blocks fail-closed.",
     "",

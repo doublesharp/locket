@@ -1,6 +1,6 @@
 # Testing Strategy
 
-This file is part of the normative planned Locket implementation spec. Start at [index.md](index.md).
+This file is part of the normative Locket v1 specification. Start at [index.md](index.md).
 
 Testing should be driven from the threat model and user-facing guarantees. Security-sensitive behavior needs regression tests, including negative-path and error-path coverage.
 

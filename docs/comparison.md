@@ -10,7 +10,7 @@ Per seat per month, billed annually, unless noted.
 
 | Product | Free tier | Team tier | Enterprise | Self-host? |
 | --- | --- | --- | --- | --- |
-| **Locket** | Solo CLI free, MIT | **$7/seat** (planned) | Custom | **N/A — no server exists** |
+| **Locket** | Solo CLI free, MIT | Hosted team pricing not yet published | Custom | **N/A — local-first sync** |
 | Doppler | 3 users (then $8) | $21/user | ~$50/user, $30K+ contracts | No (deliberate) |
 | Infisical | 5 identities, 3 projects | $18/identity (incl. service accts) | Custom | Yes (SSO paywalled) |
 | Bitwarden Secrets Manager | 2 users only | $6/user + $1/extra machine acct | $12/user | Yes (server required) |
@@ -38,7 +38,7 @@ Per seat per month, billed annually, unless noted.
 
 ## Feature gating — what teams actually pay competitors for
 
-| Feature | Doppler | Infisical | Bitwarden SM | 1Password | dotenvx Ops | **Locket (planned)** |
+| Feature | Doppler | Infisical | Bitwarden SM | 1Password | dotenvx Ops | **Locket** |
 | --- | --- | --- | --- | --- | --- | --- |
 | SAML SSO | Team ($21) | Pro ($18) | Enterprise ($12) | Business ($8) | Custom | **Org tier** |
 | SCIM | Enterprise | Enterprise | Enterprise | Enterprise | — | Org tier |
