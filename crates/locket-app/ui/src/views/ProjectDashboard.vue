@@ -3,14 +3,22 @@ import { computed, ref } from 'vue';
 
 import type {
   AuditLogRow,
+  CommandPolicyRow,
   RuntimeSessionRow,
   ScanFindingRow,
   SecretRowMeta,
   SettingsState,
   VersionHistoryRow,
 } from '../types/views';
+import { startHereActions, type StartHereTarget } from '../dashboard/startHere';
 
-type DashboardTarget = 'secrets' | 'versions' | 'execution' | 'audit' | 'scan' | 'settings';
+type DashboardTarget =
+  | StartHereTarget
+  | 'secrets'
+  | 'versions'
+  | 'devices'
+  | 'profiles'
+  | 'recovery';
 type ProjectProfileSearchScope = 'all' | 'project' | 'profile';
 
 interface Props {
@@ -23,8 +31,10 @@ interface Props {
   sessions: RuntimeSessionRow[];
   auditRows: AuditLogRow[];
   findings: ScanFindingRow[];
+  policies: CommandPolicyRow[];
   settings: SettingsState;
   auditChainOk: boolean;
+  lastScanAt?: string;
 }
 
 const props = defineProps<Props>();
@@ -52,6 +62,18 @@ const scanWarningCount = computed<number>(
 );
 const auditIssueCount = computed<number>(
   () => props.auditRows.filter((row) => row.status !== 'OK' || !row.hmacOk).length,
+);
+const startActions = computed(() =>
+  startHereActions({
+    lockLabel: props.lockLabel,
+    secrets: props.secrets,
+    policies: props.policies,
+    sessions: props.sessions,
+    auditRows: props.auditRows,
+    findings: props.findings,
+    auditChainOk: props.auditChainOk,
+    lastScanAt: props.lastScanAt,
+  }),
 );
 const projectProfileRows = computed(() => [
   {
@@ -160,6 +182,29 @@ function refresh(): void {
       </dl>
     </section>
 
+    <section class="dashboard__start" aria-labelledby="dashboard-start-heading">
+      <div class="dashboard__section-head">
+        <h3 id="dashboard-start-heading">Start here</h3>
+        <span>{{ startActions.length === 0 ? 'Ready' : `${startActions.length} next` }}</span>
+      </div>
+      <ol v-if="startActions.length > 0" class="dashboard__start-list">
+        <li v-for="action in startActions" :key="action.id">
+          <div>
+            <strong :class="`dashboard__start-title dashboard__start-title--${action.tone}`">
+              {{ action.title }}
+            </strong>
+            <p>{{ action.detail }}</p>
+          </div>
+          <button type="button" class="dashboard__start-action" @click="navigate(action.target)">
+            {{ action.actionLabel }}
+          </button>
+        </li>
+      </ol>
+      <p v-else class="dashboard__start-empty">
+        Project setup is complete for the signals Locket can verify locally.
+      </p>
+    </section>
+
     <section class="dashboard__metrics" aria-label="Project summary">
       <button type="button" class="dashboard__metric" @click="navigate('secrets')">
         <span>Secrets</span>
@@ -259,6 +304,7 @@ function refresh(): void {
 .dashboard__header,
 .dashboard__status,
 .dashboard__search,
+.dashboard__start,
 .dashboard__health {
   background: #0f1115;
   border-radius: 0.5rem;
@@ -273,6 +319,7 @@ function refresh(): void {
 }
 
 .dashboard__header h2,
+.dashboard__section-head h3,
 .dashboard__search h3,
 .dashboard__health h3 {
   margin: 0;
@@ -294,7 +341,8 @@ function refresh(): void {
 }
 
 .dashboard__refresh,
-.dashboard__metric {
+.dashboard__metric,
+.dashboard__start-action {
   border: 1px solid rgba(255, 255, 255, 0.1);
   background: rgba(255, 255, 255, 0.04);
   color: #e6e8ec;
@@ -310,6 +358,76 @@ function refresh(): void {
 .dashboard__refresh:disabled {
   color: #6f7785;
   cursor: default;
+}
+
+.dashboard__section-head {
+  align-items: center;
+  display: flex;
+  gap: 1rem;
+  justify-content: space-between;
+}
+
+.dashboard__section-head span {
+  color: #9aa3b2;
+  font-size: 0.78rem;
+}
+
+.dashboard__start {
+  display: grid;
+  gap: 0.875rem;
+}
+
+.dashboard__start-list {
+  display: grid;
+  gap: 0.625rem;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.dashboard__start-list li {
+  align-items: center;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 0.5rem;
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: 1fr auto;
+  min-width: 0;
+  padding: 0.875rem;
+}
+
+.dashboard__start-list p,
+.dashboard__start-empty {
+  color: #9aa3b2;
+  font-size: 0.85rem;
+  margin: 0.25rem 0 0;
+}
+
+.dashboard__start-title {
+  display: block;
+}
+
+.dashboard__start-title--ok {
+  color: #78d69d;
+}
+
+.dashboard__start-title--warn {
+  color: #f8d77a;
+}
+
+.dashboard__start-title--critical {
+  color: #ff8a8a;
+}
+
+.dashboard__start-title--neutral {
+  color: #e6e8ec;
+}
+
+.dashboard__start-action {
+  border-radius: 0.375rem;
+  min-height: 2.25rem;
+  padding: 0 0.875rem;
+  white-space: nowrap;
 }
 
 .dashboard__status {
@@ -387,7 +505,9 @@ function refresh(): void {
 .dashboard__metric:hover,
 .dashboard__metric:focus-visible,
 .dashboard__refresh:hover,
-.dashboard__refresh:focus-visible {
+.dashboard__refresh:focus-visible,
+.dashboard__start-action:hover,
+.dashboard__start-action:focus-visible {
   border-color: rgba(248, 215, 122, 0.55);
   outline: none;
 }
@@ -521,12 +641,18 @@ function refresh(): void {
   .dashboard__facts,
   .dashboard__metrics,
   .dashboard__search-results,
-  .dashboard__health ul {
+  .dashboard__health ul,
+  .dashboard__start-list li {
     grid-template-columns: 1fr;
   }
 
+  .dashboard__start-action {
+    width: 100%;
+  }
+
   .dashboard__header,
-  .dashboard__search-header {
+  .dashboard__search-header,
+  .dashboard__section-head {
     align-items: stretch;
     flex-direction: column;
   }

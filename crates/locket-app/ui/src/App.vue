@@ -143,20 +143,38 @@ type TrayMenuAction =
   | 'reveal-secret'
   | 'copy-secret';
 
-const navItems: ReadonlyArray<{ key: ViewKey; label: string }> = [
-  { key: 'dashboard', label: 'Dashboard' },
-  { key: 'secrets', label: 'Secrets' },
-  { key: 'secret-editor', label: 'Secret editor' },
-  { key: 'versions', label: 'Versions' },
-  { key: 'execution', label: 'Execution' },
-  { key: 'devices', label: 'Devices' },
-  { key: 'audit', label: 'Audit' },
-  { key: 'scan', label: 'Scan' },
-  { key: 'policies', label: 'Policies' },
-  { key: 'profiles', label: 'Profiles' },
-  { key: 'team', label: 'Team' },
-  { key: 'recovery', label: 'Recovery' },
-  { key: 'settings', label: 'Settings' },
+const navGroups: ReadonlyArray<{
+  label: string;
+  items: ReadonlyArray<{ key: ViewKey; label: string }>;
+}> = [
+  { label: 'Start', items: [{ key: 'dashboard', label: 'Overview' }] },
+  {
+    label: 'Use',
+    items: [
+      { key: 'secrets', label: 'Secrets' },
+      { key: 'secret-editor', label: 'Add or rotate' },
+      { key: 'policies', label: 'Run policies' },
+      { key: 'execution', label: 'Runs' },
+    ],
+  },
+  {
+    label: 'Safety',
+    items: [
+      { key: 'scan', label: 'Scan' },
+      { key: 'audit', label: 'Audit' },
+      { key: 'recovery', label: 'Recovery' },
+    ],
+  },
+  {
+    label: 'Share',
+    items: [
+      { key: 'team', label: 'Invites' },
+      { key: 'devices', label: 'Devices' },
+      { key: 'profiles', label: 'Profiles' },
+    ],
+  },
+  { label: 'History', items: [{ key: 'versions', label: 'Versions' }] },
+  { label: 'Settings', items: [{ key: 'settings', label: 'Preferences' }] },
 ];
 
 const lockLabel = computed<string>(() => {
@@ -1412,18 +1430,24 @@ onUnmounted(() => {
       </div>
 
       <nav>
-        <ul>
-          <li v-for="item in navItems" :key="item.key">
-            <button
-              type="button"
-              :class="['shell__nav-item', { 'shell__nav-item--active': currentView === item.key }]"
-              :aria-current="currentView === item.key ? 'page' : undefined"
-              @click="selectView(item.key)"
-            >
-              {{ item.label }}
-            </button>
-          </li>
-        </ul>
+        <div v-for="group in navGroups" :key="group.label" class="shell__nav-group">
+          <span class="shell__nav-group-label">{{ group.label }}</span>
+          <ul>
+            <li v-for="item in group.items" :key="item.key">
+              <button
+                type="button"
+                :class="[
+                  'shell__nav-item',
+                  { 'shell__nav-item--active': currentView === item.key },
+                ]"
+                :aria-current="currentView === item.key ? 'page' : undefined"
+                @click="selectView(item.key)"
+              >
+                {{ item.label }}
+              </button>
+            </li>
+          </ul>
+        </div>
       </nav>
     </aside>
 
@@ -1441,8 +1465,10 @@ onUnmounted(() => {
         :sessions="sessions"
         :audit-rows="auditRows"
         :findings="findings"
+        :policies="policies"
         :settings="settings"
         :audit-chain-ok="auditChainOk"
+        :last-scan-at="lastScanAt"
         @navigate="selectView"
         @refresh="triggerVerify"
       />
@@ -1726,6 +1752,12 @@ html,
   color: #e6e8ec;
 }
 
+.shell__nav nav {
+  display: flex;
+  flex-direction: column;
+  gap: 0.875rem;
+}
+
 .shell__nav nav ul {
   list-style: none;
   margin: 0;
@@ -1733,6 +1765,21 @@ html,
   display: flex;
   flex-direction: column;
   gap: 0.125rem;
+}
+
+.shell__nav-group {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.shell__nav-group-label {
+  color: #747d8c;
+  display: block;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  padding: 0 0.625rem;
+  text-transform: uppercase;
 }
 
 .shell__nav-item {
