@@ -121,6 +121,7 @@ Project maintenance:
 ```bash
 locket
 locket status
+locket setup [status|agent|share]
 locket new --from-template <name>
 locket project trust-root
 locket project list-roots
@@ -129,7 +130,7 @@ locket emit-example
 locket completion <shell>
 ```
 
-Bare `locket` behaves as `locket status`. It shows active project, active profile, lock state, agent state, running session count, scan warning count, trusted-root state, and one next suggested action if setup is incomplete. When `privacy.redact_names = true`, status output uses stable local aliases for project, profile, policy, and secret names while preserving counts and next-action guidance. `locket new --from-template <name>` initializes a new project from a local template at `~/.locket/templates/<name>.toml` or a packaged built-in template. Templates may define profiles, expected secret names, metadata, and command policies, but never secret values. v1 templates are local or bundled only; any future remote/community template channel must define signing, provenance, and review rules before it is enabled.
+Bare `locket` behaves as `locket status`. It shows active project, active profile, lock state, agent state, running session count, scan warning count, trusted-root state, and one next suggested action if setup is incomplete. `locket setup` is a metadata-only guided entry point for local development: without a project it prints the exact `init`, `import`, policy, and agent setup commands to run; inside a project it prints the active project/profile, policy count, and next safe setup commands. `locket setup agent` prints the receiver/maintainer/accept command sequence for paste-friendly agent onboarding, and `locket setup share` points users to the agent invite, team invite, and sealed bundle paths. Setup guidance must not create files, start agents, modify project state, or print secret values. When `privacy.redact_names = true`, status output uses stable local aliases for project, profile, policy, and secret names while preserving counts and next-action guidance. `locket new --from-template <name>` initializes a new project from a local template at `~/.locket/templates/<name>.toml` or a packaged built-in template. Templates may define profiles, expected secret names, metadata, and command policies, but never secret values. v1 templates are local or bundled only; any future remote/community template channel must define signing, provenance, and review rules before it is enabled.
 
 `locket project trust-root` records the current resolved project root hash for the active project after showing the canonical path and requiring confirmation. If the current root is already trusted, it exits successfully with a notice and updates `last_seen_at` without creating a duplicate root row. `locket project list-roots` prints trusted root hashes, display paths where known, creation timestamps, and last-seen timestamps; it never prints secret values. `locket project untrust-root <root-hash>` requires typed confirmation of the root hash, removes durable trust for that root, revokes live grants bound to that root, invalidates shell/editor grants for that root, writes a `TRUST_ROOT` audit row with removal metadata, and prevents new secret access from that path. It does not terminate already spawned child processes because their environments are already outside Locket's control.
 
@@ -252,6 +253,7 @@ locket device add <name> --device <device-descriptor>
 locket device list
 locket device remove <device>
 locket team init
+locket setup share
 locket team invite <name> --device <device-descriptor> --profile dev --role developer [--expires-in <duration>] [--output <path>]
 locket team accept <invite.locket>
 locket team revoke-invite <invite-id>

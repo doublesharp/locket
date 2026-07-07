@@ -8,7 +8,7 @@ Build a modern Tauri v2 desktop app as a first-class control surface. The UI sha
 
 Primary views:
 
-- Project dashboard.
+- Project dashboard with a guided Start view.
 - Profile switcher.
 - Secret metadata list.
 - Secret editor with gated set/update flow.
@@ -23,6 +23,8 @@ Primary views:
 Design direction:
 
 - Modern, restrained, dense operational interface.
+- Navigation is grouped around tasks: start, use secrets, run commands, safety, sharing, history, and settings.
+- The dashboard starts with prioritized local next actions derived from verifiable metadata such as lock state, missing secrets, missing policies, scan status, audit health, failed runs, and share readiness.
 - Keyboard-friendly flows.
 - Clear locked/unlocked state.
 - No marketing-style landing page.

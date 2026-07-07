@@ -74,25 +74,31 @@ cargo run -p locket-cli -- <command>
 
 ## Quick Start
 
-Initialize a project:
+Ask Locket what to do next:
+
+```bash
+locket setup
+```
+
+Start a new local vault:
 
 ```bash
 locket init --name my-app --profile dev
 ```
 
-Import an existing env file:
+Move an existing `.env` file into the encrypted vault:
 
 ```bash
 locket import .env
 ```
 
-Or set one secret from stdin:
+Or add one secret from stdin:
 
 ```bash
 printf '%s' "$DATABASE_URL" | locket set DATABASE_URL
 ```
 
-Inspect metadata without printing values:
+Check metadata without printing values:
 
 ```bash
 locket status
@@ -100,7 +106,7 @@ locket list
 locket get DATABASE_URL
 ```
 
-Create a command policy and run it:
+Create a run policy and start your app:
 
 ```bash
 locket policy add dev -- npm run dev
@@ -108,12 +114,21 @@ locket policy require dev DATABASE_URL
 locket run dev
 ```
 
-Check the workspace for accidental leaks:
+Check the workspace before sharing it with a person or AI agent:
 
 ```bash
 locket scan .
 locket scan --require-known .
 ```
+
+Invite another local agent with copy/paste handoff text:
+
+```bash
+locket setup agent
+locket agent invite request
+```
+
+Open the desktop app and use **Start here** for the same workflow with guided next steps.
 
 ## Core Workflows
 
@@ -122,12 +137,13 @@ locket scan --require-known .
 ```bash
 locket init [--name <name>] [--profile <profile>] [--recovery-code]
 locket new --from-template <name>
+locket setup [status|agent|share]
 locket bootstrap
 locket status
 locket emit-example
 ```
 
-`locket init` creates the project configuration, prepares the local vault, updates `.gitignore`, and creates a managed `.env.example` block. It reuses the local device identity when one already exists on the machine, so new projects do not require a new backup phrase by default. Pass `--recovery-code` when you want an offline backup code during setup; otherwise you can add or rotate one later with `locket recovery rotate`.
+`locket setup` is the safe first command. It prints metadata-only next steps for a new or existing project, plus focused `setup agent` and `setup share` paths for copy/paste onboarding. `locket init` creates the project configuration, prepares the local vault, updates `.gitignore`, and creates a managed `.env.example` block. It reuses the local device identity when one already exists on the machine, so new projects do not require a new backup phrase by default. Pass `--recovery-code` when you want an offline backup code during setup; otherwise you can add or rotate one later with `locket recovery rotate`.
 
 ### Secrets And Profiles
 
@@ -202,6 +218,7 @@ Execution commands prepare the child process environment for that invocation onl
 ```bash
 locket agent start
 locket agent status
+locket setup agent
 locket agent invite request
 locket agent invite create <label> --device <descriptor> --profile dev --role developer [--expires-in 7d]
 locket agent invite accept -
@@ -212,7 +229,7 @@ locket deny
 locket install-hooks
 ```
 
-The local agent backs unlock caching, live grants, shell prompts, editor status, `lk://` reference resolution, and desktop/tray workflows.
+The local agent backs unlock caching, live grants, shell prompts, editor status, `lk://` reference resolution, and desktop/tray workflows. `locket setup agent` prints the copy/paste handoff in the order both sides need to run it.
 
 For paste-friendly agent onboarding, the receiving machine runs `locket agent invite request` and sends the printed request block to a maintainer. The block includes the device descriptor plus the exact maintainer command to run. The maintainer creates a profile- and role-scoped invite with `locket agent invite create <label> --device <descriptor> --profile dev --role developer [--expires-in 7d]`, then sends the sealed invite text back. The receiver accepts it without saving an intermediate file:
 
@@ -254,6 +271,7 @@ Recovery and verification flows are local-first and avoid putting recovery mater
 locket device init
 locket device pubkey
 locket team init
+locket setup share
 locket team invite <name> --device <device-descriptor> --profile dev --role developer
 locket team accept <invite.locket>
 locket agent invite request

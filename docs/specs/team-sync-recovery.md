@@ -31,6 +31,7 @@ Maintainer invite flow:
 Agent invite handoff uses the same primitive with paste-friendly command wrappers:
 
 ```bash
+locket setup agent
 locket agent invite request
 locket agent invite create <label> --device <descriptor> --profile dev --role developer [--expires-in 7d]
 cat <<'LOCKET_INVITE' | locket agent invite accept -
@@ -38,7 +39,7 @@ cat <<'LOCKET_INVITE' | locket agent invite accept -
 LOCKET_INVITE
 ```
 
-`locket agent invite request` uses the active local device descriptor, or a supplied `--device <descriptor>`, to print a request block containing the descriptor, fingerprint, safety words, and a ready-to-run maintainer command. If no local descriptor exists, it directs the user to run `locket device init`; it does not silently initialize a device because that flow may display recovery material. `locket agent invite create` is a CLI and desktop handoff wrapper for `locket team invite`: it accepts the same device descriptor, profile, role, expiry, issuer authorization, dangerous-profile confirmation, and audit requirements, writes the standard signed invite file, then prints a heredoc accept block suitable for copying through chat, issue comments, or another user-mediated channel. `locket agent invite accept -` reads that block from stdin and applies the same verification, replay protection, user-verification policy, import, and audit behavior as `locket team accept`. These commands do not define a new cryptographic protocol, trust root, role model, or unattended grant path; they only package the existing team invite/accept flow for agent and desktop handoff surfaces.
+`locket setup agent` prints the receiver, maintainer, and accept commands in the order they should be used. `locket setup share` lists the agent invite, team invite, and sealed bundle paths for users who are not sure which sharing flow they need. `locket agent invite request` uses the active local device descriptor, or a supplied `--device <descriptor>`, to print a request block containing the descriptor, fingerprint, safety words, and a ready-to-run maintainer command. If no local descriptor exists, it directs the user to run `locket device init`; it does not silently initialize a device because that flow may display recovery material. `locket agent invite create` is a CLI and desktop handoff wrapper for `locket team invite`: it accepts the same device descriptor, profile, role, expiry, issuer authorization, dangerous-profile confirmation, and audit requirements, writes the standard signed invite file, then prints a heredoc accept block suitable for copying through chat, issue comments, or another user-mediated channel. `locket agent invite accept -` reads that block from stdin and applies the same verification, replay protection, user-verification policy, import, and audit behavior as `locket team accept`. These commands do not define a new cryptographic protocol, trust root, role model, or unattended grant path; they only package the existing team invite/accept flow for agent and desktop handoff surfaces.
 
 `locket bootstrap` must:
 
