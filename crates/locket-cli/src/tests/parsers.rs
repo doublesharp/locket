@@ -214,6 +214,10 @@ fn parses_core_secret_commands() {
         &["locket", "bundle", "verify", "bundle.locket-bundle"],
         &["locket", "new", "--from-template", "basic"],
         &["locket", "bootstrap"],
+        &["locket", "setup"],
+        &["locket", "setup", "status"],
+        &["locket", "setup", "agent"],
+        &["locket", "setup", "share"],
         &["locket", "completion", "bash"],
     ] {
         assert!(Cli::try_parse_from(args).is_ok(), "{args:?}");

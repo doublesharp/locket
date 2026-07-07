@@ -929,6 +929,99 @@ fn status_reports_not_initialized_without_project() -> Result<(), Box<dyn std::e
 }
 
 #[test]
+fn setup_guides_new_projects_without_writing_files() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    let mut output = Vec::new();
+
+    run_with_context(Cli::try_parse_from(["locket", "setup"])?, &context, &mut output)?;
+
+    let output = String::from_utf8(output)?;
+    assert!(output.contains("setup: new_project"));
+    assert!(output.contains("metadata_only: yes"));
+    assert!(output.contains("locket init --name <name> --profile dev"));
+    assert!(output.contains("locket import .env"));
+    assert!(!directory.path().join("locket.toml").exists());
+    Ok(())
+}
+
+#[test]
+fn setup_guides_initialized_projects() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from([
+            "locket",
+            "init",
+            "--no-device",
+            "--no-passkey",
+            "--name",
+            "app",
+            "--profile",
+            "dev",
+        ])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+
+    let mut output = Vec::new();
+    run_with_context(Cli::try_parse_from(["locket", "setup", "status"])?, &context, &mut output)?;
+
+    let output = String::from_utf8(output)?;
+    assert!(output.contains("setup: local_development"));
+    assert!(output.contains("project: app"));
+    assert!(output.contains("profile: dev"));
+    assert!(output.contains("metadata_only: yes"));
+    assert!(output.contains("locket import .env"));
+    assert!(output.contains("locket policy add dev --"));
+    assert!(output.contains("locket setup agent"));
+    Ok(())
+}
+
+#[test]
+fn setup_agent_prints_paste_friendly_handoff_steps() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    let mut output = Vec::new();
+
+    run_with_context(Cli::try_parse_from(["locket", "setup", "agent"])?, &context, &mut output)?;
+
+    let output = String::from_utf8(output)?;
+    assert!(output.contains("setup: agent_invite"));
+    assert!(output.contains("metadata_only: yes"));
+    assert!(output.contains("receiver: locket agent invite request"));
+    assert!(
+        output.contains(
+            "maintainer: locket agent invite create <label> --device <descriptor> --profile dev --role developer --expires-in 7d"
+        ),
+        "{output}"
+    );
+    assert!(output.contains("receiver_accept: locket agent invite accept -"));
+    Ok(())
+}
+
+#[test]
+fn setup_share_points_to_agent_and_team_paths() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    let mut output = Vec::new();
+
+    run_with_context(Cli::try_parse_from(["locket", "setup", "share"])?, &context, &mut output)?;
+
+    let output = String::from_utf8(output)?;
+    assert!(output.contains("setup: share_access"));
+    assert!(output.contains("metadata_only: yes"));
+    assert!(output.contains("agent_path: locket setup agent"));
+    assert!(
+        output.contains(
+            "team_path: locket team invite <name> --device <descriptor> --profile dev --role developer"
+        ),
+        "{output}"
+    );
+    Ok(())
+}
+
+#[test]
 fn status_reports_metadata_summary_and_next_action() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempdir()?;
     let context = test_context(&directory);

@@ -169,6 +169,12 @@ enum Command {
     New(NewArgs),
     /// Show metadata-only onboarding checklist.
     Bootstrap,
+    /// Show guided local-development setup steps.
+    Setup {
+        /// Setup guide.
+        #[command(subcommand)]
+        command: Option<SetupCommand>,
+    },
     /// Generate shell completions.
     Completion(CompletionArgs),
     /// Run locked-safe local diagnostics.
@@ -368,6 +374,16 @@ struct DoctorArgs {
     /// Prune expired runtime-session secret-name metadata after reporting it.
     #[arg(long)]
     prune_runtime_session_secret_names: bool,
+}
+
+#[derive(Debug, Clone, Copy, Subcommand)]
+pub(crate) enum SetupCommand {
+    /// Summarize setup state and next commands.
+    Status,
+    /// Show paste-friendly agent invite steps.
+    Agent,
+    /// Show sharing options for agents, teammates, and sealed bundles.
+    Share,
 }
 
 #[derive(Debug, Args)]
@@ -1360,6 +1376,7 @@ fn run_with_context(
         Command::Status => project::status::status(context, output)?,
         Command::New(args) => new_command(context, output, &args)?,
         Command::Bootstrap => project::bootstrap::bootstrap_command(context, output)?,
+        Command::Setup { command } => project::setup::setup_command(context, output, command)?,
         Command::Completion(args) => completion_command(output, args.shell)?,
         Command::Doctor(args) => {
             return diagnostics::doctor_command(
