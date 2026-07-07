@@ -117,6 +117,7 @@ fn parses_bare_status() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn parses_core_secret_commands() {
     for args in [
         ["locket", "init", "--name", "app"].as_slice(),
