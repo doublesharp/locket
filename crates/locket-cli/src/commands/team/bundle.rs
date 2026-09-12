@@ -577,6 +577,54 @@ pub fn import_bundle_command(
 /// [`ConflictResolution::InteractiveRequired`] the transaction is rolled
 /// back and the function returns [`ApplyOutcome::InteractiveRequired`]
 /// with a metadata-only summary list.
+fn validate_bundle_project_scope(
+    transaction: &rusqlite::Transaction<'_>,
+    project_id: &str,
+    payload: &SealedBundlePayloadV1,
+) -> Result<(), CliError> {
+    use rusqlite::OptionalExtension as _;
+
+    let incoming_profiles: BTreeSet<_> =
+        payload.profiles.iter().map(|row| row.profile_id.as_str()).collect();
+    let profiles: BTreeSet<_> = incoming_profiles
+        .iter()
+        .copied()
+        .chain(payload.profile_keys.iter().map(|row| row.profile_id.as_str()))
+        .chain(payload.secrets.iter().map(|row| row.profile_id.as_str()))
+        .collect();
+    for profile in profiles {
+        let owner: Option<String> = transaction
+            .query_row("SELECT project_id FROM profiles WHERE id = ?1", [profile], |row| row.get(0))
+            .optional()
+            .map_err(map_apply_sqlite_error)?;
+        if owner.as_deref().is_some_and(|owner| owner != project_id)
+            || (owner.is_none() && !incoming_profiles.contains(profile))
+        {
+            return Err(metadata_invalid_error("bundle row is outside the requested project"));
+        }
+    }
+
+    let incoming_secrets: BTreeSet<_> = payload.secrets.iter().map(|row| row.id.as_str()).collect();
+    let secrets: BTreeSet<_> = incoming_secrets
+        .iter()
+        .copied()
+        .chain(payload.secret_versions.iter().map(|row| row.secret_id.as_str()))
+        .chain(payload.blobs.iter().map(|row| row.secret_id.as_str()))
+        .collect();
+    for secret in secrets {
+        let owner: Option<String> = transaction
+            .query_row("SELECT project_id FROM secrets WHERE id = ?1", [secret], |row| row.get(0))
+            .optional()
+            .map_err(map_apply_sqlite_error)?;
+        if owner.as_deref().is_some_and(|owner| owner != project_id)
+            || (owner.is_none() && !incoming_secrets.contains(secret))
+        {
+            return Err(metadata_invalid_error("bundle row is outside the requested project"));
+        }
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn apply_bundle_payload(
     store: &mut Store,
@@ -589,6 +637,8 @@ fn apply_bundle_payload(
     now: i64,
 ) -> Result<ApplyOutcome, CliError> {
     let bundle_digest_bytes = decode_bundle_digest(&manifest.payload_digest)?;
+    let mut retained_secrets = BTreeSet::new();
+    let mut rotated_versions = Vec::new();
     let mut applied = AppliedBundleCounts::default();
     let mut conflicts = BundleConflictCounts::default();
     let mut divergent_summary: Vec<String> = Vec::new();
@@ -600,6 +650,8 @@ fn apply_bundle_payload(
 
     // Profiles: insert if absent, otherwise compare. Profile rows have no
     // version field; the conflict matrix is identical-vs-divergent only.
+    validate_bundle_project_scope(&transaction, project_id, payload)?;
+
     for profile in &payload.profiles {
         match read_local_profile(&transaction, project_id, &profile.profile_id)? {
             None => {
@@ -837,7 +889,13 @@ fn apply_bundle_payload(
                     divergent_summary.push(format!("secret/{}: newer-incoming", secret.id));
                     DivergentDecision::Defer
                 };
+                if decision == DivergentDecision::Skip {
+                    retained_secrets.insert(secret.id.as_str());
+                }
                 if matches!(decision, DivergentDecision::Apply) {
+                    if secret.current_version != local.current_version {
+                        rotated_versions.push((secret.id.as_str(), local.current_version));
+                    }
                     // docs/specs/team-sync-recovery.md:224 — "applies the
                     // same target lifecycle as `locket rotate` with no
                     // grace window... and `SecretMeta.last_rotated_at` is
@@ -876,6 +934,10 @@ fn apply_bundle_payload(
     // rotate-with-no-grace against the local current version, divergent
     // routes through `resolve_divergent`.
     for version in &payload.secret_versions {
+        if retained_secrets.contains(version.secret_id.as_str()) {
+            conflicts.rejected = conflicts.rejected.saturating_add(1);
+            continue;
+        }
         match read_local_secret_version(&transaction, &version.secret_id, version.version)? {
             None => {
                 if version.state == "current" {
@@ -886,12 +948,21 @@ fn apply_bundle_payload(
                 conflicts.applied = conflicts.applied.saturating_add(1);
             }
             Some(local) => {
+                // An accepted import must not revive a locally expired grace window,
+                // including when replaying the bundle that caused the local rotation.
+                let preserve_expiry = local.state == "deprecated"
+                    && version.state == "deprecated"
+                    && local.grace_until.is_none_or(|until| until <= now);
+                let deprecated_at =
+                    if preserve_expiry { local.deprecated_at } else { version.deprecated_at };
+                let grace_until =
+                    if preserve_expiry { local.grace_until } else { version.grace_until };
                 let identical = local.source == version.source
                     && local.origin == version.origin
                     && local.state == version.state
                     && local.created_at == version.created_at
-                    && local.deprecated_at == version.deprecated_at
-                    && local.grace_until == version.grace_until
+                    && local.deprecated_at == deprecated_at
+                    && local.grace_until == grace_until
                     && local.purged_at == version.purged_at;
                 if identical {
                     conflicts.identical = conflicts.identical.saturating_add(1);
@@ -940,8 +1011,8 @@ fn apply_bundle_payload(
                                 version.origin,
                                 version.state,
                                 version.created_at,
-                                version.deprecated_at,
-                                version.grace_until,
+                                deprecated_at,
+                                grace_until,
                                 version.purged_at,
                             ],
                         )
@@ -954,7 +1025,19 @@ fn apply_bundle_payload(
 
     // Blobs: insert when absent; identical when stored bytes match;
     // divergent otherwise.
+    for (secret_id, version) in rotated_versions {
+        transaction.execute(
+            "UPDATE secret_versions SET state = 'deprecated', deprecated_at = ?3, grace_until = ?3
+             WHERE secret_id = ?1 AND version = ?2 AND state != 'purged'",
+            params![secret_id, version, now],
+        ).map_err(map_apply_sqlite_error)?;
+    }
+
     for blob in &payload.blobs {
+        if retained_secrets.contains(blob.secret_id.as_str()) {
+            conflicts.rejected = conflicts.rejected.saturating_add(1);
+            continue;
+        }
         match read_local_blob(&transaction, &blob.secret_id, blob.version)? {
             None => {
                 let blob_record = decode_bundle_blob(blob)?;
@@ -2304,6 +2387,259 @@ fn write_bundle_audit_if_available(
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    fn import_apply(
+        store: &mut Store,
+        project: &str,
+        payload: &SealedBundlePayloadV1,
+        resolution: ConflictResolution,
+    ) -> Result<ApplyOutcome, Box<dyn std::error::Error>> {
+        let manifest = BundleManifest {
+            recipient_fingerprints: Vec::new(),
+            project_id: project.to_owned(),
+            schema_version: BUNDLE_SCHEMA_V1,
+            created_at: 100,
+            profile_count: 1,
+            payload_digest: "11".repeat(32),
+        };
+        Ok(apply_bundle_payload(
+            store, project, payload, resolution, false, &manifest, &[42; 32], 300,
+        )?)
+    }
+
+    fn import_fixture(
+        profile: &str,
+        id: &str,
+        version: u32,
+    ) -> Result<SealedBundlePayloadV1, serde_json::Error> {
+        serde_json::from_value(serde_json::json!({
+            "profiles": [{"profile_id": profile, "name": "dev", "dangerous": false,
+                "active_secret_count": 1, "created_at": 100}],
+            "command_policies": [], "profile_keys": [],
+            "secrets": [{"id": id, "profile_id": profile, "name": id, "source": "machine-local",
+                "origin": "manual", "current_version": version, "state": "active",
+                "created_at": 100, "updated_at": version * 100, "last_rotated_at": null, "deleted_at": null}],
+            "secret_versions": [{"secret_id": id, "version": version, "source": "machine-local",
+                "origin": "manual", "state": "current", "created_at": version * 100,
+                "deprecated_at": null, "grace_until": null, "purged_at": null}],
+            "blobs": [{"secret_id": id, "version": version, "encrypted_dek_b64": "AQ",
+                "ciphertext_b64": BASE64URL_NOPAD.encode(&version.to_le_bytes()),
+                "value_nonce_b64": BASE64URL_NOPAD.encode(&[0; 24]),
+                "aad_schema_version": 1, "created_at": version * 100}],
+            "profile_count": 1, "command_policy_count": 0, "profile_key_count": 0,
+            "secret_count": 1, "secret_version_count": 1, "blob_count": 1,
+            "active_secret_count": 1, "audit_rows_included": false, "audit_chain": null
+        }))
+    }
+
+    #[test]
+    fn import_rotation_does_not_restore_exporter_grace() -> Result<(), Box<dyn std::error::Error>> {
+        for reverse in [false, true] {
+            let directory = tempfile::tempdir()?;
+            let mut store = Store::open(directory.path().join("store.db"))?;
+            store.initialize_schema()?;
+            store.insert_project_if_absent("project", "project", 100)?;
+            import_apply(
+                &mut store,
+                "project",
+                &import_fixture("profile", "secret", 1)?,
+                ConflictResolution::AcceptIncoming,
+            )?;
+            let mut incoming = import_fixture("profile", "secret", 2)?;
+            let mut historical = import_fixture("profile", "secret", 1)?;
+            historical.secret_versions[0].state = "deprecated".to_owned();
+            historical.secret_versions[0].deprecated_at = Some(200);
+            historical.secret_versions[0].grace_until = Some(999);
+            incoming.secret_versions.extend(historical.secret_versions);
+            if reverse {
+                incoming.secret_versions.reverse();
+            }
+            refresh_fixture_counts(&mut incoming);
+            import_apply(&mut store, "project", &incoming, ConflictResolution::AcceptIncoming)?;
+            // Replaying an accepted bundle must not revive the prior version.
+            import_apply(&mut store, "project", &incoming, ConflictResolution::AcceptIncoming)?;
+            let old = store.get_secret_version("secret", 1)?.ok_or("missing old version")?;
+            assert_eq!(old.state, "deprecated");
+            assert_eq!(old.deprecated_at, Some(300));
+            store.connection().execute("UPDATE secret_versions SET grace_until = NULL WHERE secret_id = 'secret' AND version = 1", [])?;
+            import_apply(&mut store, "project", &incoming, ConflictResolution::AcceptIncoming)?;
+            assert_eq!(
+                store.get_secret_version("secret", 1)?.ok_or("missing old version")?.grace_until,
+                None
+            );
+
+            assert_eq!(
+                old.grace_until,
+                Some(300),
+                "import rotation must expire the previous version immediately"
+            );
+        }
+        Ok(())
+    }
+
+    fn refresh_fixture_counts(payload: &mut SealedBundlePayloadV1) {
+        payload.profile_count = payload.profiles.len();
+        payload.secret_count = payload.secrets.len();
+        payload.secret_version_count = payload.secret_versions.len();
+        payload.blob_count = payload.blobs.len();
+        payload.profile_key_count = payload.profile_keys.len();
+        payload.active_secret_count =
+            payload.secrets.iter().filter(|row| row.state == "active").count();
+    }
+
+    #[test]
+    fn import_conflict_choice_keeps_version_pointer_and_blob_consistent()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for resolution in [
+            ConflictResolution::InteractiveRequired,
+            ConflictResolution::AcceptLocal,
+            ConflictResolution::AcceptIncoming,
+        ] {
+            let directory = tempfile::tempdir()?;
+            let mut store = Store::open(directory.path().join("store.db"))?;
+            store.initialize_schema()?;
+            store.insert_project_if_absent("project", "project", 100)?;
+            let original = import_fixture("profile", "secret", 1)?;
+            import_apply(
+                &mut store,
+                "project",
+                &original,
+                ConflictResolution::InteractiveRequired,
+            )?;
+            let mut incoming = import_fixture("profile", "secret", 2)?;
+            let mut historical = import_fixture("profile", "secret", 1)?;
+            historical.secret_versions[0].state = "deprecated".to_owned();
+            historical.secret_versions[0].deprecated_at = Some(200);
+            historical.secret_versions[0].grace_until = Some(999);
+            incoming.secret_versions.extend(historical.secret_versions);
+            let unrelated = import_fixture("profile", "unrelated", 1)?;
+            incoming.secrets.extend(unrelated.secrets);
+            incoming.secret_versions.extend(unrelated.secret_versions);
+            incoming.blobs.extend(unrelated.blobs);
+            refresh_fixture_counts(&mut incoming);
+            let outcome = import_apply(&mut store, "project", &incoming, resolution)?;
+            let expected_version =
+                if resolution == ConflictResolution::AcceptIncoming { 2 } else { 1 };
+            let pointer: u32 = store.connection().query_row(
+                "SELECT current_version FROM secrets WHERE id = 'secret'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(pointer, expected_version);
+            let active =
+                store.get_secret_version("secret", pointer)?.ok_or("missing pointed version")?;
+            assert_eq!(
+                active.state, "current",
+                "conflict choice must keep its selected version usable"
+            );
+            let blob = store.get_blob("secret", pointer)?.ok_or("missing pointed blob")?;
+            assert_eq!(blob.ciphertext, expected_version.to_le_bytes());
+            if resolution != ConflictResolution::AcceptIncoming {
+                assert!(store.get_secret_version("secret", 2)?.is_none());
+                assert!(store.get_blob("secret", 2)?.is_none());
+            }
+            let unrelated_count: u32 = store.connection().query_row(
+                "SELECT COUNT(*) FROM secrets WHERE id = 'unrelated'",
+                [],
+                |row| row.get(0),
+            )?;
+            if resolution == ConflictResolution::InteractiveRequired {
+                assert!(matches!(outcome, ApplyOutcome::InteractiveRequired { .. }));
+                assert_eq!(unrelated_count, 0, "review must roll back the whole import");
+            } else {
+                assert!(matches!(outcome, ApplyOutcome::Applied { .. }));
+                assert_eq!(unrelated_count, 1, "nonconflicting new secrets still import");
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn import_rejects_cross_project_rows_and_rolls_back() -> Result<(), Box<dyn std::error::Error>>
+    {
+        for attack in [
+            "secret",
+            "version",
+            "blob",
+            "profile",
+            "profile-key",
+            "missing-profile",
+            "missing-secret",
+            "missing-key-profile",
+        ] {
+            let directory = tempfile::tempdir()?;
+            let mut store = Store::open(directory.path().join("store.db"))?;
+            store.initialize_schema()?;
+            for project in ["project-a", "project-b"] {
+                store.insert_project_if_absent(project, project, 100)?;
+            }
+            let original = import_fixture("profile-b", "secret-b", 1)?;
+            import_apply(
+                &mut store,
+                "project-b",
+                &original,
+                ConflictResolution::InteractiveRequired,
+            )?;
+            let mut incoming = import_fixture("profile-a", "new-secret", 2)?;
+            match attack {
+                "secret" => {
+                    incoming.secrets[0].id = "secret-b".to_owned();
+                    incoming.secret_versions[0].secret_id = "secret-b".to_owned();
+                    incoming.blobs[0].secret_id = "secret-b".to_owned();
+                }
+                "version" => incoming.secret_versions[0].secret_id = "secret-b".to_owned(),
+                "blob" => {
+                    incoming.blobs[0].secret_id = "secret-b".to_owned();
+                    incoming.blobs[0].version = 1;
+                }
+                "profile" => incoming.secrets[0].profile_id = "profile-b".to_owned(),
+                "missing-profile" => incoming.secrets[0].profile_id = "missing-profile".to_owned(),
+                "missing-secret" => {
+                    incoming.secret_versions[0].secret_id = "missing-secret".to_owned();
+                }
+                _ => incoming.profile_keys.push(SealedBundleProfileKeyV1 {
+                    profile_id: if attack == "missing-key-profile" {
+                        "missing-profile"
+                    } else {
+                        "profile-b"
+                    }
+                    .to_owned(),
+                    purpose: KeyPurpose::ProfileSecret.as_str().to_owned(),
+                    key_material_b64: BASE64URL_NOPAD.encode(&[42; 32]),
+                }),
+            }
+            refresh_fixture_counts(&mut incoming);
+            assert!(
+                import_apply(
+                    &mut store,
+                    "project-a",
+                    &incoming,
+                    ConflictResolution::AcceptIncoming
+                )
+                .is_err(),
+                "{attack} must reject a foreign project reference"
+            );
+            let retained: (String, String, u32) = store.connection().query_row(
+                "SELECT project_id, profile_id, current_version FROM secrets WHERE id = 'secret-b'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+            assert_eq!(retained, ("project-b".to_owned(), "profile-b".to_owned(), 1));
+            assert_eq!(
+                store.get_secret_version("secret-b", 1)?.ok_or("missing original version")?.state,
+                "current"
+            );
+            assert_eq!(
+                store.get_blob("secret-b", 1)?.ok_or("missing original blob")?.ciphertext,
+                1_u32.to_le_bytes()
+            );
+            assert!(store.get_secret_version("secret-b", 2)?.is_none());
+            assert!(
+                store.list_profiles("project-a")?.is_empty(),
+                "rejected import must roll back profile insertion"
+            );
+        }
+        Ok(())
+    }
 
     fn sample_rows() -> Vec<ExportableAuditRow> {
         // Two-row chain: row 1 has zero previous_hmac; row 2 chains to

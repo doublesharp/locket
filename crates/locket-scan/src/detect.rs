@@ -25,7 +25,7 @@ struct CandidateSegment<'a> {
     value: &'a str,
     start: usize,
     end: usize,
-    relative_start: usize,
+    relative_column: usize,
 }
 
 pub fn sensitive_detections(text: &str) -> Vec<Detection> {
@@ -45,7 +45,7 @@ pub fn sensitive_detections_with_entropy_rule(
                     start: candidate.start,
                     end: candidate.end,
                     line: token.line,
-                    column: token.column + token.value[..candidate.relative_start].chars().count(),
+                    column: token.column + candidate.relative_column,
                     kind: FindingKind::ProviderTokenPattern,
                 });
             } else if is_high_entropy_token_with_rule(candidate.value, entropy_rule) {
@@ -53,7 +53,7 @@ pub fn sensitive_detections_with_entropy_rule(
                     start: candidate.start,
                     end: candidate.end,
                     line: token.line,
-                    column: token.column + token.value[..candidate.relative_start].chars().count(),
+                    column: token.column + candidate.relative_column,
                     kind: FindingKind::HighEntropy,
                 });
             }
@@ -66,15 +66,23 @@ pub fn sensitive_detections_with_entropy_rule(
 fn candidate_segments(token: Token<'_>) -> Vec<CandidateSegment<'_>> {
     let mut candidates = Vec::new();
     let mut segment_start = 0;
+    let mut segment_column = 0;
 
-    for (index, character) in token.value.char_indices() {
+    for (column, (index, character)) in token.value.char_indices().enumerate() {
         if is_token_boundary(character) {
-            push_candidate_segment(&mut candidates, token, segment_start, index);
+            push_candidate_segment(&mut candidates, token, segment_start, index, segment_column);
             segment_start = index + character.len_utf8();
+            segment_column = column + 1;
         }
     }
 
-    push_candidate_segment(&mut candidates, token, segment_start, token.value.len());
+    push_candidate_segment(
+        &mut candidates,
+        token,
+        segment_start,
+        token.value.len(),
+        segment_column,
+    );
     candidates
 }
 
@@ -83,13 +91,14 @@ fn push_candidate_segment<'a>(
     token: Token<'a>,
     relative_start: usize,
     relative_end: usize,
+    relative_column: usize,
 ) {
     if relative_start < relative_end {
         candidates.push(CandidateSegment {
             value: &token.value[relative_start..relative_end],
             start: token.start + relative_start,
             end: token.start + relative_end,
-            relative_start,
+            relative_column,
         });
     }
 }

@@ -232,6 +232,46 @@ fn scan_text_reports_candidate_column_after_boundaries() {
 }
 
 #[test]
+fn scan_columns_count_unicode_characters_across_delimiters_and_controls() {
+    for (text, positions) in [
+        (":ghp_a,ghp_b", vec![(1, 2), (1, 8)]),
+        ("éé=ghp_a;🦀:ghp_b", vec![(1, 4), (1, 12)]),
+        ("x\n\tghp_a\0ghp_b", vec![(2, 2), (2, 8)]),
+        ("\n{}[ghp_a]\r\n'ghp_b'", vec![(2, 4), (3, 2)]),
+    ] {
+        let findings = scan_text("positions.txt", text);
+        assert_eq!(findings.len(), positions.len());
+        for (finding, (line, column)) in findings.iter().zip(positions) {
+            assert_eq!((finding.line, finding.column), (line, column), "{text:?}");
+            assert_eq!(finding.token_length, 5);
+            assert_eq!(finding.kind, FindingKind::ProviderTokenPattern);
+        }
+        let redacted = redact_text(text);
+        assert_eq!(
+            redacted.text,
+            text.replace("ghp_a", "lk_redacted_PROVIDER_TOKEN")
+                .replace("ghp_b", "lk_redacted_PROVIDER_TOKEN")
+        );
+    }
+}
+
+#[test]
+fn dense_line_preserves_every_finding_and_redaction() {
+    let record = "é=ghp_example,";
+    let text = record.repeat(512);
+    let findings = scan_text("dense.txt", &text);
+    assert_eq!(findings.len(), 512);
+    for (index, finding) in findings.iter().enumerate() {
+        assert_eq!(finding.line, 1);
+        assert_eq!(finding.column, index * record.chars().count() + 3);
+        assert_eq!(finding.token_length, "ghp_example".len());
+    }
+    let redacted = redact_text(&text);
+    assert_eq!(redacted.text, "é=lk_redacted_PROVIDER_TOKEN,".repeat(512));
+    assert_eq!(redacted.counts.get(&FindingKind::ProviderTokenPattern), Some(&512));
+}
+
+#[test]
 fn inline_suppression_removes_high_entropy_findings_on_same_line() {
     let entropy = "Z9a$kLmN2pQx7R!sT4vW8yB3cD6eF";
     let text = format!("token={entropy} # locket-allow: known random fixture\n");

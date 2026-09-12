@@ -236,3 +236,11 @@ Bundle import conflict policy:
 - Full audit rows imported with `--include-audit` remain a separate remote audit chain in `imported_audit_chains`. Locket structurally verifies the remote chain against the bundle checkpoint: sequence numbers must be monotonically increasing, each row's `prev_hmac` must match the prior row's stored `hmac`, and the final row's `hmac` must match the plaintext bundle checkpoint `hmac`. HMAC recomputation against the project audit key is not performed because audit key material is never exported in sealed bundles; structural and checkpoint consistency is the sole verification mechanism for remote chains. The encrypted remote rows are stored as imported evidence, and a local import row is appended with the bundle checkpoint rather than merging chains. `locket team accept` writes `TEAM_ACCEPT`; `locket import-bundle` always writes `BACKUP_IMPORT`, including when the bundle came from another team member.
 
 When `import-bundle` or `team accept` imports a newer version over an existing active target, it applies the same target lifecycle as `locket rotate` with no grace window: the prior local version is marked `Deprecated`, the incoming version becomes current, and `SecretMeta.last_rotated_at` is set to the import timestamp. Importing version `1` into a missing target leaves `last_rotated_at = None`.
+
+Import validates project ownership for every referenced profile, profile key,
+secret, version, and blob before applying rows. References must resolve within
+the requested project or to new rows declared by that bundle. Foreign or
+missing references reject the entire transaction. Accepting a local secret
+also retains its versions and ciphertext; unrelated new secrets may still
+import. Historical rows and repeated imports must not extend a locally expired
+deprecated-version grace period.

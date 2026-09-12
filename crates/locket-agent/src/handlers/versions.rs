@@ -93,6 +93,11 @@ pub fn list_versions(request: &ListVersionsRequest) -> Result<ListVersionsRespon
                 row.grace_until,
                 request.now_unix_nanos,
             );
+            let scan_included = match row.version_state.as_str() {
+                "current" => row.secret_state == "active" || row.version == row.current_version,
+                "deprecated" => row.grace_until.is_some_and(|until| until > request.now_unix_nanos),
+                _ => false,
+            };
             ListVersionsRow {
                 secret_id: row.secret_id,
                 profile_id: profile_label(&row.profile_id, request.redact_names),
@@ -110,7 +115,7 @@ pub fn list_versions(request: &ListVersionsRequest) -> Result<ListVersionsRespon
                 grace_until: row.grace_until,
                 purged_at: row.purged_at,
                 pinned_reference_eligible: eligible,
-                scan_included: eligible,
+                scan_included,
             }
         })
         .collect();
@@ -125,8 +130,11 @@ fn version_resolves_at(
     grace_until: Option<i64>,
     now_unix_nanos: i64,
 ) -> bool {
+    if secret_state != "active" {
+        return false;
+    }
     match version_state {
-        "current" => secret_state == "active" && version == current_version,
+        "current" => version == current_version,
         "deprecated" => grace_until.is_some_and(|grace_until| grace_until > now_unix_nanos),
         _ => false,
     }
@@ -143,6 +151,7 @@ fn secret_label(value: &str, redact_names: bool) -> String {
 #[cfg(test)]
 mod tests {
     use std::error::Error;
+    use std::path::PathBuf;
 
     use locket_core::privacy_alias;
     use locket_store::Store;
@@ -215,6 +224,11 @@ mod tests {
     }
 
     #[test]
+    fn deleted_deprecated_version_is_not_resolvable_during_grace() {
+        assert!(!version_resolves_at("deprecated", "deleted", 2, 1, Some(101), 100));
+    }
+
+    #[test]
     fn list_versions_returns_store_errors() -> Result<(), Box<dyn Error>> {
         let directory = tempdir()?;
         let request = ListVersionsRequest {
@@ -230,8 +244,7 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn list_versions_filters_and_redacts_metadata_rows() -> Result<(), Box<dyn Error>> {
+    fn version_store_fixture() -> Result<(tempfile::TempDir, PathBuf), Box<dyn Error>> {
         let directory = tempdir()?;
         let store_path = directory.path().join("store.db");
         let mut store = Store::open(&store_path)?;
@@ -250,7 +263,7 @@ mod tests {
             ("lk_sec_machine", "DATABASE_URL", "machine-local", 2, "active", Some(200)),
             ("lk_sec_team", "DATABASE_URL", "team-managed", 1, "active", None),
             ("lk_sec_other", "API_TOKEN", "machine-local", 1, "active", None),
-            ("lk_sec_deleted", "DATABASE_URL", "user-local", 1, "deleted", None),
+            ("lk_sec_deleted", "DATABASE_URL", "user-local", 2, "deleted", None),
         ] {
             store.connection().execute(
                 "INSERT INTO secrets(
@@ -268,7 +281,8 @@ mod tests {
             ("lk_sec_machine", 2, "current", 200, None, None, None),
             ("lk_sec_team", 1, "current", 100, None, None, None),
             ("lk_sec_other", 1, "current", 100, None, None, None),
-            ("lk_sec_deleted", 1, "current", 100, None, None, None),
+            ("lk_sec_deleted", 1, "deprecated", 100, Some(200), Some(900), None),
+            ("lk_sec_deleted", 2, "current", 200, None, None, None),
         ] {
             store.connection().execute(
                 "INSERT INTO secret_versions(
@@ -299,8 +313,14 @@ mod tests {
         }
         drop(store);
 
+        Ok((directory, store_path))
+    }
+
+    #[test]
+    fn list_versions_filters_and_redacts_metadata_rows() -> Result<(), Box<dyn Error>> {
+        let (_directory, store_path) = version_store_fixture()?;
         let response = list_versions(&ListVersionsRequest {
-            store_path,
+            store_path: store_path.clone(),
             project_id: "lk_proj_test".to_owned(),
             profile_id: "lk_prof_test".to_owned(),
             secret_name: Some("DATABASE_URL".to_owned()),
@@ -320,6 +340,32 @@ mod tests {
         assert_eq!(response.rows[1].grace_until, Some(900));
         assert!(response.rows[1].pinned_reference_eligible);
         assert!(response.rows[1].scan_included);
+
+        let mut request = ListVersionsRequest {
+            store_path,
+            project_id: "lk_proj_test".to_owned(),
+            profile_id: "lk_prof_test".to_owned(),
+            secret_name: None,
+            source: Some("user-local".to_owned()),
+            now_unix_nanos: 500,
+            redact_names: false,
+        };
+        let deleted = list_versions(&request)?;
+        assert_eq!(deleted.rows.len(), 2);
+        assert_eq!(deleted.rows[0].name, "DATABASE_URL");
+        assert_eq!(deleted.rows[0].profile_id, "lk_prof_test");
+        for row in &deleted.rows {
+            assert!(!row.pinned_reference_eligible);
+            assert!(row.scan_included, "deleted current and in-grace versions still detect leaks");
+        }
+        request.now_unix_nanos = 900;
+        let expired = list_versions(&request)?;
+        assert!(expired.rows[0].scan_included);
+        assert!(!expired.rows[1].scan_included);
+        request.source = None;
+        assert_eq!(list_versions(&request)?.rows.len(), 6);
+        request.profile_id = "lk_prof_other".to_owned();
+        assert!(list_versions(&request)?.rows.is_empty());
 
         Ok(())
     }
