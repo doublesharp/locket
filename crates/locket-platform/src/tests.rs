@@ -9,12 +9,17 @@ use super::{
     RecoveryEnvelope, RecoveryEnvelopeEntry, RecoveryKdfToml, UnavailableLocalUserVerifier,
     UnavailablePlatformPasskeyRegistrar, WrappedLocalFileDevicePrivateKeyStorage,
     current_process_binding, decode_key, encode_key, load_recovery_envelope,
-    load_recovery_kdf_toml, master_key_account, process_binding_matches_live_process,
-    save_recovery_envelope, save_recovery_kdf_toml,
+    load_recovery_kdf_toml, master_key_account, platform_name,
+    process_binding_matches_live_process, save_recovery_envelope, save_recovery_kdf_toml,
 };
 
 const PROJECT_ID: &str = "lk_proj_test";
 const MASTER_KEY: [u8; KEY_LEN] = [42; KEY_LEN];
+
+#[test]
+fn platform_name_matches_rust_target_os() {
+    assert_eq!(platform_name(), std::env::consts::OS);
+}
 
 #[test]
 fn encodes_master_key_without_padding() -> Result<(), PlatformError> {

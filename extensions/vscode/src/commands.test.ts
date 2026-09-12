@@ -142,7 +142,11 @@ moduleWithLoader._load = function loadWithVscodeStub(
   return originalLoad.call(this, request, parent, isMain);
 };
 
-const { registerLocketCommands } = require('./commands') as typeof import('./commands');
+let registerLocketCommands: typeof import('./commands').registerLocketCommands;
+
+test.before(async () => {
+  ({ registerLocketCommands } = await import('./commands'));
+});
 
 test.after(() => {
   moduleWithLoader._load = originalLoad;

@@ -149,3 +149,54 @@ fn decode_client_key(encoded: &str) -> Result<Zeroizing<KeyBytes>, PlatformError
     key.copy_from_slice(&decoded);
     Ok(key)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const CLIENT_ID: &str = "lk_client_test";
+    const KEY: KeyBytes = [0x42; KEY_LEN];
+
+    #[test]
+    fn keychain_reference_uses_metadata_only_account() {
+        let reference = automation_client_keychain_ref(CLIENT_ID);
+
+        assert_eq!(reference.service, AUTOMATION_CLIENT_KEYRING_SERVICE);
+        assert_eq!(reference.account, "automation-client:lk_client_test");
+    }
+
+    #[test]
+    fn client_key_encoding_round_trips_without_padding() -> Result<(), PlatformError> {
+        let encoded = encode_client_key(&KEY);
+
+        assert!(!encoded.contains('='));
+        assert_eq!(&*decode_client_key(&encoded)?, &KEY);
+        assert!(matches!(decode_client_key("not base64"), Err(PlatformError::InvalidMasterKey)));
+        assert!(matches!(decode_client_key("AA"), Err(PlatformError::InvalidMasterKey)));
+        Ok(())
+    }
+
+    #[test]
+    fn memory_store_replaces_and_deletes_client_keys() -> Result<(), PlatformError> {
+        let store = MemoryAutomationClientKeyStore::default();
+        let replacement = [0x7A; KEY_LEN];
+
+        let reference = store.store_client_key(CLIENT_ID, &KEY)?;
+        assert_eq!(reference.account, "automation-client:lk_client_test");
+        let Some(stored) = store.load_client_key(CLIENT_ID)? else {
+            return Err(PlatformError::MasterKeyNotFound);
+        };
+        assert_eq!(&*stored, &KEY);
+
+        store.store_client_key(CLIENT_ID, &replacement)?;
+        let Some(stored) = store.load_client_key(CLIENT_ID)? else {
+            return Err(PlatformError::MasterKeyNotFound);
+        };
+        assert_eq!(&*stored, &replacement);
+
+        store.delete_client_key(CLIENT_ID)?;
+        assert!(store.load_client_key(CLIENT_ID)?.is_none());
+        store.delete_client_key(CLIENT_ID)?;
+        Ok(())
+    }
+}

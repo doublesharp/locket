@@ -53,6 +53,17 @@ struct DesktopListSecretsRequest {
     redact_names: bool,
 }
 
+impl DesktopListSecretsRequest {
+    fn into_agent_request(self) -> Result<locket_agent::ListSecretsRequest, AgentClientError> {
+        Ok(locket_agent::ListSecretsRequest {
+            store_path: resolve_path(self.store_path, default_store_path)?,
+            project_id: self.project_id,
+            profile_id: self.profile_id,
+            redact_names: self.redact_names,
+        })
+    }
+}
+
 #[derive(Deserialize)]
 struct DesktopListDeviceMembersRequest {
     store_path: Option<PathBuf>,
@@ -61,6 +72,19 @@ struct DesktopListDeviceMembersRequest {
     redact_names: bool,
     #[serde(default = "default_true")]
     include_revoked_devices: bool,
+}
+
+impl DesktopListDeviceMembersRequest {
+    fn into_agent_request(
+        self,
+    ) -> Result<locket_agent::ListDeviceMembersRequest, AgentClientError> {
+        Ok(locket_agent::ListDeviceMembersRequest {
+            store_path: resolve_path(self.store_path, default_store_path)?,
+            project_id: self.project_id,
+            redact_names: self.redact_names,
+            include_revoked_devices: self.include_revoked_devices,
+        })
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -74,7 +98,7 @@ struct DesktopReadConfigRequest {
 impl DesktopReadConfigRequest {
     fn into_agent_request(self) -> Result<locket_agent::ReadConfigRequest, AgentClientError> {
         Ok(locket_agent::ReadConfigRequest {
-            config_path: self.config_path.unwrap_or(default_config_path()?),
+            config_path: resolve_path(self.config_path, default_config_path)?,
             store_path: self.store_path,
             project_id: self.project_id,
             profile_name: self.profile_name,
@@ -95,8 +119,8 @@ struct DesktopWriteConfigRequest {
 impl DesktopWriteConfigRequest {
     fn into_agent_request(self) -> Result<locket_agent::WriteConfigRequest, AgentClientError> {
         Ok(locket_agent::WriteConfigRequest {
-            config_path: self.config_path.unwrap_or(default_config_path()?),
-            store_path: self.store_path.unwrap_or(default_store_path()?),
+            config_path: resolve_path(self.config_path, default_config_path)?,
+            store_path: resolve_path(self.store_path, default_store_path)?,
             project_id: self.project_id,
             profile_name: self.profile_name,
             changes: self.changes,
@@ -144,6 +168,20 @@ struct DesktopListVersionsRequest {
     redact_names: bool,
 }
 
+impl DesktopListVersionsRequest {
+    fn into_agent_request(self) -> Result<locket_agent::ListVersionsRequest, AgentClientError> {
+        Ok(locket_agent::ListVersionsRequest {
+            store_path: resolve_path(self.store_path, default_store_path)?,
+            project_id: self.project_id,
+            profile_id: self.profile_id,
+            secret_name: self.secret_name,
+            source: self.source,
+            now_unix_nanos: self.now_unix_nanos,
+            redact_names: self.redact_names,
+        })
+    }
+}
+
 impl DesktopListAuditRequest {
     fn into_agent_request(self) -> Result<locket_agent::ListAuditRequest, AgentClientError> {
         let store_path = match self.store_path {
@@ -162,6 +200,13 @@ impl DesktopListAuditRequest {
             redact_names: self.redact_names,
         })
     }
+}
+
+fn resolve_path(
+    explicit: Option<PathBuf>,
+    fallback: impl FnOnce() -> Result<PathBuf, AgentClientError>,
+) -> Result<PathBuf, AgentClientError> {
+    explicit.map_or_else(fallback, Ok)
 }
 
 fn project_dirs() -> Result<ProjectDirs, AgentClientError> {
@@ -332,6 +377,39 @@ struct DesktopUnlockRequest {
     audit: Option<DesktopUnlockAudit>,
 }
 
+impl DesktopUnlockRequest {
+    fn into_agent_payload(self) -> Result<serde_json::Value, AgentClientError> {
+        let passphrase: Option<String> = match self.source {
+            UnlockSource::Passphrase { passphrase } => Some(passphrase),
+            UnlockSource::OsKeychain => None,
+            UnlockSource::Recovery { .. } => {
+                return Err(AgentClientError::Protocol {
+                    reason: "unsupported unlock source".to_owned(),
+                });
+            }
+        };
+        let mut payload = serde_json::json!({
+            "project_id": self.project_id,
+            "ttl_seconds": self.ttl_seconds,
+        });
+        if let Some(passphrase) = passphrase {
+            payload["passphrase"] = serde_json::json!(passphrase);
+            payload["method"] = serde_json::json!("passphrase");
+        }
+        if let Some(audit) = self.audit {
+            let mut audit_value = serde_json::json!({});
+            if let Some(store_path) = audit.store_path {
+                audit_value["store_path"] = serde_json::json!(store_path.display().to_string());
+            }
+            if let Some(profile_id) = audit.profile_id {
+                audit_value["profile_id"] = serde_json::json!(profile_id);
+            }
+            payload["audit"] = audit_value;
+        }
+        Ok(payload)
+    }
+}
+
 /// Tauri command exposing the agent's `Unlock` RPC behind a passphrase
 /// fallback. The agent owns the unwrap path: it pulls the master key
 /// from the OS keychain when no passphrase is supplied, and from the
@@ -339,33 +417,7 @@ struct DesktopUnlockRequest {
 /// unwrapped key.
 #[tauri::command]
 async fn agent_unlock(request: DesktopUnlockRequest) -> Result<(), AgentClientError> {
-    let passphrase: Option<String> = match request.source {
-        UnlockSource::Passphrase { passphrase } => Some(passphrase),
-        UnlockSource::OsKeychain => None,
-        UnlockSource::Recovery { .. } => {
-            return Err(AgentClientError::Protocol {
-                reason: "unsupported unlock source".to_owned(),
-            });
-        }
-    };
-    let mut payload = serde_json::json!({
-        "project_id": request.project_id,
-        "ttl_seconds": request.ttl_seconds,
-    });
-    if let Some(passphrase) = passphrase {
-        payload["passphrase"] = serde_json::json!(passphrase);
-        payload["method"] = serde_json::json!("passphrase");
-    }
-    if let Some(audit) = request.audit {
-        let mut audit_value = serde_json::json!({});
-        if let Some(store_path) = audit.store_path {
-            audit_value["store_path"] = serde_json::json!(store_path.display().to_string());
-        }
-        if let Some(profile_id) = audit.profile_id {
-            audit_value["profile_id"] = serde_json::json!(profile_id);
-        }
-        payload["audit"] = audit_value;
-    }
+    let payload = request.into_agent_payload()?;
     let path = agent_client::resolve_socket_path();
     agent_client::invoke_method(&path, locket_agent::AgentMethod::Unlock, &payload).await
 }
@@ -382,21 +434,27 @@ struct DesktopSetActiveProfileRequest {
     root_hash: Option<String>,
 }
 
+impl DesktopSetActiveProfileRequest {
+    fn into_agent_request(self) -> Result<locket_agent::SetActiveProfileRequest, AgentClientError> {
+        Ok(locket_agent::SetActiveProfileRequest {
+            config_path: resolve_path(self.config_path, default_config_path)?,
+            store_path: resolve_path(self.store_path, default_store_path)?,
+            project_id: self.project_id,
+            profile_name: self.profile_name,
+            confirmation: self.confirmation,
+            privacy_redact_names: self.privacy_redact_names,
+            root_hash: self.root_hash,
+        })
+    }
+}
+
 /// Tauri command exposing the agent's `SetActiveProfile` RPC.
 #[tauri::command]
 async fn agent_set_active_profile(
     request: DesktopSetActiveProfileRequest,
 ) -> Result<locket_agent::SetActiveProfileResponse, AgentClientError> {
     let path = agent_client::resolve_socket_path();
-    let agent_request = locket_agent::SetActiveProfileRequest {
-        config_path: request.config_path.unwrap_or(default_config_path()?),
-        store_path: request.store_path.unwrap_or(default_store_path()?),
-        project_id: request.project_id,
-        profile_name: request.profile_name,
-        confirmation: request.confirmation,
-        privacy_redact_names: request.privacy_redact_names,
-        root_hash: request.root_hash,
-    };
+    let agent_request = request.into_agent_request()?;
     agent_client::invoke_method(&path, locket_agent::AgentMethod::SetActiveProfile, &agent_request)
         .await
 }
@@ -463,19 +521,25 @@ struct DesktopPolicyDoctorRequest {
     binding: Option<locket_agent::GrantBinding>,
 }
 
+impl DesktopPolicyDoctorRequest {
+    fn into_agent_request(self) -> Result<locket_agent::PolicyDoctorRequest, AgentClientError> {
+        Ok(locket_agent::PolicyDoctorRequest {
+            project_id: self.project_id,
+            profile_id: self.profile_id,
+            policy: self.policy,
+            references: self.references,
+            store_path: resolve_path(self.store_path, default_store_path)?,
+            binding: self.binding,
+        })
+    }
+}
+
 /// Tauri command exposing the agent's command-policy dry-run validator.
 #[tauri::command]
 async fn agent_policy_doctor(
     request: DesktopPolicyDoctorRequest,
 ) -> Result<locket_agent::PolicyDoctorResponse, AgentClientError> {
-    let agent_request = locket_agent::PolicyDoctorRequest {
-        project_id: request.project_id,
-        profile_id: request.profile_id,
-        policy: request.policy,
-        references: request.references,
-        store_path: request.store_path.unwrap_or(default_store_path()?),
-        binding: request.binding,
-    };
+    let agent_request = request.into_agent_request()?;
     let path = agent_client::resolve_socket_path();
     agent_client::invoke_method(&path, locket_agent::AgentMethod::PolicyDoctor, &agent_request)
         .await
@@ -552,6 +616,19 @@ struct DesktopRegisterCommandPoliciesRequest {
     audit_profile_id: Option<String>,
 }
 
+impl DesktopRegisterCommandPoliciesRequest {
+    fn into_agent_request(
+        self,
+    ) -> Result<locket_agent::RegisterCommandPoliciesRequest, AgentClientError> {
+        Ok(locket_agent::RegisterCommandPoliciesRequest {
+            project_id: self.project_id,
+            policies: self.policies,
+            store_path: resolve_path(self.store_path, default_store_path)?,
+            audit_profile_id: self.audit_profile_id,
+        })
+    }
+}
+
 /// Tauri command bridging the desktop policy editor to the agent's
 /// `RegisterCommandPolicies` RPC.
 ///
@@ -563,16 +640,7 @@ struct DesktopRegisterCommandPoliciesRequest {
 async fn agent_register_command_policies(
     request: DesktopRegisterCommandPoliciesRequest,
 ) -> Result<(), AgentClientError> {
-    let store_path = match request.store_path {
-        Some(path) => path,
-        None => default_store_path()?,
-    };
-    let agent_request = locket_agent::RegisterCommandPoliciesRequest {
-        project_id: request.project_id,
-        policies: request.policies,
-        store_path,
-        audit_profile_id: request.audit_profile_id,
-    };
+    let agent_request = request.into_agent_request()?;
     let path = agent_client::resolve_socket_path();
     agent_client::invoke_method(
         &path,
@@ -588,16 +656,7 @@ async fn agent_list_device_members(
     request: DesktopListDeviceMembersRequest,
 ) -> Result<locket_agent::ListDeviceMembersResponse, AgentClientError> {
     let path = agent_client::resolve_socket_path();
-    let store_path = match request.store_path {
-        Some(path) => path,
-        None => default_store_path()?,
-    };
-    let request = locket_agent::ListDeviceMembersRequest {
-        store_path,
-        project_id: request.project_id,
-        redact_names: request.redact_names,
-        include_revoked_devices: request.include_revoked_devices,
-    };
+    let request = request.into_agent_request()?;
     agent_client::invoke_method(&path, locket_agent::AgentMethod::ListDeviceMembers, &request).await
 }
 
@@ -607,16 +666,7 @@ async fn agent_list_secrets(
     request: DesktopListSecretsRequest,
 ) -> Result<locket_agent::ListSecretsResponse, AgentClientError> {
     let path = agent_client::resolve_socket_path();
-    let store_path = match request.store_path {
-        Some(path) => path,
-        None => default_store_path()?,
-    };
-    let request = locket_agent::ListSecretsRequest {
-        store_path,
-        project_id: request.project_id,
-        profile_id: request.profile_id,
-        redact_names: request.redact_names,
-    };
+    let request = request.into_agent_request()?;
     agent_client::invoke_method(&path, locket_agent::AgentMethod::ListSecrets, &request).await
 }
 
@@ -640,6 +690,26 @@ struct DesktopSetSecretRequest {
     grant_id: Option<String>,
 }
 
+impl DesktopSetSecretRequest {
+    fn into_agent_request(
+        self,
+        rotate: bool,
+    ) -> Result<locket_agent::SetSecretRequest, AgentClientError> {
+        Ok(locket_agent::SetSecretRequest {
+            store_path: resolve_path(self.store_path, default_store_path)?.display().to_string(),
+            project_id: self.project_id,
+            profile_id: self.profile_id,
+            secret_name: self.secret_name,
+            source: self.source,
+            value: self.value,
+            rotate,
+            grace_until: self.grace_until,
+            grant_id: self.grant_id,
+            binding: None,
+        })
+    }
+}
+
 /// Tauri command bridging the desktop secret editor to the agent's
 /// `SetSecret` RPC for the create-new path. The webview accepts a
 /// plaintext value through a password-masked input and forwards it
@@ -650,22 +720,7 @@ struct DesktopSetSecretRequest {
 async fn agent_set_secret(
     request: DesktopSetSecretRequest,
 ) -> Result<locket_agent::SetSecretResponse, AgentClientError> {
-    let store_path = match request.store_path {
-        Some(path) => path,
-        None => default_store_path()?,
-    };
-    let agent_request = locket_agent::SetSecretRequest {
-        store_path: store_path.display().to_string(),
-        project_id: request.project_id,
-        profile_id: request.profile_id,
-        secret_name: request.secret_name,
-        source: request.source,
-        value: request.value,
-        rotate: false,
-        grace_until: request.grace_until,
-        grant_id: request.grant_id,
-        binding: None,
-    };
+    let agent_request = request.into_agent_request(false)?;
     let path = agent_client::resolve_socket_path();
     agent_client::invoke_method(&path, locket_agent::AgentMethod::SetSecret, &agent_request).await
 }
@@ -678,22 +733,7 @@ async fn agent_set_secret(
 async fn agent_rotate_secret(
     request: DesktopSetSecretRequest,
 ) -> Result<locket_agent::SetSecretResponse, AgentClientError> {
-    let store_path = match request.store_path {
-        Some(path) => path,
-        None => default_store_path()?,
-    };
-    let agent_request = locket_agent::SetSecretRequest {
-        store_path: store_path.display().to_string(),
-        project_id: request.project_id,
-        profile_id: request.profile_id,
-        secret_name: request.secret_name,
-        source: request.source,
-        value: request.value,
-        rotate: true,
-        grace_until: request.grace_until,
-        grant_id: request.grant_id,
-        binding: None,
-    };
+    let agent_request = request.into_agent_request(true)?;
     let path = agent_client::resolve_socket_path();
     agent_client::invoke_method(&path, locket_agent::AgentMethod::SetSecret, &agent_request).await
 }
@@ -723,6 +763,15 @@ struct DesktopVerifyAuditRequest {
     project_id: String,
 }
 
+impl DesktopVerifyAuditRequest {
+    fn into_agent_request(self) -> Result<locket_agent::VerifyAuditRequest, AgentClientError> {
+        Ok(locket_agent::VerifyAuditRequest {
+            store_path: default_store_path()?,
+            project_id: self.project_id,
+        })
+    }
+}
+
 /// Tauri command exposing the agent's metadata-only audit list.
 #[tauri::command]
 async fn agent_list_audit(
@@ -739,10 +788,7 @@ async fn agent_verify_audit(
     request: DesktopVerifyAuditRequest,
 ) -> Result<locket_agent::VerifyAuditResponse, AgentClientError> {
     let path = agent_client::resolve_socket_path();
-    let request = locket_agent::VerifyAuditRequest {
-        store_path: default_store_path()?,
-        project_id: request.project_id,
-    };
+    let request = request.into_agent_request()?;
     agent_client::invoke_method(&path, locket_agent::AgentMethod::VerifyAudit, &request).await
 }
 
@@ -752,19 +798,7 @@ async fn agent_list_versions(
     request: DesktopListVersionsRequest,
 ) -> Result<locket_agent::ListVersionsResponse, AgentClientError> {
     let path = agent_client::resolve_socket_path();
-    let store_path = match request.store_path {
-        Some(path) => path,
-        None => default_store_path()?,
-    };
-    let request = locket_agent::ListVersionsRequest {
-        store_path,
-        project_id: request.project_id,
-        profile_id: request.profile_id,
-        secret_name: request.secret_name,
-        source: request.source,
-        now_unix_nanos: request.now_unix_nanos,
-        redact_names: request.redact_names,
-    };
+    let request = request.into_agent_request()?;
     agent_client::invoke_method(&path, locket_agent::AgentMethod::ListVersions, &request).await
 }
 
@@ -943,4 +977,293 @@ pub fn run() -> tauri::Result<()> {
         }
     });
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::error::Error;
+    use std::path::PathBuf;
+
+    use serde_json::json;
+
+    use super::{
+        DesktopListAuditRequest, DesktopListDeviceMembersRequest, DesktopListSecretsRequest,
+        DesktopListVersionsRequest, DesktopPolicyDoctorRequest,
+        DesktopRegisterCommandPoliciesRequest, DesktopSetActiveProfileRequest,
+        DesktopSetSecretRequest, DesktopUnlockAudit, DesktopUnlockRequest,
+        DesktopVerifyAuditRequest, DesktopWriteConfigRequest, UnlockSource, default_true,
+    };
+    use crate::AgentClientError;
+
+    #[test]
+    fn explicit_path_does_not_require_default_directory() -> Result<(), AgentClientError> {
+        let path = PathBuf::from("custom/store.db");
+        let resolved = super::resolve_path(Some(path.clone()), || {
+            Err(AgentClientError::Protocol { reason: "default directory unavailable".to_owned() })
+        })?;
+        assert_eq!(resolved, path);
+        Ok(())
+    }
+
+    #[test]
+    fn missing_path_uses_default_or_propagates_lookup_error() -> Result<(), AgentClientError> {
+        let path = PathBuf::from("default/store.db");
+        assert_eq!(super::resolve_path(None, || Ok(path.clone()))?, path);
+        let result = super::resolve_path(None, || {
+            Err(AgentClientError::Protocol { reason: "default directory unavailable".to_owned() })
+        });
+        assert!(
+            matches!(result, Err(AgentClientError::Protocol { reason }) if reason == "default directory unavailable")
+        );
+        Ok(())
+    }
+
+    fn sample_policy() -> locket_agent::CommandPolicySnapshot {
+        locket_agent::CommandPolicySnapshot {
+            project_id: "lk_proj_test".to_owned(),
+            name: "serve".to_owned(),
+            command_kind: "argv".to_owned(),
+            command_preview: "npm run dev".to_owned(),
+            required_secrets: vec!["DATABASE_URL".to_owned()],
+            optional_secrets: vec!["API_KEY".to_owned()],
+            allowed_secrets: vec!["API_KEY".to_owned(), "DATABASE_URL".to_owned()],
+            confirm: true,
+            require_user_verification: true,
+            require_agent: true,
+            allow_remote_docker: false,
+            ttl_seconds: 60,
+            env_mode: "strict".to_owned(),
+            override_mode: "error".to_owned(),
+            updated_at_unix_nanos: 123,
+        }
+    }
+
+    #[test]
+    fn desktop_request_defaults_deserialize_as_expected() -> Result<(), Box<dyn Error>> {
+        let members: DesktopListDeviceMembersRequest = serde_json::from_value(json!({
+            "project_id": "lk_proj_test"
+        }))?;
+        assert!(members.include_revoked_devices);
+        assert!(!members.redact_names);
+        assert!(default_true());
+
+        let versions: DesktopListVersionsRequest = serde_json::from_value(json!({
+            "project_id": "lk_proj_test",
+            "profile_id": "lk_prof_test",
+            "secret_name": null,
+            "source": null,
+            "now_unix_nanos": 100
+        }))?;
+        assert!(!versions.redact_names);
+        assert!(versions.secret_name.is_none());
+
+        Ok(())
+    }
+
+    #[test]
+    fn unlock_request_builds_passphrase_and_keychain_payloads() -> Result<(), Box<dyn Error>> {
+        let payload = DesktopUnlockRequest {
+            project_id: "lk_proj_test".to_owned(),
+            ttl_seconds: 900,
+            source: UnlockSource::Passphrase { passphrase: "secret".to_owned() },
+            audit: Some(DesktopUnlockAudit {
+                store_path: Some(PathBuf::from("/tmp/store.db")),
+                profile_id: Some("lk_prof_test".to_owned()),
+            }),
+        }
+        .into_agent_payload()?;
+        assert_eq!(payload["project_id"], "lk_proj_test");
+        assert_eq!(payload["ttl_seconds"], 900);
+        assert_eq!(payload["method"], "passphrase");
+        assert_eq!(payload["passphrase"], "secret");
+        assert_eq!(payload["audit"]["store_path"], "/tmp/store.db");
+        assert_eq!(payload["audit"]["profile_id"], "lk_prof_test");
+
+        let payload = DesktopUnlockRequest {
+            project_id: "lk_proj_test".to_owned(),
+            ttl_seconds: 60,
+            source: UnlockSource::OsKeychain,
+            audit: None,
+        }
+        .into_agent_payload()?;
+        assert!(payload.get("passphrase").is_none());
+        assert!(payload.get("method").is_none());
+        assert!(payload.get("audit").is_none());
+
+        Ok(())
+    }
+
+    #[test]
+    fn unlock_request_rejects_recovery_source_until_wired() {
+        let error = DesktopUnlockRequest {
+            project_id: "lk_proj_test".to_owned(),
+            ttl_seconds: 60,
+            source: UnlockSource::Recovery { recovery: "code".to_owned() },
+            audit: None,
+        }
+        .into_agent_payload();
+        assert!(
+            matches!(error, Err(AgentClientError::Protocol { reason }) if reason == "unsupported unlock source")
+        );
+    }
+
+    #[test]
+    fn desktop_agent_request_conversions_preserve_metadata() -> Result<(), Box<dyn Error>> {
+        let store_path = PathBuf::from("/tmp/store.db");
+        let config_path = PathBuf::from("/tmp/config.toml");
+
+        let read_config = super::DesktopReadConfigRequest {
+            config_path: Some(config_path.clone()),
+            store_path: Some(store_path.clone()),
+            project_id: Some("lk_proj_test".to_owned()),
+            profile_name: Some("dev".to_owned()),
+        }
+        .into_agent_request()?;
+        assert_eq!(read_config.config_path, config_path);
+        assert_eq!(read_config.store_path, Some(store_path.clone()));
+        assert_eq!(read_config.project_id.as_deref(), Some("lk_proj_test"));
+
+        let write_config = DesktopWriteConfigRequest {
+            config_path: Some(PathBuf::from("/tmp/write.toml")),
+            store_path: Some(store_path.clone()),
+            project_id: "lk_proj_test".to_owned(),
+            profile_name: Some("dev".to_owned()),
+            changes: locket_agent::WriteConfigChanges::default(),
+        }
+        .into_agent_request()?;
+        assert_eq!(write_config.store_path, store_path);
+        assert_eq!(write_config.profile_name.as_deref(), Some("dev"));
+
+        let active_profile = DesktopSetActiveProfileRequest {
+            config_path: Some(PathBuf::from("/tmp/active.toml")),
+            store_path: Some(PathBuf::from("/tmp/active.db")),
+            project_id: "lk_proj_test".to_owned(),
+            profile_name: "prod".to_owned(),
+            confirmation: Some("prod".to_owned()),
+            privacy_redact_names: true,
+            root_hash: Some("abc123".to_owned()),
+        }
+        .into_agent_request()?;
+        assert_eq!(active_profile.profile_name, "prod");
+        assert_eq!(active_profile.confirmation.as_deref(), Some("prod"));
+        assert!(active_profile.privacy_redact_names);
+        assert_eq!(active_profile.root_hash.as_deref(), Some("abc123"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn desktop_list_and_policy_requests_convert_to_agent_shapes() -> Result<(), Box<dyn Error>> {
+        let store_path = PathBuf::from("/tmp/store.db");
+        let list_audit = DesktopListAuditRequest {
+            store_path: Some(store_path.clone()),
+            project_id: "lk_proj_test".to_owned(),
+            profile_id: Some("lk_prof_test".to_owned()),
+            action: Some("UNLOCK".to_owned()),
+            status: Some("SUCCESS".to_owned()),
+            since_unix_nanos: Some(10),
+            until_unix_nanos: Some(20),
+            limit: Some(5),
+            redact_names: true,
+        }
+        .into_agent_request()?;
+        assert_eq!(list_audit.store_path, store_path);
+        assert_eq!(list_audit.action.as_deref(), Some("UNLOCK"));
+        assert_eq!(list_audit.limit, Some(5));
+        assert!(list_audit.redact_names);
+
+        let list_members = DesktopListDeviceMembersRequest {
+            store_path: Some(PathBuf::from("/tmp/members.db")),
+            project_id: "lk_proj_test".to_owned(),
+            redact_names: true,
+            include_revoked_devices: false,
+        }
+        .into_agent_request()?;
+        assert_eq!(list_members.project_id, "lk_proj_test");
+        assert!(list_members.redact_names);
+        assert!(!list_members.include_revoked_devices);
+
+        let list_secrets = DesktopListSecretsRequest {
+            store_path: Some(PathBuf::from("/tmp/secrets.db")),
+            project_id: "lk_proj_test".to_owned(),
+            profile_id: "lk_prof_test".to_owned(),
+            redact_names: true,
+        }
+        .into_agent_request()?;
+        assert_eq!(list_secrets.profile_id, "lk_prof_test");
+        assert!(list_secrets.redact_names);
+
+        let list_versions = DesktopListVersionsRequest {
+            store_path: Some(PathBuf::from("/tmp/versions.db")),
+            project_id: "lk_proj_test".to_owned(),
+            profile_id: "lk_prof_test".to_owned(),
+            secret_name: Some("DATABASE_URL".to_owned()),
+            source: Some("machine-local".to_owned()),
+            now_unix_nanos: 42,
+            redact_names: true,
+        }
+        .into_agent_request()?;
+        assert_eq!(list_versions.secret_name.as_deref(), Some("DATABASE_URL"));
+        assert_eq!(list_versions.source.as_deref(), Some("machine-local"));
+        assert_eq!(list_versions.now_unix_nanos, 42);
+
+        let policy = sample_policy();
+        let doctor = DesktopPolicyDoctorRequest {
+            project_id: "lk_proj_test".to_owned(),
+            profile_id: "lk_prof_test".to_owned(),
+            policy: policy.clone(),
+            references: vec!["lk://dev/DATABASE_URL".to_owned()],
+            store_path: Some(PathBuf::from("/tmp/policy.db")),
+            binding: None,
+        }
+        .into_agent_request()?;
+        assert_eq!(doctor.policy, policy.clone());
+        assert_eq!(doctor.references, ["lk://dev/DATABASE_URL"]);
+
+        let register = DesktopRegisterCommandPoliciesRequest {
+            project_id: "lk_proj_test".to_owned(),
+            policies: vec![policy],
+            store_path: Some(PathBuf::from("/tmp/register.db")),
+            audit_profile_id: Some("lk_prof_test".to_owned()),
+        }
+        .into_agent_request()?;
+        assert_eq!(register.policies.len(), 1);
+        assert_eq!(register.audit_profile_id.as_deref(), Some("lk_prof_test"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn desktop_set_secret_and_verify_audit_requests_convert() -> Result<(), Box<dyn Error>> {
+        for rotate in [false, true] {
+            let set_secret = DesktopSetSecretRequest {
+                store_path: Some(PathBuf::from("/tmp/store.db")),
+                project_id: "lk_proj_test".to_owned(),
+                profile_id: "lk_prof_test".to_owned(),
+                secret_name: "DATABASE_URL".to_owned(),
+                source: Some("machine-local".to_owned()),
+                value: "postgres://localhost/dev".to_owned(),
+                grace_until: Some(123),
+                grant_id: Some("grant-1".to_owned()),
+            }
+            .into_agent_request(rotate)?;
+            assert_eq!(set_secret.store_path, "/tmp/store.db");
+            assert_eq!(set_secret.source.as_deref(), Some("machine-local"));
+            assert_eq!(set_secret.rotate, rotate);
+            assert_eq!(set_secret.grace_until, Some(123));
+            assert_eq!(set_secret.grant_id.as_deref(), Some("grant-1"));
+            assert!(set_secret.binding.is_none());
+            assert_eq!(set_secret.project_id, "lk_proj_test");
+            assert_eq!(set_secret.profile_id, "lk_prof_test");
+            assert_eq!(set_secret.secret_name, "DATABASE_URL");
+            assert_eq!(set_secret.value, "postgres://localhost/dev");
+        }
+
+        let verify = DesktopVerifyAuditRequest { project_id: "lk_proj_test".to_owned() }
+            .into_agent_request()?;
+        assert_eq!(verify.project_id, "lk_proj_test");
+        assert!(verify.store_path.ends_with("store.db"));
+
+        Ok(())
+    }
 }

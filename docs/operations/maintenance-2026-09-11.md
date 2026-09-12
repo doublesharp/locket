@@ -110,3 +110,48 @@ compatibility notice.
 
 Validation ran on macOS. The changed GitHub jobs and native Linux/Windows
 runtime behavior have not been exercised by this local pass.
+
+## Outstanding-work follow-up
+
+Integrated the pending local coverage commit `393f71a0` after reviewing its
+request conversions and tests. Desktop requests now resolve a default path
+only when no explicit path was supplied. The imported conversions evaluated
+the fallback eagerly, which could reject an explicit path when default
+directory lookup failed. The regression test failed with that implementation
+and passes with lazy lookup. Existing eager config and policy conversions
+use the same corrected helper.
+
+The integration adds version filtering, privacy, grace-boundary, command
+validation, client-key replacement/deletion, and desktop request tests.
+Secret-forwarding assertions cover both creation and rotation. Removed a
+verifier test that asserted only an Arc reference count, and isolated the
+missing-store fixture under a temporary directory. Independent review found
+no blocking issues.
+
+The VS Code extension's command fixture now imports its module in the async
+test setup hook, preserving the VS Code stub while satisfying ESLint.
+Extension lint, TypeScript compilation, and all 87 tests passed.
+
+The integrated workspace passed 1,361 Rust tests across 22 targets with no
+failures or ignored tests. After strengthening the desktop assertions, all
+33 desktop tests passed again. Final workspace Clippy passed with warnings
+denied, and formatting and documentation checks passed.
+
+Additional checks completed:
+
+- Cargo deny license, ban, and source checks; RustSec policy; exception ledger;
+  and regenerated third-party notices.
+- Cargo machete, installed under `/Volumes/Scratch/locket/tools`, found no
+  unused dependencies.
+- Notice, RustSec-policy, and provenance-policy fixture tests.
+- Distribution validation including Cargo package file lists, VSIX file
+  selection, workflow lint, and installer dry runs.
+- Local-auth and packaged-canary host harness dry runs.
+
+The local `target` symlink routes scripts with fixed output paths to
+`/Volumes/Scratch/locket/target`; Git ignores either a target directory or
+symlink. Follow-up logs use the `outstanding-` prefix in the Scratch reports
+directory. No remote publication or installer signing was performed. Signed
+installer tests, Linux/Windows runtime validation, and physical FIDO2 checks
+still require their release hosts and credentials. The upstream dependency
+warnings documented above remain.

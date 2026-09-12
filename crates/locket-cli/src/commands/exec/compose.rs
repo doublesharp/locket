@@ -45,3 +45,33 @@ pub fn compose_run_command(
     writeln!(output, "child exited with status {status}")?;
     Err(child_exit_error(status))
 }
+
+#[cfg(test)]
+mod tests {
+    use tempfile::tempdir;
+
+    use super::*;
+
+    #[test]
+    fn compose_command_routes_run_and_validates_profile_before_execution()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempdir()?;
+        let context = crate::tests::test_context(&directory);
+        let command = ComposeCommand::Run(ComposeRunArgs {
+            policy: "compose_app".to_owned(),
+            project_directory: None,
+            profile: vec![String::new()],
+            command: vec!["docker".to_owned(), "compose".to_owned(), "up".to_owned()],
+        });
+        let mut output = Vec::new();
+
+        let result = compose_command(&context, &mut output, command);
+
+        let Err(error) = result else {
+            return Err("empty compose profile must be rejected".into());
+        };
+        assert!(error.to_string().contains("compose profile must not be empty"));
+        assert!(output.is_empty());
+        Ok(())
+    }
+}
