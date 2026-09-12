@@ -1076,12 +1076,14 @@ mod tests {
 
     impl DecodedPng {
         fn visible_alpha_pixels(&self) -> usize {
-            self.pixels.chunks_exact(4).filter(|rgba| rgba[3] > 0).count()
+            self.pixels.as_chunks::<4>().0.iter().filter(|rgba| rgba[3] > 0).count()
         }
 
         fn visible_rgbs(&self) -> impl Iterator<Item = [u8; 3]> + '_ {
             self.pixels
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .filter(|rgba| rgba[3] > 0)
                 .map(|rgba| [rgba[0], rgba[1], rgba[2]])
         }

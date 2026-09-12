@@ -166,7 +166,7 @@ fn canonical_json_array(values: &[Value]) -> String {
 
 fn canonical_json_object(values: &Map<String, Value>) -> String {
     let mut entries = values.iter().collect::<Vec<_>>();
-    entries.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
+    entries.sort_unstable_by_key(|(key, _)| *key);
 
     let mut encoded = String::from("{");
     for (index, (key, value)) in entries.into_iter().enumerate() {

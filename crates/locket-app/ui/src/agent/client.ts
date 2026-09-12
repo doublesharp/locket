@@ -122,32 +122,38 @@ export async function subscribeStatus(
     };
   }
 
-  const unlistenStatus = await listen<AgentStatusEvent>(AGENT_STATUS_EVENT, (event) => {
-    handleStatusEvent(event.payload, onStatus, options.onHeartbeat);
-  });
-  const unlistenError = await listen<AgentClientError>(AGENT_STATUS_ERROR_EVENT, (event) => {
-    onError(event.payload);
-  });
-  const unlistenDisconnected = await listen<unknown>(AGENT_STATUS_DISCONNECTED_EVENT, () => {
-    options.onDisconnected?.();
-  });
+  const listeners: UnlistenFn[] = [];
+  const cleanup = (): void => {
+    for (const unlisten of listeners.splice(0)) {
+      unlisten();
+    }
+  };
 
   try {
+    listeners.push(
+      await listen<AgentStatusEvent>(AGENT_STATUS_EVENT, (event) => {
+        handleStatusEvent(event.payload, onStatus, options.onHeartbeat);
+      }),
+    );
+    listeners.push(
+      await listen<AgentClientError>(AGENT_STATUS_ERROR_EVENT, (event) => {
+        onError(event.payload);
+      }),
+    );
+    listeners.push(
+      await listen<unknown>(AGENT_STATUS_DISCONNECTED_EVENT, () => {
+        options.onDisconnected?.();
+      }),
+    );
     await invoke<void>('agent_subscribe_status');
   } catch (raw) {
-    unlistenStatus();
-    unlistenError();
-    unlistenDisconnected();
+    cleanup();
     return { ok: false, error: normalizeError(raw) };
   }
 
   return {
     ok: true,
-    value: () => {
-      unlistenStatus();
-      unlistenError();
-      unlistenDisconnected();
-    },
+    value: cleanup,
   };
 }
 

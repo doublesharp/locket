@@ -26,14 +26,32 @@ describe('RevealModalModel', () => {
     expect(events).toEqual([{ kind: 'shown', secretLabel: 'DATABASE_URL', ttlSeconds: 30 }]);
   });
 
-  it('defaults the TTL to 30 seconds when missing or non-positive', () => {
-    const model = new RevealModalModel();
-    model.show({ secretLabel: 'DATABASE_URL', value: 'value' }, 0);
-    const snap = model.snapshot();
-    if (snap.kind === 'visible') {
-      expect(snap.ttlSeconds).toBe(30);
-    }
-  });
+  it.each([undefined, 0, -1, Number.NaN, Number.POSITIVE_INFINITY])(
+    'defaults invalid TTL %s to 30 seconds',
+    (ttlSeconds) => {
+      const model = new RevealModalModel();
+      model.show({ secretLabel: 'DATABASE_URL', value: 'value', ttlSeconds }, 0);
+      const snap = model.snapshot();
+      expect(snap).toMatchObject({ kind: 'visible', ttlSeconds: 30 });
+    },
+  );
+
+  it.each(['scrub', 'dismiss', 'replace'] as const)(
+    'clears a retained visible snapshot on %s',
+    (action) => {
+      const model = new RevealModalModel();
+      model.show({ secretLabel: 'TOKEN', value: 'old-secret' }, 0);
+      const retained = model.snapshot();
+      expect(retained).toMatchObject({ kind: 'visible', value: 'old-secret' });
+      if (action === 'scrub') model.scrub('component-unmount');
+      else if (action === 'dismiss') model.dismiss('blur');
+      else model.show({ secretLabel: 'OTHER', value: 'new-secret' }, 1000);
+      expect(retained).toMatchObject({ value: '' });
+      expect(model.snapshot()).toMatchObject(
+        action === 'replace' ? { kind: 'visible', value: 'new-secret' } : { kind: 'idle' },
+      );
+    },
+  );
 
   it('emits a `scrubbed` event when the TTL expires', () => {
     const model = new RevealModalModel();

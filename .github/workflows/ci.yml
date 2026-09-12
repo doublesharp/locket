@@ -68,6 +68,9 @@ jobs:
       - name: Cargo check workspace
         run: cargo check --workspace --all-targets --all-features --locked
 
+      - name: Test workspace
+        run: cargo test --workspace --all-targets --all-features --locked
+
       - name: Upload quality reports
         if: always()
         uses: actions/upload-artifact@v4
@@ -77,6 +80,31 @@ jobs:
             target/quality/**
             supply-chain-exceptions.json
           if-no-files-found: ignore
+
+  desktop-ui:
+    name: desktop UI checks
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: '11.21.0'
+
+      - name: Check and test desktop UI
+        run: make app-ui-check
+
+      - name: Build desktop UI
+        run: pnpm --dir crates/locket-app/ui build
 
   windows-transport:
     name: windows transport check

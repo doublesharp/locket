@@ -498,7 +498,7 @@ fn parse_client_public_key(value: &str) -> Result<[u8; 32], CliError> {
         return Err(metadata_invalid_error("public key must be 64 hex characters"));
     }
     let mut output = [0_u8; 32];
-    for (index, chunk) in value.as_bytes().chunks_exact(2).enumerate() {
+    for (index, chunk) in value.as_bytes().as_chunks::<2>().0.iter().enumerate() {
         let high = hex_nibble_with_message(chunk[0], "public key must be hex encoded")?;
         let low = hex_nibble_with_message(chunk[1], "public key must be hex encoded")?;
         output[index] = (high << 4) | low;

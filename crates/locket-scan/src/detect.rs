@@ -4,13 +4,12 @@ use crate::FindingKind;
 use crate::rules::{EntropyRule, is_high_entropy_token_with_rule, is_provider_token};
 
 #[derive(Debug, Clone, Copy)]
-pub struct Detection<'a> {
+pub struct Detection {
     pub start: usize,
     pub end: usize,
     pub line: usize,
     pub column: usize,
     pub kind: FindingKind,
-    pub marker: Option<&'a str>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -29,14 +28,14 @@ struct CandidateSegment<'a> {
     relative_start: usize,
 }
 
-pub fn sensitive_detections(text: &str) -> Vec<Detection<'static>> {
+pub fn sensitive_detections(text: &str) -> Vec<Detection> {
     sensitive_detections_with_entropy_rule(text, EntropyRule::default())
 }
 
 pub fn sensitive_detections_with_entropy_rule(
     text: &str,
     entropy_rule: EntropyRule,
-) -> Vec<Detection<'static>> {
+) -> Vec<Detection> {
     let mut detections = Vec::new();
 
     for token in printable_tokens(text) {
@@ -48,7 +47,6 @@ pub fn sensitive_detections_with_entropy_rule(
                     line: token.line,
                     column: token.column + token.value[..candidate.relative_start].chars().count(),
                     kind: FindingKind::ProviderTokenPattern,
-                    marker: None,
                 });
             } else if is_high_entropy_token_with_rule(candidate.value, entropy_rule) {
                 detections.push(Detection {
@@ -57,27 +55,12 @@ pub fn sensitive_detections_with_entropy_rule(
                     line: token.line,
                     column: token.column + token.value[..candidate.relative_start].chars().count(),
                     kind: FindingKind::HighEntropy,
-                    marker: None,
                 });
             }
         }
     }
 
     detections
-}
-
-pub fn line_column(text: &str, byte_index: usize) -> (usize, usize) {
-    let mut line = 1;
-    let mut column = 1;
-    for character in text[..byte_index].chars() {
-        if character == '\n' {
-            line += 1;
-            column = 1;
-        } else {
-            column += 1;
-        }
-    }
-    (line, column)
 }
 
 fn candidate_segments(token: Token<'_>) -> Vec<CandidateSegment<'_>> {

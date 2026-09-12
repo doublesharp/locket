@@ -158,10 +158,8 @@ fn collect_object_keys_in_output(input: &str) -> Vec<Vec<String>> {
                     }
                     expecting_key = false;
                 }
-                ',' => {
-                    if !stack.is_empty() {
-                        expecting_key = true;
-                    }
+                ',' if !stack.is_empty() => {
+                    expecting_key = true;
                 }
                 _ => {}
             }

@@ -10,10 +10,62 @@
 // seen" timestamp) but must not reach `onStatus` (so the rest of the UI
 // does not re-render on idle keepalives).
 
-import { describe, expect, it, vi } from 'vitest';
+import { invoke, isTauri } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { handleStatusEvent } from './client';
+import { handleStatusEvent, subscribeStatus } from './client';
 import type { AgentStatusEvent } from './types';
+
+vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn(), isTauri: vi.fn() }));
+vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn() }));
+
+describe('subscribeStatus setup and teardown', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.mocked(isTauri).mockReturnValue(true);
+    vi.mocked(invoke).mockResolvedValue(undefined);
+  });
+
+  it.each([0, 1, 2])('releases acquired listeners when registration %i fails', async (failure) => {
+    const cleanup = [vi.fn(), vi.fn(), vi.fn()];
+    for (let index = 0; index < failure; index++) {
+      vi.mocked(listen).mockResolvedValueOnce(cleanup[index]!);
+    }
+    vi.mocked(listen).mockRejectedValueOnce('listener unavailable');
+    await expect(subscribeStatus(vi.fn(), vi.fn())).resolves.toEqual({
+      ok: false,
+      error: { kind: 'protocol', reason: 'listener unavailable' },
+    });
+    for (let index = 0; index < cleanup.length; index++) {
+      expect(cleanup[index]).toHaveBeenCalledTimes(index < failure ? 1 : 0);
+    }
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it('releases every listener when the backend subscription fails', async () => {
+    const cleanup = [vi.fn(), vi.fn(), vi.fn()];
+    cleanup.forEach((unlisten) => vi.mocked(listen).mockResolvedValueOnce(unlisten));
+    vi.mocked(invoke).mockRejectedValueOnce('agent unavailable');
+    expect(await subscribeStatus(vi.fn(), vi.fn())).toEqual({
+      ok: false,
+      error: { kind: 'protocol', reason: 'agent unavailable' },
+    });
+    cleanup.forEach((unlisten) => expect(unlisten).toHaveBeenCalledTimes(1));
+  });
+
+  it('returns an idempotent cleanup after successful setup', async () => {
+    const cleanup = [vi.fn(), vi.fn(), vi.fn()];
+    cleanup.forEach((unlisten) => vi.mocked(listen).mockResolvedValueOnce(unlisten));
+    const result = await subscribeStatus(vi.fn(), vi.fn());
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('subscription failed');
+    expect(invoke).toHaveBeenCalledWith('agent_subscribe_status');
+    result.value();
+    result.value();
+    cleanup.forEach((unlisten) => expect(unlisten).toHaveBeenCalledTimes(1));
+  });
+});
 
 function makeEvent(kind: 'status' | 'heartbeat', sequence: number): AgentStatusEvent {
   return {

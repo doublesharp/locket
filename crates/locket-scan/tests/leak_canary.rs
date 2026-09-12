@@ -25,7 +25,7 @@ fn leak_canary_redacts_provider_tokens_without_echoing_values() {
     let findings = scan_text("canary.log", &input);
     let finding_debug = format!("{findings:?}");
 
-    assert!(result.text.contains("lk_redacted_PROVIDER_TOKEN"));
+    assert_eq!(result.text, "token=lk_redacted_PROVIDER_TOKEN\n");
     assert!(!result.text.contains(&canary));
     assert!(!finding_debug.contains(&canary));
     assert!(findings.iter().any(|finding| finding.kind == FindingKind::ProviderTokenPattern));
@@ -39,6 +39,6 @@ fn leak_canary_redacts_known_values_without_echoing_values() {
 
     let result = redact_text_with_known_values(&input, &known);
 
-    assert!(result.text.contains("lk_redacted_DATABASE_URL"));
+    assert_eq!(result.text, "database_url=lk_redacted_DATABASE_URL\n");
     assert!(!result.text.contains(&canary));
 }

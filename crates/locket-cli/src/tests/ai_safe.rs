@@ -65,7 +65,7 @@ fn ai_safe_redacts_child_output_and_transcript() -> Result<(), Box<dyn std::erro
 }
 
 #[test]
-fn ai_safe_redacts_known_secret_across_partial_line_flush_boundary() {
+fn ai_safe_discards_a_partial_secret_after_the_cap_until_newline() {
     let secret = "SPLIT_SECRET_VALUE";
     let redactions = vec![crate::KnownSecretRedaction {
         value: zeroize::Zeroizing::new(secret.to_owned()),
@@ -80,7 +80,7 @@ fn ai_safe_redacts_known_secret_across_partial_line_flush_boundary() {
     let first_chunks =
         redactor.push(crate::AiSafeRawChunk { stream: crate::AiSafeStream::Stdout, bytes: first });
     let first_text = first_chunks.iter().map(|chunk| chunk.text.as_str()).collect::<String>();
-    assert!(!first_text.contains(&secret[..5]));
+    assert_eq!(first_text, "lk_redacted_BUFFER_LIMIT");
 
     let mut second = secret.as_bytes()[5..].to_vec();
     second.push(b'\n');
@@ -89,8 +89,88 @@ fn ai_safe_redacts_known_secret_across_partial_line_flush_boundary() {
     chunks.extend(redactor.finish());
     let text = chunks.iter().map(|chunk| chunk.text.as_str()).collect::<String>();
 
-    assert!(text.contains("lk_redacted_SPLIT_SECRET"));
-    assert!(!text.contains(secret));
+    assert_eq!(text, "\n");
+}
+
+#[test]
+fn ai_safe_cap_never_emits_fragments_of_a_known_secret() {
+    let secret = "xyzxyz";
+    let redactions = vec![crate::KnownSecretRedaction {
+        value: zeroize::Zeroizing::new(secret.to_owned()),
+        marker: "lk_redacted_TEST".to_owned(),
+        secret_name: Some("TEST".to_owned()),
+    }];
+    for stream in [crate::AiSafeStream::Stdout, crate::AiSafeStream::Stderr] {
+        for offset in 1..=secret.len() {
+            let mut redactor = crate::AiSafeStreamRedactor::new(&redactions);
+            let mut bytes =
+                vec![b'a'; crate::AI_SAFE_PARTIAL_LINE_MAX_BYTES - secret.len() - offset];
+            bytes.extend_from_slice(secret.as_bytes());
+            bytes.extend(std::iter::repeat_n(b'a', offset));
+            let mut chunks = redactor.push(crate::AiSafeRawChunk { stream, bytes });
+            chunks.extend(redactor.push(crate::AiSafeRawChunk {
+                stream,
+                bytes: b"more secret material\nclean\n".to_vec(),
+            }));
+            chunks.extend(redactor.finish());
+            let text = chunks.iter().map(|chunk| chunk.text.as_str()).collect::<String>();
+            assert_eq!(text, "lk_redacted_BUFFER_LIMIT\nclean\n");
+            assert_eq!(chunks.iter().filter(|chunk| chunk.buffer_limit_reached).count(), 1);
+        }
+    }
+}
+
+#[test]
+fn ai_safe_cap_handles_utf8_and_secrets_larger_than_the_buffer() {
+    let redactions = vec![crate::KnownSecretRedaction {
+        value: zeroize::Zeroizing::new("é".repeat(crate::AI_SAFE_PARTIAL_LINE_MAX_BYTES)),
+        marker: "lk_redacted_LONG".to_owned(),
+        secret_name: Some("LONG".to_owned()),
+    }];
+    let mut redactor = crate::AiSafeStreamRedactor::new(&redactions);
+    let first = redactor.push(crate::AiSafeRawChunk {
+        stream: crate::AiSafeStream::Stdout,
+        bytes: vec![b'x'; crate::AI_SAFE_PARTIAL_LINE_MAX_BYTES],
+    });
+    assert_eq!(
+        first.iter().map(|chunk| chunk.text.as_str()).collect::<String>(),
+        "lk_redacted_BUFFER_LIMIT"
+    );
+    let continuation = redactor.push(crate::AiSafeRawChunk {
+        stream: crate::AiSafeStream::Stdout,
+        bytes: vec![0xc3; crate::AI_SAFE_PARTIAL_LINE_MAX_BYTES],
+    });
+    assert!(continuation.is_empty());
+    let mut chunks = redactor.push(crate::AiSafeRawChunk {
+        stream: crate::AiSafeStream::Stderr,
+        bytes: "other é\n".as_bytes().to_vec(),
+    });
+    chunks.extend(redactor.push(crate::AiSafeRawChunk {
+        stream: crate::AiSafeStream::Stdout,
+        bytes: "\nclean é\n".as_bytes().to_vec(),
+    }));
+    chunks.extend(redactor.finish());
+    assert_eq!(
+        chunks.iter().map(|chunk| chunk.text.as_str()).collect::<String>(),
+        "other é\n\nclean é\n"
+    );
+}
+
+#[test]
+fn ai_safe_finish_after_suppression_emits_only_metadata_and_is_idempotent() {
+    let mut redactor = crate::AiSafeStreamRedactor::new(&[]);
+    let chunks = redactor.push(crate::AiSafeRawChunk {
+        stream: crate::AiSafeStream::Stdout,
+        bytes: vec![b'x'; crate::AI_SAFE_PARTIAL_LINE_MAX_BYTES],
+    });
+    assert_eq!(chunks.len(), 1);
+    assert_eq!(chunks[0].text, "lk_redacted_BUFFER_LIMIT");
+    let final_chunks = redactor.finish();
+    assert_eq!(final_chunks.len(), 1);
+    assert!(final_chunks[0].text.is_empty());
+    assert!(final_chunks[0].unterminated_partial_line);
+    assert!(!final_chunks[0].buffer_limit_reached);
+    assert!(redactor.finish().is_empty());
 }
 
 #[test]
@@ -105,8 +185,7 @@ fn ai_safe_partial_line_cap_emits_redacted_buffer_without_values() {
     let text = chunks.iter().map(|chunk| chunk.text.as_str()).collect::<String>();
 
     assert!(chunks.iter().any(|chunk| chunk.buffer_limit_reached));
-    assert!(text.contains("lk_redacted_PROVIDER_TOKEN"));
-    assert!(!text.contains(token));
+    assert_eq!(text, "lk_redacted_BUFFER_LIMIT");
 }
 
 #[test]

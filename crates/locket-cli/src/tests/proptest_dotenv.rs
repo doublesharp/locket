@@ -22,10 +22,9 @@ fn valid_key_strategy() -> impl Strategy<Value = String> {
 
 fn clean_value_strategy() -> impl Strategy<Value = String> {
     prop::collection::vec(
-        prop::char::ranges(std::borrow::Cow::Borrowed(&[' '..='~']))
-            .prop_filter("no NUL, no newline, no quote", |c| {
-                *c != '\0' && *c != '\n' && *c != '\r' && *c != '"' && *c != '\''
-            }),
+        prop::char::range(' ', '~').prop_filter("no NUL, no newline, no quote", |c| {
+            *c != '\0' && *c != '\n' && *c != '\r' && *c != '"' && *c != '\''
+        }),
         0..40,
     )
     .prop_map(|chars| chars.into_iter().collect())

@@ -3196,7 +3196,7 @@ fn team_accept_verifies_invite_displays_trust_summary_and_records_audit()
     assert_eq!(row_count("secrets")?, 0, "team accept must not import secrets");
     assert_eq!(row_count("secret_versions")?, 0, "team accept must not import secret_versions");
     assert_eq!(row_count("blobs")?, 0, "team accept must not import secret blobs");
-    assert_eq!(row_count("command_policies")?, 1, "team accept must import command_policies",);
+    assert_eq!(row_count("command_policies")?, 1, "team accept must import command_policies");
     Ok(())
 }
 

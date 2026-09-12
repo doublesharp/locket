@@ -339,8 +339,7 @@ fn collect_diagnostics(
                     ));
                     let integrity_ok = store
                         .integrity_check()
-                        .map(|rows| rows.iter().any(|row| row == "ok"))
-                        .unwrap_or(false);
+                        .is_ok_and(|rows| rows.iter().any(|row| row == "ok"));
                     checks.push(if integrity_ok {
                         DiagnosticCheck::pass("sqlite_integrity", "ok")
                     } else {

@@ -847,14 +847,11 @@ async fn serve_until_signal(
 fn agent_signal_unix_nanos() -> i128 {
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| {
-            let max = u128::from(u64::try_from(i64::MAX).unwrap_or(0));
-            let clamped = duration.as_nanos().min(max);
-            i128::from(i64::try_from(clamped).unwrap_or(0))
-        })
-        .unwrap_or(0)
+    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |duration| {
+        let max = u128::from(u64::try_from(i64::MAX).unwrap_or(0));
+        let clamped = duration.as_nanos().min(max);
+        i128::from(i64::try_from(clamped).unwrap_or(0))
+    })
 }
 
 #[cfg(target_os = "windows")]

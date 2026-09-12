@@ -265,10 +265,9 @@ pub fn verify_imported_audit_chain_structure(
     checkpoint_sequence: u64,
     checkpoint_hmac: &[u8; AUDIT_HMAC_LEN],
 ) -> Result<ImportedAuditChainVerification, StoreError> {
-    let mut expected_sequence = 1_u64;
     let mut previous_hmac = [0; AUDIT_HMAC_LEN];
 
-    for row in rows {
+    for (expected_sequence, row) in (1_u64..).zip(rows) {
         if row.sequence != expected_sequence {
             return Err(StoreError::AuditIntegrity {
                 sequence: expected_sequence,
@@ -283,7 +282,6 @@ pub fn verify_imported_audit_chain_structure(
         }
 
         previous_hmac = row.hmac;
-        expected_sequence += 1;
     }
 
     let Some(final_row) = rows.last() else {
@@ -312,11 +310,10 @@ fn verify_audit_rows(
     rows: &[StoredAuditRow],
     audit_key: &[u8],
 ) -> Result<AuditChainVerification, StoreError> {
-    let mut expected_sequence = 1_u64;
     let mut previous_hmac = [0; AUDIT_HMAC_LEN];
     let mut rows_verified = 0_u64;
 
-    for row in rows {
+    for (expected_sequence, row) in (1_u64..).zip(rows) {
         if row.sequence != expected_sequence {
             return Ok(AuditChainVerification {
                 hmac_ok: false,
@@ -370,7 +367,6 @@ fn verify_audit_rows(
         }
 
         previous_hmac = row.hmac;
-        expected_sequence += 1;
         rows_verified += 1;
     }
 
@@ -1110,10 +1106,9 @@ impl Store {
     ) -> Result<u64, StoreError> {
         let transaction = self.connection.transaction()?;
         let rows = read_audit_rows(&transaction, project_id)?;
-        let mut expected_sequence = 1_u64;
         let mut previous_hmac = [0; AUDIT_HMAC_LEN];
 
-        for row in &rows {
+        for (expected_sequence, row) in (1_u64..).zip(&rows) {
             if row.sequence != expected_sequence {
                 return Err(StoreError::AuditIntegrity {
                     sequence: expected_sequence,
@@ -1156,7 +1151,6 @@ impl Store {
             }
 
             previous_hmac = row.hmac;
-            expected_sequence += 1;
         }
 
         let rows_verified = rows.len() as u64;

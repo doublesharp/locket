@@ -47,10 +47,22 @@ export function useAgent(): AgentState {
   const connected = ref<boolean>(false);
 
   let unlisten: (() => void) | null = null;
+  let disposed = false;
+  let refreshGeneration = 0;
+
+  function applyStatus(event: AgentStatusEvent): void {
+    ++refreshGeneration;
+    status.value = statusFromEvent(event);
+    error.value = null;
+    loading.value = false;
+  }
 
   async function refresh(): Promise<void> {
+    if (disposed) return;
+    const generation = ++refreshGeneration;
     loading.value = true;
     const result = await fetchStatus();
+    if (disposed || generation !== refreshGeneration) return;
     if (result.ok) {
       status.value = result.status;
       error.value = null;
@@ -66,33 +78,42 @@ export function useAgent(): AgentState {
     loading.value = true;
     const result = await subscribeStatus(
       (event) => {
+        if (disposed) return;
         // Push-based state-change frames replace the previous polling
         // path; heartbeats are filtered out by `subscribeStatus`.
-        status.value = statusFromEvent(event);
-        error.value = null;
-        loading.value = false;
+        applyStatus(event);
         lastSeenAt.value = new Date().toISOString();
         connected.value = true;
       },
       (streamError) => {
+        if (disposed) return;
+        ++refreshGeneration;
         error.value = streamError;
         connected.value = false;
         loading.value = false;
       },
       {
-        onHeartbeat: () => {
+        onHeartbeat: (event) => {
+          if (disposed) return;
+          // An existing backend stream may send only heartbeats after remount.
+          if (status.value === null) applyStatus(event);
           // Heartbeats only refresh the connection-health timestamp;
           // they must never trigger a status re-render.
           lastSeenAt.value = new Date().toISOString();
           connected.value = true;
         },
         onDisconnected: () => {
+          if (disposed) return;
           // The Tauri side reconnects with exponential backoff; mark
           // the connection stale so the badge can show "reconnecting".
           connected.value = false;
         },
       },
     );
+    if (disposed) {
+      if (result.ok) result.value();
+      return;
+    }
     if (result.ok) {
       unlisten = result.value;
     } else {
@@ -105,6 +126,7 @@ export function useAgent(): AgentState {
   void startSubscription();
 
   onScopeDispose(() => {
+    disposed = true;
     unlisten?.();
     unlisten = null;
   });

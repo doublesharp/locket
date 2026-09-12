@@ -83,11 +83,11 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
+  model.scrub('component-unmount');
   unsubscribe?.();
   unsubscribe = null;
   stopTicker();
   window.removeEventListener('blur', onBlur);
-  model.scrub('component-unmount');
 });
 
 const visible = computed<boolean>(() => state.value.kind === 'visible');

@@ -445,11 +445,12 @@ pub struct AiSafeRunResult {
 struct AiSafeStreamState {
     stream: AiSafeStream,
     pending: Vec<u8>,
+    discarding_line: bool,
 }
 
 impl AiSafeStreamState {
     const fn new(stream: AiSafeStream) -> Self {
-        Self { stream, pending: Vec::new() }
+        Self { stream, pending: Vec::new(), discarding_line: false }
     }
 }
 
@@ -492,33 +493,52 @@ fn drain_ai_safe_pending(
     final_flush: bool,
 ) -> Vec<AiSafeRedactedChunk> {
     let mut chunks = Vec::new();
-    let boundary_overlap = ai_safe_redaction_boundary_overlap(known_redactions);
     loop {
-        if let Some(newline_index) = state.pending.iter().position(|byte| *byte == b'\n') {
+        let newline_index = state.pending.iter().position(|byte| *byte == b'\n');
+        if state.discarding_line {
+            if let Some(newline_index) = newline_index {
+                // Keep the delimiter so output framing survives the discarded line.
+                state.pending.drain(..newline_index);
+                state.discarding_line = false;
+                continue;
+            }
+            state.pending.clear();
+            break;
+        }
+        if let Some(newline_index) = newline_index
+            && newline_index < AI_SAFE_PARTIAL_LINE_MAX_BYTES
+        {
             let bytes = state.pending.drain(..=newline_index).collect::<Vec<_>>();
             chunks.push(redact_ai_safe_bytes(state.stream, &bytes, known_redactions, false, false));
             continue;
         }
-        if state.pending.len() >= AI_SAFE_PARTIAL_LINE_MAX_BYTES
-            && state.pending.len() > boundary_overlap
-        {
-            let emit_len = state.pending.len() - boundary_overlap;
-            let bytes = state.pending.drain(..emit_len).collect::<Vec<_>>();
-            chunks.push(redact_ai_safe_bytes(state.stream, &bytes, known_redactions, true, false));
+        if state.pending.len() >= AI_SAFE_PARTIAL_LINE_MAX_BYTES {
+            // A byte cut can split a known value or UTF-8 character. Retaining
+            // only the longest-secret suffix still exposes crossing matches.
+            // Record detections already available, but suppress the whole line.
+            let mut chunk = redact_ai_safe_bytes(
+                state.stream,
+                &state.pending[..AI_SAFE_PARTIAL_LINE_MAX_BYTES],
+                known_redactions,
+                true,
+                false,
+            );
+            "lk_redacted_BUFFER_LIMIT".clone_into(&mut chunk.text);
+            chunks.push(chunk);
+            state.discarding_line = true;
             continue;
         }
         break;
     }
 
-    if final_flush && !state.pending.is_empty() {
-        let bytes = state.pending.drain(..).collect::<Vec<_>>();
+    if final_flush && state.discarding_line {
+        state.discarding_line = false;
+        chunks.push(redact_ai_safe_bytes(state.stream, &[], &[], false, true));
+    } else if final_flush && !state.pending.is_empty() {
+        let bytes = std::mem::take(&mut state.pending);
         chunks.push(redact_ai_safe_bytes(state.stream, &bytes, known_redactions, false, true));
     }
     chunks
-}
-
-fn ai_safe_redaction_boundary_overlap(known_redactions: &[KnownSecretRedaction]) -> usize {
-    known_redactions.iter().map(|entry| entry.value.len()).max().unwrap_or(0)
 }
 
 fn redact_ai_safe_bytes(
@@ -633,7 +653,7 @@ fn emit_ai_safe_chunk(
     if chunk.buffer_limit_reached {
         writeln!(
             stderr_output,
-            "locket: ai-safe warning: {} partial-line buffer limit reached; emitted redacted buffered output",
+            "locket: ai-safe warning: {} partial-line buffer limit reached; suppressed the entire line",
             chunk.stream.as_str()
         )?;
         result.buffer_limit_flushes += 1;

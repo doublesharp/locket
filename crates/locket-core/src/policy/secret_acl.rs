@@ -206,7 +206,7 @@ fn slash_path(path: &Path) -> String {
     if normalized.is_empty() { ".".to_owned() } else { normalized }
 }
 
-fn glob_matches(pattern: &str, value: &str) -> bool {
+const fn glob_matches(pattern: &str, value: &str) -> bool {
     let pattern = pattern.as_bytes();
     let value = value.as_bytes();
     let (mut pattern_index, mut value_index) = (0, 0);

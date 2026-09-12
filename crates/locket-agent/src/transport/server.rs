@@ -795,14 +795,11 @@ struct LockPayload {
 /// the positive `i64` range so downstream arithmetic stays in `i128`.
 pub fn current_unix_nanos() -> i128 {
     use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| {
-            let max = u128::from(u64::try_from(i64::MAX).unwrap_or(0));
-            let clamped = d.as_nanos().min(max);
-            i128::from(i64::try_from(clamped).unwrap_or(0))
-        })
-        .unwrap_or(0)
+    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| {
+        let max = u128::from(u64::try_from(i64::MAX).unwrap_or(0));
+        let clamped = d.as_nanos().min(max);
+        i128::from(i64::try_from(clamped).unwrap_or(0))
+    })
 }
 
 fn error_response(envelope: &RequestEnvelope, error: &str, message: &str) -> ResponseEnvelope {

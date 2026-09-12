@@ -253,7 +253,7 @@ fn rotated_path(base: &Path, index: u32) -> PathBuf {
 }
 
 fn file_size_or_zero(path: &Path) -> u64 {
-    fs::metadata(path).map(|metadata| metadata.len()).unwrap_or(0)
+    fs::metadata(path).map_or(0, |metadata| metadata.len())
 }
 
 #[cfg(unix)]

@@ -98,8 +98,7 @@ impl IdeTestAgent {
     ) -> Result<(), Box<dyn std::error::Error>> {
         let now_nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| i128::try_from(d.as_nanos()).unwrap_or(0))
-            .unwrap_or(0);
+            .map_or(0, |d| i128::try_from(d.as_nanos()).unwrap_or(0));
         let entry = locket_agent::IdeEnvSessionEntry {
             project_id: project_id.to_owned(),
             env_names,

@@ -201,7 +201,8 @@ app-ui-check: app-ui-install
 		echo "skip: pnpm not on PATH"; \
 	else \
 		$(PNPM) --dir crates/locket-app/ui lint && \
-		$(PNPM) --dir crates/locket-app/ui typecheck; \
+		$(PNPM) --dir crates/locket-app/ui typecheck && \
+		$(PNPM) --dir crates/locket-app/ui test; \
 	fi
 
 app-ui-build: app-ui-install

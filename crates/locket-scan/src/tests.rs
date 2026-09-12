@@ -163,6 +163,63 @@ fn empty_known_values_are_ignored() {
 }
 
 #[test]
+fn overlapping_known_values_redact_the_entire_union() {
+    let result = redact_text_with_known_values(
+        "before abcdefgh after",
+        &[
+            KnownRedaction { value: "abcd", marker: "[A]" },
+            KnownRedaction { value: "cdef", marker: "[B]" },
+            KnownRedaction { value: "efgh", marker: "[C]" },
+        ],
+    );
+    assert_eq!(result.text, "before [A] after");
+    assert_eq!(result.counts.get(&FindingKind::KnownSecretValue), Some(&1));
+}
+
+#[test]
+fn self_overlapping_known_values_redact_every_matched_character() {
+    for (text, value) in [("ababa", "aba"), ("ééé", "éé"), ("aaaaa", "aaa")] {
+        let result =
+            redact_text_with_known_values(text, &[KnownRedaction { value, marker: "[X]" }]);
+        assert_eq!(result.text, "[X]");
+        assert_eq!(result.counts.get(&FindingKind::KnownSecretValue), Some(&1));
+    }
+}
+
+#[test]
+fn known_prefix_does_not_expose_the_rest_of_a_provider_token() {
+    let result = redact_text_with_known_values(
+        "key=sk_live_abc123def456!",
+        &[KnownRedaction { value: "sk_live_", marker: "[KEY]" }],
+    );
+    assert_eq!(result.text, "key=[KEY]");
+    assert_eq!(result.counts.get(&FindingKind::KnownSecretValue), Some(&1));
+}
+
+#[test]
+fn known_value_inside_provider_token_keeps_its_marker_and_covers_both_spans() {
+    let result = redact_text_with_known_values(
+        "key=sk_live_abc123 trailing secret end",
+        &[KnownRedaction { value: "abc123 trailing secret", marker: "[KEY]" }],
+    );
+    assert_eq!(result.text, "key=[KEY] end");
+    assert_eq!(result.counts.get(&FindingKind::KnownSecretValue), Some(&1));
+}
+
+#[test]
+fn adjacent_known_values_remain_separate_replacements() {
+    let result = redact_text_with_known_values(
+        "abcdef",
+        &[
+            KnownRedaction { value: "abc", marker: "[A]" },
+            KnownRedaction { value: "def", marker: "[B]" },
+        ],
+    );
+    assert_eq!(result.text, "[A][B]");
+    assert_eq!(result.counts.get(&FindingKind::KnownSecretValue), Some(&2));
+}
+
+#[test]
 fn scan_text_reports_candidate_column_after_boundaries() {
     let token = "sk_live_sampleTokenValue123";
     let findings = scan_text("config.json", &format!("  api_key=\"{token}\""));

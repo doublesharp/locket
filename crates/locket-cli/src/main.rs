@@ -3205,7 +3205,7 @@ fn parse_root_hash(value: &str) -> Result<[u8; 32], CliError> {
         return Err(metadata_invalid_error("root hash must be 64 hex characters"));
     }
     let mut output = [0_u8; 32];
-    for (index, chunk) in value.as_bytes().chunks_exact(2).enumerate() {
+    for (index, chunk) in value.as_bytes().as_chunks::<2>().0.iter().enumerate() {
         let high = hex_nibble(chunk[0])?;
         let low = hex_nibble(chunk[1])?;
         output[index] = (high << 4) | low;

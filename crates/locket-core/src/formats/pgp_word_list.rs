@@ -582,7 +582,7 @@ pub fn safety_words_from_fingerprint_hex(fingerprint: &str) -> Vec<&'static str>
     let mut bytes = [0u8; SAFETY_WORD_FINGERPRINT_BYTES];
     let mut decoded_count = 0usize;
     let chars: Vec<char> = fingerprint.chars().take(SAFETY_WORD_FINGERPRINT_BYTES * 2).collect();
-    for (index, pair) in chars.chunks_exact(2).enumerate() {
+    for (index, pair) in chars.as_chunks::<2>().0.iter().enumerate() {
         match (pair[0].to_digit(16), pair[1].to_digit(16)) {
             (Some(hi), Some(lo)) => {
                 // Cast to u8 is safe: each digit fits in 4 bits.

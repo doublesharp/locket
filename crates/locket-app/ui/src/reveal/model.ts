@@ -16,7 +16,7 @@ export interface RevealRequest {
   secretLabel: string;
   /** Plaintext returned by the agent's `Reveal` RPC. */
   value: string;
-  /** TTL in seconds. Defaults to 30 when missing or non-positive. */
+  /** TTL in seconds. Defaults to 30 when missing, non-finite, or non-positive. */
   ttlSeconds?: number;
 }
 
@@ -59,8 +59,11 @@ export class RevealModalModel {
 
   /** Show the modal with a freshly resolved value. */
   show(request: RevealRequest, nowMs: number = nowMonotonic()): void {
+    this.zeroize();
     const ttl =
-      request.ttlSeconds && request.ttlSeconds > 0 ? request.ttlSeconds : DEFAULT_TTL_SECONDS;
+      request.ttlSeconds && Number.isFinite(request.ttlSeconds) && request.ttlSeconds > 0
+        ? request.ttlSeconds
+        : DEFAULT_TTL_SECONDS;
     this.state = {
       kind: 'visible',
       secretLabel: request.secretLabel,
@@ -107,8 +110,8 @@ export class RevealModalModel {
 
   /**
    * Dismiss the modal at the user's request and emit a typed `dismissed`
-   * event. Always scrubs the underlying value first so dismiss-on-blur
-   * never leaves plaintext in memory.
+   * event. Drops the value from retained state snapshots before emitting.
+   * JavaScript strings cannot be securely erased from memory.
    */
   dismiss(reason: DismissReason): void {
     if (this.state.kind === 'idle') {
@@ -123,12 +126,8 @@ export class RevealModalModel {
     if (this.state.kind === 'visible') {
       // Best-effort plaintext scrub. Strings in JS are immutable so
       // we can't overwrite the underlying buffer; replacing the
-      // reference still drops it from the modal so it can't be
-      // re-rendered.
-      this.state = {
-        ...this.state,
-        value: '',
-      };
+      // reference on the existing object also clears retained snapshots.
+      this.state.value = '';
     }
   }
 

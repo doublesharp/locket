@@ -491,7 +491,7 @@ fn is_redirection_at(chars: &[char], index: usize) -> bool {
     false
 }
 
-fn consume_redirection(chars: &[char], index: usize) -> usize {
+const fn consume_redirection(chars: &[char], index: usize) -> usize {
     let mut cursor = index;
     while cursor < chars.len() && chars[cursor].is_ascii_digit() {
         cursor += 1;
