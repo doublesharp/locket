@@ -86,3 +86,5 @@ Removing membership or folder access cannot erase values someone already receive
 ## Validation boundary
 
 Independent synthetic stores test package integrity, owner and recipient binding, atomic apply, ordering and replay rejection. Real iCloud, OneDrive, Dropbox, network shares, multi-person fingerprint comparisons and clean-machine installation need separate acceptance runs.
+
+Use the [team acceptance checklist](team-acceptance.md) for a synthetic two-device provider trial and an observed first run.
