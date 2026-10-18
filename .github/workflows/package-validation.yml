@@ -14,6 +14,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: package-validation-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   unsigned-host:
     name: unsigned package on ${{ matrix.os }}
@@ -24,6 +28,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     env:
       CARGO_INCREMENTAL: '0'
+      CARGO_BUILD_JOBS: '2'
       PYTHONDONTWRITEBYTECODE: '1'
     defaults:
       run:
@@ -34,11 +39,13 @@ jobs:
           persist-credentials: false
       - name: Prepare disposable paths
         run: |
-          mkdir -p "$RUNNER_TEMP/locket/tmp" "$RUNNER_TEMP/locket/cargo" "$RUNNER_TEMP/locket/build"
+          task_temp="$RUNNER_TEMP"
+          if [[ "$RUNNER_OS" == "Windows" ]]; then task_temp="$(cygpath -m "$RUNNER_TEMP")"; fi
+          mkdir -p "$task_temp/locket/tmp" "$task_temp/locket/cargo" "$task_temp/locket/build"
           {
-            echo "TMPDIR=$RUNNER_TEMP/locket/tmp"
-            echo "CARGO_TARGET_DIR=$RUNNER_TEMP/locket/cargo"
-            echo "LOCKET_BUILD_ROOT=$RUNNER_TEMP/locket/build"
+            echo "TMPDIR=$task_temp/locket/tmp"
+            echo "CARGO_TARGET_DIR=$task_temp/locket/cargo"
+            echo "LOCKET_BUILD_ROOT=$task_temp/locket/build"
           } >> "$GITHUB_ENV"
       - uses: actions/setup-node@v4
         with:
@@ -58,7 +65,14 @@ jobs:
             case "$RUNNER_OS" in
               Linux) sudo apt-get update && sudo apt-get install -y ripgrep ;;
               macOS) brew install ripgrep ;;
-              Windows) choco install ripgrep --version=14.1.1 --yes --no-progress ;;
+              Windows)
+                rg_root="$LOCKET_BUILD_ROOT/tools/ripgrep"
+                mkdir -p "$rg_root"
+                curl --fail --location --retry 3 --output "$rg_root/rg.zip" https://github.com/BurntSushi/ripgrep/releases/download/14.1.1/ripgrep-14.1.1-x86_64-pc-windows-msvc.zip
+                python3 -c 'import hashlib,pathlib,sys,zipfile; archive=pathlib.Path(sys.argv[1]); assert hashlib.sha256(archive.read_bytes()).hexdigest()=="d0f534024c42afd6cb4d38907c25cd2b249b79bbe6cc1dbee8e3e37c2b6e25a1", "ripgrep checksum mismatch"; zipfile.ZipFile(archive).extractall(sys.argv[2])' "$rg_root/rg.zip" "$rg_root"
+                echo "$rg_root/ripgrep-14.1.1-x86_64-pc-windows-msvc" >> "$GITHUB_PATH"
+                ;;
+
             esac
           fi
       - uses: pnpm/action-setup@v4

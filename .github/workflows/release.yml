@@ -68,6 +68,9 @@ jobs:
       - name: Validate package manifests and signing inputs
         run: make distribution-check
 
+      - name: Fetch locked dependencies for offline quality checks
+        run: cargo fetch --locked
+
       - name: Generate release quality artifacts
         run: |
           make supply-chain-exceptions

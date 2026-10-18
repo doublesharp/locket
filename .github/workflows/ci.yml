@@ -12,7 +12,12 @@ permissions:
 env:
   CARGO_INCREMENTAL: "1"
   CARGO_JOBS: "2"
+  CARGO_BUILD_JOBS: "2"
   RUST_BACKTRACE: "1"
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   static:
@@ -50,6 +55,9 @@ jobs:
           key: cargo-ci-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
           restore-keys: |
             cargo-ci-${{ runner.os }}-
+
+      - name: Fetch locked dependencies for offline quality checks
+        run: cargo fetch --locked
 
       - name: Check supply-chain exception ledger
         run: make supply-chain-exceptions
