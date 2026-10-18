@@ -2750,13 +2750,17 @@ mod server_tests {
         let frame = encode_frame(&request, DEFAULT_MAX_MESSAGE_SIZE)?;
         // The server should drop the stream before reading any frame
         // — write may succeed into the kernel buffer, but the read
-        // attempt below must observe EOF without ever producing a
-        // response envelope.
+        // attempt below must observe EOF or a reset (Linux can reset
+        // sockets with unread input), without producing response bytes.
         let _ = client.write_all(&frame).await;
         let mut buffer = Vec::new();
         let mut chunk = [0_u8; 1024];
         loop {
-            let read = client.read(&mut chunk).await?;
+            let read = match client.read(&mut chunk).await {
+                Ok(read) => read,
+                Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => break,
+                Err(error) => return Err(error.into()),
+            };
             if read == 0 {
                 break;
             }
