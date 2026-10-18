@@ -35,7 +35,8 @@
     "shortDescription": "Encrypted local development variables",
     "longDescription": "Locket keeps development variables encrypted locally and supplies them to approved commands.",
     "icon": [
-      "icons/icon.png"
+      "icons/icon.png",
+      "icons/icon.ico"
     ],
     "macOS": {
       "entitlements": "../../../dist/installers/macos/entitlements.plist",
