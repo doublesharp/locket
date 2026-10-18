@@ -162,6 +162,9 @@ def install_linux(package, version, scratch):
         raise ValueError('installed Debian desktop executable or bundled CLI missing from package files')
     if len(entries) != 1 or not entries[0].is_file():
         raise ValueError('expected exactly one installed desktop entry')
+    linkage = run(['ldd', str(desktop)])
+    if 'not found' in linkage:
+        raise ValueError(f'installed desktop runtime dependency missing: {linkage}')
     # Only files owned by this package, never a recursive scan of /usr.
     scan_files(files)
     verify_cli(cli, version)

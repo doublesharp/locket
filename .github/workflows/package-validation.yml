@@ -111,9 +111,6 @@ jobs:
           scripts/package-native-installers.sh --target host --unsigned
           scripts/package-vscode-extension.sh
           scripts/validate-packaged-os-canaries.sh --artifact-root "$LOCKET_BUILD_ROOT/package"
-      - name: Install and verify native package on disposable host
-        run: |
-          python3 scripts/validate-installed-native.py --target host --installer-root "$LOCKET_BUILD_ROOT/package/installers" --scratch-root "$TMPDIR" --version "$(node scripts/distribution.mjs versions)"
       - name: Preserve unsigned build cache
         if: always() && !cancelled() && steps.unsigned-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
@@ -134,5 +131,56 @@ jobs:
             ${{ runner.temp }}/locket/build/package/installers/linux/*.deb
             ${{ runner.temp }}/locket/build/package/vscode/*.vsix
             ${{ runner.temp }}/locket/build/package/vscode/*.sha256
-            ${{ runner.temp }}/locket/tmp/*install*.log
+          if-no-files-found: ignore
+
+  installed-host:
+    name: installed package on fresh ${{ matrix.os }}
+    needs: unsigned-host
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, ubuntu-24.04, windows-2022]
+    runs-on: ${{ matrix.os }}
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Prepare isolated acceptance paths
+        run: |
+          task_temp="$RUNNER_TEMP"
+          if [[ "$RUNNER_OS" == "Windows" ]]; then task_temp="$(cygpath -m "$RUNNER_TEMP")"; fi
+          mkdir -p "$task_temp/locket/tmp" "$task_temp/locket/artifact"
+          {
+            echo "TMPDIR=$task_temp/locket/tmp"
+            echo "LOCKET_ACCEPTANCE_ARTIFACT=$task_temp/locket/artifact"
+          } >> "$GITHUB_ENV"
+          if ! command -v python3 >/dev/null 2>&1; then
+            mkdir -p "$task_temp/locket/tools"
+            printf '#!/usr/bin/env bash\nexec python "$@"\n' > "$task_temp/locket/tools/python3"
+            chmod +x "$task_temp/locket/tools/python3"
+            echo "$task_temp/locket/tools" >> "$GITHUB_PATH"
+          fi
+      - uses: actions/download-artifact@v4
+        with:
+          name: locket-unsigned-${{ matrix.os }}-${{ github.sha }}
+          path: ${{ runner.temp }}/locket/artifact
+      - name: Install and verify downloaded native package
+        run: |
+          python3 scripts/validate-installed-native.py --target host --installer-root "$LOCKET_ACCEPTANCE_ARTIFACT/installers" --scratch-root "$TMPDIR" --version "$(node scripts/distribution.mjs versions)"
+      - uses: actions/upload-artifact@v4
+        if: always() && !cancelled()
+        with:
+          name: locket-install-logs-${{ matrix.os }}-${{ github.sha }}
+          path: ${{ runner.temp }}/locket/tmp/*install*.log
           if-no-files-found: ignore

@@ -17,7 +17,7 @@ scripts/validate-packaged-os-canaries.sh --artifact-root "$LOCKET_BUILD_ROOT/pac
 
 Install the pinned `tauri-cli` 2.10.1 build tool and the existing locked UI/editor dependencies first. The scripts compile frontend/editor output in a staging directory under `LOCKET_BUILD_ROOT`. Native packaging builds and embeds the exact matching CLI. The desktop resolves the installed resource directory and checks CLI version before using it. VSIX validation opens the compressed archive and checks its identity, version, entry point and excluded development files.
 
-The package-validation workflow installs the unsigned native package on a fresh GitHub-hosted runner, checks installed package metadata and the desktop executable, runs the installed bundled CLI version check, and scans the installed payload for canaries. `scripts/validate-installed-native.py` refuses local and self-hosted installation. These checks do not exercise the desktop GUI or native authentication.
+The package-validation workflow downloads and installs the unsigned native package on a separate fresh GitHub-hosted runner with no build-tool dependencies installed, checks installed package metadata and the desktop executable, runs the installed bundled CLI version check, and scans the installed payload for canaries. Linux also checks the desktop executable for unresolved runtime libraries. `scripts/validate-installed-native.py` refuses local and self-hosted installation. These checks do not exercise the desktop GUI or native authentication.
 
 For a real installed-extension host check with your existing VS Code binary, run:
 
