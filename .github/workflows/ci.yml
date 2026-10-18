@@ -29,6 +29,11 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Prepare disposable test storage
+        run: |
+          mkdir -p "$RUNNER_TEMP/locket/tmp"
+          echo "TMPDIR=$RUNNER_TEMP/locket/tmp" >> "$GITHUB_ENV"
+
       - name: Install Rust toolchain
         run: rustup show
 
