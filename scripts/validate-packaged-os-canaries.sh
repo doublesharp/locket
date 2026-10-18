@@ -5,12 +5,13 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 artifact_root="${LOCKET_PACKAGE_ARTIFACT_ROOT:-${LOCKET_BUILD_ROOT:-${CARGO_TARGET_DIR:-${repo_root}/target}}/package}"
 dry_run=0
 install_smoke=0
+editor_smoke=0
 vsix_path="${LOCKET_VSIX_PATH:-}"
 
 usage() {
   sed -n '1,120p' <<'USAGE'
 Usage:
-  scripts/validate-packaged-os-canaries.sh [--artifact-root PATH] [--vsix PATH] [--install-smoke] [--dry-run]
+  scripts/validate-packaged-os-canaries.sh [--artifact-root PATH] [--vsix PATH] [--install-smoke] [--editor-smoke] [--dry-run]
 
 Validates packaged OS canary surfaces that normal CI cannot fully exercise:
 signed desktop installer artifacts, packaged VSIX execution, and artifact
@@ -18,6 +19,8 @@ scanning for known canary markers.
 
 --install-smoke runs host-specific installer/extension smoke commands when the
 required tools and artifacts are available.
+--editor-smoke installs and activates the VSIX in disposable editor directories
+without invoking native installer or signing checks. It does not open a real vault.
 USAGE
 }
 
@@ -30,6 +33,10 @@ while [[ $# -gt 0 ]]; do
     --vsix)
       vsix_path="${2:-}"
       shift 2
+      ;;
+    --editor-smoke)
+      editor_smoke=1
+      shift
       ;;
     --install-smoke)
       install_smoke=1
@@ -134,7 +141,36 @@ validate_vsix() {
   smoke_root="$(mktemp -d "${TMPDIR%/}/locket-editor-smoke.XXXXXX")"
   code --user-data-dir "${smoke_root}/user" --extensions-dir "${smoke_root}/extensions" --install-extension "${vsix_path}" --force
   code --user-data-dir "${smoke_root}/user" --extensions-dir "${smoke_root}/extensions" --list-extensions | rg -F -x "${editor_id}" >/dev/null
-  echo "Isolated editor installation verified; temporary profile: ${smoke_root}"
+  mkdir -p "${smoke_root}/workspace" "${smoke_root}/user/User"
+  printf '%s\n' '{"telemetry.telemetryLevel":"off","extensions.autoUpdate":false,"extensions.autoCheckUpdates":false,"workbench.startupEditor":"none"}' > "${smoke_root}/user/User/settings.json"
+  local installed
+  installed="$(python3 - "${smoke_root}/extensions" "${editor_id}" "${version}" <<'PYEDITOR'
+import json, pathlib, sys
+matches = []
+for manifest in pathlib.Path(sys.argv[1]).glob('*/package.json'):
+    package = json.loads(manifest.read_text())
+    if package.get('publisher', '') + '.' + package.get('name', '') == sys.argv[2] and package.get('version') == sys.argv[3]:
+        matches.append(manifest.parent)
+if len(matches) != 1:
+    sys.exit(f'expected exactly one installed matching extension, found {len(matches)}')
+print(matches[0])
+PYEDITOR
+)"
+  LOCKET_AGENT_SOCKET="${smoke_root}/absent-test-agent.sock" \
+  LOCKET_EXPECTED_EDITOR_ID="${editor_id}" \
+  LOCKET_EXPECTED_EDITOR_VERSION="${version}" \
+  LOCKET_EDITOR_ACCEPTANCE_REPORT="${smoke_root}/activation.json" \
+    code --user-data-dir "${smoke_root}/user" --extensions-dir "${smoke_root}/extensions" \
+      --extensionDevelopmentPath="${installed}" \
+      --extensionTestsPath="${repo_root}/extensions/vscode/integration/packaged-host.cjs" \
+      --disable-workspace-trust --skip-welcome --skip-release-notes --new-window --wait "${smoke_root}/workspace"
+  python3 - "${smoke_root}/activation.json" "${editor_id}" "${version}" <<'PYRESULT'
+import json, pathlib, sys
+result = json.loads(pathlib.Path(sys.argv[1]).read_text())
+if result.get('id') != sys.argv[2] or result.get('version') != sys.argv[3] or result.get('isActive') is not True or len(result.get('registeredCommands', [])) != 9:
+    sys.exit('installed extension activation did not complete')
+PYRESULT
+  echo "Isolated editor installation and activation verified; report: ${smoke_root}/activation.json"
 }
 
 if [[ "${dry_run}" == "1" ]]; then
@@ -154,5 +190,7 @@ done < <(find "${artifact_root}" -name '*.vsix' -type f -print0)
 
 if [[ "${install_smoke}" == "1" ]]; then
   validate_host_package
+fi
+if [[ "${install_smoke}" == "1" || "${editor_smoke}" == "1" ]]; then
   validate_vsix
 fi

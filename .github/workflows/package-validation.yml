@@ -78,6 +78,16 @@ jobs:
       - uses: pnpm/action-setup@v4
         with:
           version: '11.21.0'
+      - name: Restore unsigned build cache
+        id: unsigned-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ${{ runner.temp }}/locket/cargo
+            ${{ runner.temp }}/locket/build/tools
+          key: unsigned-${{ matrix.os }}-tauri-2.10.1-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
       - name: Linux native dependencies
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential libxdo-dev libssl-dev librsvg2-dev libayatana-appindicator3-dev
@@ -86,10 +96,13 @@ jobs:
           node scripts/distribution.mjs versions
           node --test scripts/distribution.test.mjs
           python3 scripts/package_contents_test.py
+          python3 scripts/installed_native_test.py
       - name: Install build tools and dependencies
         run: |
           rustup show
-          cargo install tauri-cli --version 2.10.1 --locked --root "$LOCKET_BUILD_ROOT/tools"
+          if [[ ! -x "$LOCKET_BUILD_ROOT/tools/bin/cargo-tauri" ]] || [[ "$("$LOCKET_BUILD_ROOT/tools/bin/cargo-tauri" --version)" != 'tauri-cli 2.10.1' ]]; then
+            cargo install tauri-cli --version 2.10.1 --locked --force --root "$LOCKET_BUILD_ROOT/tools"
+          fi
           echo "$LOCKET_BUILD_ROOT/tools/bin" >> "$GITHUB_PATH"
           pnpm --dir crates/locket-app/ui install --frozen-lockfile
           pnpm --dir extensions/vscode install --frozen-lockfile
@@ -98,7 +111,21 @@ jobs:
           scripts/package-native-installers.sh --target host --unsigned
           scripts/package-vscode-extension.sh
           scripts/validate-packaged-os-canaries.sh --artifact-root "$LOCKET_BUILD_ROOT/package"
+      - name: Install and verify native package on disposable host
+        run: |
+          python3 scripts/validate-installed-native.py --target host --installer-root "$LOCKET_BUILD_ROOT/package/installers" --scratch-root "$TMPDIR" --version "$(node scripts/distribution.mjs versions)"
+      - name: Preserve unsigned build cache
+        if: always() && !cancelled() && steps.unsigned-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ${{ runner.temp }}/locket/cargo
+            ${{ runner.temp }}/locket/build/tools
+          key: unsigned-${{ matrix.os }}-tauri-2.10.1-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
       - uses: actions/upload-artifact@v4
+        if: always() && !cancelled()
         with:
           name: locket-unsigned-${{ matrix.os }}-${{ github.sha }}
           path: |
@@ -107,4 +134,5 @@ jobs:
             ${{ runner.temp }}/locket/build/package/installers/linux/*.deb
             ${{ runner.temp }}/locket/build/package/vscode/*.vsix
             ${{ runner.temp }}/locket/build/package/vscode/*.sha256
-          if-no-files-found: error
+            ${{ runner.temp }}/locket/tmp/*install*.log
+          if-no-files-found: ignore
