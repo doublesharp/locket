@@ -104,6 +104,10 @@ function onRescan(): void {
       Vault locked; known-value matching is unavailable.
     </p>
 
+    <p v-else-if="!lastScanAt" class="view__notice">
+      No scan has run for this project. Run a scan to check its files.
+    </p>
+
     <p v-else-if="isEmpty" class="view__empty">No scan findings.</p>
 
     <p v-else-if="isFilteredEmpty" class="view__empty">No matching scan findings.</p>

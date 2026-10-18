@@ -8,6 +8,7 @@ import {
   defaultPolicyForm,
   parseSecretList,
   policyFormRequiresTypedConfirmation,
+  policyFormFromRow,
   policyFormToSnapshot,
   validatePolicyForm,
   type PolicyFormState,
@@ -166,3 +167,43 @@ function snapshot(projectId: string, name: string): CommandPolicySnapshotWire {
     updated_at_unix_nanos: 0,
   };
 }
+
+describe('policy security boundaries', () => {
+  it('preserves require_agent through hydration', () => {
+    const row = {
+      name: 'dev',
+      commandKind: 'argv',
+      commandPreview: 'npm run dev',
+      requiredSecrets: [],
+      optionalSecrets: [],
+      allowedSecrets: [],
+      confirm: true,
+      requireUserVerification: true,
+      requireAgent: true,
+      allowRemoteDocker: false,
+      ttlSeconds: 300,
+      envMode: 'minimal',
+      overrideMode: 'fail',
+    } as unknown as import('../types/views').CommandPolicyRow;
+    expect(policyFormToSnapshot(policyFormFromRow(row), 'project', 2)).toMatchObject({
+      require_agent: true,
+      confirm: true,
+      require_user_verification: true,
+    });
+  });
+  it.each([1.5, Infinity, 28801])('rejects invalid TTL %s', (ttlSeconds) => {
+    expect(validatePolicyForm(validForm({ ttlSeconds })).errors.ttlSeconds).toBeDefined();
+  });
+  it('accepts eight hours', () => {
+    expect(validatePolicyForm(validForm({ ttlSeconds: 28800 })).valid).toBe(true);
+  });
+  it('rejects required/optional overlap', () => {
+    expect(
+      validatePolicyForm(validForm({ optionalSecrets: 'KUBECONFIG' })).errors.optionalSecrets,
+    ).toBeDefined();
+  });
+});
+
+it('accepts core-valid underscore-prefixed variable names', () => {
+  expect(validatePolicyForm(validForm({ requiredSecrets: '_TOKEN' })).valid).toBe(true);
+});

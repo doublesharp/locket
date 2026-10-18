@@ -1058,7 +1058,7 @@ mod tests {
             assert_eq!(descriptor, descriptor.reason.descriptor());
             assert!(!descriptor.title.contains("DATABASE_URL"));
             assert!(!descriptor.next_action.contains("postgres://"));
-            assert!(!descriptor.affordance.is_empty());
+            assert_ne!(descriptor.affordance, "");
         }
 
         let affordances = denial_ux_descriptors()

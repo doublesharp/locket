@@ -4,7 +4,7 @@
 
 # Locket
 
-### A local-first secrets control plane for development and AI-agent workflows.
+### Your development variables, encrypted locally and ready to run.
 
 <p>
   <img alt="local-first" src="https://img.shields.io/badge/local--first-✓-3b82f6?style=flat-square" />
@@ -14,7 +14,7 @@
   <img alt="platforms" src="https://img.shields.io/badge/macOS_·_Linux_·_Windows-grey?style=flat-square" />
 </p>
 
-<em>Replace plaintext <code>.env</code> files with an encrypted vault, explicit policy,<br/>and process-scoped delivery — without ever leaving your machine.</em>
+<em>Replace plaintext <code>.env</code> files with an encrypted vault, explicit policy,<br/>and delivery to the commands you approve.</em>
 
 <br/>
 
@@ -26,7 +26,7 @@
 
 <br/>
 
-> Locket treats secrets as **capabilities** — granted to specific projects, profiles, commands, directories, editors, shells, and runtime sessions. No plaintext on disk. No values in shell history. No telemetry. No remote calls except the ones you explicitly ask for.
+> Import your `.env`, approve which variables a command can use, and run it with Locket. Values are encrypted in your local vault. Project configuration and variable names can go in Git; values stay out of it. Locket collects no telemetry.
 
 ---
 
@@ -40,7 +40,7 @@
 - 🔄 **Rotation, history, and diffs** — change values safely; compare profiles without revealing them.
 - 🧹 **Scanner, pre-commit, redaction, AI-safe tools** — keep secrets out of code, logs, and prompts before sharing context with local AI agents.
 - 🪪 **Recovery and device trust** — local verification, recovery rotation, and sealed export/import without a hosted service.
-- 👥 **CLI-first team onboarding** — encrypted invites, roles, bootstrap checks; no cloud required.
+- 👥 **Team updates** — signed encrypted shared-folder delivery, verified device onboarding, and personal overrides; no hosted service required.
 - 🧾 **Metadata-only audit and diagnostics** — report what happened, never the values.
 - 🚫 **No telemetry, no analytics** — only opt-in update checks or explicit sealed sync/export/import.
 
@@ -54,11 +54,17 @@
 
 > Locket is intentionally local-first. CI and production should use their platform-native secret stores; Locket is for local development workflows.
 
-## Release Scope
+## Current Scope
 
-This release is prepared for local development with AI agents through the CLI, local agent, scanner, redaction, policy execution, VS Code status integration, and desktop metadata views. Secret values stay local, redacted reports are metadata-only, and `locket context` / `locket ai-safe` are the supported paths for preparing project context before handing it to an agent.
+Locket targets local development. The desktop connects project folders, unlocks the vault, imports env files, edits durable commands, and opens approved commands in a terminal. Imports and policy edits use the unlocked agent cache, including passphrase-only vaults. Native packages bundle a matching CLI; the editor version matches the app and CLI.
 
-Desktop set/rotate/reveal and metadata history are available. Team invite changes and secret deletion are CLI-directed in this release; the desktop validates the forms and points users back to the CLI instead of duplicating those lifecycle operations in the webview.
+Teams can [join a fresh machine and receive signed encrypted updates](docs/team-updates.md) through an existing shared folder. First join requires the owner's full fingerprint from a separate trusted channel. One owner publishes shared values, while personal overrides remain local. The unlocked agent publishes changed shared values and applies verified updates automatically. Status shows the last verified update; an offline or malicious folder provider can withhold newer files. Owner handover and real sync-provider/clean-OS acceptance remain separate qualification work.
+
+Manual version 1 export/import remains available. These older bundles encrypt for recipients but do **not** authenticate the issuer. Imported command proposals never grant local execution permission. Exports default to current shared values; personal overrides and history require explicit opt-in. Read [package validation](docs/distribution-validation.md) before preparing installers; unsigned local artifacts do not establish signing or notarization.
+
+For an older local signing identity, run `locket device rotate-signing` before issuing invitations, then refresh your recovery backup. This replaces the signing key while preserving the sealing key needed to open earlier bundles.
+
+Scanners and redaction help prepare output before sharing it. They do not isolate code or intercept an AI application's outbound requests. Programs receiving a variable can read and transmit it. Original `.env` files stay plaintext until you explicitly remove them; keep a verified recovery path before doing so.
 
 ## Install From Source
 
@@ -74,39 +80,19 @@ cargo run -p locket-cli -- <command>
 
 ## Quick Start
 
-Ask Locket what to do next:
-
-```bash
-locket setup
-```
-
-Start a new local vault:
+In your application folder, initialize Locket and migrate your variables:
 
 ```bash
 locket init --name my-app --profile dev
-```
-
-Move an existing `.env` file into the encrypted vault:
-
-```bash
 locket import .env
+locket run -- npm run dev
 ```
 
-Or add one secret from stdin:
+The first new command asks you to approve its exact arguments, working directory, and variable names. Approval saves a command in `locket.toml`. Later runs can use its saved name, for example `locket run dev`. Interactive setup can detect common package scripts; `locket setup` shows the next action for your project.
 
-```bash
-printf '%s' "$DATABASE_URL" | locket set DATABASE_URL
-```
+Import validates the whole file before writing any values. It supports quoted multiline values, empty strings, comments, and `export KEY=...`; duplicate names use the last assignment with a warning. Variable expansion is rejected by default. Use `locket import .env --literal` only when dollar expressions should remain literal text. Nothing in the file is executed. Review skipped entries before replacing values with `--overwrite`. Removal of the original requires a separate confirmation after a complete successful import; desktop imports keep it.
 
-Check metadata without printing values:
-
-```bash
-locket status
-locket list
-locket get DATABASE_URL
-```
-
-Create a run policy and start your app:
+To approve only specific variables instead:
 
 ```bash
 locket policy add dev -- npm run dev
@@ -114,21 +100,15 @@ locket policy require dev DATABASE_URL
 locket run dev
 ```
 
-Check the workspace before sharing it with a person or AI agent:
+Inspect names and state without printing values:
 
 ```bash
-locket scan .
-locket scan --require-known .
+locket list
+locket status
+locket status --scan
 ```
 
-Invite another local agent with copy/paste handoff text:
-
-```bash
-locket setup agent
-locket agent invite request
-```
-
-Open the desktop app and use **Start here** for the same workflow with guided next steps.
+Use the desktop's **Project** page for the same connect → unlock → import → command workflow. The names **Shared**, **My override**, and **This machine** describe where a value comes from. Environments such as `dev` and `staging` retain the compatible `profile` CLI syntax.
 
 ## Core Workflows
 
@@ -143,13 +123,13 @@ locket status
 locket emit-example
 ```
 
-`locket setup` is the safe first command. It prints metadata-only next steps for a new or existing project, plus focused `setup agent` and `setup share` paths for copy/paste onboarding. `locket init` creates the project configuration, prepares the local vault, updates `.gitignore`, and creates a managed `.env.example` block. It reuses the local device identity when one already exists on the machine, so new projects do not require a new backup phrase by default. Pass `--recovery-code` when you want an offline backup code during setup; otherwise you can add or rotate one later with `locket recovery rotate`.
+`locket setup` shows the next missing action. In an interactive terminal it can offer to import an existing `.env` and approve a detected development command. It never starts a project script during setup. `locket init` creates the project configuration, prepares the local vault, updates `.gitignore`, and creates a managed `.env.example` block. It reuses the local device identity when one already exists on the machine, so new projects do not require a new backup phrase by default. Pass `--recovery-code` when you want an offline backup code during setup; otherwise you can add or rotate one later with `locket recovery rotate`.
 
 ### Secrets And Profiles
 
 ```bash
 locket set <KEY> [--source user-local|machine-local|team-managed]
-locket import .env [--overwrite]
+locket import .env [--overwrite] [--literal]
 locket list [--all]
 locket get <KEY>
 locket get <KEY> --reveal
@@ -176,13 +156,14 @@ Run a saved policy or inject explicit secrets into one child process:
 ```bash
 locket run dev
 locket run npm dev
+locket run -- npm run dev
 locket env inspect --policy dev
 locket exec --secret DATABASE_URL -- <command> [args...]
 locket env docker --policy dev -- docker run ...
 locket compose run --policy dev -- docker compose up
 ```
 
-`locket run` accepts either a saved policy name or a supported runner adapter. For example, `locket run npm dev` expands to `npm run dev`, validates the `dev` script when `package.json` is present, and uses the command identity `npm:dev` for ACL checks and audit metadata. Other adapters include `pnpm`, `yarn`, `bun`, `cargo`, `make`, `just`, `task`, `poetry`, `uv`, and `python`.
+`locket run` accepts a saved policy name, a supported runner adapter, or explicit arguments after `--`. New command access requires interactive approval; noninteractive execution uses saved authorization. For example, `locket run npm dev` expands to `npm run dev`, validates the `dev` script when `package.json` is present, and uses the command identity `npm:dev` for ACL checks and audit metadata. Other adapters include `pnpm`, `yarn`, `bun`, `cargo`, `make`, `just`, `task`, `poetry`, `uv`, and `python`.
 
 In monorepos, path scopes extend the selected command policy by current directory:
 
@@ -212,6 +193,41 @@ allow_paths = ["apps/api/**"]
 When a secret has an ACL, every configured dimension must match: command identity, structured argv pattern, and project-relative path. `*` matches inside one command or argv token; `**` is supported as a full argv token to match the remaining arguments. Plain `allow_paths` entries match that directory and its descendants, while `apps/api/**` is the explicit subtree form.
 
 Execution commands prepare the child process environment for that invocation only. They do not export secrets into the parent shell.
+
+### Configuration contracts
+
+Describe required setup in `locket.toml` without committing secret values:
+
+```toml
+[variables.DATABASE_URL]
+classification = "secret"
+type = "url"
+setup_hint = "Ask a teammate for a local development database."
+
+[variables.NEXT_PUBLIC_API_URL]
+classification = "public"
+type = "url"
+default = "http://localhost:3001"
+```
+
+Keep each command's approved names in its existing `required_secrets` and
+`optional_secrets` lists. Contracts do not grant access. Only public variables
+can have defaults, which fill missing authorized names after existing sources
+and conflict rules. Types are checked before launch; errors show names, never
+values. Secret `VITE_` and `NEXT_PUBLIC_` names produce a browser exposure warning.
+The desktop's configuration panel shows missing names, setup guidance, source
+labels and unverified sources without showing values or default strings.
+
+For CI coverage without opening a vault, reading env values or starting scripts:
+
+```sh
+locket env validate --policy dev --provided-name DATABASE_URL --json
+```
+
+The report is names-only and sets `values_checked` to `false`. Exit codes are 0
+for complete coverage, 1 for missing required names and 2 for invalid input or
+access rules. It does not verify a live credential. See the
+[contract specification](docs/specs/policy.md#variable-contracts) for all fields.
 
 ### Agent And Integrations
 
@@ -267,22 +283,28 @@ Recovery and verification flows are local-first and avoid putting recovery mater
 
 ### Team And Sync
 
+Receiving device:
+
 ```bash
-locket device init
-locket device pubkey
-locket team init
-locket setup share
-locket team invite <name> --device <device-descriptor> --profile dev --role developer
-locket team accept <invite.locket>
-locket agent invite request
-locket agent invite create <label> --device <descriptor> --profile dev --role developer [--expires-in 7d]
-locket agent invite accept -
-locket team members
-locket export --sealed --recipient <device-descriptor> --profile dev
-locket import-bundle <bundle>
+locket team join --request
+# Give the descriptor to the owner and compare fingerprints separately.
+locket team join --folder /path/to/shared-folder --owner '<verified full owner fingerprint>'
+locket team sync status
 ```
 
-Team and sync workflows use encrypted files addressed to trusted devices. Agent invite commands are paste-friendly wrappers over the same team invite and accept primitives, so they never require a hosted service or plaintext secret exchange.
+Owner:
+
+```bash
+locket device init
+locket team init 'Our team'
+locket team add Alex --device '<descriptor>' --confirm-device-fingerprint '<verified full device fingerprint>' --profile dev
+locket team folder /path/to/shared-folder
+locket team publish
+```
+
+The unlocked agent delivers signed encrypted updates automatically. Held values are shown by `locket team sync pending`; the desktop provides explicit collision resolution. Follow the [team onboarding and recovery guide](docs/team-updates.md) for the complete flow.
+
+Manual `export --sealed` / `import-bundle` and older invite commands remain available for compatibility. Version 1 bundles do not authenticate the issuer; use the signed team workflow for ongoing delivery.
 
 ### Audit And Diagnostics
 

@@ -199,7 +199,7 @@ fn current_process_binding_matches_current_process() -> Result<(), PlatformError
     let binding = current_process_binding()?;
 
     assert_eq!(binding.pid, std::process::id());
-    assert!(!binding.process_start_time.is_empty());
+    assert_ne!(binding.process_start_time, "");
     assert!(process_binding_matches_live_process(&binding)?);
     Ok(())
 }
@@ -568,7 +568,7 @@ fn wrapped_device_private_key_list_is_empty_when_directory_missing() -> Result<(
         store as std::sync::Arc<dyn MasterKeyStore + Send + Sync>,
     );
     let listed = storage.list()?;
-    assert!(listed.is_empty());
+    assert_eq!(listed.len(), 0);
     Ok(())
 }
 
@@ -656,10 +656,26 @@ fn keyring_passkey_helpers_are_stable_and_metadata_only() -> Result<(), Platform
     assert_eq!(public_key, public_key_again);
     assert_ne!(public_key, secret);
     assert!(super::passkey::passkey_account(&credential_id).starts_with("prf:"));
-    assert!(!super::passkey::platform_transport_label().is_empty());
+    assert_ne!(super::passkey::platform_transport_label(), "");
 
     let prf_a = super::passkey::derive_passkey_prf(&secret, b"salt-a")?;
     let prf_b = super::passkey::derive_passkey_prf(&secret, b"salt-b")?;
     assert_ne!(prf_a, prf_b);
+    Ok(())
+}
+
+#[test]
+fn signing_storage_is_separate_and_rejects_sealing_envelope_substitution()
+-> Result<(), PlatformError> {
+    let directory = tempfile::tempdir()?;
+    let store = populated_master_key_store(MASTER_KEY)?;
+    let sealing = WrappedLocalFileDevicePrivateKeyStorage::new(directory.path(), PROJECT_ID, store);
+    let signing = sealing.clone().for_signing();
+    sealing.store(DEVICE_ID_A, &PRIVATE_KEY_A)?;
+    signing.store(DEVICE_ID_A, &PRIVATE_KEY_B)?;
+    assert_eq!(*sealing.load(DEVICE_ID_A)?, PRIVATE_KEY_A);
+    assert_eq!(*signing.load(DEVICE_ID_A)?, PRIVATE_KEY_B);
+    std::fs::copy(sealing.envelope_path(DEVICE_ID_A)?, signing.envelope_path(DEVICE_ID_A)?)?;
+    assert!(signing.load(DEVICE_ID_A).is_err());
     Ok(())
 }

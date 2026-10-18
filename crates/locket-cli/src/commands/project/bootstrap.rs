@@ -7,11 +7,10 @@ use std::fs;
 use std::io::Write;
 use std::path::Path;
 
-use crate::runtime::key_access::load_profile_key;
 use crate::{
-    CliError, EXAMPLE_FILE, HOOK_BEGIN, HOOK_END, LOCKET_TOML, ResolvedProject, RunArgs,
-    RuntimeContext, git_dir_for_worktree, load_project_key, metadata_invalid_error, now_unix_nanos,
-    open_store, read_policy_document, require_project, root_hash, yes_no,
+    CliError, EXAMPLE_FILE, HOOK_BEGIN, HOOK_END, LOCKET_TOML, ResolvedProject, RuntimeContext,
+    git_dir_for_worktree, load_project_key, metadata_invalid_error, now_unix_nanos, open_store,
+    read_policy_document, require_project, root_hash, yes_no,
 };
 
 pub fn bootstrap_command(
@@ -22,7 +21,6 @@ pub fn bootstrap_command(
     let mut store = open_store(context)?;
     let report = collect_bootstrap_report(context, &resolved, &store)?;
     write_bootstrap_report(output, &report)?;
-    run_smoke_policy_if_configured(context, output, &report)?;
     write_bootstrap_audit_if_available(context, &mut store, &resolved, &report)?;
     Ok(())
 }
@@ -54,9 +52,13 @@ struct BootstrapReport {
     profile_name: String,
     project_in_store: bool,
     profile_ready: bool,
-    profile_unlocked: bool,
+    profile_unlocked: Option<bool>,
     trusted_root: bool,
-    agent_startable: bool,
+    agent_running: bool,
+    missing_variables: Vec<String>,
+    unverified_variables: Vec<String>,
+    unverified_commands: Vec<String>,
+    run_policy: Option<String>,
     example_exists: bool,
     hook_state: HookState,
     policy_count: usize,
@@ -89,11 +91,59 @@ fn collect_bootstrap_report(
     let smoke_policy_present = smoke_policy
         .as_ref()
         .is_some_and(|name| policy_document.commands.contains_key(name.as_str()));
-    let profile_unlocked = profile.as_ref().is_some_and(|profile| {
-        active_profile_keys_are_unlocked(context, store, project_id, &profile.id)
-    });
-    let agent_startable =
-        crate::commands::agent::ensure_agent_running_for_execution(context).is_ok();
+    let snapshot = crate::commands::agent::request_project_status_snapshot(
+        &crate::agent_socket_path(context),
+        resolved.config.project_id.as_str(),
+    )
+    .ok();
+    let profile_unlocked = snapshot
+        .as_ref()
+        .filter(|snapshot| {
+            snapshot.get("project_id").and_then(serde_json::Value::as_str) == Some(project_id)
+        })
+        .and_then(|snapshot| snapshot.get("lock_state"))
+        .and_then(serde_json::Value::as_str)
+        .and_then(|state| match state {
+            "locked" => Some(false),
+            "unlocked" => Some(true),
+            _ => None,
+        });
+    let agent_running = snapshot.is_some();
+    let mut missing_variables = BTreeSet::new();
+    let mut unverified_variables = BTreeSet::new();
+    let mut unverified_commands = Vec::new();
+    if project.is_some() && profile.is_some() {
+        for (name, base) in &policy_document.commands {
+            let availability = crate::load_effective_command_policy(resolved, name, &context.cwd)
+                .and_then(|effective| {
+                    let policy_profile =
+                        crate::effective_policy_profile(store, resolved, &effective)?;
+                    crate::commands::exec::run::required_variable_availability(
+                        store,
+                        resolved,
+                        &policy_profile,
+                        &effective.policy,
+                    )
+                });
+            if let Ok(availability) = availability {
+                missing_variables.extend(availability.missing);
+                unverified_variables.extend(availability.unknown);
+            } else {
+                // Readiness is diagnostic: missing local profiles/files are
+                // repair actions, never a reason to lose the whole report.
+                unverified_variables
+                    .extend(base.required_secrets.iter().map(|name| name.as_str().to_owned()));
+                unverified_commands.push(name.clone());
+            }
+        }
+    }
+    let run_policy = policy_document
+        .commands
+        .get("dev")
+        .or_else(|| policy_document.commands.values().next())
+        .map(|policy| policy.name.clone());
+    let team_status =
+        if store.get_team_by_project(project_id)?.is_some() { "team" } else { "solo" };
 
     Ok(BootstrapReport {
         project_name: resolved.config.name.clone(),
@@ -103,7 +153,11 @@ fn collect_bootstrap_report(
         profile_ready: profile.is_some(),
         profile_unlocked,
         trusted_root,
-        agent_startable,
+        agent_running,
+        missing_variables: missing_variables.into_iter().collect(),
+        unverified_variables: unverified_variables.into_iter().collect(),
+        unverified_commands,
+        run_policy,
         example_exists,
         hook_state,
         policy_count,
@@ -112,7 +166,7 @@ fn collect_bootstrap_report(
         tools_checked: tool_report.checked,
         missing_tools: tool_report.missing,
         unchecked_tools: tool_report.unchecked,
-        team_status: "solo",
+        team_status,
     })
 }
 
@@ -124,9 +178,27 @@ fn write_bootstrap_report(
     writeln!(output, "project_id: {}", report.project_id)?;
     writeln!(output, "profile: {}", report.profile_name)?;
     writeln!(output, "profile_ready: {}", yes_no(report.profile_ready))?;
-    writeln!(output, "profile_unlocked: {}", yes_no(report.profile_unlocked))?;
+    writeln!(output, "profile_unlocked: {}", report.profile_unlocked.map_or("unknown", yes_no))?;
     writeln!(output, "store_project: {}", yes_no(report.project_in_store))?;
-    writeln!(output, "agent_startable: {}", yes_no(report.agent_startable))?;
+    writeln!(output, "agent_running: {}", yes_no(report.agent_running))?;
+    writeln!(
+        output,
+        "missing_variables: {}",
+        if report.missing_variables.is_empty() {
+            "none".to_owned()
+        } else {
+            report.missing_variables.join(",")
+        }
+    )?;
+    writeln!(
+        output,
+        "unverified_variables: {}",
+        if report.unverified_variables.is_empty() {
+            "none".to_owned()
+        } else {
+            report.unverified_variables.join(",")
+        }
+    )?;
     writeln!(output, ".env.example: {}", yes_no(report.example_exists))?;
     writeln!(output, "trusted_root: {}", yes_no(report.trusted_root))?;
     writeln!(output, "pre_commit_hook: {}", report.hook_state.as_str())?;
@@ -141,8 +213,9 @@ fn write_bootstrap_report(
         None => writeln!(output, "smoke_policy: none")?,
     }
     writeln!(output, "metadata_only: yes")?;
-    writeln!(output, "next_actions:")?;
     let actions = bootstrap_next_actions(report);
+    writeln!(output, "next_action: {}", actions.first().map_or("none", String::as_str))?;
+    writeln!(output, "next_actions:")?;
     if actions.is_empty() {
         writeln!(output, "- none")?;
     } else {
@@ -158,10 +231,10 @@ fn bootstrap_next_actions(report: &BootstrapReport) -> Vec<String> {
     if !report.project_in_store || !report.profile_ready {
         actions.push("run locket init to resume local metadata setup".to_owned());
     }
-    if report.profile_ready && !report.profile_unlocked {
+    if report.profile_ready && report.profile_unlocked == Some(false) {
         actions.push("run locket unlock for the active profile".to_owned());
     }
-    if !report.agent_startable {
+    if !report.agent_running {
         actions.push("run locket agent start".to_owned());
     }
     if !report.example_exists {
@@ -181,18 +254,27 @@ fn bootstrap_next_actions(report: &BootstrapReport) -> Vec<String> {
     if !report.missing_tools.is_empty() {
         actions.push(format!("install missing tool(s): {}", report.missing_tools.join(", ")));
     }
+    if !report.missing_variables.is_empty() {
+        for name in &report.missing_variables {
+            actions.push(format!("run locket set {name}"));
+        }
+    }
+    for name in &report.unverified_commands {
+        actions.push(format!("run locket env inspect {name} to check local files and profiles"));
+    }
+    if !report.unverified_variables.is_empty()
+        && let Some(name) = &report.run_policy
+    {
+        actions.push(format!("run locket env inspect {name}"));
+    }
+    if actions.is_empty() {
+        if let Some(name) = &report.run_policy {
+            actions.push(format!("run locket run {name}"));
+        } else {
+            actions.push("run locket setup".to_owned());
+        }
+    }
     actions
-}
-
-fn active_profile_keys_are_unlocked(
-    context: &RuntimeContext,
-    store: &Store,
-    project_id: &str,
-    profile_id: &str,
-) -> bool {
-    [KeyPurpose::ProfileSecret, KeyPurpose::ProfileFingerprint]
-        .into_iter()
-        .all(|purpose| load_profile_key(context, store, project_id, profile_id, purpose).is_ok())
 }
 
 #[derive(Debug, Default)]
@@ -607,26 +689,6 @@ fn write_tool_report(output: &mut impl Write, report: &BootstrapReport) -> Resul
     Ok(())
 }
 
-fn run_smoke_policy_if_configured(
-    context: &RuntimeContext,
-    output: &mut impl Write,
-    report: &BootstrapReport,
-) -> Result<(), CliError> {
-    let Some(name) = report.smoke_policy.as_ref() else {
-        return Ok(());
-    };
-    if !report.smoke_policy_present {
-        return Ok(());
-    }
-    crate::commands::exec::run::run_command(
-        context,
-        output,
-        &RunArgs { policy: name.clone(), runner_args: Vec::new() },
-    )?;
-    writeln!(output, "smoke_policy_run: passed ({name})")?;
-    Ok(())
-}
-
 fn detect_pre_commit_hook_state(root: &Path) -> HookState {
     let Ok(git_dir) = git_dir_for_worktree(root) else {
         return HookState::NotGitRepo;
@@ -727,4 +789,44 @@ fn write_bootstrap_audit_if_available(
     };
     store.append_audit(audit_key.as_ref(), &audit)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod readiness_tests {
+    use clap::Parser;
+    #[test]
+    fn fresh_clone_readiness_reports_init_instead_of_requiring_profile()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let context = crate::tests::test_context(&directory);
+        std::fs::write(
+            directory.path().join("locket.toml"),
+            "schema_version=1\nproject_id=\"lk_proj_clone\"\nname=\"clone\"\ndefault_profile=\"dev\"\n[commands.dev]\nargv=[\"true\"]\nrequired_secrets=[\"API_KEY\"]\n",
+        )?;
+        let mut output = Vec::new();
+        super::bootstrap_command(&context, &mut output)?;
+        assert!(String::from_utf8(output)?.contains("run locket init"));
+        Ok(())
+    }
+    #[test]
+    fn bootstrap_counts_declared_parent_variables_without_running_children()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let context = crate::tests::test_context(&directory);
+        crate::run_with_context(
+            crate::Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey"])?,
+            &context,
+            &mut Vec::new(),
+        )?;
+        let path = directory.path().join("locket.toml");
+        let mut text = std::fs::read_to_string(&path)?;
+        text.push_str("\n[commands.dev]\nargv=[\"/usr/bin/true\"]\nrequired_secrets=[\"PATH\"]\nexternal_env_sources=[\"parent\"]\n");
+        std::fs::write(path, text)?;
+        let resolved = crate::require_project(&context)?;
+        let store = crate::open_store(&context)?;
+        let report = super::collect_bootstrap_report(&context, &resolved, &store)?;
+        assert_eq!(report.missing_variables, [] as [String; 0]);
+        assert!(!crate::agent_socket_path(&context).exists());
+        Ok(())
+    }
 }

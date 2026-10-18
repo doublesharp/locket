@@ -43,6 +43,7 @@ function policy(overrides: Partial<CommandPolicyRow>): CommandPolicyRow {
     allowedSecrets: [],
     confirm: false,
     requireUserVerification: true,
+    requireAgent: false,
     allowRemoteDocker: false,
     ttlSeconds: 60,
     envMode: 'minimal',

@@ -62,6 +62,9 @@ pub use recovery::{
     RECOVERY_KDF_TOML_VERSION, RecoveryEnvelope, RecoveryEnvelopeEntry, RecoveryKdfToml,
     load_recovery_envelope, load_recovery_kdf_toml, save_recovery_envelope, save_recovery_kdf_toml,
 };
+pub use storage::policy_file::{
+    PolicyFileDocument, PolicyFileError, SECRET_FILE_IGNORE_PATTERNS, ensure_secret_file_ignores,
+};
 pub use user_verification::{
     LocalUserVerification, LocalUserVerificationMethod, LocalUserVerificationRequest,
     LocalUserVerifier, MemoryLocalUserVerifier, UnavailableLocalUserVerifier,

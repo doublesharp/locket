@@ -44,3 +44,9 @@ describe('deriveTrayState', () => {
     );
   });
 });
+
+it('keeps global scan warnings visible when project-specific counts are unknown', () => {
+  expect(
+    deriveTrayState(status({ scan_warning_count: 2, scan_warning_count_known: false }), null),
+  ).toBe('scan-warning');
+});

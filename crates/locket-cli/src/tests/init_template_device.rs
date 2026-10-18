@@ -73,12 +73,13 @@ optional_secrets = ["API_KEY"]
     let bootstrap_output = String::from_utf8(bootstrap_output)?;
     assert!(bootstrap_output.contains("project: web-app"));
     assert!(bootstrap_output.contains("profile: dev"));
-    assert!(bootstrap_output.contains("profile_unlocked: yes"));
-    assert!(bootstrap_output.contains("agent_startable: yes"));
+    assert!(bootstrap_output.contains("profile_unlocked: unknown"));
+    assert!(bootstrap_output.contains("agent_running: no"));
+    assert!(!crate::agent_socket_path(&context).exists());
     assert!(bootstrap_output.contains(".env.example: yes"));
     assert!(bootstrap_output.contains("trusted_root: yes"));
     assert!(bootstrap_output.contains("metadata_only: yes"));
-    assert!(bootstrap_output.contains("- none"));
+    assert!(bootstrap_output.contains("- run locket agent start"));
     assert!(bootstrap_output.contains("team: solo"));
     assert!(bootstrap_output.contains("policies: 1"));
     assert!(bootstrap_output.contains("tools_present: yes (checked 1)"));
@@ -125,10 +126,10 @@ argv = ["/bin/sh", "-c", "printf smoke-ok > smoke-ran.txt"]
     )?;
     let bootstrap_output = String::from_utf8(bootstrap_output)?;
     assert!(bootstrap_output.contains("smoke_policy: configured (smoke)"));
-    assert!(bootstrap_output.contains("smoke_policy_run: passed (smoke)"));
+    assert!(!bootstrap_output.contains("smoke_policy_run:"));
     assert!(bootstrap_output.contains("policies: 1"));
-    assert!(bootstrap_output.contains("- none"));
-    assert_eq!(std::fs::read_to_string(directory.path().join("smoke-ran.txt"))?, "smoke-ok");
+    assert!(bootstrap_output.contains("- run locket agent start"));
+    assert!(!directory.path().join("smoke-ran.txt").exists());
 
     let store = locket_store::Store::open(directory.path().join("store.db"))?;
     let bootstrap_audit = store.connection().query_row(
@@ -180,12 +181,12 @@ shell = "LOCKET_BOOTSTRAP=1 cargo --version && definitely-missing-locket-shell-t
     )?;
     let bootstrap_output = String::from_utf8(bootstrap_output)?;
     assert!(bootstrap_output.contains("profile_ready: yes"));
-    assert!(bootstrap_output.contains("profile_unlocked: no"));
+    assert!(bootstrap_output.contains("profile_unlocked: unknown"));
     assert!(bootstrap_output.contains(
         "tools_present: missing (definitely-missing-locket-bootstrap-tool,definitely-missing-locket-shell-tool)"
     ));
     assert!(bootstrap_output.contains("tools_unchecked: shell:dynamic"));
-    assert!(bootstrap_output.contains("- run locket unlock for the active profile"));
+    assert!(bootstrap_output.contains("- run locket agent start"));
     assert!(bootstrap_output.contains(
         "- install missing tool(s): definitely-missing-locket-bootstrap-tool, definitely-missing-locket-shell-tool"
     ));
@@ -639,7 +640,7 @@ fn device_commands_initialize_describe_add_list_and_revoke_metadata_only()
         .find_map(|line| line.strip_prefix("device_id: "))
         .ok_or("missing device id")?
         .to_owned();
-    assert!(descriptor.starts_with("lkdev1_"));
+    assert!(descriptor.starts_with("lkdev2_"));
 
     output.clear();
     run_with_context(Cli::try_parse_from(["locket", "device", "pubkey"])?, &context, &mut output)?;
@@ -1992,7 +1993,7 @@ fn device_init_force_requires_local_user_verification_before_rekey()
         return Err("device init --force must fail when verification is denied".into());
     };
     assert_eq!(error.exit_code(), locket_core::LocketError::UserVerificationFailed.exit_code());
-    assert!(output.is_empty());
+    assert_eq!(output.len(), 0);
 
     let store = locket_store::Store::open(directory.path().join("store.db"))?;
     let project_id: String =
@@ -2620,7 +2621,7 @@ fn team_invite_creates_signed_file_pending_row_and_audit() -> Result<(), Box<dyn
     assert_eq!(invite.payload.recipient_device_fingerprint, recipient_fingerprint);
     assert_eq!(invite.payload.role, locket_core::TeamRole::Developer);
     assert_eq!(invite.payload.profiles, vec!["dev".to_owned()]);
-    assert!(!invite.signature.is_empty());
+    assert_ne!(invite.signature, "");
     let sealed_payload = invite.payload.sealed_payload.as_ref().ok_or("sealed payload")?;
     assert_eq!(sealed_payload.v, 1);
     assert_eq!(sealed_payload.plaintext_counts.profile_key_count, 2);
@@ -3069,12 +3070,12 @@ fn team_accept_verifies_invite_displays_trust_summary_and_records_audit()
                     {
                         "profile_name": "dev",
                         "purpose": "profile-secret",
-                        "key_material_b64": data_encoding::BASE64URL_NOPAD.encode(&[0xA5; 32]),
+                        "key_material_b64": data_encoding::BASE64URL_NOPAD.encode(crate::runtime::key_access::load_profile_key(&context, &store, config.project_id.as_str(), &store.get_profile_by_name(config.project_id.as_str(), "dev")?.ok_or("dev profile missing")?.id, locket_crypto::KeyPurpose::ProfileSecret)?.as_slice()),
                     },
                     {
                         "profile_name": "dev",
                         "purpose": "profile-fingerprint",
-                        "key_material_b64": data_encoding::BASE64URL_NOPAD.encode(&[0x5A; 32]),
+                        "key_material_b64": data_encoding::BASE64URL_NOPAD.encode(crate::runtime::key_access::load_profile_key(&context, &store, config.project_id.as_str(), &store.get_profile_by_name(config.project_id.as_str(), "dev")?.ok_or("dev profile missing")?.id, locket_crypto::KeyPurpose::ProfileFingerprint)?.as_slice()),
                     },
                 ],
                 "command_policies": [{
@@ -3144,8 +3145,8 @@ fn team_accept_verifies_invite_displays_trust_summary_and_records_audit()
     assert!(output.contains("team_accept: pending"), "{output}");
     assert!(output.contains("team_accept: accepted"), "{output}");
     assert!(output.contains("sealed_payload: applied"), "{output}");
-    assert!(output.contains("applied_profile_keys: 2"), "{output}");
-    assert!(output.contains("applied_command_policies: 1"), "{output}");
+    assert!(output.contains("applied_profile_keys: 0"), "{output}");
+    assert!(output.contains("applied_command_policies: 0"), "{output}");
     assert!(output.contains("issuer_fingerprint:"), "{output}");
     assert!(output.contains("issuer_safety_words:"), "{output}");
     assert!(output.contains("role: developer"), "{output}");
@@ -3174,8 +3175,8 @@ fn team_accept_verifies_invite_displays_trust_summary_and_records_audit()
     assert_eq!(metadata["role"], "developer");
     assert_eq!(metadata["profiles"], json!(["dev"]));
     assert_eq!(metadata["sealed_payload_applied"], true);
-    assert_eq!(metadata["applied_profile_key_count"], 2);
-    assert_eq!(metadata["applied_command_policy_count"], 1);
+    assert_eq!(metadata["applied_profile_key_count"], 0);
+    assert_eq!(metadata["applied_command_policy_count"], 0);
     // The configured-user-verification gate runs after the fingerprint
     // confirmation. With the default test runtime context (no
     // `user_verification_required_for.team_accept` config) the gate is a
@@ -3196,7 +3197,11 @@ fn team_accept_verifies_invite_displays_trust_summary_and_records_audit()
     assert_eq!(row_count("secrets")?, 0, "team accept must not import secrets");
     assert_eq!(row_count("secret_versions")?, 0, "team accept must not import secret_versions");
     assert_eq!(row_count("blobs")?, 0, "team accept must not import secret blobs");
-    assert_eq!(row_count("command_policies")?, 1, "team accept must import command_policies");
+    assert_eq!(
+        row_count("command_policies")?,
+        0,
+        "team accept must not authorize command policies"
+    );
     Ok(())
 }
 
@@ -4381,7 +4386,7 @@ fn device_envelope_path(directory: &tempfile::TempDir, device_id: &str) -> std::
 }
 
 #[test]
-fn device_init_force_cleans_up_prior_wrapped_envelope() -> Result<(), Box<dyn std::error::Error>> {
+fn device_init_force_preserves_prior_sealing_envelope() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempdir()?;
     let context = test_context(&directory);
 
@@ -4436,8 +4441,8 @@ fn device_init_force_cleans_up_prior_wrapped_envelope() -> Result<(), Box<dyn st
     assert_ne!(replacement_id, original_id);
 
     assert!(
-        !original_envelope.exists(),
-        "prior wrapped envelope must be deleted after device init --force"
+        original_envelope.exists(),
+        "prior sealing envelope must remain available for old bundle recovery"
     );
     assert!(
         device_envelope_path(&directory, &replacement_id).exists(),
@@ -5097,4 +5102,213 @@ fn init_recovery_code_displayed_even_when_passkey_registration_fails()
 fn init_no_passkey_conflicts_with_register_passkey_at_clap_parse_time() {
     let result = Cli::try_parse_from(["locket", "init", "--no-passkey", "--register-passkey"]);
     assert!(result.is_err(), "clap must reject --no-passkey + --register-passkey as a conflict");
+}
+
+#[test]
+fn team_join_request_bootstraps_no_speculative_shared_profile_keys()
+-> Result<(), Box<dyn std::error::Error>> {
+    let owner = tempdir()?;
+    let owner_context = test_context(&owner);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app"])?,
+        &owner_context,
+        &mut Vec::new(),
+    )?;
+    let receiver = tempdir()?;
+    fs::copy(owner.path().join("locket.toml"), receiver.path().join("locket.toml"))?;
+    let receiver_context = test_context(&receiver);
+    let mut output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "team", "join", "--request"])?,
+        &receiver_context,
+        &mut output,
+    )?;
+    let output = String::from_utf8(output)?;
+    assert!(output.contains("lkdev2_"));
+    assert!(!output.contains("key_material"));
+    let config = crate::read_project_config(&receiver.path().join("locket.toml"))?;
+    let store = locket_store::Store::open(receiver.path().join("store.db"))?;
+    assert_eq!(
+        store.connection().query_row(
+            "SELECT COUNT(*) FROM keys WHERE profile_id IS NOT NULL",
+            [],
+            |row| row.get::<_, u32>(0)
+        )?,
+        0
+    );
+    assert!(store.get_team_by_project(config.project_id.as_str())?.is_none());
+    let device =
+        store.get_active_local_device(config.project_id.as_str())?.ok_or("device missing")?;
+    let mut again = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "team", "join", "--request"])?,
+        &receiver_context,
+        &mut again,
+    )?;
+    assert!(String::from_utf8(again)?.contains(&device.fingerprint));
+    Ok(())
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn authenticated_team_cli_joins_independent_store_and_receives_next_update()
+-> Result<(), Box<dyn std::error::Error>> {
+    let owner = tempdir()?;
+    let owner_context = test_context_with_secret_value(&owner, "team-cli-first-synthetic-value");
+    let mut log = Vec::new();
+    for args in [
+        vec!["locket", "init", "--name", "app"],
+        vec!["locket", "device", "init"],
+        vec!["locket", "team", "init", "Synthetic team"],
+        vec!["locket", "set", "API_KEY", "--source", "team-managed"],
+    ] {
+        run_with_context(Cli::try_parse_from(args)?, &owner_context, &mut log)
+            .map_err(|error| format!("team step: {error}"))?;
+    }
+    let config = crate::read_project_config(&owner.path().join("locket.toml"))?;
+    let owner_store = locket_store::Store::open(owner.path().join("store.db"))?;
+    let owner_device =
+        owner_store.get_active_local_device(config.project_id.as_str())?.ok_or("owner missing")?;
+    let receiver = tempdir()?;
+    fs::copy(owner.path().join("locket.toml"), receiver.path().join("locket.toml"))?;
+    let receiver_context = test_context(&receiver);
+    run_with_context(
+        Cli::try_parse_from(["locket", "team", "join", "--request"])?,
+        &receiver_context,
+        &mut Vec::new(),
+    )
+    .map_err(|error| format!("join: {error}"))?;
+    let receiver_store = locket_store::Store::open(receiver.path().join("store.db"))?;
+    let receiver_device = receiver_store
+        .get_active_local_device(config.project_id.as_str())?
+        .ok_or("receiver missing")?;
+    let descriptor = crate::commands::team::device::encode_device_descriptor(&receiver_device)?;
+    run_with_context(
+        Cli::try_parse_from([
+            "locket",
+            "team",
+            "add",
+            "Receiver",
+            "--device",
+            &descriptor,
+            "--confirm-device-fingerprint",
+            &receiver_device.fingerprint,
+            "--profile",
+            "dev",
+        ])?,
+        &owner_context,
+        &mut log,
+    )
+    .map_err(|error| format!("add: {error}"))?;
+    let shared = tempdir()?;
+    let shared_path = shared.path().to_str().ok_or("folder")?;
+    run_with_context(
+        Cli::try_parse_from(["locket", "team", "folder", shared_path])?,
+        &owner_context,
+        &mut log,
+    )
+    .map_err(|error| format!("folder: {error}"))?;
+    run_with_context(Cli::try_parse_from(["locket", "team", "publish"])?, &owner_context, &mut log)
+        .map_err(|error| format!("publish: {error}"))?;
+    // A joining device must choose the latest full snapshot, then ignore
+    // older pre-anchor packages left in the same delivery folder.
+    run_with_context(
+        Cli::try_parse_from(["locket", "set", "ANOTHER_KEY", "--source", "team-managed"])?,
+        &owner_context,
+        &mut log,
+    )?;
+    run_with_context(
+        Cli::try_parse_from(["locket", "team", "publish"])?,
+        &owner_context,
+        &mut log,
+    )?;
+    run_with_context(
+        Cli::try_parse_from([
+            "locket",
+            "team",
+            "join",
+            "--folder",
+            shared_path,
+            "--owner",
+            &owner_device.fingerprint,
+        ])?,
+        &receiver_context,
+        &mut log,
+    )
+    .map_err(|error| format!("join: {error}"))?;
+    let mut revealed = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "get", "API_KEY", "--reveal", "--force"])?,
+        &receiver_context,
+        &mut revealed,
+    )
+    .map_err(|error| format!("get: {error}"))?;
+    assert_eq!(String::from_utf8(revealed)?, "team-cli-first-synthetic-value\n");
+    let next_context = RuntimeContext {
+        secret_value_reader: Arc::new(StaticSecretValueReader::new(
+            "team-cli-second-synthetic-value",
+        )),
+        ..owner_context
+    };
+    run_with_context(
+        Cli::try_parse_from(["locket", "rotate", "API_KEY", "--source", "team-managed"])?,
+        &next_context,
+        &mut log,
+    )
+    .map_err(|error| format!("rotate: {error}"))?;
+    run_with_context(Cli::try_parse_from(["locket", "team", "publish"])?, &next_context, &mut log)
+        .map_err(|error| format!("publish: {error}"))?;
+    run_with_context(
+        Cli::try_parse_from(["locket", "team", "sync", "now"])?,
+        &receiver_context,
+        &mut log,
+    )
+    .map_err(|error| format!("sync: {error}"))?;
+    let mut revealed = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "get", "API_KEY", "--reveal", "--force"])?,
+        &receiver_context,
+        &mut revealed,
+    )
+    .map_err(|error| format!("get: {error}"))?;
+    assert_eq!(String::from_utf8(revealed)?, "team-cli-second-synthetic-value\n");
+    let log = String::from_utf8(log)?;
+    assert!(!log.contains("team-cli-first-synthetic-value"));
+    assert!(!log.contains("team-cli-second-synthetic-value"));
+    assert_eq!(
+        receiver_store
+            .connection()
+            .query_row("SELECT COUNT(*) FROM team_invites", [], |r| r.get::<_, u32>(0))?,
+        0
+    );
+    Ok(())
+}
+
+#[test]
+fn team_join_request_supports_passphrase_only_private_key_envelopes()
+-> Result<(), Box<dyn std::error::Error>> {
+    let owner = tempdir()?;
+    let owner_context = test_context(&owner);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app"])?,
+        &owner_context,
+        &mut Vec::new(),
+    )?;
+    let receiver = tempdir()?;
+    fs::copy(owner.path().join("locket.toml"), receiver.path().join("locket.toml"))?;
+    let context = test_context_with_key_store(&receiver, Arc::new(UnavailableMasterKeyStore));
+    run_with_context(
+        Cli::try_parse_from(["locket", "team", "join", "--request"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    let config = crate::read_project_config(&receiver.path().join("locket.toml"))?;
+    assert!(context.passphrase_store.contains_project(config.project_id.as_str())?);
+    let store = locket_store::Store::open(receiver.path().join("store.db"))?;
+    let device =
+        store.get_active_local_device(config.project_id.as_str())?.ok_or("device missing")?;
+    let signing =
+        crate::commands::team::device::load_device_signing_key(&context, &store, &device)?;
+    assert_eq!(signing.verifying_key().as_bytes().as_slice(), device.signing_public_key);
+    Ok(())
 }

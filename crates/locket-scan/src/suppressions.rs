@@ -459,7 +459,7 @@ mod tests {
     fn directive_without_comment_prefix_is_ignored() -> Result<(), Box<dyn Error>> {
         let map = parse_suppression_map("data locket-suppress: not a real directive\n")?;
         assert!(map.line_entries().is_empty());
-        assert!(map.block_entries().is_empty());
+        assert_eq!(map.block_entries().len(), 0);
         Ok(())
     }
 

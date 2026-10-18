@@ -5,6 +5,14 @@ use thiserror::Error;
 /// Error returned when a command policy document is invalid.
 #[derive(Debug, Clone, Eq, Error, PartialEq)]
 pub enum PolicyParseError {
+    /// A variable contract is invalid; diagnostic never contains its values.
+    #[error("invalid variable contract {name}: {reason}")]
+    VariableContract {
+        /// Valid variable name, or a redacted placeholder.
+        name: String,
+        /// Static value-free reason.
+        reason: &'static str,
+    },
     /// TOML syntax or decoding failed.
     #[error("invalid policy TOML: {message}")]
     Toml {

@@ -2,13 +2,22 @@
 
 mod command;
 mod document;
+mod edit;
 mod env_source;
 mod error;
 mod path_scope;
 mod secret_acl;
+mod variable_contract;
+pub use variable_contract::{
+    VariableClassification, VariableContract, VariableReadinessRow, VariableReadinessState,
+    VariableType, variable_exposure_warning,
+};
 
 pub use command::{CommandPolicy, CommandSpec, MAX_COMMAND_POLICY_TTL_SECONDS, PolicyFieldSource};
 pub use document::PolicyDocument;
+pub use edit::{
+    PolicyEditError, command_policy_value, policy_source_digest, render_policy_document,
+};
 pub use env_source::ExternalEnvSource;
 pub use error::PolicyParseError;
 pub use path_scope::PathEnvSet;
@@ -369,9 +378,9 @@ allow_remote_docker = true
 
         let policy = document.commands.get("dev").ok_or("missing dev policy")?;
 
-        assert!(policy.required_secrets.is_empty());
-        assert!(policy.optional_secrets.is_empty());
-        assert!(policy.allowed_secrets.is_empty());
+        assert_eq!(policy.required_secrets.len(), 0);
+        assert_eq!(policy.optional_secrets.len(), 0);
+        assert_eq!(policy.allowed_secrets.len(), 0);
         assert!(!policy.confirm);
         assert!(!policy.require_user_verification);
         assert!(policy.allow_remote_docker);
@@ -700,7 +709,7 @@ confirm = true
         assert_eq!(dev.required_secrets.len(), 1);
         let test = document.commands.get("test").ok_or("missing test")?;
         assert_eq!(test.optional_secrets.len(), 1);
-        assert!(test.required_secrets.is_empty());
+        assert_eq!(test.required_secrets.len(), 0);
         let deploy = document.commands.get("deploy").ok_or("missing deploy")?;
         assert!(deploy.confirm);
         assert_eq!(deploy.required_secrets.len(), 2);
@@ -906,7 +915,7 @@ override = "error"
     #[test]
     fn parse_error_root_must_be_table_display() {
         let err = PolicyParseError::RootMustBeTable;
-        assert!(!err.to_string().is_empty());
+        assert_ne!(err.to_string(), "");
     }
 
     #[test]
@@ -1044,7 +1053,7 @@ inherit_env = []
 "#,
         )?;
         let policy = document.commands.get("dev").ok_or("missing dev")?;
-        assert!(policy.inherit_env.is_empty());
+        assert_eq!(policy.inherit_env.len(), 0);
         Ok(())
     }
 
@@ -1222,5 +1231,51 @@ mod proptest_policy {
                 "allowed must be superset of required+optional"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod configuration_contract_tests {
+    use super::PolicyDocument;
+
+    #[test]
+    fn configuration_contract_accepts_public_defaults_and_secret_metadata()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let text = r#"schema_version=1
+[variables.PORT]
+classification="public"
+type="integer"
+default="3001"
+description="Local listener"
+setup_hint="Choose a free local port"
+[variables.TOKEN]
+description="Development API token"
+[commands.dev]
+argv=["echo"]
+required_secrets=["PORT","TOKEN"]
+[secrets.TOKEN]
+allow_commands=["dev"]
+"#;
+        let document = PolicyDocument::from_toml_str(text)?;
+        assert_eq!(document.variables.len(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn configuration_contract_errors_never_include_values() -> Result<(), Box<dyn std::error::Error>>
+    {
+        for body in [
+            "classification='secret'\ndefault='canary-do-not-print'",
+            "classification='public'\ntype='integer'\ndefault='canary-do-not-print'",
+            "classification='canary-do-not-print'",
+            "classification='public'\ndefault='lk://dev/KEY?canary-do-not-print'",
+            "unknown='canary-do-not-print'",
+        ] {
+            let text = format!("schema_version=1\n[variables.TOKEN]\n{body}");
+            let error =
+                PolicyDocument::from_toml_str(&text).err().ok_or("invalid contract must fail")?;
+            assert!(!error.to_string().contains("canary-do-not-print"));
+        }
+        Ok(())
     }
 }

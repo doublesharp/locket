@@ -1,15 +1,24 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, ref, watch } from 'vue';
+import VariableReadinessPanel from '../components/VariableReadinessPanel.vue';
 
 import type { CommandPolicyRow } from '../types/views';
 
 defineOptions({ name: 'PolicyEditor' });
 
 interface Props {
+  projectId?: string;
+  profileId?: string;
   rows: CommandPolicyRow[];
   privacyMode: boolean;
   loading: boolean;
+  metadataLoaded: boolean;
+  actionGuidance?: string | null;
   errorMessage?: string | null;
+  actionsEnabled: boolean;
+  running?: boolean;
+  runError?: string | null;
+  runNotice?: string | null;
 }
 
 const props = defineProps<Props>();
@@ -18,8 +27,10 @@ const emit = defineEmits<{
   create: [];
   edit: [row: CommandPolicyRow];
   delete: [row: CommandPolicyRow];
+  run: [row: CommandPolicyRow];
 }>();
 
+const configurationMissing = ref(false);
 const selectedId = ref<string | null>(null);
 const searchQuery = ref<string>('');
 
@@ -42,7 +53,16 @@ const selectedPolicy = computed<CommandPolicyRow | null>(() => {
   return filteredRows.value.find((row) => row.id === selectedId.value) ?? filteredRows.value[0];
 });
 
-const isEmpty = computed<boolean>(() => !props.loading && sortedRows.value.length === 0);
+watch(
+  () => [props.projectId, props.profileId, selectedPolicy.value?.name],
+  () => {
+    configurationMissing.value = false;
+  },
+);
+
+const isEmpty = computed<boolean>(
+  () => props.metadataLoaded && !props.loading && sortedRows.value.length === 0,
+);
 const isFilteredEmpty = computed<boolean>(
   () => !props.loading && sortedRows.value.length > 0 && filteredRows.value.length === 0,
 );
@@ -66,6 +86,7 @@ function gateLabels(row: CommandPolicyRow): string[] {
   if (row.requireUserVerification) {
     labels.push('verify user');
   }
+  if (row.requireAgent) labels.push('agent required');
   if (row.allowRemoteDocker) {
     labels.push('remote docker');
   }
@@ -139,10 +160,10 @@ function startDelete(): void {
 <template>
   <section class="view" aria-labelledby="policy-editor-heading">
     <header class="view__header">
-      <h2 id="policy-editor-heading">Policies</h2>
+      <h2 id="policy-editor-heading">Commands</h2>
       <div class="view__actions">
         <label class="view__search">
-          <span class="view__search-label">Search policies</span>
+          <span class="view__search-label">Search commands</span>
           <input
             v-model="searchQuery"
             type="search"
@@ -151,14 +172,21 @@ function startDelete(): void {
             placeholder="Search metadata"
           />
         </label>
-        <button type="button" class="view__button" @click="startCreate">New policy</button>
-        <button type="button" class="view__button" :disabled="!selectedPolicy" @click="startEdit">
+        <button type="button" class="view__button" :disabled="!actionsEnabled" @click="startCreate">
+          New command
+        </button>
+        <button
+          type="button"
+          class="view__button"
+          :disabled="!actionsEnabled || !selectedPolicy"
+          @click="startEdit"
+        >
           Edit
         </button>
         <button
           type="button"
           class="view__button view__button--danger"
-          :disabled="!selectedPolicy"
+          :disabled="!actionsEnabled || !selectedPolicy"
           @click="startDelete"
         >
           Delete
@@ -167,12 +195,15 @@ function startDelete(): void {
       </div>
     </header>
 
-    <p v-if="loading" class="view__loading" role="status">Loading policy metadata...</p>
+    <p v-if="runError" role="alert">{{ runError }}</p>
+    <p v-if="runNotice" role="status">{{ runNotice }}</p>
+    <p v-if="actionGuidance" class="view__empty" role="status">{{ actionGuidance }}</p>
+    <p v-else-if="loading" class="view__loading" role="status">Loading policy metadata...</p>
 
     <p v-else-if="errorMessage" class="view__empty">{{ errorMessage }}</p>
 
     <p v-else-if="isEmpty" class="view__empty">
-      No saved command policies. Run <code>locket policy add dev -- &lt;cmd&gt;</code>.
+      No commands yet. Choose New command to approve a command and its variable access.
     </p>
 
     <p v-else-if="isFilteredEmpty" class="view__empty">No matching policies.</p>
@@ -228,6 +259,25 @@ function startDelete(): void {
       </table>
 
       <aside v-if="selectedPolicy" class="policy-detail" aria-labelledby="policy-detail-heading">
+        <VariableReadinessPanel
+          :project-id="projectId"
+          :profile-id="profileId"
+          :policy-name="selectedPolicy.name"
+          :privacy-mode="privacyMode"
+          :refresh-key="selectedPolicy.updatedAt"
+          @blocked="configurationMissing = $event"
+        />
+        <p v-if="configurationMissing" role="status">
+          Resolve this command’s configuration checks before running it.
+        </p>
+        <button
+          type="button"
+          class="view__button"
+          :disabled="!actionsEnabled || running || configurationMissing"
+          @click="emit('run', selectedPolicy)"
+        >
+          {{ running ? 'Opening terminal…' : 'Run in terminal' }}
+        </button>
         <h3 id="policy-detail-heading">{{ policyLabel(selectedPolicy) }}</h3>
 
         <dl class="policy-detail__grid">
@@ -275,6 +325,7 @@ function startDelete(): void {
         <section class="policy-detail__section" aria-labelledby="policy-gates-heading">
           <h4 id="policy-gates-heading">Gates</h4>
           <div class="view__badges">
+            <span v-if="selectedPolicy.requireAgent" class="badge badge--gate">agent required</span>
             <span v-if="selectedPolicy.confirm" class="badge badge--gate">confirm</span>
             <span v-if="selectedPolicy.requireUserVerification" class="badge badge--gate">
               verify user
@@ -284,6 +335,7 @@ function startDelete(): void {
             </span>
             <span
               v-if="
+                !selectedPolicy.requireAgent &&
                 !selectedPolicy.confirm &&
                 !selectedPolicy.requireUserVerification &&
                 !selectedPolicy.allowRemoteDocker

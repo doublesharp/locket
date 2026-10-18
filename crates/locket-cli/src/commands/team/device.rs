@@ -37,6 +37,7 @@ pub fn device_command(
 ) -> Result<(), CliError> {
     match command {
         DeviceCommand::Init(args) => device_init_command(context, output, &args),
+        DeviceCommand::RotateSigning => device_rotate_signing_command(context, output),
         DeviceCommand::Pubkey => device_pubkey_command(context, output),
         DeviceCommand::Add(args) => device_add_command(context, output, &args),
         DeviceCommand::List(args) => device_list_command(context, output, &args),
@@ -65,6 +66,7 @@ pub(crate) fn device_init_command(
             write_device_init_summary(output, "already initialized", &existing, None)?;
             return Ok(());
         }
+        refuse_anchored_identity_change(&store, project_id)?;
         let verification =
             require_user_verification(context, "device init --force", "Replace local device key")?;
         Some((existing, verification))
@@ -84,6 +86,8 @@ pub(crate) fn device_init_command(
     let GeneratedLocalDevice { record: device, signing_private_key, sealing_private_key } =
         generate_local_device_record(project_id, timestamp)?;
     let storage = build_device_private_key_storage(context, project_id)?;
+    storage.store(&device.id, &sealing_private_key)?;
+    storage.for_signing().store(&device.fingerprint, &signing_private_key)?;
     if let Some((existing, verification)) = existing_replacement {
         replace_local_device_with_audit(
             context,
@@ -94,14 +98,7 @@ pub(crate) fn device_init_command(
             verification,
             timestamp,
         )?;
-        // Force-rekey envelope swap: store the replacement envelope BEFORE
-        // deleting the prior device's envelope so a failure mid-rotation
-        // never leaves the active device row pointing at a missing envelope.
-        // If the new store succeeds, drop the prior envelope on a best-effort
-        // basis: the active row already points at the replacement, so a
-        // stranded old envelope is a soft cleanup issue rather than a
-        // correctness failure.
-        storage.store(&device.id, &sealing_private_key)?;
+        // Both new private envelopes were staged before changing the active device row.
         update_recovery_envelope_for_replacement_device(
             context,
             &resolved,
@@ -109,7 +106,7 @@ pub(crate) fn device_init_command(
             &signing_private_key,
             &sealing_private_key,
         )?;
-        let _ = storage.delete(&existing.id);
+        // Retain the old sealing envelope for deliberate recovery of old bundles.
     } else {
         store.insert_device(&device)?;
         write_device_audit_if_available(
@@ -121,7 +118,6 @@ pub(crate) fn device_init_command(
             &device,
             user_verification,
         )?;
-        storage.store(&device.id, &sealing_private_key)?;
         if let Some(bootstrap_recovery) = bootstrap_recovery {
             save_bootstrap_recovery_envelope_with_device(
                 &resolved.root,
@@ -140,6 +136,7 @@ pub(crate) fn device_init_command(
             )?;
         }
     }
+    store.mark_device_signing_v2(&device.id)?;
     let descriptor = encode_device_descriptor(&device)?;
 
     write_device_init_summary(output, "initialized", &device, Some(&descriptor))?;
@@ -206,6 +203,7 @@ pub fn active_local_device_descriptor(
     let device = store
         .get_active_local_device(project_id)?
         .ok_or_else(|| invalid_reference_error("local device is not initialized"))?;
+    require_v2_signing(&store, &device)?;
     let descriptor = encode_device_descriptor(&device)?;
     let storage = build_device_private_key_storage(context, project_id)?;
     let private_key = storage.load(&device.id)?;
@@ -256,6 +254,9 @@ fn device_add_command(
         revoked_at: None,
     };
     store.insert_device(&device)?;
+    if verified.descriptor.v == 2 {
+        store.mark_device_signing_v2(&device.id)?;
+    }
     write_device_audit_if_available(
         context,
         &mut store,
@@ -314,6 +315,26 @@ fn device_remove_command(
     let device = store
         .find_device(project_id, &args.device)?
         .ok_or_else(|| invalid_reference_error("device not found"))?;
+    if locket_agent::team_sync::status(&store, project_id)
+        .map_err(|error| metadata_invalid_error(error.to_string()))?
+        .owner_fingerprint
+        .is_some()
+    {
+        if device.local {
+            return Err(access_denied_error(
+                "this device has pinned team history; disable updates with `locket team sync disable`. Identity replacement requires fresh-device onboarding in a separate store",
+            ));
+        }
+        let team = store
+            .get_team_by_project(project_id)?
+            .ok_or_else(|| metadata_invalid_error("team missing"))?;
+        let member = store
+            .get_team_member_by_device(&team.id, &device.id)?
+            .ok_or_else(|| metadata_invalid_error("device has no team membership"))?;
+        return super::sync::remove_authenticated(
+            context, output, &mut store, project_id, &member.id,
+        );
+    }
     if device.local && !args.force {
         return Err(access_denied_error("removing the active local device requires --force"));
     }
@@ -380,7 +401,8 @@ fn generate_local_device_record(
     timestamp: i64,
 ) -> Result<GeneratedLocalDevice, CliError> {
     let signing_seed = generate_key()?;
-    let signing_public_key = *signing_seed;
+    let signing_public_key =
+        ed25519_dalek::SigningKey::from_bytes(&signing_seed).verifying_key().to_bytes();
     let mut signing_private_key = zeroize::Zeroizing::new([0_u8; 32]);
     signing_private_key.copy_from_slice(signing_seed.as_ref());
     let sealing_seed = generate_key()?;
@@ -428,13 +450,111 @@ pub fn build_device_private_key_storage(
     Ok(WrappedLocalFileDevicePrivateKeyStorage::new(
         device_private_key_root(context)?,
         project_id.to_owned(),
-        std::sync::Arc::clone(&context.key_store),
+        std::sync::Arc::new(DeviceMasterKey {
+            project: project_id.to_owned(),
+            key: crate::runtime::key_access::load_master_key(context, project_id)?.0,
+        }),
     ))
+}
+
+// Reuse the CLI's verified passphrase/keychain cache for private envelopes.
+// The agent never exports its cache to this process.
+struct DeviceMasterKey {
+    project: String,
+    key: zeroize::Zeroizing<locket_crypto::KeyBytes>,
+}
+impl locket_platform::MasterKeyStore for DeviceMasterKey {
+    fn load_master_key(
+        &self,
+        project: &str,
+    ) -> Result<zeroize::Zeroizing<locket_crypto::KeyBytes>, PlatformError> {
+        if project != self.project {
+            return Err(PlatformError::MasterKeyNotFound);
+        }
+        Ok(self.key.clone())
+    }
+    fn store_master_key(&self, _: &str, _: &locket_crypto::KeyBytes) -> Result<(), PlatformError> {
+        Err(PlatformError::InvalidMasterKey)
+    }
+    fn delete_master_key(&self, _: &str) -> Result<(), PlatformError> {
+        Err(PlatformError::InvalidMasterKey)
+    }
+}
+
+/// Prepare a receiver with project/audit keys only. Shared keys arrive from its owner.
+pub fn join_request(context: &RuntimeContext, output: &mut impl Write) -> Result<(), CliError> {
+    let resolved = require_project(context)?;
+    let mut store = open_store(context)?;
+    let project = resolved.config.project_id.as_str();
+    if let Some(device) = store.get_active_local_device(project)? {
+        require_v2_signing(&store, &device)?;
+        return write_device_init_summary(
+            output,
+            "ready for team join",
+            &device,
+            Some(&encode_device_descriptor(&device)?),
+        );
+    }
+    let now = now_unix_nanos()?;
+    let existing = store.get_project(project)?.is_some();
+    let has_fallback = context.passphrase_store.contains_project(project)?;
+    let master = if existing || has_fallback {
+        crate::runtime::key_access::load_master_key(context, project)?.0
+    } else {
+        if recovery_envelope_present(&resolved.root) {
+            return Err(ambiguous_bootstrap_state_error(true, false));
+        }
+        match context.key_store.load_master_key(project) {
+            Ok(key) => key,
+            Err(PlatformError::MasterKeyNotFound) => {
+                let key = generate_key()?;
+                let source = store_master_key_with_fallback(context, project, &key, now)?;
+                context.master_key_cache.insert(project, key.clone(), source);
+                key
+            }
+            Err(error) => return Err(error.into()),
+        }
+    };
+    store.with_atomic_write::<_, CliError>(|store| {
+        store.insert_project_if_absent(project, &resolved.config.name, now)?;
+        for purpose in [KeyPurpose::ProjectMetadata, KeyPurpose::Audit] {
+            if store.get_key_by_scope(project, None, purpose.as_str())?.is_none() {
+                insert_wrapped_key(store, project, None, purpose, &master, now)?;
+            }
+        }
+        Ok(())
+    })?;
+    let GeneratedLocalDevice { record, signing_private_key, sealing_private_key } =
+        generate_local_device_record(project, now)?;
+    let storage = build_device_private_key_storage(context, project)?;
+    storage.store(&record.id, &sealing_private_key)?;
+    storage.for_signing().store(&record.fingerprint, &signing_private_key)?;
+    store.insert_device(&record)?;
+    store.mark_device_signing_v2(&record.id)?;
+    trust_root(&store, &resolved.config, &resolved.root, now)?;
+    let material = create_bootstrap_recovery_material(&resolved.root, now)?;
+    let material = BootstrapRecoveryMaterial { master_key: master, ..material };
+    save_bootstrap_recovery_envelope_with_device(
+        &resolved.root,
+        &resolved.config,
+        &material,
+        &record,
+        &signing_private_key,
+        &sealing_private_key,
+        now,
+    )?;
+    display_bootstrap_recovery_code(context, output, &resolved.config, &material.code_bytes)?;
+    write_device_init_summary(
+        output,
+        "ready for team join",
+        &record,
+        Some(&encode_device_descriptor(&record)?),
+    )
 }
 
 pub fn encode_device_descriptor(device: &DeviceRecord) -> Result<String, CliError> {
     let descriptor = DeviceDescriptorV1 {
-        v: 1,
+        v: 2,
         device_id: device.id.clone(),
         label: device.name.clone(),
         signing_public_key_ed25519: BASE64URL_NOPAD.encode(&device.signing_public_key),
@@ -443,18 +563,24 @@ pub fn encode_device_descriptor(device: &DeviceRecord) -> Result<String, CliErro
         safety_words: device.safety_words.clone(),
     };
     let json = serde_json::to_vec(&descriptor)?;
-    Ok(format!("lkdev1_{}", BASE64URL_NOPAD.encode(&json)))
+    Ok(format!("lkdev2_{}", BASE64URL_NOPAD.encode(&json)))
 }
 
 pub fn decode_device_descriptor(value: &str) -> Result<DeviceDescriptorV1, CliError> {
-    let Some(encoded) = value.strip_prefix("lkdev1_") else {
-        return Err(metadata_invalid_error("device descriptor must start with lkdev1_"));
+    let (encoded, version) = if let Some(encoded) = value.strip_prefix("lkdev2_") {
+        (encoded, 2)
+    } else if let Some(encoded) = value.strip_prefix("lkdev1_") {
+        (encoded, 1)
+    } else {
+        return Err(metadata_invalid_error(
+            "device descriptor must start with lkdev2_ or legacy lkdev1_",
+        ));
     };
     let bytes = BASE64URL_NOPAD
         .decode(encoded.as_bytes())
         .map_err(|_| metadata_invalid_error("device descriptor is not valid base64url"))?;
     let descriptor: DeviceDescriptorV1 = serde_json::from_slice(&bytes)?;
-    if descriptor.v != 1 {
+    if descriptor.v != version {
         return Err(metadata_invalid_error("unsupported device descriptor version"));
     }
     DeviceId::new(descriptor.device_id.clone())
@@ -994,4 +1120,174 @@ pub struct DeviceDescriptorV1 {
     pub sealing_public_key_x25519: String,
     pub fingerprint_sha256: String,
     pub safety_words: Vec<String>,
+}
+
+pub fn require_v2_signing(store: &Store, device: &DeviceRecord) -> Result<(), CliError> {
+    if !store.device_signing_is_v2(&device.id)? {
+        return Err(access_denied_error(
+            "legacy signing seed was exposed; run `locket device rotate-signing` before publishing a descriptor or issuing invites",
+        ));
+    }
+    Ok(())
+}
+
+pub fn load_device_signing_key(
+    context: &RuntimeContext,
+    store: &Store,
+    device: &DeviceRecord,
+) -> Result<ed25519_dalek::SigningKey, CliError> {
+    require_v2_signing(store, device)?;
+    let seed = build_device_private_key_storage(context, &device.project_id)?
+        .for_signing()
+        .load(&device.fingerprint)?;
+    let key = ed25519_dalek::SigningKey::from_bytes(&seed);
+    if key.verifying_key().as_bytes().as_slice() != device.signing_public_key {
+        return Err(corrupt_db_error("protected signing key does not match device public key"));
+    }
+    Ok(key)
+}
+
+pub fn rotate_signing_identity(
+    context: &RuntimeContext,
+    store: &mut Store,
+    device: &DeviceRecord,
+) -> Result<DeviceRecord, CliError> {
+    let seed = generate_key()?;
+    let public = ed25519_dalek::SigningKey::from_bytes(&seed).verifying_key().to_bytes();
+    let sealing: [u8; 32] = device
+        .sealing_public_key
+        .as_slice()
+        .try_into()
+        .map_err(|_| corrupt_db_error("invalid sealing key"))?;
+    let fingerprint = device_fingerprint_hex(&public, &sealing);
+    let words = safety_words_from_fingerprint(&fingerprint);
+    let storage = build_device_private_key_storage(context, &device.project_id)?.for_signing();
+    storage.store(&fingerprint, &seed)?;
+    if let Err(error) =
+        store.rotate_device_signing(device, &public, &fingerprint, &words, now_unix_nanos()?)
+    {
+        let _ = storage.delete(&fingerprint);
+        return Err(error.into());
+    }
+    store
+        .get_active_local_device(&device.project_id)?
+        .ok_or_else(|| corrupt_db_error("rotated device missing"))
+}
+
+fn refuse_anchored_identity_change(store: &Store, project: &str) -> Result<(), CliError> {
+    if locket_agent::team_sync::status(store, project)
+        .map_err(|error| metadata_invalid_error(error.to_string()))?
+        .owner_fingerprint
+        .is_some()
+    {
+        return Err(access_denied_error(
+            "this device has pinned team history; automatic identity handover is unsupported. Prepare and verify a new device in a separate store before retiring this identity",
+        ));
+    }
+    Ok(())
+}
+
+fn device_rotate_signing_command(
+    context: &RuntimeContext,
+    output: &mut impl Write,
+) -> Result<(), CliError> {
+    let resolved = require_project(context)?;
+    let mut store = open_store(context)?;
+    let device = store
+        .get_active_local_device(resolved.config.project_id.as_str())?
+        .ok_or_else(|| invalid_reference_error("local device is not initialized"))?;
+    refuse_anchored_identity_change(&store, &device.project_id)?;
+    require_user_verification(
+        context,
+        "device rotate-signing",
+        "Rotate exposed device signing key",
+    )?;
+    let storage = build_device_private_key_storage(context, &device.project_id)?;
+    let sealing = storage.load(&device.id)?;
+    if X25519PublicKey::from(&X25519StaticSecret::from(*sealing)).as_bytes().as_slice()
+        != device.sealing_public_key
+    {
+        return Err(corrupt_db_error("device sealing key mismatch"));
+    }
+    let rotated = rotate_signing_identity(context, &mut store, &device)?;
+    write_device_init_summary(
+        output,
+        "signing key rotated; sealing key preserved",
+        &rotated,
+        Some(&encode_device_descriptor(&rotated)?),
+    )?;
+    writeln!(output, "pending_invites: revoked; reissue invites with the new fingerprint")?;
+    writeln!(output, "recovery: run `locket recovery rotate` to back up the new signing key")?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod signing_safety_tests {
+    use super::*;
+
+    #[test]
+    fn generated_identity_publishes_verifying_key_not_seed()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let generated = generate_local_device_record("project-test", 1)?;
+        let expected = ed25519_dalek::SigningKey::from_bytes(&generated.signing_private_key)
+            .verifying_key()
+            .to_bytes();
+        assert_eq!(generated.record.signing_public_key, expected);
+        assert_ne!(generated.record.signing_public_key, *generated.signing_private_key);
+        assert!(encode_device_descriptor(&generated.record)?.starts_with("lkdev2_"));
+        Ok(())
+    }
+    #[test]
+    fn legacy_rotation_preserves_sealing_and_rejects_disclosed_signer()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use clap::Parser;
+        let directory = tempfile::tempdir()?;
+        let context = crate::tests::test_context(&directory);
+        crate::run_with_context(
+            crate::Cli::try_parse_from(["locket", "init", "--name", "app"])?,
+            &context,
+            &mut Vec::new(),
+        )?;
+        let resolved = require_project(&context)?;
+        let project = resolved.config.project_id.as_str();
+        let mut store = open_store(&context)?;
+        let device =
+            store.get_active_local_device(project)?.ok_or("active local device missing")?;
+        let storage = build_device_private_key_storage(&context, project)?;
+        let sealing = storage.load(&device.id)?;
+        let leaked = [17_u8; 32];
+        let seal_pub: [u8; 32] = device.sealing_public_key.as_slice().try_into()?;
+        let legacy_fp = device_fingerprint_hex(&leaked, &seal_pub);
+        store.connection().execute(
+            "UPDATE devices SET signing_public_key = ?1, fingerprint = ?2 WHERE id = ?3",
+            rusqlite::params![leaked.as_slice(), legacy_fp, device.id],
+        )?;
+        store
+            .connection()
+            .execute("DELETE FROM device_signing_versions WHERE device_id = ?1", [&device.id])?;
+        let legacy =
+            store.get_active_local_device(project)?.ok_or("active local device missing")?;
+        assert!(active_local_device_descriptor(&context).is_err());
+        assert!(load_device_signing_key(&context, &store, &legacy).is_err());
+        let ciphertext =
+            locket_core::encrypt_bundle_payload_for_age_recipients(b"old bundle", &[seal_pub])?;
+        let rotated = rotate_signing_identity(&context, &mut store, &legacy)?;
+        assert_eq!(rotated.id, legacy.id);
+        assert_eq!(rotated.sealing_public_key, legacy.sealing_public_key);
+        assert_ne!(
+            rotated.signing_public_key,
+            ed25519_dalek::SigningKey::from_bytes(&leaked).verifying_key().as_bytes()
+        );
+        assert_eq!(*storage.load(&device.id)?, *sealing);
+        assert_eq!(
+            locket_core::decrypt_bundle_payload_with_x25519_secret(&ciphertext, &sealing)?
+                .as_slice(),
+            b"old bundle"
+        );
+        assert!(store.device_matches_bundle_recipient(&rotated, &legacy_fp)?);
+        let signer = load_device_signing_key(&context, &store, &rotated)?;
+        assert_eq!(signer.verifying_key().as_bytes().as_slice(), rotated.signing_public_key);
+        assert!(active_local_device_descriptor(&context)?.1.starts_with("lkdev2_"));
+        Ok(())
+    }
 }

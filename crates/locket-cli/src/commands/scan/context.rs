@@ -13,6 +13,47 @@ use crate::{
     yes_no,
 };
 
+/// Emits real local identity without scanning, decrypting, initializing, or starting an agent.
+pub fn context_json_command(
+    context: &RuntimeContext,
+    output: &mut impl Write,
+) -> Result<(), CliError> {
+    use rusqlite::OptionalExtension;
+    let resolved = require_project(context)?;
+    if !context.store_path.is_file() {
+        return Err(crate::runtime::error::corrupt_db_error("local store is missing"));
+    }
+    let store_path = context.store_path.canonicalize()?;
+    let connection = rusqlite::Connection::open_with_flags(
+        &store_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .map_err(locket_store::StoreError::from)?;
+    let profile: Option<(String,String)> = connection.query_row(
+        "SELECT profiles.id, profiles.name FROM profiles JOIN projects ON projects.id = profiles.project_id WHERE projects.id = ?1 AND profiles.name = ?2",
+        (resolved.config.project_id.as_str(), resolved.config.default_profile.as_str()),
+        |row| Ok((row.get(0)?,row.get(1)?)),
+    ).optional().map_err(locket_store::StoreError::from)?;
+    let (profile_id, profile_name) = profile.ok_or_else(|| {
+        crate::runtime::error::profile_not_found_error(
+            "project or default profile is missing from the local store",
+        )
+    })?;
+    serde_json::to_writer(
+        &mut *output,
+        &serde_json::json!({
+            "root": resolved.root,
+            "project_id": resolved.config.project_id.as_str(),
+            "project_name": resolved.config.name,
+            "profile_id": profile_id,
+            "profile_name": profile_name,
+            "store_path": store_path,
+        }),
+    )?;
+    writeln!(output)?;
+    Ok(())
+}
+
 pub fn context_command(
     context: &RuntimeContext,
     output: &mut impl Write,

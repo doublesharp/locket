@@ -7,7 +7,7 @@ use rusqlite::{Connection, OptionalExtension};
 use crate::error::StoreError;
 
 /// Current storage schema version.
-pub const SCHEMA_VERSION: u32 = 3;
+pub const SCHEMA_VERSION: u32 = 6;
 
 /// Audit action written for each schema migration step when project context is available.
 pub const AUDIT_ACTION_SCHEMA_MIGRATE: &str = "SCHEMA_MIGRATE";
@@ -72,7 +72,7 @@ pub fn initialize_schema(
             for version in 1..=SCHEMA_VERSION {
                 insert_schema_migration_row(&transaction, version)?;
             }
-            applied_steps.push("schema.bootstrap_v3");
+            applied_steps.push("schema.bootstrap_v6");
         }
         Some(version) => {
             transaction.execute_batch(SCHEMA_MIGRATIONS_SQL)?;
@@ -85,6 +85,34 @@ pub fn initialize_schema(
                 migrate_v3_team_member_profiles(&transaction)?;
                 insert_schema_migration_row(&transaction, 3)?;
                 applied_steps.push("schema.migrate_v3_team_member_profiles");
+            }
+            transaction.execute_batch(SCHEMA_SQL)?;
+            if version < 4 {
+                // Legacy issuers disclosed their seeds. Pending signatures cannot be trusted.
+                transaction.execute("UPDATE team_invites SET revoked_at = CAST(strftime('%s','now') AS INTEGER) * 1000000000 WHERE accepted_at IS NULL AND revoked_at IS NULL", [])?;
+                insert_schema_migration_row(&transaction, 4)?;
+                applied_steps.push("schema.migrate_v4_device_signing");
+            }
+            if version < 5 {
+                insert_schema_migration_row(&transaction, 5)?;
+                applied_steps.push("schema.migrate_v5_authenticated_team_sync");
+            }
+            if version < 6 {
+                add_column_if_missing(
+                    &transaction,
+                    "team_sync_folders",
+                    "scan_after",
+                    "scan_after TEXT",
+                )?;
+                add_column_if_missing(
+                    &transaction,
+                    "team_sync_folders",
+                    "last_error",
+                    "last_error TEXT",
+                )?;
+                transaction.execute("INSERT OR IGNORE INTO team_sync_join_checkpoints(project_id,epoch) SELECT h.project_id,COALESCE((SELECT MIN(s.epoch) FROM team_sync_seen s WHERE s.project_id=h.project_id AND s.outcome='applied'),h.epoch) FROM team_sync_heads h",[])?;
+                insert_schema_migration_row(&transaction, 6)?;
+                applied_steps.push("schema.migrate_v6_pending_team_profiles");
             }
             transaction.execute_batch(SCHEMA_SQL)?;
         }
@@ -723,6 +751,70 @@ CREATE TABLE IF NOT EXISTS automation_client_nonces (
   PRIMARY KEY (client_id, nonce)
 );
 
+CREATE TABLE IF NOT EXISTS team_sync_anchors (
+ project_id TEXT PRIMARY KEY REFERENCES projects(id), team_id TEXT NOT NULL,
+ owner_json TEXT NOT NULL, pinned_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS team_sync_join_checkpoints (
+ project_id TEXT PRIMARY KEY REFERENCES projects(id), epoch INTEGER NOT NULL CHECK(epoch > 0)
+);
+CREATE TABLE IF NOT EXISTS team_sync_heads (
+ project_id TEXT PRIMARY KEY REFERENCES projects(id), epoch INTEGER NOT NULL,
+ digest TEXT NOT NULL, members_json TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'verified',
+ verified_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS team_sync_seen (
+ project_id TEXT NOT NULL, digest TEXT NOT NULL, epoch INTEGER NOT NULL,
+ outcome TEXT NOT NULL, PRIMARY KEY(project_id,digest)
+);
+CREATE TABLE IF NOT EXISTS team_sync_values (
+ project_id TEXT NOT NULL, secret_id TEXT NOT NULL, digest TEXT NOT NULL,
+ PRIMARY KEY(project_id,secret_id)
+);
+CREATE TABLE IF NOT EXISTS team_sync_profile_epochs (
+ project_id TEXT NOT NULL, profile_id TEXT NOT NULL, epoch INTEGER NOT NULL,
+ PRIMARY KEY(project_id,profile_id)
+);
+CREATE TABLE IF NOT EXISTS team_sync_conflicts (
+ project_id TEXT NOT NULL, secret_id TEXT NOT NULL, epoch INTEGER NOT NULL,
+ encrypted_package BLOB NOT NULL, PRIMARY KEY(project_id,secret_id)
+);
+CREATE TABLE IF NOT EXISTS team_sync_pending_packages (
+ project_id TEXT PRIMARY KEY REFERENCES projects(id), epoch INTEGER NOT NULL,
+ digest TEXT NOT NULL, encrypted_package BLOB NOT NULL
+);
+CREATE TABLE IF NOT EXISTS team_sync_pending_profiles (
+ project_id TEXT NOT NULL REFERENCES team_sync_pending_packages(project_id) ON DELETE CASCADE,
+ profile_id TEXT NOT NULL, reason TEXT NOT NULL, PRIMARY KEY(project_id,profile_id)
+);
+CREATE TABLE IF NOT EXISTS team_sync_folders (
+ project_id TEXT PRIMARY KEY REFERENCES projects(id), path TEXT NOT NULL,
+ device_key_root TEXT NOT NULL, allow_dangerous INTEGER NOT NULL DEFAULT 0,
+ enabled INTEGER NOT NULL DEFAULT 1, last_error TEXT, scan_after TEXT
+);
+CREATE TABLE IF NOT EXISTS team_sync_outbound (
+ project_id TEXT NOT NULL, recipient TEXT NOT NULL, epoch INTEGER NOT NULL,
+ digest TEXT NOT NULL, content_digest TEXT NOT NULL, expires_at INTEGER NOT NULL,
+ PRIMARY KEY(project_id,recipient)
+);
+CREATE TABLE IF NOT EXISTS team_sync_outbox (
+ project_id TEXT NOT NULL, filename TEXT NOT NULL, recipient TEXT NOT NULL,
+ ciphertext BLOB NOT NULL, delivered INTEGER NOT NULL DEFAULT 0,
+ PRIMARY KEY(project_id,filename)
+);
+CREATE TABLE IF NOT EXISTS team_sync_publications (
+ project_id TEXT PRIMARY KEY, members_json TEXT NOT NULL, keys_json TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS device_signing_versions (
+  device_id TEXT PRIMARY KEY REFERENCES devices(id) ON DELETE CASCADE,
+  version INTEGER NOT NULL CHECK(version = 2)
+);
+CREATE TABLE IF NOT EXISTS device_fingerprint_aliases (
+  device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+  fingerprint TEXT NOT NULL,
+  PRIMARY KEY(device_id, fingerprint)
+);
 CREATE TABLE IF NOT EXISTS schema_migrations (
   version INTEGER PRIMARY KEY CHECK (version >= 1 AND version <= 4294967295),
   applied_at INTEGER NOT NULL

@@ -48,10 +48,10 @@ function onDismiss(): void {
     aria-labelledby="profile-switcher-title"
   >
     <form class="modal" @submit.prevent="onSubmit">
-      <h2 id="profile-switcher-title">Switch profile</h2>
+      <h2 id="profile-switcher-title">Switch environment</h2>
       <p v-if="currentProfile" class="modal__caption">Active: {{ currentProfile }}</p>
       <label class="modal__field">
-        <span>Target profile</span>
+        <span>Target environment</span>
         <input v-model="profileName" type="text" required autofocus />
       </label>
       <label v-if="requiresConfirmation" class="modal__field">

@@ -291,7 +291,7 @@ fn schema_initialization_is_idempotent() -> Result<(), Box<dyn Error>> {
     assert_eq!(test_store.store.current_schema_version()?, Some(i64::from(SCHEMA_VERSION)));
     let outcome = test_store.store.initialize_schema()?;
     assert!(!outcome.advanced(), "no-op initialize must not advance the ledger");
-    assert!(outcome.applied_steps.is_empty());
+    assert_eq!(outcome.applied_steps.len(), 0);
     assert_eq!(outcome.before, Some(SCHEMA_VERSION));
     assert_eq!(outcome.after, SCHEMA_VERSION);
 
@@ -315,7 +315,7 @@ fn fresh_initialize_reports_pending_schema_migration() -> Result<(), Box<dyn Err
     assert!(outcome.advanced(), "fresh store must advance the ledger");
     assert_eq!(outcome.before, None);
     assert_eq!(outcome.after, SCHEMA_VERSION);
-    assert_eq!(outcome.applied_steps.as_slice(), &["schema.bootstrap_v3"]);
+    assert_eq!(outcome.applied_steps.as_slice(), &["schema.bootstrap_v6"]);
 
     Ok(())
 }
@@ -334,7 +334,13 @@ fn v1_store_migrates_recent_schema_alignment_columns_and_indexes() -> Result<(),
     assert_eq!(outcome.after, SCHEMA_VERSION);
     assert_eq!(
         outcome.applied_steps.as_slice(),
-        &["schema.migrate_v2_recent_schema_alignment", "schema.migrate_v3_team_member_profiles"]
+        &[
+            "schema.migrate_v2_recent_schema_alignment",
+            "schema.migrate_v3_team_member_profiles",
+            "schema.migrate_v4_device_signing",
+            "schema.migrate_v5_authenticated_team_sync",
+            "schema.migrate_v6_pending_team_profiles"
+        ]
     );
     assert_eq!(store.current_schema_version()?, Some(i64::from(SCHEMA_VERSION)));
 
@@ -407,7 +413,7 @@ fn record_schema_migrate_audit_writes_row_for_advancement() -> Result<(), Box<dy
     let outcome = crate::SchemaMigrationOutcome {
         before: None,
         after: SCHEMA_VERSION,
-        applied_steps: vec!["schema.bootstrap_v3"],
+        applied_steps: vec!["schema.bootstrap_v6"],
     };
 
     let wrote = test_store.store.record_schema_migrate_audit(
@@ -433,7 +439,7 @@ fn record_schema_migrate_audit_writes_row_for_advancement() -> Result<(), Box<dy
     assert_eq!(metadata["schema_versions"]["before"], serde_json::Value::Null);
     assert_eq!(metadata["schema_versions"]["after"], SCHEMA_VERSION);
     assert_eq!(metadata["migration_count"], 1);
-    assert_eq!(metadata["check_names"][0], "schema.bootstrap_v3");
+    assert_eq!(metadata["check_names"][0], "schema.bootstrap_v6");
     assert_eq!(metadata["status"], "SUCCESS");
 
     Ok(())
@@ -587,7 +593,7 @@ fn schema_migrations_applied_at_is_positive_integer() -> Result<(), Box<dyn Erro
 
 #[test]
 fn schema_version_constant_is_current() {
-    assert_eq!(SCHEMA_VERSION, 3);
+    assert_eq!(SCHEMA_VERSION, 6);
 }
 
 #[test]
@@ -883,5 +889,86 @@ fn newer_schema_version_blocks_initialization_before_any_tables_are_created()
     )?;
     assert_eq!(projects_absent, 0, "rollback must leave other tables absent");
 
+    Ok(())
+}
+
+#[test]
+fn schema_five_adds_pending_tables_with_an_explicit_six_migration() -> Result<(), Box<dyn Error>> {
+    let directory = tempdir()?;
+    let mut store = Store::open(directory.path().join("store.db"))?;
+    store.initialize_schema()?;
+    store.connection().execute("DELETE FROM schema_migrations WHERE version=6", [])?;
+    store.connection().execute_batch(
+        "DROP TABLE team_sync_pending_profiles; DROP TABLE team_sync_pending_packages;",
+    )?;
+    store.connection().execute_batch("ALTER TABLE team_sync_folders DROP COLUMN scan_after; ALTER TABLE team_sync_folders DROP COLUMN last_error;")?;
+    store.insert_project_if_absent("old-team-project", "fixture", 1)?;
+    store.connection().execute(
+        "INSERT INTO team_sync_heads VALUES ('old-team-project',5,'head-five','[]','verified',1)",
+        [],
+    )?;
+    store.connection().execute("INSERT INTO team_sync_seen VALUES ('old-team-project','first-three',3,'applied'),('old-team-project','head-five',5,'applied')",[])?;
+    let migration = store.initialize_schema()?;
+    assert_eq!(migration.before, Some(5));
+    assert_eq!(migration.after, 6);
+    assert_eq!(migration.applied_steps, vec!["schema.migrate_v6_pending_team_profiles"]);
+    let tables:i64=store.connection().query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('team_sync_pending_profiles','team_sync_pending_packages')",[],|row|row.get(0))?;
+    assert_eq!(tables, 2);
+    let join: i64 = store.connection().query_row(
+        "SELECT epoch FROM team_sync_join_checkpoints WHERE project_id='old-team-project'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(join, 3, "upgrade preserves the earliest authenticated join boundary");
+    assert!(column_exists(store.connection(), "team_sync_folders", "scan_after")?);
+    assert!(column_exists(store.connection(), "team_sync_folders", "last_error")?);
+    assert!(!store.initialize_schema()?.advanced());
+    Ok(())
+}
+
+#[test]
+fn read_only_store_preserves_legacy_schema_and_journal_and_rejects_writes()
+-> Result<(), Box<dyn Error>> {
+    let directory = tempdir()?;
+    let path = directory.path().join("read-only.db");
+    let connection = rusqlite::Connection::open(&path)?;
+    connection.execute_batch("PRAGMA journal_mode=DELETE; CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY,applied_at INTEGER NOT NULL); INSERT INTO schema_migrations VALUES (5,1); CREATE TABLE report(label TEXT); INSERT INTO report VALUES ('metadata');")?;
+    drop(connection);
+    let before = std::fs::read(&path)?;
+    let store = Store::open_read_only(&path)?;
+    assert_eq!(
+        store.connection().query_row("PRAGMA journal_mode", [], |row| row.get::<_, String>(0))?,
+        "delete"
+    );
+    assert_eq!(store.current_schema_version()?, Some(5));
+    assert_eq!(
+        store
+            .connection()
+            .query_row("SELECT label FROM report", [], |row| row.get::<_, String>(0))?,
+        "metadata"
+    );
+    assert!(store.connection().execute("INSERT INTO report VALUES ('forbidden')", []).is_err());
+    assert!(store.connection().execute_batch("CREATE TABLE forbidden(value TEXT)").is_err());
+    drop(store);
+    assert_eq!(std::fs::read(&path)?, before);
+    let after = rusqlite::Connection::open(&path)?;
+    assert_eq!(
+        after.query_row("PRAGMA journal_mode", [], |row| row.get::<_, String>(0))?,
+        "delete"
+    );
+    assert_eq!(
+        after.query_row("SELECT MAX(version) FROM schema_migrations", [], |row| row
+            .get::<_, i64>(0))?,
+        5
+    );
+    Ok(())
+}
+
+#[test]
+fn read_only_store_does_not_create_a_missing_database() -> Result<(), Box<dyn Error>> {
+    let directory = tempdir()?;
+    let path = directory.path().join("missing.db");
+    assert!(Store::open_read_only(&path).is_err());
+    assert!(!path.exists());
     Ok(())
 }

@@ -97,6 +97,11 @@ pub fn team_command(
     command: TeamCommand,
 ) -> Result<(), CliError> {
     match command {
+        TeamCommand::Join(args) => super::sync::join(context, output, &args),
+        TeamCommand::Add(args) => super::sync::add(context, output, &args),
+        TeamCommand::Publish => super::sync::publish(context, output),
+        TeamCommand::Sync { command } => super::sync::sync(context, output, command),
+        TeamCommand::Folder(args) => super::sync::folder(context, output, &args),
         TeamCommand::Init(args) => team_init_command(context, output, &args),
         TeamCommand::Invite(args) => team_invite_command(context, output, &args),
         TeamCommand::RevokeInvite(args) => team_revoke_invite_command(context, output, &args),
@@ -203,6 +208,11 @@ fn team_invite_command(
     }
 
     let recipient = decode_recipient_device(&args.device)?;
+    if store.bundle_recipient_is_denied(project_id, &recipient.sealing_public_key)? {
+        return Err(team_role_denied_error(
+            "recipient device is revoked or its member was removed",
+        ));
+    }
     if recipient.fingerprint == issuer.local_device.fingerprint {
         return Err(metadata_invalid_error("recipient device must differ from issuer device"));
     }
@@ -226,7 +236,9 @@ fn team_invite_command(
         &profiles,
         &recipient.sealing_public_key,
     )?;
+    let signing_key = device::load_device_signing_key(context, &store, &issuer.local_device)?;
     let built_invite = build_signed_invite(
+        &signing_key,
         project_id,
         &issuer,
         &recipient,
@@ -377,17 +389,20 @@ fn team_accept_command(
             return Err(error);
         }
     };
-    let applied =
-        apply_invite_sealed_payload(context, &mut store, &project_id, &local_device, &invite)?;
-    accept_invite_with_audit(
-        context,
-        &mut store,
-        &project_id,
-        &local_device,
-        &invite,
-        user_verification,
-        applied,
-    )?;
+    let applied = store.with_atomic_write(|store| {
+        let applied =
+            apply_invite_sealed_payload(context, store, &project_id, &local_device, &invite)?;
+        accept_invite_with_audit(
+            context,
+            store,
+            &project_id,
+            &local_device,
+            &invite,
+            user_verification,
+            applied,
+        )?;
+        Ok::<_, CliError>(applied)
+    })?;
 
     writeln!(output, "team_accept: accepted")?;
     if invite.payload.sealed_payload.is_some() {
@@ -560,8 +575,7 @@ fn ensure_invite_pending_with_denial(
     project_id: &str,
     invite: &SignedInvite,
 ) -> Result<(), CliError> {
-    if let Err(error) = ensure_invite_pending(store, project_id, invite.payload.invite_id.as_str())
-    {
+    if let Err(error) = ensure_invite_pending(store, project_id, invite) {
         append_team_accept_denial(
             context,
             store,
@@ -647,6 +661,17 @@ fn apply_invite_plaintext_payload(
     project_id: &str,
     payload: &InviteSealedPlaintextV1,
 ) -> Result<InviteApplyCounts, CliError> {
+    store.with_atomic_write(|store| {
+        apply_invite_plaintext_payload_inner(context, store, project_id, payload)
+    })
+}
+
+fn apply_invite_plaintext_payload_inner(
+    context: &RuntimeContext,
+    store: &locket_store::Store,
+    project_id: &str,
+    payload: &InviteSealedPlaintextV1,
+) -> Result<InviteApplyCounts, CliError> {
     if payload.v != 1 {
         return Err(metadata_invalid_error("invite sealed plaintext schema is unsupported"));
     }
@@ -694,6 +719,15 @@ fn apply_invite_plaintext_payload(
         plaintext_array.copy_from_slice(&plaintext_bytes);
         let existing_key =
             store.get_key_by_scope(project_id, Some(&profile.id), purpose.as_str())?;
+        if existing_key.is_some() {
+            let local = load_profile_key(context, store, project_id, &profile.id, purpose)?;
+            if local.as_slice() != plaintext_array.as_slice() {
+                return Err(metadata_invalid_error(
+                    "invite profile key conflicts with local keys; use a separate store to preserve existing secrets",
+                ));
+            }
+            continue;
+        }
         let receiver_key_id = existing_key.as_ref().map_or_else(
             || KeyId::generate().map(KeyId::into_string).map_err(|_| CliError::Time),
             |record| Ok(record.id.clone()),
@@ -732,24 +766,7 @@ fn apply_invite_plaintext_payload(
         counts.profile_key_count = counts.profile_key_count.saturating_add(1);
     }
 
-    for policy in &payload.command_policies {
-        let policy_json = serde_json::to_string(policy)?;
-        store
-            .connection()
-            .execute(
-                "INSERT INTO command_policies(
-               project_id, name, policy_json, normalized_json, created_at, updated_at
-             )
-             VALUES (?1, ?2, ?3, ?4, ?5, ?5)
-            ON CONFLICT(project_id, name) DO UPDATE SET
-               policy_json = excluded.policy_json,
-               normalized_json = excluded.normalized_json,
-               updated_at = excluded.updated_at",
-                rusqlite::params![project_id, policy.name, policy_json, policy_json, now],
-            )
-            .map_err(locket_store::StoreError::from)?;
-        counts.command_policy_count = counts.command_policy_count.saturating_add(1);
-    }
+    // Invited command definitions are proposals. Only local locket.toml approval grants authority.
 
     Ok(counts)
 }
@@ -830,8 +847,9 @@ fn accept_invite_with_audit(
 fn ensure_invite_pending(
     store: &locket_store::Store,
     project_id: &str,
-    invite_id: &str,
+    invite: &SignedInvite,
 ) -> Result<(), CliError> {
+    let invite_id = invite.payload.invite_id.as_str();
     let Some(team) = store.get_team_by_project(project_id)? else {
         return Err(team_role_denied_error("no team initialized for this project"));
     };
@@ -843,6 +861,17 @@ fn ensure_invite_pending(
             kind: LocketError::ReplayDetected,
             message: format!("invite {invite_id} already accepted or revoked; refusing replay"),
         });
+    }
+    if stored.issuer_member_id != invite.payload.issuer_member_id.as_str()
+        || stored.recipient_device_fingerprint != invite.payload.recipient_device_fingerprint
+        || stored.role != role_label_from_payload(invite.payload.role)
+        || stored.profiles.iter().collect::<BTreeSet<_>>()
+            != invite.payload.profiles.iter().collect::<BTreeSet<_>>()
+        || stored.expires_at / NANOS_PER_SECOND != invite.payload.expires_at
+    {
+        return Err(metadata_invalid_error(
+            "invite claims differ from the locally approved pending scope",
+        ));
     }
     Ok(())
 }
@@ -1032,6 +1061,14 @@ fn team_remove_command(
         return Err(confirmation_failed_error("confirmation did not match member display name"));
     }
 
+    if locket_agent::team_sync::status(&store, project_id)
+        .map_err(|e| metadata_invalid_error(e.to_string()))?
+        .owner_fingerprint
+        .is_some()
+    {
+        super::sync::remove_authenticated(context, output, &mut store, project_id, &member.id)?;
+        return Ok(());
+    }
     let timestamp = now_unix_nanos()?;
     store.remove_team_member(&member.id, timestamp)?;
 
@@ -1091,6 +1128,16 @@ fn team_revoke_device_command(
         return Ok(());
     }
 
+    if locket_agent::team_sync::status(&store, project_id)
+        .map_err(|e| metadata_invalid_error(e.to_string()))?
+        .owner_fingerprint
+        .is_some()
+    {
+        let member = target_member
+            .ok_or_else(|| metadata_invalid_error("device has no authenticated team membership"))?;
+        super::sync::remove_authenticated(context, output, &mut store, project_id, &member.id)?;
+        return Ok(());
+    }
     let timestamp = now_unix_nanos()?;
     store.revoke_device(project_id, &device.id, timestamp)?;
 
@@ -1354,6 +1401,7 @@ fn invite_command_policy(policy: &CommandPolicy) -> InviteSealedCommandPolicyV1 
 
 #[allow(clippy::too_many_arguments)]
 fn build_signed_invite(
+    signing_key: &SigningKey,
     project_id: &str,
     issuer: &InviteIssuer,
     recipient: &RecipientDevice,
@@ -1365,7 +1413,6 @@ fn build_signed_invite(
 ) -> Result<BuiltInvite, CliError> {
     let invite_id = InviteId::generate().map_err(|_| CliError::Time)?;
     let nonce = invite_nonce()?;
-    let signing_key = signing_key_from_device(&issuer.local_device.signing_public_key)?;
     let issuer_signing_public_key = signing_key.verifying_key().to_bytes();
     let issuer_sealing_public_key = issuer
         .local_device
@@ -1393,7 +1440,7 @@ fn build_signed_invite(
         nonce: BASE64URL_NOPAD.encode(&nonce),
         sealed_payload: Some(sealed_payload),
     };
-    let signed_invite = SignedInvite::sign(&signing_key, payload)
+    let signed_invite = SignedInvite::sign(signing_key, payload)
         .map_err(|error| metadata_invalid_error(format!("invite signing failed: {error}")))?;
     let encoded_invite = signed_invite
         .encode()
@@ -1568,6 +1615,10 @@ fn write_accept_summary(output: &mut impl Write, invite: &SignedInvite) -> Resul
     let issuer_safety_words =
         device::safety_words_from_fingerprint(&invite.payload.issuer_device_fingerprint);
     writeln!(output, "team_accept: pending")?;
+    writeln!(
+        output,
+        "command_definitions: proposed metadata only; approve separately in locket.toml"
+    )?;
     writeln!(output, "invite_id: {}", invite.payload.invite_id.as_str())?;
     writeln!(output, "project_id: {}", invite.payload.project_id.as_str())?;
     writeln!(output, "issuer_member_id: {}", invite.payload.issuer_member_id.as_str())?;
@@ -1688,13 +1739,6 @@ fn invite_nonce() -> Result<[u8; 24], CliError> {
     let mut nonce = [0_u8; 24];
     nonce.copy_from_slice(&random[..24]);
     Ok(nonce)
-}
-
-fn signing_key_from_device(bytes: &[u8]) -> Result<SigningKey, CliError> {
-    let seed: [u8; 32] = bytes
-        .try_into()
-        .map_err(|_| metadata_invalid_error("issuer signing key must be 32 bytes"))?;
-    Ok(SigningKey::from_bytes(&seed))
 }
 
 fn default_invite_output_path(context: &RuntimeContext, timestamp: i64) -> PathBuf {
@@ -2009,4 +2053,47 @@ fn write_rotation_scope_note(
     };
     writeln!(output, "  scope_note: {note}")?;
     Ok(())
+}
+
+#[cfg(test)]
+mod trust_safety_tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn incompatible_invite_preserves_profile_key_and_rows() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let dir = tempfile::tempdir()?;
+        let context = crate::tests::test_context(&dir);
+        crate::run_with_context(
+            crate::Cli::try_parse_from(["locket", "init", "--name", "app"])?,
+            &context,
+            &mut Vec::new(),
+        )?;
+        let resolved = require_project(&context)?;
+        let project_id = resolved.config.project_id.as_str();
+        let mut store = open_store(&context)?;
+        let profile = store.get_profile_by_name(project_id, "dev")?.ok_or("dev profile missing")?;
+        let args = crate::tests::test_secret_write_args("PRESERVED");
+        crate::set_secret_value(&context, &args, "still-decryptable", "manual", 1000)?;
+        let before =
+            load_profile_key(&context, &store, project_id, &profile.id, KeyPurpose::ProfileSecret)?;
+        let payload: InviteSealedPlaintextV1 = serde_json::from_value(json!({
+            "v":1,"profiles":[],"profile_keys":[{"profile_name":"dev","purpose":"profile-secret","key_material_b64":BASE64URL_NOPAD.encode(&[99;32])}],"command_policies":[]
+        }))?;
+        assert!(
+            apply_invite_plaintext_payload(&context, &mut store, project_id, &payload).is_err()
+        );
+        let after =
+            load_profile_key(&context, &store, project_id, &profile.id, KeyPurpose::ProfileSecret)?;
+        assert_eq!(*before, *after);
+        let mut value = Vec::new();
+        crate::run_with_context(
+            crate::Cli::try_parse_from(["locket", "get", "PRESERVED", "--reveal", "--force"])?,
+            &context,
+            &mut value,
+        )?;
+        assert!(String::from_utf8(value)?.contains("still-decryptable"));
+        Ok(())
+    }
 }

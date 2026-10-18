@@ -164,7 +164,11 @@ struct Cli {
 #[derive(Debug, Subcommand)]
 enum Command {
     /// Show metadata-only status.
-    Status,
+    Status {
+        /// Scan project files for plaintext secrets.
+        #[arg(long)]
+        scan: bool,
+    },
     /// Initialize a Locket project from a template.
     New(NewArgs),
     /// Show metadata-only onboarding checklist.
@@ -266,7 +270,7 @@ enum Command {
     /// Redact a file or stdin.
     Redact(RedactArgs),
     /// Emit AI-safe context metadata.
-    Context(RedactNamesArgs),
+    Context(ContextArgs),
     /// Capture and redact command output.
     AiSafe(AiSafeArgs),
     /// Rotate a secret value.
@@ -444,6 +448,9 @@ struct ImportArgs {
     /// Runtime source to target.
     #[arg(long, value_enum)]
     source: Option<SecretSourceArg>,
+    /// Preserve dollar expressions literally without evaluating them.
+    #[arg(long)]
+    literal: bool,
     /// Rotate duplicate keys instead of skipping them.
     #[arg(long)]
     overwrite: bool,
@@ -568,19 +575,39 @@ pub struct ExecArgs {
                         structured argv pattern, and project-relative path.")]
 pub struct RunArgs {
     /// Command policy name, or a runner adapter such as npm, pnpm, yarn, bun, cargo, make, just, task, poetry, uv, or python.
+    #[arg(default_value = "")]
     pub policy: String,
     /// Runner target and arguments. For example, `locket run npm dev` executes `npm run dev`.
-    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+    #[arg(allow_hyphen_values = true)]
     pub runner_args: Vec<String>,
+    /// Exact command arguments after --. New commands require interactive approval.
+    #[arg(last = true, allow_hyphen_values = true)]
+    pub argv: Vec<String>,
 }
 
 /// Subcommands for `locket env`.
 #[derive(Debug, Subcommand)]
 pub enum EnvCommand {
+    /// Validate required-name coverage offline without reading values or the local vault.
+    Validate(EnvValidateArgs),
     /// Show metadata-only policy environment decisions.
     Inspect(EnvInspectArgs),
     /// Execute docker run with policy-backed environment injection.
     Docker(EnvDockerArgs),
+}
+
+/// Arguments for offline, names-only contract validation.
+#[derive(Debug, Args)]
+pub struct EnvValidateArgs {
+    /// Saved policy whose effective names will be checked.
+    #[arg(long)]
+    pub policy: String,
+    /// Available variable name, repeated as needed. Never pass values.
+    #[arg(long)]
+    pub provided_name: Vec<String>,
+    /// Emit a metadata-only JSON report.
+    #[arg(long)]
+    pub json: bool,
 }
 
 /// Arguments for the `locket env inspect` command.
@@ -738,6 +765,15 @@ struct RedactArgs {
     require_known: bool,
     #[command(flatten)]
     redact_names: RedactNamesArgs,
+}
+
+#[derive(Debug, Args)]
+struct ContextArgs {
+    #[command(flatten)]
+    redact_names: RedactNamesArgs,
+    /// Emit resolved project identity for trusted local integrations.
+    #[arg(long, hide = true, conflicts_with = "redact_names")]
+    json: bool,
 }
 
 #[derive(Debug, Args)]
@@ -1016,6 +1052,8 @@ struct PasskeyRegisterArgs {
 enum DeviceCommand {
     /// Initialize or rotate the local device descriptor.
     Init(DeviceInitArgs),
+    /// Migrate legacy signing material while preserving bundle decryption keys.
+    RotateSigning,
     /// Print the active local device descriptor.
     Pubkey,
     /// Add a trusted device descriptor.
@@ -1028,6 +1066,19 @@ enum DeviceCommand {
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum TeamCommand {
+    /// Prepare a fresh device or join an authenticated encrypted team package.
+    Join(TeamJoinArgs),
+    /// Add a verified device to owner-published team updates.
+    Add(TeamAddArgs),
+    /// Publish an encrypted signed snapshot to the configured shared folder.
+    Publish,
+    /// Check or apply authenticated updates from the shared folder.
+    Sync {
+        #[command(subcommand)]
+        command: Option<TeamSyncCommand>,
+    },
+    /// Choose this machine's shared folder (local consent, never imported).
+    Folder(TeamFolderArgs),
     /// Initialize a team for this project.
     Init(TeamInitArgs),
     /// Create a signed team invite for a recipient device.
@@ -1044,6 +1095,89 @@ pub(crate) enum TeamCommand {
     /// Revoke a team member's device.
     #[command(name = "revoke-device")]
     RevokeDevice(TeamRevokeDeviceArgs),
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct TeamJoinArgs {
+    /// Generate a receiving device descriptor without creating shared profile keys.
+    #[arg(long, conflicts_with_all = ["package", "owner", "folder"])]
+    pub request: bool,
+    /// Encrypted .lkpkg provided by the owner.
+    #[arg(required_unless_present_any = ["request", "folder"])]
+    pub package: Option<PathBuf>,
+    /// Full owner fingerprint verified through a separate trusted channel.
+    #[arg(long, required_unless_present = "request")]
+    pub owner: Option<String>,
+    /// Opt into automatic updates from this shared folder after joining.
+    #[arg(long)]
+    pub folder: Option<PathBuf>,
+    /// Explicitly permit dangerous profile values and later folder updates on this machine.
+    #[arg(long)]
+    pub allow_dangerous: bool,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct TeamAddArgs {
+    pub name: String,
+    /// lkdev2_ descriptor received from the joining device.
+    #[arg(long)]
+    pub device: String,
+    /// Full joining-device fingerprint verified independently of its descriptor.
+    #[arg(long)]
+    pub confirm_device_fingerprint: String,
+    #[arg(long = "profile", required = true)]
+    pub profiles: Vec<String>,
+    #[arg(long, value_enum, default_value = "developer")]
+    pub role: TeamRoleArg,
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum TeamSyncCommand {
+    /// Review held profiles, collision IDs and setup guidance without revealing values.
+    Pending,
+    /// Rename a local colliding profile, preserving its ID, keys and values.
+    #[command(after_help = commands::team::sync::PROFILE_RENAME_CONSEQUENCES)]
+    RenameLocalProfile {
+        /// Held incoming profile ID shown by `team sync pending`.
+        incoming_profile_id: String,
+        /// Local colliding profile ID shown by `team sync pending`.
+        local_profile_id: String,
+        /// New name for the existing local profile, such as personal-dev.
+        new_name: String,
+    },
+    /// Preserve one colliding local value as a personal override before retrying a held profile.
+    KeepLocalValue {
+        /// Held incoming profile ID shown by `team sync pending`.
+        incoming_profile_id: String,
+        /// Local colliding secret ID shown by `team sync pending`; never pass its value.
+        local_secret_id: String,
+    },
+    /// Apply available signed updates using this machine's unlocked keys.
+    Now,
+    /// Show last verified update and any blocked or conflicting updates.
+    Status,
+    /// Resolve a conflicting value by keeping a personal override or accepting the team value.
+    Resolve {
+        /// Value-conflict secret ID shown by sync status; held profiles use the pending commands.
+        secret: String,
+        #[arg(value_enum)]
+        choice: TeamConflictChoice,
+    },
+    /// Disable automatic updates without forgetting the authenticated head.
+    Disable,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub(crate) enum TeamConflictChoice {
+    KeepLocal,
+    TakeTeam,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct TeamFolderArgs {
+    pub path: PathBuf,
+    #[arg(long)]
+    pub allow_dangerous: bool,
 }
 
 #[derive(Debug, Args)]
@@ -1190,6 +1324,8 @@ struct ClientListArgs {
     all: bool,
 }
 
+// These are independent command-line opt-ins.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Args)]
 struct ExportArgs {
     /// Require sealed-bundle mode.
@@ -1204,6 +1340,12 @@ struct ExportArgs {
     /// Include all profiles.
     #[arg(long)]
     all_profiles: bool,
+    /// Include personal secret sources.
+    #[arg(long)]
+    include_personal: bool,
+    /// Include historical encrypted secret versions.
+    #[arg(long)]
+    include_history: bool,
     /// Include encrypted remote audit rows in the bundle payload.
     #[arg(long)]
     include_audit: bool,
@@ -1353,6 +1495,8 @@ fn write_error_and_exit(error: &CliError) -> ProcessExitCode {
     ProcessExitCode::from(error.exit_code())
 }
 
+// Keep the command routing table together; each arm delegates its behavior.
+#[allow(clippy::too_many_lines)]
 fn run_with_context(
     cli: Cli,
     context: &RuntimeContext,
@@ -1363,7 +1507,7 @@ fn run_with_context(
         team, trust, vault,
     };
 
-    let command = cli.command.unwrap_or(Command::Status);
+    let command = cli.command.unwrap_or(Command::Status { scan: false });
 
     // The master-key cache is scoped to a single CLI invocation. In
     // production each invocation gets a fresh `RuntimeContext`; tests
@@ -1373,7 +1517,7 @@ fn run_with_context(
     context.master_key_cache.clear();
 
     match command {
-        Command::Status => project::status::status(context, output)?,
+        Command::Status { scan } => project::status::status_with_scan(context, output, scan)?,
         Command::New(args) => new_command(context, output, &args)?,
         Command::Bootstrap => project::bootstrap::bootstrap_command(context, output)?,
         Command::Setup { command } => project::setup::setup_command(context, output, command)?,
@@ -1444,7 +1588,13 @@ fn run_with_context(
         Command::Use(args) => trust::profile::use_profile_command(context, output, args)?,
         Command::Scan(args) => scan::scanner::scan_command(context, output, &args)?,
         Command::Redact(args) => scan::redact::redact_command(context, output, &args)?,
-        Command::Context(args) => scan::context::context_command(context, output, &args)?,
+        Command::Context(args) => {
+            if args.json {
+                scan::context::context_json_command(context, output)?;
+            } else {
+                scan::context::context_command(context, output, &args.redact_names)?;
+            }
+        }
         Command::AiSafe(args) => scan::redact::ai_safe_command(context, output, &args)?,
         Command::Config { command } => config::config_command(context, output, command)?,
         Command::Passkey { command } => vault::passkey::passkey_command(context, output, command)?,
@@ -2599,7 +2749,9 @@ pub(crate) fn resolve_project(start: &Path) -> Result<Option<ResolvedProject>, C
 
 fn read_project_config(path: &Path) -> Result<ProjectConfig, CliError> {
     let content = fs::read_to_string(path)?;
-    let config = toml::from_str::<ProjectConfig>(&content)?;
+    let config = toml::from_str::<ProjectConfig>(&content).map_err(|_| {
+        metadata_invalid_error("project configuration could not be parsed (source redacted)")
+    })?;
     if config.schema_version != PROJECT_CONFIG_SCHEMA_VERSION {
         return Err(metadata_invalid_error(format!(
             "unsupported locket.toml schema_version {}; supported {}",
@@ -2774,7 +2926,19 @@ pub(crate) fn external_env_source_label(source: &ExternalEnvSource) -> String {
 
 pub(crate) fn write_project_config(path: &Path, config: &ProjectConfig) -> Result<(), CliError> {
     let content = toml::to_string_pretty(config)?;
-    fs::write(path, content)?;
+    if path.exists() {
+        let mut document = locket_platform::PolicyFileDocument::read(path)
+            .map_err(|error| metadata_invalid_error(error.to_string()))?;
+        let replacement: toml::Value = toml::from_str(&content)?;
+        if let (Some(current), Some(fields)) = (document.as_table_mut(), replacement.as_table()) {
+            for (key, value) in fields {
+                current.insert(key.clone(), value.clone());
+            }
+        }
+        document.save().map_err(|error| metadata_invalid_error(error.to_string()))?;
+    } else {
+        fs::write(path, content)?;
+    }
     Ok(())
 }
 

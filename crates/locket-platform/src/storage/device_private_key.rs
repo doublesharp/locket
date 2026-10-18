@@ -90,6 +90,7 @@ pub trait LocalDevicePrivateKeyStorage {
 #[derive(Clone)]
 pub struct WrappedLocalFileDevicePrivateKeyStorage {
     directory: PathBuf,
+    signing: bool,
     project_id: String,
     master_key_store: Arc<dyn MasterKeyStore + Send + Sync>,
 }
@@ -113,7 +114,20 @@ impl WrappedLocalFileDevicePrivateKeyStorage {
         project_id: impl Into<String>,
         master_key_store: Arc<dyn MasterKeyStore + Send + Sync>,
     ) -> Self {
-        Self { directory: directory.into(), project_id: project_id.into(), master_key_store }
+        Self {
+            directory: directory.into(),
+            signing: false,
+            project_id: project_id.into(),
+            master_key_store,
+        }
+    }
+
+    /// Selects separate files and authenticated domain for Ed25519 signing seeds.
+    /// Use the signing fingerprint as the storage identifier to stage rotations safely.
+    #[must_use]
+    pub const fn for_signing(mut self) -> Self {
+        self.signing = true;
+        self
     }
 
     /// Returns the on-disk path for `device_id`.
@@ -128,7 +142,11 @@ impl WrappedLocalFileDevicePrivateKeyStorage {
     }
 
     fn devices_directory(&self) -> PathBuf {
-        self.directory.join(DEVICE_PRIVATE_KEY_DIRECTORY)
+        self.directory.join(if self.signing {
+            "device-signing-v2"
+        } else {
+            DEVICE_PRIVATE_KEY_DIRECTORY
+        })
     }
 
     fn temp_envelope_path(&self, device_id: &str) -> Result<PathBuf, PlatformError> {
@@ -138,7 +156,11 @@ impl WrappedLocalFileDevicePrivateKeyStorage {
 
     fn wrap_aad(&self, device_id: &str) -> Vec<u8> {
         let mut aad = Vec::new();
-        aad.extend_from_slice(b"locket-device-private-key-v1");
+        aad.extend_from_slice(if self.signing {
+            b"locket-device-signing-private-key-v2"
+        } else {
+            b"locket-device-private-key-v1"
+        });
         aad.extend_from_slice(self.project_id.as_bytes());
         aad.push(0);
         aad.extend_from_slice(device_id.as_bytes());

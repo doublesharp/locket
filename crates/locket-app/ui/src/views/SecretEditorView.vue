@@ -37,6 +37,8 @@ interface Props {
   rows: SecretRowMeta[];
   privacyMode: boolean;
   loading: boolean;
+  metadataLoaded: boolean;
+  actionGuidance?: string | null;
   errorMessage?: string | null;
   lastRefreshedAt?: string;
   /** Active project id (required for SetSecret payloads). */
@@ -113,7 +115,9 @@ const deleteNotice = computed<string | null>(() => {
   return deleteUnavailableNotice(deleteForm.value.name);
 });
 
-const hasContext = computed<boolean>(() => Boolean(props.projectId) && Boolean(props.profileId));
+const hasContext = computed<boolean>(
+  () => props.metadataLoaded && Boolean(props.projectId) && Boolean(props.profileId),
+);
 
 function rotateSourceFor(name: string): SecretSource {
   const trimmed = name.trim();
@@ -241,11 +245,13 @@ function errorLabel(error: AgentClientError): string {
     <p v-if="errorMessage" class="view__error">{{ errorMessage }}</p>
 
     <p v-if="!hasContext" class="view__notice" role="note">
-      Select an active project and profile before setting or rotating secrets.
+      Select an active project and environment before setting or rotating secrets.
     </p>
 
     <section aria-labelledby="secret-editor-list-heading" class="view__panel">
-      <h3 id="secret-editor-list-heading" class="view__panel-heading">Secrets in active profile</h3>
+      <h3 id="secret-editor-list-heading" class="view__panel-heading">
+        Secrets in active environment
+      </h3>
       <label class="view__search">
         <span class="view__search-label">Search secrets</span>
         <input
@@ -256,9 +262,16 @@ function errorLabel(error: AgentClientError): string {
           placeholder="Filter by name or source"
         />
       </label>
-      <p v-if="loading" class="view__loading" role="status">Loading secret metadata…</p>
-      <p v-else-if="filteredRows.length === 0" class="view__empty">No matching secrets.</p>
-      <table v-else class="view__table" aria-describedby="secret-editor-list-heading">
+      <p v-if="actionGuidance" class="view__empty" role="status">{{ actionGuidance }}</p>
+      <p v-else-if="loading" class="view__loading" role="status">Loading secret metadata…</p>
+      <p v-else-if="metadataLoaded && filteredRows.length === 0" class="view__empty">
+        No matching secrets.
+      </p>
+      <table
+        v-else-if="metadataLoaded"
+        class="view__table"
+        aria-describedby="secret-editor-list-heading"
+      >
         <thead>
           <tr>
             <th scope="col">Name</th>
@@ -270,7 +283,15 @@ function errorLabel(error: AgentClientError): string {
         <tbody>
           <tr v-for="row in filteredRows" :key="row.id">
             <td>{{ displayName(row) }}</td>
-            <td>{{ row.source }}</td>
+            <td>
+              {{
+                row.source === 'team'
+                  ? 'Shared'
+                  : row.source === 'user-local'
+                    ? 'My override'
+                    : 'This machine'
+              }}
+            </td>
             <td>v{{ row.currentVersion }}</td>
             <td>
               <button
@@ -326,9 +347,9 @@ function errorLabel(error: AgentClientError): string {
         <label class="view__field">
           <span>Source</span>
           <select v-model="setForm.source" data-testid="secret-editor-set-source">
-            <option value="user-local">user-local</option>
-            <option value="machine-local">machine-local</option>
-            <option value="team-managed">team-managed</option>
+            <option value="user-local">My override</option>
+            <option value="machine-local">This machine</option>
+            <option value="team-managed">Shared</option>
           </select>
         </label>
         <p v-if="setError" class="view__error" role="alert">{{ setError }}</p>

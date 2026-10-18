@@ -211,8 +211,9 @@ fn tombstone_secret_hides_it_from_active_queries() -> Result<(), Box<dyn Error>>
         )?,
         None
     );
-    assert!(
-        test_store.store.list_active_secrets_by_profile("lk_proj_test", "lk_prof_test")?.is_empty()
+    assert_eq!(
+        test_store.store.list_active_secrets_by_profile("lk_proj_test", "lk_prof_test")?.len(),
+        0
     );
 
     let deleted_at = test_store.store.connection().query_row(

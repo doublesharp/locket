@@ -1,82 +1,43 @@
 import * as vscode from 'vscode';
-
 import { AgentClient } from './agentClient';
-import { resolveLocketProject, resolveStorePath } from './commands';
+import { LOCKET_IDE_ENV_SESSION_VARIABLE, clearIdeEnvSessionFromTerminals } from './ideEnvSession';
 import { WarnOnceLatch } from './terminalAutobindModel';
-import {
-  TerminalAutobindHandlerDeps,
-  handleOpenTerminal,
-} from './terminalAutobindHandler';
+import { TerminalAutobindHandlerDeps, handleOpenTerminal } from './terminalAutobindHandler';
+import { resolveActiveProjectContext, resolveProjectForCwd, workingDirectoryForTerminal } from './vscodeProject';
 
-export function registerLocketTerminalAutobind(
-  context: vscode.ExtensionContext,
-  agentClient: AgentClient,
-): vscode.Disposable {
-  const warnOnce = new WarnOnceLatch();
+export function registerLocketTerminalAutobind(context: vscode.ExtensionContext, agentClient: AgentClient): vscode.Disposable {
+  const clearGlobalSession = (): void => clearIdeEnvSessionFromTerminals(context.environmentVariableCollection);
+  clearGlobalSession();
   const deps: TerminalAutobindHandlerDeps = {
     agentClient,
     environmentVariableCollection: context.environmentVariableCollection,
-    autobindContext: {
-      resolveProject: (cwd) => (cwd === undefined ? undefined : resolveLocketProject(cwd)),
-      pid: process.pid,
-      processStartTime: hostProcessStartTime(),
-    },
-    storePath: resolveStorePath(),
-    notifyDirectoryGrantRejected: (reason) => {
-      void vscode.window.showWarningMessage(`Locket: ${reason}`);
-    },
-    warnOnce,
-  };
-  const refreshDefaultSession = (): void => {
-    void handleOpenTerminal(firstWorkspaceFolderPath(), deps);
+    autobindContext: {resolveProject:()=>undefined,pid:process.pid,processStartTime:hostProcessStartTime()},
+    resolveProject: resolveProjectForCwd,
+    storePath:'',
+    notifyDirectoryGrantRejected:(reason)=>{void vscode.window.showWarningMessage(`Locket: ${reason}`);},
+    warnOnce:new WarnOnceLatch(),
   };
   const createTerminal = async (): Promise<void> => {
-    const cwd = firstWorkspaceFolderPath();
-    await handleOpenTerminal(cwd, deps);
-    const terminal = vscode.window.createTerminal({
-      cwd,
-      name: 'Locket',
-    });
-    terminal.show();
+    try {
+      const project = await resolveActiveProjectContext();
+      if (project === undefined) { return; }
+      const outcome = await handleOpenTerminal(project.root,deps);
+      const terminal=vscode.window.createTerminal({
+        cwd:project.root,name:'Locket',
+        env:outcome.sessionId===undefined?{}:{[LOCKET_IDE_ENV_SESSION_VARIABLE]:outcome.sessionId},
+      });
+      terminal.show();
+    } catch (error) {void vscode.window.showErrorMessage(error instanceof Error ? error.message : 'Locket project is unavailable.');}
   };
-
-  refreshDefaultSession();
-
   return vscode.Disposable.from(
-    vscode.commands.registerCommand('locket.createTerminal', createTerminal),
-    vscode.workspace.onDidChangeWorkspaceFolders(refreshDefaultSession),
-    vscode.window.onDidOpenTerminal((terminal) => {
-      void handleOpenTerminal(workingDirectoryForTerminal(terminal), deps);
-    }),
+    vscode.commands.registerCommand('locket.createTerminal',createTerminal),
+    vscode.workspace.onDidChangeWorkspaceFolders(clearGlobalSession),
+    vscode.window.onDidOpenTerminal((terminal)=>{void handleOpenTerminal(workingDirectoryForTerminal(terminal),deps);}),
+    new vscode.Disposable(clearGlobalSession),
   );
 }
 
-function workingDirectoryForTerminal(terminal: vscode.Terminal): string | undefined {
-  const opts = terminal.creationOptions as { cwd?: string | vscode.Uri } | undefined;
-  if (opts !== undefined && opts.cwd !== undefined) {
-    if (typeof opts.cwd === 'string') {
-      return opts.cwd;
-    }
-    if (typeof opts.cwd === 'object' && 'fsPath' in opts.cwd) {
-      return opts.cwd.fsPath;
-    }
-  }
-  return firstWorkspaceFolderPath();
-}
-
-function firstWorkspaceFolderPath(): string | undefined {
-  const folders = vscode.workspace.workspaceFolders;
-  if (folders === undefined || folders.length === 0) {
-    return undefined;
-  }
-  return folders[0]?.uri.fsPath;
-}
-
 function hostProcessStartTime(): string {
-  // VS Code does not expose the host process start time directly; we
-  // approximate with a stable per-process token derived from `process.pid`
-  // and `process.uptime` rounded to seconds. The agent only requires the
-  // value to be stable across the lifetime of the bound process.
-  const startUnix = Math.floor(Date.now() / 1000 - process.uptime());
+  const startUnix=Math.floor(Date.now()/1000-process.uptime());
   return `pid-${process.pid}-start-${startUnix}`;
 }

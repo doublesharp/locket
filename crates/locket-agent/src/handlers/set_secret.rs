@@ -140,7 +140,7 @@ pub async fn handle_set_secret(
         let cache = state.unlock_cache.lock().await;
         cache.lookup(&typed.project_id, now_unix_nanos).map(|entry| entry.key_bytes().to_vec())
     };
-    let Some(master_key) = master_key else {
+    let Some(master_key) = master_key.map(Zeroizing::new) else {
         return typed_error(
             request,
             ERROR_UNLOCK_REQUIRED,
@@ -161,6 +161,7 @@ pub async fn handle_set_secret(
         grace_until: typed.grace_until,
         master_key: &master_key,
         timestamp: now_unix_nanos,
+        imported: false,
     }) {
         Ok(response) => {
             let payload = serde_json::to_value(response).unwrap_or(Value::Null);
@@ -188,9 +189,9 @@ fn typed_error(
 }
 
 #[derive(Debug)]
-struct SetSecretFailure {
-    error: &'static str,
-    message: &'static str,
+pub(super) struct SetSecretFailure {
+    pub(crate) error: &'static str,
+    pub(crate) message: &'static str,
     kind: LocketError,
 }
 
@@ -201,29 +202,39 @@ impl SetSecretFailure {
 }
 
 #[derive(Clone, Copy)]
-struct SetSecretOperation<'a> {
-    store_path: &'a Path,
-    project_id: &'a str,
-    profile_id: &'a str,
-    name: &'a str,
-    source: &'a str,
-    source_was_omitted: bool,
-    value: &'a str,
-    rotate: bool,
-    grace_until: Option<i64>,
-    master_key: &'a [u8],
-    timestamp: i128,
+pub(super) struct SetSecretOperation<'a> {
+    pub(crate) store_path: &'a Path,
+    pub(crate) project_id: &'a str,
+    pub(crate) profile_id: &'a str,
+    pub(crate) name: &'a str,
+    pub(crate) source: &'a str,
+    pub(crate) source_was_omitted: bool,
+    pub(crate) value: &'a str,
+    pub(crate) rotate: bool,
+    pub(crate) grace_until: Option<i64>,
+    pub(crate) master_key: &'a [u8],
+    pub(crate) timestamp: i128,
+    pub(crate) imported: bool,
 }
 
 fn set_secret(operation: SetSecretOperation<'_>) -> Result<SetSecretResponse, SetSecretFailure> {
     let timestamp = i64::try_from(operation.timestamp).map_err(|_| corrupt_db())?;
-    let master_key = key_array(operation.master_key).ok_or_else(corrupt_db)?;
+    let master_key = Zeroizing::new(key_array(operation.master_key).ok_or_else(corrupt_db)?);
     let mut store = Store::open(operation.store_path).map_err(|_| corrupt_db())?;
-    ensure_profile_exists(&store, operation.project_id, operation.profile_id)?;
+    set_secret_in_store(&mut store, &operation, &master_key, timestamp)
+}
+
+pub(super) fn set_secret_in_store(
+    store: &mut Store,
+    operation: &SetSecretOperation<'_>,
+    master_key: &locket_crypto::KeyBytes,
+    timestamp: i64,
+) -> Result<SetSecretResponse, SetSecretFailure> {
+    ensure_profile_exists(store, operation.project_id, operation.profile_id)?;
     if operation.rotate {
-        rotate_secret(&mut store, &operation, &master_key, timestamp)
+        rotate_secret(store, operation, master_key, timestamp)
     } else {
-        create_secret(&mut store, &operation, &master_key, timestamp)
+        create_secret(store, operation, master_key, timestamp)
     }
 }
 
@@ -286,7 +297,7 @@ fn create_secret(
             .map_err(|_| corrupt_db())?;
     let secret_id = secret_id.into_string();
     let metadata = secret_audit_metadata(
-        "SET",
+        if operation.imported { "IMPORT" } else { "SET" },
         operation.name,
         operation.profile_id,
         operation.source,
@@ -295,7 +306,7 @@ fn create_secret(
     let audit = AuditWrite {
         project_id: operation.project_id,
         profile_id: Some(operation.profile_id),
-        action: "SET",
+        action: if operation.imported { "IMPORT" } else { "SET" },
         status: "SUCCESS",
         secret_name: Some(operation.name),
         command: None,
@@ -310,7 +321,7 @@ fn create_secret(
                 profile_id: operation.profile_id.to_owned(),
                 name: operation.name.to_owned(),
                 source: operation.source.to_owned(),
-                origin: ORIGIN.to_owned(),
+                origin: if operation.imported { "imported" } else { ORIGIN }.to_owned(),
                 current_version: version,
                 state: "active".to_owned(),
                 created_at: timestamp,
@@ -322,7 +333,7 @@ fn create_secret(
                 secret_id: secret_id.clone(),
                 version,
                 source: operation.source.to_owned(),
-                origin: ORIGIN.to_owned(),
+                origin: if operation.imported { "imported" } else { ORIGIN }.to_owned(),
                 state: "current".to_owned(),
                 created_at: timestamp,
                 deprecated_at: None,
@@ -426,7 +437,7 @@ fn rotate_secret(
                 secret_id: secret.id.clone(),
                 version: new_version,
                 source: operation.source.to_owned(),
-                origin: ORIGIN.to_owned(),
+                origin: if operation.imported { "imported" } else { ORIGIN }.to_owned(),
                 state: "current".to_owned(),
                 created_at: timestamp,
                 deprecated_at: None,
@@ -610,7 +621,7 @@ fn load_profile_key_with_master(
     unwrap_key_material_v1(&wrapping_key, &wrapped, &aad)
 }
 
-fn load_project_key_with_master(
+pub(super) fn load_project_key_with_master(
     store: &Store,
     project_id: &str,
     purpose: KeyPurpose,

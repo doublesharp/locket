@@ -216,3 +216,26 @@ Component checks:
 - History and diff output never contain plaintext.
 - Rotated secrets cannot be silently rolled back without an explicit audited operation.
 - Expired pinned references fail closed.
+
+## Public defaults and value validation
+
+After existing environment layers and override handling, a permitted
+`[variables.<NAME>].default` fills an authorized name only if the final child
+environment lacks that name. Defaults never broaden a policy's name set or
+bypass path/command/argv ACLs. This fallback applies to ordinary execution and
+Docker/Compose injection. The existing unsupported Docker-policy gates still
+apply. Values selected from any source are validated against a declared
+variable type before spawn; errors name the variable and failed requirement
+without printing the value. Missing required names include commit-safe setup
+guidance and an explicit `locket set <NAME>` next step.
+
+Metadata-only readiness reports contain names, classification, required state,
+source labels, descriptions, setup hints, and warnings. They contain neither
+resolved values nor public default strings. Deferred source availability must
+remain distinct from a proven ready state. A names-only CI validation result
+never proves that a live credential exists or that its value is valid.
+
+Ad-hoc `locket exec` validates the types of its explicitly selected existing
+vault values and shows the same browser-prefix warnings. It does not discover
+or inject extra variables from contracts or apply saved-command defaults. Use
+`locket run <policy>` for a declared command's requirements and public defaults.

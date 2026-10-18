@@ -1,0 +1,1107 @@
+//! Scoped desktop operations. Child output never crosses the webview boundary.
+
+#[cfg(not(any(target_os = "windows", test)))]
+use base64 as _;
+use locket_core::ProjectConfig;
+use locket_store::Store;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::{
+    ffi::OsStr,
+    fs,
+    io::Write as _,
+    path::{Path, PathBuf},
+    process::{Command, Stdio},
+    time::{Duration, Instant},
+};
+
+const CHILD_TIMEOUT: Duration = Duration::from_secs(30);
+static RESOURCE_ROOT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+static SELECTED_PROJECT: std::sync::Mutex<Option<DesktopProjectContext>> =
+    std::sync::Mutex::new(None);
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub(crate) struct DesktopProjectContext {
+    root: String,
+    project_id: String,
+    project_name: String,
+    profile_id: String,
+    profile_name: String,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct DesktopPathRequest {
+    path: PathBuf,
+}
+#[derive(Deserialize)]
+pub(crate) struct DesktopImportEnvRequest {
+    project_id: String,
+    path: PathBuf,
+    overwrite: bool,
+    literal: bool,
+    #[serde(default)]
+    confirmation: Option<String>,
+}
+#[derive(Deserialize)]
+pub(crate) struct DesktopStartAgentRequest {
+    project_id: Option<String>,
+}
+#[derive(Deserialize)]
+pub(crate) struct DesktopRunPolicyRequest {
+    project_id: String,
+    policy_name: String,
+}
+#[derive(Serialize)]
+pub(crate) struct DesktopImportSummary {
+    summary: String,
+}
+#[derive(Serialize)]
+pub(crate) struct DesktopRunResponse {
+    launched: bool,
+    command: String,
+}
+
+struct CliPlan {
+    cwd: PathBuf,
+    args: Vec<String>,
+    input: Option<Vec<u8>>,
+}
+
+fn metadata_error(_: impl std::fmt::Display) -> String {
+    "Cannot read registered project metadata. Check locket.toml and run `locket doctor` in the project.".into()
+}
+
+fn root_hash(root: &Path) -> [u8; 32] {
+    Sha256::digest(root.to_string_lossy().as_bytes()).into()
+}
+
+fn selected_root(path: &Path) -> Result<PathBuf, String> {
+    let path = path
+        .canonicalize()
+        .map_err(|_| "Select an existing project folder or locket.toml file.".to_string())?;
+    if path.is_dir() {
+        return Ok(path);
+    }
+    if path.is_file() && path.file_name() == Some(OsStr::new("locket.toml")) {
+        return path
+            .parent()
+            .map(Path::to_path_buf)
+            .ok_or_else(|| "Project folder is unavailable.".into());
+    }
+    Err("Select a project folder or its locket.toml file.".into())
+}
+
+fn open_project_at(store_path: &Path, path: &Path) -> Result<DesktopProjectContext, String> {
+    let root = selected_root(path)?;
+    if !store_path.is_file() {
+        return Err("No local vault exists. Initialize this project with Locket first.".into());
+    }
+    let source = fs::read_to_string(root.join("locket.toml")).map_err(|_| {
+        "No readable locket.toml exists in the selected folder. Initialize it first.".to_string()
+    })?;
+    let config: ProjectConfig = toml::from_str(&source).map_err(metadata_error)?;
+    if config.schema_version != locket_core::PROJECT_CONFIG_SCHEMA_VERSION {
+        return Err("Unsupported locket.toml schema. Update Locket.".into());
+    }
+    let store = Store::open(store_path).map_err(metadata_error)?;
+    let project_id = config.project_id.as_str();
+    if !store.project_root_is_trusted(project_id, &root_hash(&root)).map_err(metadata_error)? {
+        return Err(
+            "This folder is not trusted for the project. Run `locket trust` in this folder first."
+                .into(),
+        );
+    }
+    let project = store
+        .get_project(project_id)
+        .map_err(metadata_error)?
+        .ok_or_else(|| "Project is not registered in this vault.".to_string())?;
+    let profile = store
+        .get_profile_by_name(project_id, config.default_profile.as_str())
+        .map_err(metadata_error)?
+        .ok_or_else(|| {
+            "The configured profile is missing from this vault. Run `locket doctor`.".to_string()
+        })?;
+    let root = root
+        .to_str()
+        .ok_or_else(|| "Project folder must have a valid Unicode path.".to_string())?
+        .into();
+    Ok(DesktopProjectContext {
+        root,
+        project_id: project.id,
+        project_name: project.name,
+        profile_id: profile.id,
+        profile_name: profile.name,
+    })
+}
+
+fn list_projects_at(store_path: &Path) -> Result<Vec<DesktopProjectContext>, String> {
+    if !store_path.exists() {
+        return Ok(Vec::new());
+    }
+    let store = Store::open(store_path).map_err(metadata_error)?;
+    let mut query = store.connection().prepare("SELECT DISTINCT display_path FROM project_roots WHERE display_path IS NOT NULL ORDER BY display_path").map_err(metadata_error)?;
+    let roots = query
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(metadata_error)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(metadata_error)?;
+    // Stale, moved, or untrusted copies are omitted instead of guessed.
+    Ok(roots.iter().filter_map(|root| open_project_at(store_path, Path::new(root)).ok()).collect())
+}
+
+fn project_context(store_path: &Path, project_id: &str) -> Result<DesktopProjectContext, String> {
+    let selected =
+        SELECTED_PROJECT.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+    project_context_with_selection(store_path, project_id, selected.as_ref())
+}
+
+fn initialize_plan(path: &Path) -> Result<CliPlan, String> {
+    let cwd =
+        path.canonicalize().map_err(|_| "Select an existing folder to initialize.".to_string())?;
+    if !cwd.is_dir() {
+        return Err("Initialize requires an existing folder.".into());
+    }
+    if cwd.ancestors().skip(1).any(|parent| parent.join("locket.toml").exists()) {
+        return Err("A parent folder already contains locket.toml. Open that project or select a folder outside it before initializing.".into());
+    }
+    Ok(CliPlan { cwd, args: vec!["init".into(), "--no-passkey".into()], input: None })
+}
+
+fn start_plan(store_path: &Path, project_id: Option<&str>) -> Result<CliPlan, String> {
+    let cwd = match project_id {
+        Some(id) => project_context(store_path, id)?.root.into(),
+        None => std::env::current_exe()
+            .map_err(metadata_error)?
+            .parent()
+            .ok_or_else(|| "Cannot find application directory.".to_string())?
+            .into(),
+    };
+    Ok(CliPlan { cwd, args: vec!["agent".into(), "start".into()], input: None })
+}
+
+fn policy_context(
+    store_path: &Path,
+    project_id: &str,
+    name: &str,
+) -> Result<DesktopProjectContext, String> {
+    let context = project_context(store_path, project_id)?;
+    if name.is_empty() || name.starts_with('-') || name.contains('\0') {
+        return Err("Choose a policy whose name does not begin with a dash.".into());
+    }
+    let source =
+        fs::read_to_string(Path::new(&context.root).join("locket.toml")).map_err(metadata_error)?;
+    let policies = locket_core::PolicyDocument::from_toml_str(&source).map_err(metadata_error)?;
+    if !policies.commands.contains_key(name) {
+        return Err("The policy no longer exists in locket.toml. Refresh the command list.".into());
+    }
+    Ok(context)
+}
+
+fn executable_file(path: &Path) -> bool {
+    let Ok(metadata) = fs::metadata(path) else {
+        return false;
+    };
+    if !metadata.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        metadata.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("exe"))
+    }
+}
+
+fn find_cli_from(candidates: &[PathBuf], search_path: Option<&OsStr>) -> Result<PathBuf, String> {
+    let installed = search_path
+        .map(std::env::split_paths)
+        .into_iter()
+        .flatten()
+        .filter(|path| path.is_absolute())
+        .map(|path| path.join(if cfg!(windows) { "locket.exe" } else { "locket" }));
+    candidates.iter().cloned().chain(installed).find(|path| executable_file(path)).and_then(|path| path.canonicalize().ok())
+        .ok_or_else(|| "Locket CLI was not found. Install `locket` on PATH or place it beside the desktop application, then retry.".into())
+}
+
+pub(crate) fn set_resource_root(path: PathBuf) {
+    let _ = RESOURCE_ROOT.set(path);
+}
+
+fn verify_cli_version(executable: &Path, timeout: Duration) -> Result<(), String> {
+    use std::io::Read as _;
+    let mut child = Command::new(executable)
+        .arg("--version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|_| "Cannot inspect the bundled CLI version.".to_owned())?;
+    let stdout = child.stdout.take().ok_or_else(|| "Cannot read the CLI version.".to_owned())?;
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    std::thread::spawn(move || {
+        let mut output = Vec::new();
+        let result = stdout.take(128).read_to_end(&mut output).map(|_| output);
+        let _ = sender.send(result);
+    });
+    let started = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => break,
+            Ok(Some(_)) | Err(_) => {
+                return Err("The CLI version check failed. Reinstall Locket.".into());
+            }
+            Ok(None) if started.elapsed() < timeout => {
+                std::thread::sleep(Duration::from_millis(10))
+            }
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("The CLI version check timed out.".into());
+            }
+        }
+    }
+    let output = receiver
+        .recv_timeout(Duration::from_millis(500))
+        .map_err(|_| "The CLI version response timed out.".to_owned())?
+        .map_err(|_| "Cannot read the CLI version.".to_owned())?;
+    if output == format!("locket {}\n", env!("CARGO_PKG_VERSION")).as_bytes()
+        || output == format!("locket {}\r\n", env!("CARGO_PKG_VERSION")).as_bytes()
+    {
+        Ok(())
+    } else {
+        Err("The Locket CLI version differs from this desktop application. Reinstall the matching release.".into())
+    }
+}
+
+fn resolve_cli() -> Result<PathBuf, String> {
+    let executable = std::env::current_exe().map_err(metadata_error)?;
+    let parent =
+        executable.parent().ok_or_else(|| "Cannot find application directory.".to_string())?;
+    let filename = if cfg!(windows) { "locket.exe" } else { "locket" };
+    let mut candidates = Vec::new();
+    if let Some(root) = RESOURCE_ROOT.get() {
+        candidates.push(root.join(filename));
+    }
+    candidates.extend([
+        parent.join(filename),
+        parent.join("../Resources").join(filename),
+        parent.join("resources").join(filename),
+    ]);
+    let cli = find_cli_from(&candidates, std::env::var_os("PATH").as_deref())?;
+    verify_cli_version(&cli, Duration::from_secs(2))?;
+    Ok(cli)
+}
+
+fn execute_cli(executable: &Path, plan: &CliPlan, timeout: Duration) -> Result<(), String> {
+    if !executable_file(executable) {
+        return Err(
+            "The Locket executable is missing or is not executable. Reinstall Locket CLI.".into()
+        );
+    }
+    // CLI output may include init/recovery material or malformed user input. Keep
+    // it out of logs and IPC entirely; this action returns only process status.
+    let mut child = Command::new(executable)
+        .args(&plan.args)
+        .current_dir(&plan.cwd)
+        .stdin(if plan.input.is_some() { Stdio::piped() } else { Stdio::null() })
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|_| {
+            "Cannot launch Locket CLI. Check its installation and permissions.".to_string()
+        })?;
+    let (sender, receiver) = std::sync::mpsc::channel();
+    if let Some(input) = plan.input.clone()
+        && let Some(mut stdin) = child.stdin.take()
+    {
+        std::thread::spawn(move || {
+            let result = stdin.write_all(&input);
+            drop(stdin);
+            let _ = sender.send(result);
+        });
+    }
+    let started = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                if !status.success() {
+                    return Err(cli_failure_guidance(
+                        plan.args.first().map_or("action", String::as_str),
+                        &status.to_string(),
+                    ));
+                }
+                if plan.input.is_some()
+                    && !matches!(receiver.recv_timeout(Duration::from_millis(250)), Ok(Ok(())))
+                {
+                    return Err("Locket CLI did not accept the complete policy request.".into());
+                }
+                return Ok(());
+            }
+            Ok(None) if started.elapsed() < timeout => {
+                std::thread::sleep(Duration::from_millis(10))
+            }
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("Locket CLI timed out. Retry in a terminal if an interactive prompt is required.".into());
+            }
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("Cannot wait for Locket CLI to finish.".into());
+            }
+        }
+    }
+}
+
+fn posix_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn terminal_script(cli: &Path, root: &Path, policy: &str) -> String {
+    format!(
+        "#!/bin/sh\n/bin/rm -- \"$0\"\ncd -- {} || exit 1\n{} run {}\n",
+        posix_quote(&root.to_string_lossy()),
+        posix_quote(&cli.to_string_lossy()),
+        posix_quote(policy)
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn launch_terminal(cli: &Path, root: &Path, policy: &str) -> Result<(), String> {
+    let file = write_terminal_launcher(cli, root, policy)?;
+    let (_handle, path) = file.keep().map_err(metadata_error)?;
+    let result = execute_cli(
+        Path::new("/usr/bin/open"),
+        &CliPlan {
+            cwd: root.into(),
+            args: vec!["-a".into(), "Terminal".into(), path.to_string_lossy().into_owned()],
+            input: None,
+        },
+        Duration::from_secs(10),
+    );
+    if result.is_err() {
+        let _ = fs::remove_file(&path);
+        return Err("Cannot open Terminal. Check that Terminal is installed and try again.".into());
+    }
+    // The script deletes itself once Terminal opens it. Remove abandoned
+    // launchers too, including when Terminal declines to open the file.
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_secs(300));
+        let _ = fs::remove_file(path);
+    });
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn launch_terminal(cli: &Path, root: &Path, policy: &str) -> Result<(), String> {
+    for (terminal, separator) in [("gnome-terminal", "--"), ("konsole", "-e"), ("xterm", "-e")] {
+        let Some(path) = std::env::var_os("PATH")
+            .map(|path| {
+                std::env::split_paths(&path)
+                    .filter(|path| path.is_absolute())
+                    .map(|path| path.join(terminal))
+                    .find(|path| executable_file(path))
+            })
+            .flatten()
+        else {
+            continue;
+        };
+        let mut command = Command::new(path);
+        command.current_dir(root);
+        match terminal {
+            "gnome-terminal" => {
+                command.arg("--working-directory").arg(root);
+            }
+            "konsole" => {
+                command.arg("--workdir").arg(root);
+            }
+            _ => {}
+        }
+        let mut child = command
+            .arg(separator)
+            .arg(cli)
+            .args(["run", policy])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|_| "Cannot launch the terminal application.".to_string())?;
+        std::thread::sleep(Duration::from_millis(200));
+        if child.try_wait().map_err(metadata_error)?.is_some_and(|status| !status.success()) {
+            return Err(
+                "The terminal application rejected the command. Install a working terminal.".into(),
+            );
+        }
+        std::thread::spawn(move || {
+            let _ = child.wait();
+        });
+        return Ok(());
+    }
+    Err("Install gnome-terminal, konsole, or xterm to run an interactive command.".into())
+}
+
+#[cfg(target_os = "windows")]
+fn launch_terminal(cli: &Path, root: &Path, policy: &str) -> Result<(), String> {
+    let terminal = std::env::var_os("PATH")
+        .and_then(|path| {
+            std::env::split_paths(&path)
+                .filter(|path| path.is_absolute())
+                .map(|path| path.join("wt.exe"))
+                .find(|path| executable_file(path))
+        })
+        .ok_or_else(|| "Install Windows Terminal to run an interactive command.".to_string())?;
+    execute_cli(
+        &terminal,
+        &CliPlan { cwd: root.into(), args: windows_terminal_args(cli, root, policy), input: None },
+        Duration::from_secs(10),
+    )
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+fn launch_terminal(_: &Path, _: &Path, _: &str) -> Result<(), String> {
+    Err("Interactive policy launch is unsupported on this platform. Use `locket run` in a terminal.".into())
+}
+
+async fn blocking<T: Send + 'static>(
+    action: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(action)
+        .await
+        .map_err(|_| "Desktop action failed unexpectedly.".to_string())?
+}
+
+async fn set_agent_context(context: &DesktopProjectContext) -> Result<(), String> {
+    let request = locket_agent::SetActiveProfileRequest {
+        // The existing agent RPC expects locket.toml, despite its generic name.
+        config_path: Path::new(&context.root).join("locket.toml"),
+        store_path: super::default_store_path().map_err(|error| error.to_string())?,
+        project_id: context.project_id.clone(),
+        profile_name: context.profile_name.clone(),
+        confirmation: None,
+        privacy_redact_names: false,
+        root_hash: Some(
+            root_hash(Path::new(&context.root)).iter().map(|byte| format!("{byte:02x}")).collect(),
+        ),
+    };
+    let result: Result<locket_agent::SetActiveProfileResponse, _> = super::invoke_method(
+        &super::resolve_socket_path(),
+        locket_agent::AgentMethod::SetActiveProfile,
+        &request,
+    )
+    .await;
+    match result {
+        Ok(_) | Err(super::AgentClientError::Unavailable { .. }) => Ok(()),
+        // Metadata browsing must work while locked. No grant or unlock is made.
+        Err(super::AgentClientError::Rejected { code, .. }) if code == "UnlockRequired" => Ok(()),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+#[tauri::command]
+pub(crate) async fn desktop_list_projects() -> Result<Vec<DesktopProjectContext>, String> {
+    let store = super::default_store_path().map_err(|error| error.to_string())?;
+    blocking(move || list_projects_at(&store)).await
+}
+#[tauri::command]
+pub(crate) async fn desktop_open_project(
+    request: DesktopPathRequest,
+) -> Result<DesktopProjectContext, String> {
+    let store = super::default_store_path().map_err(|error| error.to_string())?;
+    let context = blocking(move || open_project_at(&store, &request.path)).await?;
+    set_agent_context(&context).await?;
+    *SELECTED_PROJECT.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
+        Some(context.clone());
+    Ok(context)
+}
+#[tauri::command]
+pub(crate) async fn desktop_initialize_project(
+    request: DesktopPathRequest,
+) -> Result<DesktopProjectContext, String> {
+    let store = super::default_store_path().map_err(|error| error.to_string())?;
+    let context = blocking(move || {
+        let plan = initialize_plan(&request.path)?;
+        execute_cli(&resolve_cli()?, &plan, CHILD_TIMEOUT).map_err(|error| format!("{error} Desktop initialization needs OS keychain access. For passphrase fallback, run `locket init` in this folder's terminal."))?;
+        open_project_at(&store, &plan.cwd)
+    }).await?;
+    set_agent_context(&context).await?;
+    *SELECTED_PROJECT.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
+        Some(context.clone());
+    Ok(context)
+}
+#[tauri::command]
+pub(crate) async fn desktop_import_env(
+    request: DesktopImportEnvRequest,
+) -> Result<DesktopImportSummary, String> {
+    let store = super::default_store_path().map_err(|error| error.to_string())?;
+    let context = project_context(&store, &request.project_id)?;
+    let payload = serde_json::json!({
+        "store_path": store, "project_root": context.root, "project_id": context.project_id,
+        "profile_id": context.profile_id, "env_path": request.path,
+        "overwrite": request.overwrite, "literal": request.literal, "confirmation": request.confirmation,
+    });
+    let result: locket_agent::ImportDotenvResponse = invoke_granted(
+        locket_agent::AgentMethod::ImportDotenv,
+        locket_agent::GrantAction::ImportDotenv,
+        payload,
+        &store,
+        &context.project_id,
+        &context.profile_id,
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    let mut summary = format!(
+        "Imported {}, overwritten {}, skipped {}. Original file preserved.",
+        result.imported, result.overwritten, result.skipped
+    );
+    if let Some(warning) = result.maintenance_warning {
+        summary.push(' ');
+        summary.push_str(&warning);
+    }
+    Ok(DesktopImportSummary { summary })
+}
+#[tauri::command]
+pub(crate) async fn desktop_start_agent(request: DesktopStartAgentRequest) -> Result<(), String> {
+    let store = super::default_store_path().map_err(|error| error.to_string())?;
+    blocking(move || {
+        execute_cli(
+            &resolve_cli()?,
+            &start_plan(&store, request.project_id.as_deref())?,
+            CHILD_TIMEOUT,
+        )
+    })
+    .await
+}
+#[tauri::command]
+pub(crate) async fn desktop_run_policy(
+    request: DesktopRunPolicyRequest,
+) -> Result<DesktopRunResponse, String> {
+    let store = super::default_store_path().map_err(|error| error.to_string())?;
+    blocking(move || {
+        let context = policy_context(&store, &request.project_id, &request.policy_name)?;
+        let cli = resolve_cli()?;
+        launch_terminal(&cli, Path::new(&context.root), &request.policy_name)?;
+        Ok(DesktopRunResponse {
+            launched: true,
+            command: format!("locket run {}", posix_quote(&request.policy_name)),
+        })
+    })
+    .await
+}
+#[tauri::command]
+pub(crate) async fn desktop_save_policy(request: serde_json::Value) -> Result<(), String> {
+    let store = super::default_store_path().map_err(|error| error.to_string())?;
+    let project_id = request
+        .get("project_id")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| "A project id is required.".to_owned())?
+        .to_owned();
+    let context = project_context(&store, &project_id)?;
+    let mut payload = request;
+    let object = payload.as_object_mut().ok_or_else(|| "Invalid policy request.".to_owned())?;
+    object.insert("store_path".into(), serde_json::json!(store));
+    object.insert("project_root".into(), serde_json::json!(context.root));
+    object.insert("profile_id".into(), serde_json::json!(context.profile_id));
+    let _: locket_agent::ApplyPolicyResponse = invoke_granted(
+        locket_agent::AgentMethod::ApplyPolicy,
+        locket_agent::GrantAction::ApplyPolicy,
+        payload,
+        &store,
+        &project_id,
+        &context.profile_id,
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+#[cfg(test)]
+#[path = "desktop_action_tests.rs"]
+mod action_tests;
+
+fn scoped_status(
+    mut status: locket_agent::StatusPayload,
+    context: &DesktopProjectContext,
+) -> Result<locket_agent::StatusPayload, String> {
+    if status.project_id.as_deref() != Some(context.project_id.as_str()) {
+        return Err("Agent status did not match the selected project. Restart the agent after updating Locket.".into());
+    }
+    status.profile_name = Some(context.profile_name.clone());
+    Ok(status)
+}
+#[cfg(any(target_os = "windows", test))]
+fn windows_terminal_args(cli: &Path, root: &Path, policy: &str) -> Vec<String> {
+    use base64::Engine as _;
+    fn quote(value: &str) -> String {
+        format!("'{}'", value.replace('\'', "''"))
+    }
+    let script = format!(
+        "Set-Location -LiteralPath {} -ErrorAction Stop; & {} 'run' {}; exit $LASTEXITCODE",
+        quote(&root.to_string_lossy()),
+        quote(&cli.to_string_lossy()),
+        quote(policy)
+    );
+    let bytes: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
+    vec![
+        "-w".into(),
+        "new".into(),
+        "new-tab".into(),
+        "powershell.exe".into(),
+        "-NoProfile".into(),
+        "-NoExit".into(),
+        "-EncodedCommand".into(),
+        base64::engine::general_purpose::STANDARD.encode(bytes),
+    ]
+}
+#[cfg(any(target_os = "macos", all(test, unix)))]
+fn write_terminal_launcher(
+    cli: &Path,
+    root: &Path,
+    policy: &str,
+) -> Result<tempfile::NamedTempFile, String> {
+    use std::os::unix::fs::PermissionsExt;
+    let mut file = tempfile::Builder::new()
+        .prefix("locket-policy-")
+        .suffix(".command")
+        .tempfile()
+        .map_err(|_| "Cannot create the scoped Terminal launcher.".to_string())?;
+    file.write_all(terminal_script(cli, root, policy).as_bytes()).map_err(metadata_error)?;
+    file.as_file().set_permissions(fs::Permissions::from_mode(0o700)).map_err(metadata_error)?;
+    file.as_file().sync_all().map_err(metadata_error)?;
+    Ok(file)
+}
+
+pub(crate) async fn selected_agent_status(
+    socket: &Path,
+) -> Result<locket_agent::StatusPayload, super::AgentClientError> {
+    let selected =
+        SELECTED_PROJECT.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+    let Some(selected) = selected else {
+        return super::fetch_status(socket).await;
+    };
+    let store = super::default_store_path()?;
+    let context = blocking(move || {
+        let refreshed = open_project_at(&store, Path::new(&selected.root))?;
+        if refreshed.project_id != selected.project_id {
+            return Err("The selected folder's project changed. Open the project again.".into());
+        }
+        Ok(refreshed)
+    })
+    .await
+    .map_err(|reason| super::AgentClientError::Protocol { reason })?;
+    fetch_context_status(socket, &context).await
+}
+fn project_context_with_selection(
+    store: &Path,
+    id: &str,
+    selected: Option<&DesktopProjectContext>,
+) -> Result<DesktopProjectContext, String> {
+    if let Some(selected) = selected.filter(|selected| selected.project_id == id) {
+        let refreshed = open_project_at(store, Path::new(&selected.root))?;
+        if refreshed.project_id != id {
+            return Err("The selected folder now belongs to another project. Open it again.".into());
+        }
+        return Ok(refreshed);
+    }
+    let mut matches =
+        list_projects_at(store)?.into_iter().filter(|context| context.project_id == id);
+    let first = matches.next().ok_or_else(|| {
+        "No trusted local folder is registered for this project. Open the project first."
+            .to_string()
+    })?;
+    if matches.next().is_some() {
+        return Err(
+            "Multiple trusted folders use this project id. Open the intended project folder first."
+                .into(),
+        );
+    }
+    Ok(first)
+}
+
+pub(crate) fn project_config_path(store: &Path, id: &str) -> Result<PathBuf, String> {
+    Ok(Path::new(&project_context(store, id)?.root).join("locket.toml"))
+}
+async fn fetch_context_status(
+    socket: &Path,
+    context: &DesktopProjectContext,
+) -> Result<locket_agent::StatusPayload, super::AgentClientError> {
+    let payload = serde_json::json!({"project_id": context.project_id});
+    let status = super::invoke_method(socket, locket_agent::AgentMethod::Status, &payload).await?;
+    scoped_status(status, context).map_err(|reason| super::AgentClientError::Protocol { reason })
+}
+
+fn cli_failure_guidance(operation: &str, status: &str) -> String {
+    format!(
+        "Locket CLI failed during {operation} ({status}). Check that the matching CLI release is installed and this project can be initialized or started."
+    )
+}
+
+/// Obtain the actual native process binding. Never accept an identity from the webview.
+pub(crate) fn native_binding() -> Result<locket_agent::GrantBinding, super::AgentClientError> {
+    let binding = locket_platform::current_process_binding().map_err(|_| {
+        super::AgentClientError::Protocol { reason: "Cannot identify the native process.".into() }
+    })?;
+    Ok(locket_agent::GrantBinding::new(binding.pid, binding.process_start_time))
+}
+
+/// Resolve selected project metadata and authorize exactly one native user action.
+pub(crate) async fn invoke_granted<R: serde::de::DeserializeOwned>(
+    method: locket_agent::AgentMethod,
+    action: locket_agent::GrantAction,
+    payload: serde_json::Value,
+    store: &Path,
+    project_id: &str,
+    profile_id: &str,
+) -> Result<R, super::AgentClientError> {
+    let selected =
+        SELECTED_PROJECT.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+    if selected.as_ref().is_some_and(|selected| selected.project_id != project_id) {
+        return Err(super::AgentClientError::Protocol {
+            reason: "The selected project changed. Refresh before retrying.".into(),
+        });
+    }
+    let context = project_context_with_selection(store, project_id, selected.as_ref())
+        .map_err(|reason| super::AgentClientError::Protocol { reason })?;
+    if context.profile_id != profile_id {
+        return Err(super::AgentClientError::Protocol {
+            reason: "The active profile changed. Refresh before retrying.".into(),
+        });
+    }
+    invoke_granted_at(&super::resolve_socket_path(), method, action, payload, store, &context).await
+}
+
+async fn invoke_granted_at<R: serde::de::DeserializeOwned>(
+    socket: &Path,
+    method: locket_agent::AgentMethod,
+    action: locket_agent::GrantAction,
+    mut payload: serde_json::Value,
+    store: &Path,
+    context: &DesktopProjectContext,
+) -> Result<R, super::AgentClientError> {
+    let project_id = context.project_id.as_str();
+    let profile_id = context.profile_id.as_str();
+    let binding = native_binding()?;
+    let grant: locket_agent::GrantIdPayload = super::invoke_method(
+        socket,
+        locket_agent::AgentMethod::RequestGrant,
+        &locket_agent::RequestGrantPayload {
+            project_id: project_id.into(),
+            profile_id: profile_id.into(),
+            policy_name: None,
+            action,
+            ttl_seconds: 30,
+            binding: binding.clone(),
+        },
+    )
+    .await?;
+    let fresh = open_project_at(store, Path::new(&context.root))
+        .map_err(|reason| super::AgentClientError::Protocol { reason })?;
+    if &fresh != context {
+        let _: Result<serde_json::Value, _> =
+            super::invoke_method(socket, locket_agent::AgentMethod::RevokeGrant, &grant).await;
+        return Err(super::AgentClientError::Protocol {
+            reason: "Project metadata changed before authorization. Refresh and retry.".into(),
+        });
+    }
+    payload["grant_id"] = serde_json::json!(grant.grant_id);
+    payload["binding"] = serde_json::json!(binding);
+    let result = super::invoke_method(socket, method, &payload).await;
+    // The grant belongs only to this explicit user action, including a failed action.
+    let _: Result<serde_json::Value, _> =
+        super::invoke_method(socket, locket_agent::AgentMethod::RevokeGrant, &grant).await;
+    result
+}
+
+pub(crate) fn selected_project_id() -> Result<String, super::AgentClientError> {
+    SELECTED_PROJECT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .as_ref()
+        .map(|context| context.project_id.clone())
+        .ok_or_else(|| super::AgentClientError::Protocol {
+            reason: "Open a trusted project before requesting secret access.".into(),
+        })
+}
+
+#[derive(Deserialize)]
+pub(crate) struct DesktopReadinessRequest {
+    project_id: String,
+    policy_name: Option<String>,
+}
+#[derive(Serialize)]
+pub(crate) struct DesktopPolicyReadiness {
+    policy_name: String,
+    profile_id: String,
+    rows: Vec<locket_core::VariableReadinessRow>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+#[derive(Serialize)]
+pub(crate) struct DesktopReadinessResponse {
+    project_id: String,
+    profile_id: String,
+    profile_name: String,
+    policies: Vec<DesktopPolicyReadiness>,
+}
+fn variable_readiness_at(
+    store_path: &Path,
+    request: &DesktopReadinessRequest,
+) -> Result<DesktopReadinessResponse, String> {
+    let context = project_context(store_path, &request.project_id)?;
+    // Desktop Run starts at the selected trusted root. Cwd is native-owned,
+    // never accepted from the webview or inherited from the app process.
+    variable_readiness_for_context(store_path, request, &context, Path::new(&context.root))
+}
+
+fn variable_readiness_for_context(
+    store_path: &Path,
+    request: &DesktopReadinessRequest,
+    context: &DesktopProjectContext,
+    cwd: &Path,
+) -> Result<DesktopReadinessResponse, String> {
+    let root = Path::new(&context.root).canonicalize().map_err(metadata_error)?;
+    let cwd = cwd.canonicalize().map_err(metadata_error)?;
+    if !cwd.is_dir() || !cwd.starts_with(&root) {
+        return Err("Command directory is outside the selected trusted project.".into());
+    }
+    let relative = cwd.strip_prefix(&root).map_err(metadata_error)?;
+    let relative_cwd = if relative.as_os_str().is_empty() { Path::new(".") } else { relative };
+    let text = fs::read_to_string(root.join("locket.toml")).map_err(metadata_error)?;
+    let document = locket_core::PolicyDocument::from_toml_str(&text).map_err(metadata_error)?;
+    let store = Store::open(store_path).map_err(metadata_error)?;
+    let scope = document.path_scope_for(&root, &cwd);
+    let profile_id = if let Some(name) = scope.and_then(|scope| scope.profile.as_ref()) {
+        store
+            .get_profile_by_name(&context.project_id, name.as_str())
+            .map_err(metadata_error)?
+            .ok_or_else(|| "The scoped profile is missing.".to_owned())?
+            .id
+    } else {
+        context.profile_id.clone()
+    };
+    let mut available = std::collections::BTreeMap::new();
+    // Query contains names/source labels only. It never fetches ciphertext or values.
+    for secret in store
+        .list_active_secret_metadata_by_profile(&context.project_id, &profile_id)
+        .map_err(metadata_error)?
+    {
+        available.entry(secret.name).or_insert(secret.source);
+    }
+    if request.policy_name.as_ref().is_some_and(|name| !document.commands.contains_key(name)) {
+        return Err("The selected command no longer exists. Refresh commands.".into());
+    }
+    let mut policies = Vec::new();
+    for base in document
+        .commands
+        .values()
+        .filter(|policy| request.policy_name.as_ref().is_none_or(|name| policy.name == *name))
+    {
+        let mut policy = base.clone();
+        if let Some(scope) = scope {
+            for name in &scope.required_secrets {
+                if !policy.required_secrets.contains(name) {
+                    policy.required_secrets.push(name.clone());
+                }
+                policy.optional_secrets.retain(|optional| optional != name);
+            }
+            for name in &scope.optional_secrets {
+                if !policy.required_secrets.contains(name)
+                    && !policy.optional_secrets.contains(name)
+                {
+                    policy.optional_secrets.push(name.clone());
+                }
+            }
+            policy.allowed_secrets =
+                policy.required_secrets.iter().chain(&policy.optional_secrets).cloned().collect();
+        }
+        let argv = match &policy.command {
+            locket_core::CommandSpec::Argv(argv) => Some(argv.as_slice()),
+            locket_core::CommandSpec::Shell(_) => None,
+        };
+        if policy.allowed_secrets.iter().any(|name| {
+            document
+                .secret_access
+                .get(name.as_str())
+                .is_some_and(|acl| !acl.allows(&policy.name, argv, relative_cwd))
+        }) {
+            policies.push(DesktopPolicyReadiness {
+                policy_name: policy.name,
+                profile_id: profile_id.clone(),
+                rows: Vec::new(),
+                error: Some("Command variable access is denied by its configured rules.".into()),
+            });
+            continue;
+        }
+        let deferred = !policy.external_env_sources.is_empty()
+            || !policy.inherit_env.is_empty()
+            || matches!(
+                policy.env_mode,
+                locket_core::EnvMode::Merge | locket_core::EnvMode::Passthrough
+            );
+        let rows = document.variable_readiness(&policy, &available, deferred);
+        policies.push(DesktopPolicyReadiness {
+            policy_name: policy.name,
+            profile_id: profile_id.clone(),
+            rows,
+            error: None,
+        });
+    }
+    Ok(DesktopReadinessResponse {
+        project_id: context.project_id.clone(),
+        profile_id: context.profile_id.clone(),
+        profile_name: context.profile_name.clone(),
+        policies,
+    })
+}
+
+#[tauri::command]
+pub(crate) async fn desktop_variable_readiness(
+    request: DesktopReadinessRequest,
+) -> Result<DesktopReadinessResponse, String> {
+    let store = super::default_store_path().map_err(|error| error.to_string())?;
+    blocking(move || variable_readiness_at(&store, &request)).await
+}
+
+#[derive(Deserialize)]
+pub(crate) struct DesktopTeamSyncRequest {
+    project_id: String,
+    folder: Option<PathBuf>,
+    #[serde(default)]
+    allow_dangerous: bool,
+}
+async fn team_sync_request(
+    request: DesktopTeamSyncRequest,
+    method: locket_agent::AgentMethod,
+) -> Result<serde_json::Value, super::AgentClientError> {
+    let store = super::default_store_path()?;
+    let context = project_context(&store, &request.project_id)
+        .map_err(|reason| super::AgentClientError::Protocol { reason })?;
+    let mut payload = serde_json::json!({"project_id": context.project_id, "profile_id": context.profile_id, "store_path": store});
+    if method == locket_agent::AgentMethod::TeamSyncStatus {
+        return super::invoke_method(&super::resolve_socket_path(), method, &payload).await;
+    }
+    if method == locket_agent::AgentMethod::TeamSyncConfigure {
+        let folder = request.folder.ok_or_else(|| super::AgentClientError::Protocol {
+            reason: "Choose a shared folder first.".into(),
+        })?;
+        payload["folder"] = serde_json::json!(folder);
+        payload["allow_dangerous"] = serde_json::json!(request.allow_dangerous);
+    }
+    invoke_granted(
+        method,
+        locket_agent::GrantAction::TeamSync,
+        payload,
+        &store,
+        &context.project_id,
+        &context.profile_id,
+    )
+    .await
+}
+#[tauri::command]
+pub(crate) async fn desktop_team_sync_status(
+    request: DesktopTeamSyncRequest,
+) -> Result<serde_json::Value, super::AgentClientError> {
+    team_sync_request(request, locket_agent::AgentMethod::TeamSyncStatus).await
+}
+#[tauri::command]
+pub(crate) async fn desktop_team_sync_configure(
+    request: DesktopTeamSyncRequest,
+) -> Result<serde_json::Value, super::AgentClientError> {
+    team_sync_request(request, locket_agent::AgentMethod::TeamSyncConfigure).await
+}
+#[tauri::command]
+pub(crate) async fn desktop_team_sync_now(
+    request: DesktopTeamSyncRequest,
+) -> Result<serde_json::Value, super::AgentClientError> {
+    team_sync_request(request, locket_agent::AgentMethod::TeamSyncNow).await
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct DesktopRenameProfileRequest {
+    project_id: String,
+    incoming_profile_id: String,
+    local_profile_id: String,
+    new_name: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct DesktopPreserveOverrideRequest {
+    project_id: String,
+    incoming_profile_id: String,
+    local_secret_id: String,
+}
+
+fn pending_reconcile_payload(
+    context: &DesktopProjectContext,
+    store: &Path,
+    incoming_profile_id: String,
+    action: locket_agent::TeamSyncAction,
+) -> Result<serde_json::Value, super::AgentClientError> {
+    serde_json::to_value(locket_agent::TeamSyncReconcileRequest {
+        scope: locket_agent::TeamSyncRequest {
+            project_id: context.project_id.clone(),
+            store_path: Some(store.into()),
+            profile_id: Some(context.profile_id.clone()),
+            grant_id: None,
+            binding: None,
+        },
+        incoming_profile_id,
+        action,
+    })
+    .map_err(|_| super::AgentClientError::Protocol {
+        reason: "Invalid pending profile resolution request.".into(),
+    })
+}
+
+async fn reconcile_pending_profile(
+    project_id: &str,
+    incoming_profile_id: String,
+    action: locket_agent::TeamSyncAction,
+) -> Result<locket_agent::team_sync::SyncStatus, super::AgentClientError> {
+    let store = super::default_store_path()?;
+    let context = project_context(&store, project_id)
+        .map_err(|reason| super::AgentClientError::Protocol { reason })?;
+    let payload = pending_reconcile_payload(&context, &store, incoming_profile_id, action)?;
+    invoke_granted(
+        locket_agent::AgentMethod::TeamSyncReconcile,
+        locket_agent::GrantAction::TeamSync,
+        payload,
+        &store,
+        &context.project_id,
+        &context.profile_id,
+    )
+    .await
+}
+
+#[tauri::command]
+pub(crate) async fn desktop_team_sync_rename_profile(
+    request: DesktopRenameProfileRequest,
+) -> Result<locket_agent::team_sync::SyncStatus, super::AgentClientError> {
+    reconcile_pending_profile(
+        &request.project_id,
+        request.incoming_profile_id,
+        locket_agent::TeamSyncAction::RenameProfile {
+            local_profile_id: request.local_profile_id,
+            new_name: request.new_name,
+        },
+    )
+    .await
+}
+
+#[tauri::command]
+pub(crate) async fn desktop_team_sync_preserve_override(
+    request: DesktopPreserveOverrideRequest,
+) -> Result<locket_agent::team_sync::SyncStatus, super::AgentClientError> {
+    reconcile_pending_profile(
+        &request.project_id,
+        request.incoming_profile_id,
+        locket_agent::TeamSyncAction::PreserveOverride { local_secret_id: request.local_secret_id },
+    )
+    .await
+}

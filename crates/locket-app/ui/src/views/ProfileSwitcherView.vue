@@ -73,7 +73,7 @@ function selectEntry(entry: ProfileEntry): void {
 
 function entryLabel(entry: ProfileEntry): string {
   if (props.privacyMode) {
-    return entry.name === props.state.activeProfile ? 'active profile' : 'profile';
+    return entry.name === props.state.activeProfile ? 'active environment' : 'environment';
   }
   return entry.name;
 }
@@ -94,14 +94,14 @@ function onSubmit(): void {
 <template>
   <section class="view" aria-labelledby="profile-switcher-heading">
     <header class="view__header">
-      <h2 id="profile-switcher-heading">Profiles</h2>
+      <h2 id="profile-switcher-heading">Environments</h2>
       <span v-if="props.lastSwitchedAt" class="view__caption">
         Last switch: <time :datetime="props.lastSwitchedAt">{{ props.lastSwitchedAt }}</time>
       </span>
     </header>
 
     <p v-if="entries.length === 0" class="view__empty">
-      No profiles tracked yet. Type a target name below or run
+      No environments tracked yet. Type a target name below or run
       <code>locket profile create &lt;name&gt;</code>.
     </p>
 
@@ -131,10 +131,10 @@ function onSubmit(): void {
     </ul>
 
     <form class="switcher-form" data-testid="profile-switcher-form" @submit.prevent="onSubmit">
-      <h3>Switch to a profile</h3>
+      <h3>Switch environment</h3>
 
       <label class="switcher-form__field">
-        <span>Target profile name</span>
+        <span>Target environment name</span>
         <input
           v-model="targetName"
           type="text"
@@ -154,7 +154,7 @@ function onSubmit(): void {
           :disabled="entries.some((entry) => entry.name === targetName.trim())"
           data-testid="profile-target-dangerous"
         />
-        Target profile is flagged dangerous
+        Target environment is flagged dangerous
       </label>
 
       <label
@@ -162,7 +162,7 @@ function onSubmit(): void {
         class="switcher-form__field"
         data-testid="profile-confirmation"
       >
-        <span>Type the target profile name to confirm dangerous switch</span>
+        <span>Type the target environment name to confirm dangerous switch</span>
         <input v-model="confirmation" type="text" autocomplete="off" spellcheck="false" />
       </label>
 
@@ -177,7 +177,7 @@ function onSubmit(): void {
           :disabled="!canSubmit"
           data-testid="profile-switch-submit"
         >
-          {{ props.switching ? 'Switching...' : 'Switch profile' }}
+          {{ props.switching ? 'Switching...' : 'Switch environment' }}
         </button>
       </div>
     </form>

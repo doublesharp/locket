@@ -2198,6 +2198,11 @@ async fn set_active_profile_switches_profile_revokes_project_grants_and_audits()
     seed_profile_test_store(&store_path, project_id)?;
     write_profile_test_config(&config_path, project_id, "dev")?;
 
+    let policy_notes =
+        "\n# Keep team commands\n[commands.dev]\nargv = [\"npm\", \"dev\"]\nrequire_agent = true\n";
+    let original_config = std::fs::read_to_string(&config_path)?;
+    std::fs::write(&config_path, format!("{original_config}{policy_notes}"))?;
+
     let state = AgentSocketState::locked("test-version");
     unlock_profile_test_state(&state, project_id).await;
     state.grants.lock().await.insert(GrantRecord::new(GrantRecordFields {
@@ -2247,6 +2252,10 @@ async fn set_active_profile_switches_profile_revokes_project_grants_and_audits()
 
     let config = read_profile_test_config(&directory.path().join("locket.toml"))?;
     assert_eq!(config.default_profile.as_str(), "staging");
+
+    let saved = std::fs::read_to_string(&config_path)?;
+    assert!(saved.contains("# Keep team commands"));
+    assert!(locket_core::PolicyDocument::from_toml_str(&saved)?.commands["dev"].require_agent);
 
     let store = locket_store::Store::open(directory.path().join("store.db"))?;
     let (profile_id, command, secret_name, metadata): (
@@ -3014,7 +3023,7 @@ mod server_tests {
         )
         .await?;
         let grant_id = grant.payload["grant_id"].as_str().unwrap_or_default().to_owned();
-        assert!(!grant_id.is_empty());
+        assert_ne!(grant_id, "");
         Ok(grant_id)
     }
 
@@ -3237,6 +3246,7 @@ async fn register_command_policies_replaces_project_snapshot_and_runs_prepare_ex
     let mut store = locket_store::Store::open(&store_path)?;
     store.initialize_schema()?;
     store.insert_project_if_absent("p-pump", "pump project", 1)?;
+    insert_snapshot_fixture_audit_key(&store, "p-pump")?;
     drop(store);
 
     let state = AgentSocketState::locked("test-version");
@@ -3486,6 +3496,7 @@ async fn register_command_policies_does_not_drop_other_projects()
     let mut store = locket_store::Store::open(&store_path)?;
     store.initialize_schema()?;
     store.insert_project_if_absent("p-a", "a", 1)?;
+    insert_snapshot_fixture_audit_key(&store, "p-a")?;
     drop(store);
 
     let state = AgentSocketState::locked("test-version");
@@ -3599,7 +3610,7 @@ async fn register_client_inserts_record_and_appends_audit() -> Result<(), Box<dy
     let client_id = success.payload["client_id"].as_str().expect("client_id").to_owned();
     let fingerprint = success.payload["fingerprint"].as_str().expect("fingerprint").to_owned();
     assert!(client_id.starts_with("lk_client_"));
-    assert!(!fingerprint.is_empty());
+    assert_ne!(fingerprint, "");
 
     let store = locket_store::Store::open(&store_path)?;
     let row = store.get_automation_client("p-clients", &client_id)?.expect("client row written");
@@ -3797,5 +3808,63 @@ async fn revoke_client_returns_policy_not_found_for_unknown_client()
         return Err("missing client must surface PolicyNotFound".into());
     };
     assert_eq!(error.error, "PolicyNotFound");
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn desktop_mutations_require_grants_before_reading_any_input() {
+    for kind in ["ImportDotenv", "ApplyPolicy"] {
+        let state = crate::AgentSocketState::locked("test");
+        let request = crate::RequestEnvelope {
+            v: crate::PROTOCOL_VERSION,
+            id: "mutation".into(),
+            kind: kind.into(),
+            payload: serde_json::json!({
+                "store_path": "/unreadable/store.db", "project_root": "/unreadable/root",
+                "project_id": "project", "profile_id": "profile", "env_path": "/unreadable/env",
+                "overwrite": false, "literal": false, "mode": "delete", "original_name": "dev",
+                "policy": {"project_id":"project","name":"dev","command_kind":"argv","command_preview":"node","required_secrets":[],"optional_secrets":[],"allowed_secrets":[],"confirm":false,"require_user_verification":false,"require_agent":false,"allow_remote_docker":false,"ttl_seconds":30,"env_mode":"minimal","override_mode":"locket","updated_at_unix_nanos":0}
+            }),
+        };
+        let crate::ResponseEnvelope::Error(error) = crate::dispatch(&request, &state).await else {
+            panic!("expected denial")
+        };
+        assert_eq!(error.error, "GrantRequired", "{kind}");
+    }
+}
+
+fn insert_snapshot_fixture_audit_key(
+    store: &locket_store::Store,
+    project: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use locket_crypto::{
+        HkdfWrapInfo, KeyPurpose, KeyWrapAad, KeyWrapPurpose, derive_wrapping_key_v1,
+        key_wrap_aad_v1, wrap_key_material_v1,
+    };
+    let id = format!("lk_key_snapshot_{project}");
+    let purpose = KeyPurpose::Audit;
+    let wrapping = derive_wrapping_key_v1(&[42; 32], &HkdfWrapInfo::new(project, None, purpose))?;
+    let aad =
+        key_wrap_aad_v1(&KeyWrapAad::new(project, &id, None, 0, KeyWrapPurpose::from(purpose)))?;
+    let wrapped = wrap_key_material_v1(&wrapping, &[11; 32], &aad)?;
+    store.insert_key(&locket_store::KeyRecord {
+        id,
+        project_id: project.into(),
+        profile_id: None,
+        purpose: purpose.as_str().into(),
+        wrapped_material: wrapped.ciphertext,
+        nonce: wrapped.nonce,
+        created_at: 1,
+    })?;
+    Ok(())
+}
+
+#[test]
+fn pending_profile_reconcile_is_a_registered_typed_method() -> Result<(), Box<dyn std::error::Error>>
+{
+    let request: crate::RequestEnvelope = serde_json::from_value(
+        serde_json::json!({"v":1,"id":"reconcile","kind":"TeamSyncReconcile","payload":{"project_id":"project","incoming_profile_id":"incoming","action":{"kind":"rename_profile","local_profile_id":"local","new_name":"local-preserved"}}}),
+    )?;
+    assert_eq!(request.method()?.as_str(), "TeamSyncReconcile");
     Ok(())
 }

@@ -353,7 +353,6 @@ fn agent_status_command(context: &RuntimeContext, output: &mut impl Write) -> Re
                 writeln!(output, "active_project_id: {}", project.config.project_id)?;
                 writeln!(output, "active_profile: {}", project.config.default_profile)?;
             }
-            Ok(())
         }
         Err(_error) => {
             // The pid file says the daemon is alive but we cannot reach
@@ -370,9 +369,9 @@ fn agent_status_command(context: &RuntimeContext, output: &mut impl Write) -> Re
                 writeln!(output, "active_project_id: {}", project.config.project_id)?;
                 writeln!(output, "active_profile: {}", project.config.default_profile)?;
             }
-            Ok(())
         }
     }
+    Ok(())
 }
 
 #[cfg(all(any(unix, target_os = "windows"), not(test)))]
@@ -646,8 +645,28 @@ fn request_agent_shutdown_or_signal(_socket_path: &Path, pid: u32) -> Result<(),
 /// Connects to the local endpoint, sends a `Status` request, and parses the
 /// response payload.
 #[cfg(any(unix, target_os = "windows"))]
-fn request_status_snapshot(endpoint: &Path) -> Result<Value, io::Error> {
+pub fn request_status_snapshot(endpoint: &Path) -> Result<Value, io::Error> {
     request_agent_endpoint(endpoint, locket_agent::AgentMethod::Status, serde_json::Value::Null)
+}
+
+/// Probes only the selected project's unlock state without starting the daemon.
+pub fn request_project_status_snapshot(
+    endpoint: &Path,
+    project_id: &str,
+) -> Result<Value, io::Error> {
+    #[cfg(any(unix, target_os = "windows"))]
+    {
+        request_agent_endpoint(
+            endpoint,
+            locket_agent::AgentMethod::Status,
+            serde_json::json!({"project_id": project_id}),
+        )
+    }
+    #[cfg(not(any(unix, target_os = "windows")))]
+    {
+        let _ = (endpoint, project_id);
+        Err(io::Error::other("agent transport is unavailable"))
+    }
 }
 
 #[cfg(any(unix, target_os = "windows"))]
@@ -677,28 +696,38 @@ fn request_agent_endpoint(
 
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
     runtime.block_on(async move {
-        let mut stream = UnixStream::connect(endpoint).await?;
-        let request = RequestEnvelope::new("cli-request-1", method, payload);
-        let frame = encode_frame(&request, DEFAULT_MAX_MESSAGE_SIZE)
-            .map_err(|error| io::Error::other(error.to_string()))?;
-        stream.write_all(&frame).await?;
-        stream.flush().await?;
+        tokio::time::timeout(std::time::Duration::from_secs(2), async move {
+            let mut stream = UnixStream::connect(endpoint).await?;
+            let request = RequestEnvelope::new("cli-request-1", method, payload);
+            let frame = encode_frame(&request, DEFAULT_MAX_MESSAGE_SIZE)
+                .map_err(|error| io::Error::other(error.to_string()))?;
+            stream.write_all(&frame).await?;
+            stream.flush().await?;
 
-        let mut buffer = Vec::with_capacity(1024);
-        loop {
-            if let Some(response) = decode_agent_response(&buffer) {
-                return response;
+            let mut buffer = Vec::with_capacity(1024);
+            loop {
+                if let Some(response) = decode_agent_response(&buffer) {
+                    return response;
+                }
+                let mut chunk = [0_u8; 1024];
+                let read = stream.read(&mut chunk).await?;
+                if read == 0 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "agent closed connection without a response",
+                    ));
+                }
+                buffer.extend_from_slice(&chunk[..read]);
+                if buffer.len() > DEFAULT_MAX_MESSAGE_SIZE {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "agent response exceeds message limit",
+                    ));
+                }
             }
-            let mut chunk = [0_u8; 1024];
-            let read = stream.read(&mut chunk).await?;
-            if read == 0 {
-                return Err(io::Error::new(
-                    io::ErrorKind::UnexpectedEof,
-                    "agent closed connection without a response",
-                ));
-            }
-            buffer.extend_from_slice(&chunk[..read]);
-        }
+        })
+        .await
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "agent response timed out"))?
     })
 }
 
@@ -713,33 +742,43 @@ fn request_agent_endpoint(
 
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
     runtime.block_on(async move {
-        let mut stream = locket_agent::connect_named_pipe_client(endpoint).await?;
-        let request = RequestEnvelope::new("cli-request-1", method, payload);
-        let frame = encode_frame(&request, DEFAULT_MAX_MESSAGE_SIZE)
-            .map_err(|error| io::Error::other(error.to_string()))?;
-        stream.write_all(&frame).await?;
-        stream.flush().await?;
+        tokio::time::timeout(std::time::Duration::from_secs(2), async move {
+            let mut stream = locket_agent::connect_named_pipe_client(endpoint).await?;
+            let request = RequestEnvelope::new("cli-request-1", method, payload);
+            let frame = encode_frame(&request, DEFAULT_MAX_MESSAGE_SIZE)
+                .map_err(|error| io::Error::other(error.to_string()))?;
+            stream.write_all(&frame).await?;
+            stream.flush().await?;
 
-        let mut buffer = Vec::with_capacity(1024);
-        loop {
-            if let Some(response) = decode_agent_response(&buffer) {
-                return response;
+            let mut buffer = Vec::with_capacity(1024);
+            loop {
+                if let Some(response) = decode_agent_response(&buffer) {
+                    return response;
+                }
+                let mut chunk = [0_u8; 1024];
+                let read = stream.read(&mut chunk).await?;
+                if read == 0 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "agent closed connection without a response",
+                    ));
+                }
+                buffer.extend_from_slice(&chunk[..read]);
+                if buffer.len() > DEFAULT_MAX_MESSAGE_SIZE {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "agent response exceeds message limit",
+                    ));
+                }
             }
-            let mut chunk = [0_u8; 1024];
-            let read = stream.read(&mut chunk).await?;
-            if read == 0 {
-                return Err(io::Error::new(
-                    io::ErrorKind::UnexpectedEof,
-                    "agent closed connection without a response",
-                ));
-            }
-            buffer.extend_from_slice(&chunk[..read]);
-        }
+        })
+        .await
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "agent response timed out"))?
     })
 }
 
 #[cfg(not(any(unix, target_os = "windows")))]
-fn request_status_snapshot(_socket_path: &Path) -> Result<Value, io::Error> {
+pub fn request_status_snapshot(_socket_path: &Path) -> Result<Value, io::Error> {
     Err(io::Error::other("agent daemon is only supported on Unix targets"))
 }
 
@@ -765,7 +804,10 @@ pub fn run_internal_agent_serve(args: &InternalAgentServeArgs) -> Result<(), Cli
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
     let result = runtime.block_on(async {
         let (listener, state) = bind_and_record(args)?;
-        serve_until_signal(listener, state).await.map_err(CliError::Io)
+        let sync_task = locket_agent::team_sync::spawn_team_sync_poll(state.clone());
+        let result = serve_until_signal(listener, state).await.map_err(CliError::Io);
+        sync_task.abort();
+        result
     });
 
     let _ignored = fs::remove_file(&args.socket);
@@ -863,6 +905,7 @@ pub fn run_internal_agent_serve(args: &InternalAgentServeArgs) -> Result<(), Cli
         let mut listener = locket_agent::bind_named_pipe_listener(&config)?;
         let state = locket_agent::AgentSocketState::locked(env!("CARGO_PKG_VERSION"));
         write_pid_file(&args.pid_file).map_err(|error| io::Error::other(error.to_string()))?;
+        let sync_task = locket_agent::team_sync::spawn_team_sync_poll(state.clone());
         loop {
             tokio::select! {
                 connected = listener.connect() => {
@@ -879,6 +922,7 @@ pub fn run_internal_agent_serve(args: &InternalAgentServeArgs) -> Result<(), Cli
                 () = state.shutdown.notified() => break,
             }
         }
+        sync_task.abort();
         Ok::<(), io::Error>(())
     });
     let _ignored = fs::remove_file(&args.pid_file);

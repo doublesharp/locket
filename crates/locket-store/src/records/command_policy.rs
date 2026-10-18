@@ -70,7 +70,7 @@ impl Store {
     ) -> Result<(), StoreError> {
         let policy_json = serde_json::to_string(policy_json)?;
         let normalized_json = serde_json::to_string(normalized_json)?;
-        let transaction = self.connection.transaction()?;
+        let transaction = self.connection.savepoint()?;
         transaction.execute(
             "INSERT INTO command_policies(
                project_id, name, policy_json, normalized_json, created_at, updated_at
@@ -100,7 +100,7 @@ impl Store {
         name: &str,
         audit: Option<AuditContext<'_>>,
     ) -> Result<bool, StoreError> {
-        let transaction = self.connection.transaction()?;
+        let transaction = self.connection.savepoint()?;
         transaction.execute(
             "DELETE FROM command_policies WHERE project_id = ?1 AND name = ?2",
             params![project_id, name],

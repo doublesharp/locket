@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 use crate::runtime::RuntimeContext;
 use crate::runtime::error::{
     CliError, access_denied_error, exec_prepare_error, invalid_reference_error,
-    metadata_invalid_error, secret_not_found_error, unimplemented_in_build_error,
+    metadata_invalid_error, unimplemented_in_build_error,
 };
 use crate::runtime::key_access::load_project_key;
 use crate::support::secret_helpers::{
@@ -97,21 +97,35 @@ fn prepare_docker_helper_policy_execution(
     let policy = effective.policy.clone();
     ensure_runtime_policy_supported(&policy)?;
     let store = open_store(context)?;
-    let (profile, selections, locket_env) =
+    let (profile, _selections, locket_env) =
         resolve_policy_locket_env(context, &store, &resolved, &effective, &policy)?;
+    let inherited = policy.inherit_env.iter().map(String::as_str).collect::<Vec<_>>();
+    let mut delivery_env = locket_exec::merge_environment(
+        &parent_env,
+        locket_exec::DEFAULT_SAFE_ALLOWLIST,
+        &inherited,
+        &locket_exec::EnvMap::new(),
+        &locket_env,
+        policy.env_mode,
+        policy.override_behavior,
+    )
+    .map_err(|error| exec_prepare_error(locket_exec::ExecError::Environment(error)))?;
+    super::run::finalize_configuration_environment(&resolved, &policy, &mut delivery_env)?;
+    delivery_env
+        .retain(|name, _| policy.allowed_secrets.iter().any(|allowed| allowed.as_str() == name));
     let endpoint = parent_env.get("DOCKER_HOST").map(|value| value.as_str());
     let plan = match helper_kind {
         DockerHelperKind::DockerRun => locket_docker::prepare_docker_run(
             argv,
             &locket_exec::EnvMap::new(),
-            &locket_env,
+            &delivery_env,
             endpoint,
             policy.allow_remote_docker,
         ),
         DockerHelperKind::Compose => locket_docker::prepare_compose(
             argv,
             &locket_exec::EnvMap::new(),
-            &locket_env,
+            &delivery_env,
             endpoint,
             policy.allow_remote_docker,
         ),
@@ -126,11 +140,8 @@ fn prepare_docker_helper_policy_execution(
         env_mode: policy.env_mode,
         override_mode: policy.override_behavior,
     };
-    let execution = locket_exec::prepare_execution(&request).map_err(exec_prepare_error)?;
-    debug_assert_eq!(
-        plan.injected_names.len(),
-        selections.iter().filter(|s| s.selected.is_some()).count()
-    );
+    let mut execution = locket_exec::prepare_execution(&request).map_err(exec_prepare_error)?;
+    super::run::finalize_configuration_environment(&resolved, &policy, &mut execution.env)?;
 
     Ok(PreparedDockerPolicyExecution {
         store,
@@ -175,17 +186,6 @@ pub fn resolve_policy_locket_env(
     ensure_trusted_project_root(store, resolved)?;
     let profile = effective_policy_profile(store, resolved, effective)?;
     let selections = policy_secret_selections(store, resolved, &profile, policy)?;
-    let missing_required = selections
-        .iter()
-        .filter(|selection| selection.required && selection.selected.is_none())
-        .map(|selection| selection.name.as_str())
-        .collect::<Vec<_>>();
-    if !missing_required.is_empty() {
-        return Err(secret_not_found_error(format!(
-            "required secret(s) missing: {}",
-            missing_required.join(",")
-        )));
-    }
 
     let mut locket_env = locket_exec::EnvMap::new();
     for selection in &selections {

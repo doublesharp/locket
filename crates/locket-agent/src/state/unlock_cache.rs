@@ -176,6 +176,11 @@ impl UnlockCache {
         self.entries.is_empty()
     }
 
+    /// Iterates project identities for the unlocked team worker.
+    pub(crate) fn entries_for_sync(&self) -> impl Iterator<Item = (&str, &UnlockEntry)> + '_ {
+        self.entries.iter().map(|(id, entry)| (id.as_str(), entry))
+    }
+
     /// Iterates current entries without copying. Sealed to crate use
     /// because callers must not leak the `UnlockEntry` reference.
     pub(crate) fn entries_for_status(&self) -> impl Iterator<Item = &UnlockEntry> + '_ {
@@ -321,7 +326,7 @@ mod tests {
             UnlockEntry::new(b"k".to_vec(), 0, Duration::from_secs(60), UnlockMethod::Passphrase),
         );
         let evicted = cache.evict_expired(1_000_000_000);
-        assert!(evicted.is_empty());
+        assert_eq!(evicted.len(), 0);
         assert!(!cache.is_empty());
     }
 
@@ -346,7 +351,7 @@ mod tests {
     fn clear_on_empty_returns_empty_vec() {
         let mut cache = UnlockCache::default();
         let cleared = cache.clear();
-        assert!(cleared.is_empty());
+        assert_eq!(cleared.len(), 0);
     }
 
     #[test]

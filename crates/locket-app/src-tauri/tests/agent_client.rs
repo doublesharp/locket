@@ -13,14 +13,17 @@
 // Pull all dev-deps in so `unused_crate_dependencies` stays quiet for
 // crates the rest of the test references via paths/macros only.
 use arboard as _;
+use base64 as _;
 use directories as _;
 use locket_app as _;
 use locket_core as _;
 use locket_platform as _;
 use serde as _;
 use serde_json as _;
+use sha2 as _;
 use tauri as _;
 use thiserror as _;
+use toml as _;
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};

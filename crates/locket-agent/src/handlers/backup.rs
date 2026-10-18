@@ -58,6 +58,15 @@ pub struct ExportBundleRequest {
     pub scope: BundleExportScope,
     /// Whether remote audit rows should be included.
     pub include_audit: bool,
+    /// Include personal sources only for an explicit backup.
+    #[serde(default)]
+    pub include_personal: bool,
+    /// Include historical versions only when explicitly requested.
+    #[serde(default)]
+    pub include_history: bool,
+    /// Return selection metadata without writing a bundle.
+    #[serde(default)]
+    pub preview_only: bool,
     /// Optional output path.
     pub output_path: Option<PathBuf>,
 }
@@ -270,6 +279,7 @@ struct ImportedBundleCounts {
 #[derive(Debug, Default, Clone, Copy)]
 #[allow(clippy::struct_field_names)]
 struct AppliedBundleCounts {
+    archived_local_profile_count: usize,
     profile_count: usize,
     secret_count: usize,
     secret_version_count: usize,
@@ -494,8 +504,54 @@ fn export_bundle(
     {
         return Err(("ProjectNotFound", "project not found".to_owned()));
     }
+    if store
+        .bundle_recipient_is_denied(&request.project_id, &recipient.sealing_public_key)
+        .map_err(|error| ("CorruptDb", error.to_string()))?
+    {
+        return Err((
+            "AccessDenied",
+            "recipient device is revoked or its member was removed".to_owned(),
+        ));
+    }
     let profiles = selected_profiles(&store, &request.project_id, unlocked, &request.scope)?;
-    let payload = bundle_payload(&store, &request.project_id, &profiles, &unlocked.master_key)?;
+    let payload = bundle_payload_with_scope(
+        &store,
+        &request.project_id,
+        &profiles,
+        &unlocked.master_key,
+        request.include_personal,
+        request.include_history,
+    )?;
+    let selected = payload
+        .secrets
+        .iter()
+        .map(|secret| {
+            format!(
+                "{} source={} current_version={}",
+                secret.name, secret.source, secret.current_version
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    let preview = format!(
+        "recipient={}; selected=[{}]; excluded personal={} history={}. {}",
+        recipient.fingerprint,
+        selected,
+        !request.include_personal,
+        !request.include_history,
+        if payload.secret_count == 0 {
+            "No team-managed values selected. For a deliberate personal backup enable include_personal; enable include_history for prior versions."
+        } else {
+            "Only selected values will be sealed."
+        }
+    );
+    if request.preview_only {
+        return Ok(BackupActionResponse {
+            action: "export-bundle".to_owned(),
+            status: "preview".to_owned(),
+            message: preview,
+        });
+    }
     let plaintext = zeroize::Zeroizing::new(serde_json::to_vec(&payload).map_err(json_error)?);
     let encrypted_payload =
         encrypt_bundle_payload_for_age_recipients(&plaintext, &[recipient.sealing_public_key])
@@ -531,7 +587,7 @@ fn export_bundle(
         action: "export-bundle".to_owned(),
         status: "exported".to_owned(),
         message: format!(
-            "sealed bundle written to {}; profiles={} secrets={} versions={} blobs={}",
+            "sealed bundle written to {}; profiles={} secrets={} versions={} blobs={}. {preview}",
             output_path.display(),
             payload.profile_count,
             payload.secret_count,
@@ -583,7 +639,16 @@ fn import_bundle(
         .ok_or_else(|| {
             ("BundleVerificationFailed", "local device is not initialized".to_owned())
         })?;
-    if !bundle.manifest.recipient_fingerprints.iter().any(|fp| fp == &device.fingerprint) {
+    if !bundle
+        .manifest
+        .recipient_fingerprints
+        .iter()
+        .map(|fp| store.device_matches_bundle_recipient(&device, fp))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| ("CorruptDb", error.to_string()))?
+        .into_iter()
+        .any(|matches| matches)
+    {
         return Err((
             "BundleVerificationFailed",
             "bundle is not addressed to this device".to_owned(),
@@ -626,6 +691,18 @@ fn import_bundle(
         profile_key_count: payload.profile_key_count,
     };
     let resolution = ConflictResolution::from_mode(&request.conflict_mode);
+    if request.conflict_mode == BundleConflictMode::Review {
+        return Ok(BackupActionResponse {
+            action: "import-bundle".to_owned(),
+            status: "review".to_owned(),
+            message: format!(
+                "Issuer unauthenticated. Review {} profiles and {} secrets; select accept-incoming or accept-local to explicitly apply. {} command definitions remain proposed metadata and will not grant authority.",
+                payload.profiles.len(),
+                payload.secrets.len(),
+                payload.command_policies.len()
+            ),
+        });
+    }
     let timestamp = current_unix_nanos_i64();
     let outcome = apply_bundle_payload(
         &mut store,
@@ -663,7 +740,8 @@ fn import_bundle(
         action: "import-bundle".to_owned(),
         status: "applied".to_owned(),
         message: format!(
-            "bundle applied; profiles={} secrets={} versions={} blobs={} command_policies={} conflicts_applied={} conflicts_rejected={}",
+            "Issuer unauthenticated; command definitions were not authorized. Bundle applied; archived_local_profiles={} profiles={} secrets={} versions={} blobs={} command_policies={} conflicts_applied={} conflicts_rejected={}",
+            applied.archived_local_profile_count,
             applied.profile_count,
             applied.secret_count,
             applied.secret_version_count,
@@ -702,11 +780,23 @@ fn selected_profiles(
     }
 }
 
+#[cfg(test)]
 fn bundle_payload(
     store: &Store,
     project_id: &str,
     profiles: &[ProfileRecord],
     master_key: &locket_crypto::KeyBytes,
+) -> BackupResult<SealedBundlePayloadV1> {
+    bundle_payload_with_scope(store, project_id, profiles, master_key, false, false)
+}
+
+fn bundle_payload_with_scope(
+    store: &Store,
+    project_id: &str,
+    profiles: &[ProfileRecord],
+    master_key: &locket_crypto::KeyBytes,
+    include_personal: bool,
+    include_history: bool,
 ) -> BackupResult<SealedBundlePayloadV1> {
     let command_policies = bundle_command_policies(store)?;
     let mut profile_payloads = Vec::with_capacity(profiles.len());
@@ -717,25 +807,23 @@ fn bundle_payload(
     let mut active_secret_count = 0_usize;
     for profile in profiles {
         let active_secrets = store
-            .list_active_secrets_by_profile(project_id, &profile.id)
+            .select_bundle_secrets(project_id, &profile.id, include_personal, include_history)
             .map_err(|error| ("CorruptDb", format!("could not list active secrets: {error}")))?;
-        active_secret_count = active_secret_count.saturating_add(active_secrets.len());
+        let active_count = active_secrets
+            .iter()
+            .filter(|(secret, _)| secret.state == "active" && secret.deleted_at.is_none())
+            .count();
+        active_secret_count = active_secret_count.saturating_add(active_count);
         profile_payloads.push(SealedBundleProfileV1 {
             profile_id: profile.id.clone(),
             name: profile.name.clone(),
             dangerous: profile.dangerous,
-            active_secret_count: active_secrets.len(),
+            active_secret_count: active_count,
             created_at: profile.created_at,
         });
         profile_keys.extend(bundle_profile_keys(store, project_id, &profile.id, master_key)?);
-        for secret in store
-            .list_secrets_by_profile(project_id, &profile.id)
-            .map_err(|error| ("CorruptDb", format!("could not list secrets: {error}")))?
-        {
-            for version in store
-                .list_secret_versions(&secret.id)
-                .map_err(|error| ("CorruptDb", format!("could not list versions: {error}")))?
-            {
+        for (secret, versions) in active_secrets {
+            for version in versions {
                 if let Some(blob) = store
                     .get_blob(&secret.id, version.version)
                     .map_err(|error| ("CorruptDb", format!("could not read blob: {error}")))?
@@ -924,6 +1012,26 @@ fn apply_bundle_payload(
     receiver_master_key: &locket_crypto::KeyBytes,
     now: i64,
 ) -> BackupResult<ApplyOutcome> {
+    for key in &payload.profile_keys {
+        let purpose = parse_key_purpose(&key.purpose)?;
+        if store
+            .get_key_by_scope(project_id, Some(&key.profile_id), purpose.as_str())
+            .map_err(|e| ("CorruptDb", e.to_string()))?
+            .is_some()
+        {
+            let local = load_profile_key_with_master(
+                store,
+                project_id,
+                &key.profile_id,
+                purpose,
+                receiver_master_key,
+            )?;
+            let incoming = decode_key_material(&key.key_material_b64, "profile key")?;
+            if local.as_slice() != incoming.as_slice() {
+                return Err(("MetadataInvalid", "bundle profile key conflicts with local keys; import into a separate store to preserve existing secrets".to_owned()));
+            }
+        }
+    }
     let mut retained_secrets = BTreeSet::new();
     let mut rotated_versions = Vec::new();
     let mut applied = AppliedBundleCounts::default();
@@ -937,6 +1045,33 @@ fn apply_bundle_payload(
     validate_bundle_project_scope(&transaction, project_id, payload)?;
 
     for profile in &payload.profiles {
+        use rusqlite::OptionalExtension as _;
+        let same_name: Option<String> = transaction
+            .query_row(
+                "SELECT id FROM profiles WHERE project_id = ?1 AND name = ?2 AND id != ?3",
+                params![project_id, profile.name, profile.profile_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(map_apply_sqlite_error)?;
+        if let Some(local_id) = same_name {
+            let count: i64 = transaction
+                .query_row(
+                    "SELECT COUNT(*) FROM secrets WHERE profile_id = ?1",
+                    [&local_id],
+                    |row| row.get(0),
+                )
+                .map_err(map_apply_sqlite_error)?;
+            if count != 0 {
+                return Err(("MetadataInvalid", "same-name local profile contains secrets with incompatible identity; import into a separate store".to_owned()));
+            }
+            locket_store::archive_empty_profile_for_import(&transaction, project_id, &local_id)
+                .map_err(|error| ("CorruptDb", error.to_string()))?
+                .ok_or_else(|| {
+                    ("MetadataInvalid", "local profile is no longer empty".to_owned())
+                })?;
+            applied.archived_local_profile_count += 1;
+        }
         match read_local_profile(&transaction, project_id, &profile.profile_id)? {
             None => {
                 transaction
@@ -1051,48 +1186,7 @@ fn apply_bundle_payload(
         conflicts.applied = conflicts.applied.saturating_add(1);
     }
 
-    for policy in &payload.command_policies {
-        let policy_text =
-            serde_json::to_string(&command_policy_value(policy)).map_err(|error| {
-                ("MetadataInvalid", format!("command policy encode failed: {error}"))
-            })?;
-        let existing = read_local_command_policy(&transaction, project_id, &policy.name)?;
-        match existing {
-            None => {
-                insert_or_update_command_policy(
-                    &transaction,
-                    project_id,
-                    policy,
-                    &policy_text,
-                    now,
-                )?;
-                applied.command_policy_count = applied.command_policy_count.saturating_add(1);
-                conflicts.applied = conflicts.applied.saturating_add(1);
-            }
-            Some(local) if local == policy_text => {
-                conflicts.identical = conflicts.identical.saturating_add(1);
-            }
-            Some(_) => {
-                if resolve_divergent(
-                    resolution,
-                    &mut conflicts,
-                    &mut divergent,
-                    "command_policy",
-                    &policy.name,
-                ) == DivergentDecision::Apply
-                {
-                    insert_or_update_command_policy(
-                        &transaction,
-                        project_id,
-                        policy,
-                        &policy_text,
-                        now,
-                    )?;
-                    applied.command_policy_count = applied.command_policy_count.saturating_add(1);
-                }
-            }
-        }
-    }
+    // Unsigned bundles carry proposed definitions only. Never mutate command authority.
 
     for secret in &payload.secrets {
         match read_local_secret(&transaction, &secret.id)? {
@@ -1418,22 +1512,6 @@ fn read_local_profile(
         .map_err(map_apply_sqlite_error)
 }
 
-fn read_local_command_policy(
-    transaction: &rusqlite::Transaction<'_>,
-    project_id: &str,
-    name: &str,
-) -> BackupResult<Option<String>> {
-    use rusqlite::OptionalExtension;
-    transaction
-        .query_row(
-            "SELECT normalized_json FROM command_policies WHERE project_id = ?1 AND name = ?2",
-            params![project_id, name],
-            |row| row.get(0),
-        )
-        .optional()
-        .map_err(map_apply_sqlite_error)
-}
-
 #[derive(Debug)]
 struct LocalSecretRow {
     profile_id: String,
@@ -1559,29 +1637,6 @@ fn read_local_blob(
         .map_err(map_apply_sqlite_error)
 }
 
-fn insert_or_update_command_policy(
-    transaction: &rusqlite::Transaction<'_>,
-    project_id: &str,
-    policy: &SealedBundleCommandPolicyV1,
-    policy_text: &str,
-    now: i64,
-) -> BackupResult<()> {
-    transaction
-        .execute(
-            "INSERT INTO command_policies(
-               project_id, name, policy_json, normalized_json, created_at, updated_at
-             )
-             VALUES (?1, ?2, ?3, ?3, ?4, ?4)
-             ON CONFLICT(project_id, name) DO UPDATE SET
-               policy_json = excluded.policy_json,
-               normalized_json = excluded.normalized_json,
-               updated_at = excluded.updated_at",
-            params![project_id, policy.name, policy_text, now],
-        )
-        .map_err(map_apply_sqlite_error)?;
-    Ok(())
-}
-
 fn deprecate_local_current_version(
     transaction: &rusqlite::Transaction<'_>,
     secret_id: &str,
@@ -1699,10 +1754,6 @@ fn decode_bundle_blob(blob: &SealedBundleBlobV1) -> BackupResult<SecretBlobRecor
         aad_schema_version: blob.aad_schema_version,
         created_at: blob.created_at,
     })
-}
-
-fn command_policy_value(policy: &SealedBundleCommandPolicyV1) -> serde_json::Value {
-    serde_json::to_value(policy).unwrap_or(serde_json::Value::Null)
 }
 
 fn parse_key_purpose(value: &str) -> BackupResult<KeyPurpose> {
@@ -1851,14 +1902,25 @@ fn bundle_recipient(value: &str) -> BackupResult<BundleRecipientV1> {
 }
 
 fn decode_device_descriptor(value: &str) -> BackupResult<DeviceDescriptorV1> {
-    let Some(encoded) = value.strip_prefix("lkdev1_") else {
-        return Err(("MetadataInvalid", "device descriptor must start with lkdev1_".to_owned()));
+    let (encoded, version) = if let Some(encoded) = value.strip_prefix("lkdev2_") {
+        (encoded, 2)
+    } else if let Some(encoded) = value.strip_prefix("lkdev1_") {
+        (encoded, 1)
+    } else {
+        return Err((
+            "MetadataInvalid",
+            "device descriptor must start with lkdev2_ or legacy lkdev1_".to_owned(),
+        ));
     };
     let bytes = BASE64URL_NOPAD
         .decode(encoded.as_bytes())
         .map_err(|_| ("MetadataInvalid", "device descriptor is not valid base64url".to_owned()))?;
-    serde_json::from_slice(&bytes)
-        .map_err(|error| ("MetadataInvalid", format!("device descriptor is invalid: {error}")))
+    let descriptor: DeviceDescriptorV1 = serde_json::from_slice(&bytes)
+        .map_err(|error| ("MetadataInvalid", format!("device descriptor is invalid: {error}")))?;
+    if descriptor.v != version {
+        return Err(("MetadataInvalid", "descriptor version mismatch".to_owned()));
+    }
+    Ok(descriptor)
 }
 
 fn decode_descriptor_key(value: &str) -> BackupResult<[u8; 32]> {
@@ -1872,7 +1934,10 @@ fn decode_descriptor_key(value: &str) -> BackupResult<[u8; 32]> {
 
 fn device_fingerprint_hex(signing_public_key: &[u8; 32], sealing_public_key: &[u8; 32]) -> String {
     let mut hasher = Sha256::new();
+    hasher.update(b"locket-device-v1");
+    hasher.update(32_u16.to_le_bytes());
     hasher.update(signing_public_key);
+    hasher.update(32_u16.to_le_bytes());
     hasher.update(sealing_public_key);
     format_hex(&hasher.finalize())
 }
@@ -1952,6 +2017,7 @@ fn write_import_audit(
         "command_policy_count": decrypted.command_policy_count,
         "profile_key_count": decrypted.profile_key_count,
         "applied_profile_count": applied.profile_count,
+        "archived_local_profile_count": applied.archived_local_profile_count,
         "applied_secret_count": applied.secret_count,
         "applied_secret_version_count": applied.secret_version_count,
         "applied_blob_count": applied.blob_count,
@@ -2188,6 +2254,132 @@ mod tests {
     ) -> Result<ApplyOutcome, Box<dyn std::error::Error>> {
         apply_bundle_payload(store, project, payload, resolution, &[42; 32], 300)
             .map_err(|(_, message)| message.into())
+    }
+
+    #[test]
+    fn import_archives_empty_same_name_profile_preserving_audit_and_references()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let mut store = Store::open(dir.path().join("store.db"))?;
+        store.initialize_schema()?;
+        store.insert_project_if_absent("project", "project", 1)?;
+        store.connection().execute("INSERT INTO profiles(id,project_id,name,dangerous,created_at) VALUES ('local-profile','project','dev',0,1)", [])?;
+        store.connection().execute("INSERT INTO keys(id,project_id,profile_id,purpose,wrapped_material,nonce,created_at) VALUES ('local-key','project','local-profile','profile-secret',x'1234',zeroblob(24),1)", [])?;
+        store.connection().execute("INSERT INTO directory_grants(grant_id,project_id,profile_id,root_hash,directory_hash,grant_scope,created_at,updated_at) VALUES ('grant','project','local-profile',zeroblob(32),zeroblob(32),'project-root',1,1)", [])?;
+        store.connection().execute("INSERT INTO runtime_sessions(id,project_id,profile_id,process_id,process_start_time,started_at) VALUES ('session','project','local-profile',1,1,1)", [])?;
+        store.append_audit(&[9;32], &AuditWrite { project_id:"project", profile_id:Some("local-profile"), action:"BOOTSTRAP", status:"SUCCESS", secret_name:None, command:Some("locket init"), metadata_json:&json!({"schema_version":1,"action":"BOOTSTRAP","status":"SUCCESS","command":"locket init","project_id":"project","default_profile_id":"local-profile","recovery_code_displayed":false}), timestamp:1 })?;
+        let payload = import_fixture("remote-profile", "secret", 1)?;
+        import_apply(&mut store, "project", &payload, ConflictResolution::AcceptIncoming)?;
+        assert_eq!(
+            store.get_profile_by_name("project", "dev")?.ok_or("imported dev profile missing")?.id,
+            "remote-profile"
+        );
+        assert_eq!(store.list_secrets_by_profile("project", "remote-profile")?.len(), 1);
+        assert!(
+            store.verify_audit_chain_read_only("project", &[9; 32])?.hmac_ok,
+            "import must preserve audited profile references"
+        );
+        let archived = store
+            .list_profiles("project")?
+            .into_iter()
+            .find(|p| p.id == "local-profile")
+            .ok_or("original profile deleted")?;
+        assert!(archived.name.starts_with("dev-local-"));
+        for table in ["directory_grants", "runtime_sessions", "keys"] {
+            let id: String = store.connection().query_row(
+                &format!("SELECT profile_id FROM {table}"),
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(id, "local-profile");
+        }
+        let bytes: Vec<u8> = store.connection().query_row(
+            "SELECT wrapped_material FROM keys WHERE id='local-key'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(bytes, [0x12, 0x34]);
+        Ok(())
+    }
+
+    #[test]
+    fn failed_import_restores_archived_profile_name_and_identity()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let mut store = Store::open(dir.path().join("store.db"))?;
+        store.initialize_schema()?;
+        store.insert_project_if_absent("project", "project", 1)?;
+        store.insert_profile_if_absent("local-profile", "project", "dev", false, 1)?;
+        let mut payload = import_fixture("remote-profile", "secret", 1)?;
+        payload.blobs[0].ciphertext_b64 = "%invalid".into();
+        assert!(
+            import_apply(&mut store, "project", &payload, ConflictResolution::AcceptIncoming)
+                .is_err()
+        );
+        assert_eq!(
+            store.get_profile_by_name("project", "dev")?.ok_or("original restored")?.id,
+            "local-profile"
+        );
+        assert_eq!(store.list_profiles("project")?.len(), 1);
+        assert_eq!(
+            store.list_secrets_by_profile("project", "remote-profile")?,
+            Vec::<locket_store::SecretRecord>::new()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn same_name_populated_local_profile_is_not_replaced() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let dir = tempfile::tempdir()?;
+        let mut store = Store::open(dir.path().join("store.db"))?;
+        store.initialize_schema()?;
+        store.insert_project_if_absent("project", "project", 1)?;
+        import_apply(
+            &mut store,
+            "project",
+            &import_fixture("local-profile", "local-secret", 1)?,
+            ConflictResolution::AcceptIncoming,
+        )?;
+        assert!(
+            import_apply(
+                &mut store,
+                "project",
+                &import_fixture("remote-profile", "remote-secret", 1)?,
+                ConflictResolution::AcceptIncoming
+            )
+            .is_err()
+        );
+        assert_eq!(
+            store.get_profile_by_name("project", "dev")?.ok_or("original retained")?.id,
+            "local-profile"
+        );
+        assert_eq!(store.list_profiles("project")?.len(), 1);
+        assert_eq!(store.list_secrets_by_profile("project", "local-profile")?.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn unsigned_policy_cannot_widen_existing_command_authority()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let mut store = Store::open(dir.path().join("store.db"))?;
+        store.initialize_schema()?;
+        store.insert_project_if_absent("project", "project", 1)?;
+        let restricted = r#"{"allowed_secrets":["SAFE"],"confirm":true}"#;
+        store.connection().execute("INSERT INTO command_policies(project_id,name,policy_json,normalized_json,created_at,updated_at) VALUES ('project','deploy',?1,?1,1,1)", [restricted])?;
+        let mut payload = import_fixture("profile", "secret", 1)?;
+        payload.command_policies.push(serde_json::from_value(serde_json::json!({
+            "name":"deploy","command_kind":"argv","argv":["sh","-c","evil"],"shell":null,
+            "allowed_secrets":["*"],"required_secrets":[],"optional_secrets":[],"inherit_env":[],
+            "env_mode":"inherit","override_mode":"allow","override_explicit":true,"external_env_sources":[],
+            "allow_remote_docker":true,"confirm":false,"require_user_verification":false,"ttl_seconds":999_999
+        }))?);
+        payload.command_policy_count = 1;
+        import_apply(&mut store, "project", &payload, ConflictResolution::AcceptIncoming)?;
+        let actual: String = store.connection().query_row("SELECT policy_json FROM command_policies WHERE project_id = 'project' AND name = 'deploy'", [], |row| row.get(0))?;
+        assert_eq!(actual, restricted);
+        Ok(())
     }
 
     fn import_fixture(
@@ -2505,6 +2697,9 @@ mod tests {
             recipient_descriptor: test_device_descriptor()?,
             scope: BundleExportScope::ActiveProfile,
             include_audit: false,
+            include_personal: false,
+            include_history: false,
+            preview_only: false,
             output_path: Some(output_path.clone()),
         };
         let unlocked = UnlockedProject {
@@ -2513,6 +2708,12 @@ mod tests {
             master_key: zeroize::Zeroizing::new(master_key),
         };
 
+        let mut preview_request = request.clone();
+        preview_request.preview_only = true;
+        let preview = export_bundle(&preview_request, &unlocked).map_err(|(_, message)| message)?;
+        assert_eq!(preview.status, "preview");
+        assert!(preview.message.contains("No team-managed values"));
+        assert!(!output_path.exists());
         let response = export_bundle(&request, &unlocked).map_err(|(_, message)| message)?;
         assert_eq!(response.status, "exported");
         let bytes = fs::read(&output_path)?;
@@ -2583,7 +2784,7 @@ ttl = "30s"
     }
 
     #[test]
-    fn apply_bundle_payload_applies_policy_and_rolls_back_review_conflict()
+    fn unsigned_bundle_cannot_grant_policy_and_rolls_back_review_conflict()
     -> Result<(), Box<dyn std::error::Error>> {
         let tempdir = tempfile::tempdir()?;
         let store_path = tempdir.path().join("store.sqlite3");
@@ -2608,7 +2809,7 @@ ttl = "30s"
             params![PROJECT_ID],
             |row| row.get(0),
         )?;
-        assert_eq!(policy_count, 1);
+        assert_eq!(policy_count, 0);
 
         let conflicting = minimal_import_payload("prod", "ship");
         let outcome = apply_bundle_payload(
@@ -2627,12 +2828,11 @@ ttl = "30s"
             |row| row.get(0),
         )?;
         assert_eq!(profile_name, "dev");
-        let policy_name: String = store.connection().query_row(
-            "SELECT name FROM command_policies WHERE project_id = ?1",
-            params![PROJECT_ID],
-            |row| row.get(0),
-        )?;
-        assert_eq!(policy_name, "deploy");
+        assert_eq!(
+            store.connection().query_row("SELECT COUNT(*) FROM command_policies", [], |row| row
+                .get::<_, u32>(0))?,
+            0
+        );
         Ok(())
     }
 

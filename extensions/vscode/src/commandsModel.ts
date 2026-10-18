@@ -18,6 +18,7 @@ export interface ResolvedLocketProject {
   readonly root: string;
   readonly projectId: string;
   readonly defaultProfileId: string;
+  readonly storePath?: string;
 }
 
 export interface LockRequestPayload {
@@ -151,17 +152,17 @@ export const LOCKET_COMMAND_ROUTES: ReadonlyArray<{
   { commandId: 'locket.switchProfile', agentMethod: 'SetActiveProfile' },
   { commandId: 'locket.runPolicy', agentMethod: 'ListPolicies' },
   { commandId: 'locket.scanWorkspace', agentMethod: 'ScanKnownValues' },
-  { commandId: 'locket.revealSecret', agentMethod: 'Reveal' },
-  { commandId: 'locket.copySecret', agentMethod: 'Copy' },
   { commandId: 'locket.openAuditView', agentMethod: 'ListAudit' },
 ];
 
 // Full VS Code command contribution set. Most entries are agent RPC
-// routes above; `locket.createTerminal` is registered by the terminal
-// autobind surface and is intentionally not an agent route.
+// routes above; value access and terminal creation launch the CLI/terminal
+// and are intentionally not agent RPC routes.
 export const LOCKET_EDITOR_COMMAND_IDS: readonly string[] = [
   ...LOCKET_COMMAND_ROUTES.map((route) => route.commandId),
   'locket.createTerminal',
+  'locket.revealSecret',
+  'locket.copySecret',
 ];
 
 // Build a `Lock` request. The extension always reports the `desktop`

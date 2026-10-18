@@ -32,6 +32,9 @@ use crate::{
                         Path-scoped env sets live under [paths.\"relative/path\"] and are merged\n\
                         into the selected command policy only when execution starts from that subtree.")]
 pub enum PolicyCommand {
+    /// Apply one explicitly approved desktop editor mutation from stdin.
+    #[command(hide = true)]
+    Apply,
     /// Add an argv command policy.
     Add(PolicyAddArgs),
     /// Append optional secret names to a policy.
@@ -82,6 +85,7 @@ pub fn command(
     command: PolicyCommand,
 ) -> Result<(), CliError> {
     match command {
+        PolicyCommand::Apply => apply_editor_command(context, output),
         PolicyCommand::Add(args) => add(context, output, args),
         PolicyCommand::Allow(args) => allow(context, output, args),
         PolicyCommand::Require(args) => require(context, output, args),
@@ -220,7 +224,7 @@ fn edit(
     }
     edit_result?;
     let updated_document = read_locket_toml(&path)?;
-    let policy_text = toml::to_string_pretty(&updated_document)?;
+    let policy_text = toml::to_string_pretty(&*updated_document)?;
     let policy_document = PolicyDocument::from_toml_str(&policy_text)
         .map_err(|error| metadata_invalid_error(error.to_string()))?;
     write_policy_index_update_if_available(
@@ -758,20 +762,16 @@ fn write_doctor_audit_if_available(
     Ok(())
 }
 
-fn read_locket_toml(path: &Path) -> Result<toml::Value, CliError> {
-    let content = fs::read_to_string(path)?;
-    toml::from_str::<toml::Value>(&content).map_err(CliError::from)
+fn read_locket_toml(path: &Path) -> Result<locket_platform::PolicyFileDocument, CliError> {
+    locket_platform::PolicyFileDocument::read(path)
+        .map_err(|error| metadata_invalid_error(error.to_string()))
 }
 
 fn write_validated_locket_toml(
-    path: &Path,
-    document: &toml::Value,
+    _path: &Path,
+    document: &locket_platform::PolicyFileDocument,
 ) -> Result<PolicyDocument, CliError> {
-    let content = toml::to_string_pretty(document)?;
-    let policy_document = PolicyDocument::from_toml_str(&content)
-        .map_err(|error| metadata_invalid_error(error.to_string()))?;
-    fs::write(path, content)?;
-    Ok(policy_document)
+    document.save().map_err(|error| metadata_invalid_error(error.to_string()))
 }
 
 fn ensure_policy_exists(document: &toml::Value, name: &str) -> Result<(), CliError> {
@@ -977,7 +977,14 @@ fn write_policy_index_update_if_available(
     let policy = policy_document.commands.get(policy_name).ok_or_else(|| {
         metadata_invalid_error(format!("command policy missing after validation: {policy_name}"))
     })?;
-    let normalized_json = normalized_policy_json(policy);
+    let mut normalized_json = normalized_policy_json(policy);
+    let source = require_project(context)?;
+    if source.config.project_id.as_str() != project_id {
+        return Err(metadata_invalid_error("command source project changed before index refresh"));
+    }
+    normalized_json["source_path"] = json!(source.root.join(LOCKET_TOML));
+    normalized_json["source_digest"] =
+        json!(locket_core::policy::policy_source_digest(raw_document, policy_name)?);
     let audit_key = load_project_key(context, &store, project_id, KeyPurpose::Audit)?;
     let timestamp = now_unix_nanos()?;
     let metadata = policy_update_metadata(operation, policy_name);
@@ -1123,7 +1130,9 @@ pub fn pump_policies_to_agent(
             "store_path": context.store_path,
             "audit_profile_id": serde_json::Value::Null,
         });
-        if let Err(error) = pump_policies_unix(context, payload) {
+        if let Err(error) = pump_policies_unix(context, payload)
+            && std::env::var_os("LOCKET_DEBUG").is_some()
+        {
             let mut stderr = io::stderr();
             let _ignored = writeln!(
                 stderr,
@@ -1229,5 +1238,227 @@ mod tests {
         // `None`. This branch is removed once the
         // `prepare-exec-grant-fallback-removal` TODO is closed.
         assert!(reuse_prepare_exec_grant_for_resolve("").is_none());
+    }
+}
+
+/// Saves an explicitly approved command using the shared durable policy writer.
+/// Refreshes derived reference permissions before an explicit local CLI run.
+pub fn refresh_command_policy_for_run(
+    context: &RuntimeContext,
+    resolved: &ResolvedProject,
+    name: &str,
+) -> Result<(), CliError> {
+    let document = read_locket_toml(&resolved.root.join(LOCKET_TOML))?;
+    let parsed = PolicyDocument::from_toml_str(&toml::to_string_pretty(&*document)?)
+        .map_err(|error| metadata_invalid_error(error.to_string()))?;
+    let digest = locket_core::policy::policy_source_digest(&document, name)?;
+    let store = open_store(context)?;
+    crate::ensure_trusted_project_root(&store, resolved)?;
+    if store.get_command_policy_index(resolved.config.project_id.as_str(), name)?.is_some_and(
+        |index| {
+            index.normalized_json.get("source_digest").and_then(serde_json::Value::as_str)
+                == Some(&digest)
+        },
+    ) {
+        return Ok(());
+    }
+    write_policy_index_update_if_available(
+        context,
+        resolved.config.project_id.as_str(),
+        &document,
+        &parsed,
+        name,
+        "refresh",
+    )?;
+    pump_policies_to_agent(context, resolved.config.project_id.as_str(), &parsed);
+    Ok(())
+}
+
+pub fn persist_command_policy(
+    context: &RuntimeContext,
+    resolved: &ResolvedProject,
+    policy: &CommandPolicy,
+) -> Result<(), CliError> {
+    validate_policy_name(&policy.name)?;
+    let store = open_store(context)?;
+    crate::ensure_trusted_project_root(&store, resolved)?;
+    let path = resolved.root.join(LOCKET_TOML);
+    let mut document = locket_platform::PolicyFileDocument::read(&path)
+        .map_err(|error| metadata_invalid_error(error.to_string()))?;
+    commands_table_mut(&mut document)?
+        .insert(policy.name.clone(), locket_core::policy::command_policy_value(policy));
+    let parsed = document.save().map_err(|error| metadata_invalid_error(error.to_string()))?;
+    write_policy_index_update_if_available(
+        context,
+        resolved.config.project_id.as_str(),
+        &document,
+        &parsed,
+        &policy.name,
+        "approve",
+    )?;
+    pump_policies_to_agent(context, resolved.config.project_id.as_str(), &parsed);
+    Ok(())
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EditorPolicyMutation {
+    project_id: String,
+    mode: String,
+    original_name: String,
+    policy: locket_agent::CommandPolicySnapshot,
+    confirmation: Option<String>,
+}
+
+fn apply_editor_command(context: &RuntimeContext, output: &mut impl Write) -> Result<(), CliError> {
+    use std::io::Read as _;
+    const MAX_REQUEST_BYTES: u64 = 65_536;
+    let mut input = Vec::new();
+    io::stdin().take(MAX_REQUEST_BYTES + 1).read_to_end(&mut input)?;
+    if input.len() > usize::try_from(MAX_REQUEST_BYTES).unwrap_or(65_536) {
+        return Err(metadata_invalid_error("policy editor request exceeds 64 KiB"));
+    }
+    let request: EditorPolicyMutation = serde_json::from_slice(&input)
+        .map_err(|_| metadata_invalid_error("invalid policy editor request"))?;
+    apply_editor_policy(context, output, &request)
+}
+
+fn apply_editor_policy(
+    context: &RuntimeContext,
+    output: &mut impl Write,
+    request: &EditorPolicyMutation,
+) -> Result<(), CliError> {
+    let resolved = require_project(context)?;
+    let store = open_store(context)?;
+    let project_id = resolved.config.project_id.as_str();
+    let profile = default_profile(&store, &resolved.config)?;
+    let (master, _) = crate::runtime::key_access::load_master_key_verified_by_project_key(
+        context,
+        &store,
+        project_id,
+        KeyPurpose::Audit,
+    )?;
+    let mutation = locket_agent::ApplyPolicyRequest {
+        scope: locket_agent::MutationScope {
+            store_path: context.store_path.clone(),
+            project_root: resolved.root.clone(),
+            project_id: request.project_id.clone(),
+            profile_id: profile.id,
+            grant_id: None,
+            binding: None,
+        },
+        mode: request.mode.clone(),
+        original_name: request.original_name.clone(),
+        policy: request.policy.clone(),
+        confirmation: request.confirmation.clone(),
+    };
+    locket_agent::apply_policy_with_master(&mutation, &master, now_unix_nanos()?).map_err(
+        |error| match error.code {
+            "ConfirmationFailed" => confirmation_failed_error(error.message),
+            "SecretAlreadyExists" => secret_already_exists_error(error.message),
+            "PolicyNotFound" => policy_not_found_error(error.message),
+            _ => metadata_invalid_error(error.message),
+        },
+    )?;
+    let saved = fs::read_to_string(resolved.root.join(LOCKET_TOML))?;
+    let parsed = PolicyDocument::from_toml_str(&saved)
+        .map_err(|_| metadata_invalid_error("saved policy could not be read"))?;
+    pump_policies_to_agent(context, project_id, &parsed);
+    write_policy_update(output, &request.policy.name, &request.mode)
+}
+
+#[cfg(test)]
+mod persistence_tests {
+    use clap::Parser;
+
+    #[test]
+    fn policy_cli_preserves_project_comments() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let context = crate::tests::test_context(&directory);
+        crate::run_with_context(
+            crate::Cli::try_parse_from([
+                "locket",
+                "init",
+                "--no-device",
+                "--no-passkey",
+                "--name",
+                "comments",
+            ])?,
+            &context,
+            &mut Vec::new(),
+        )?;
+        let path = directory.path().join("locket.toml");
+        let source = std::fs::read_to_string(&path)?;
+        std::fs::write(&path, format!("# Keep our team notes\n{source}"))?;
+        crate::run_with_context(
+            crate::Cli::try_parse_from([
+                "locket", "policy", "add", "dev", "--", "npm", "run", "dev",
+            ])?,
+            &context,
+            &mut Vec::new(),
+        )?;
+        let saved = std::fs::read_to_string(path)?;
+        assert!(saved.contains("# Keep our team notes"));
+        Ok(())
+    }
+    #[test]
+    fn editor_policy_edit_persists_authorization_without_losing_argv_or_gates()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let context = crate::tests::test_context(&directory);
+        crate::run_with_context(
+            crate::Cli::try_parse_from([
+                "locket",
+                "init",
+                "--no-device",
+                "--no-passkey",
+                "--name",
+                "editor",
+            ])?,
+            &context,
+            &mut Vec::new(),
+        )?;
+        let resolved = crate::require_project(&context)?;
+        let path = directory.path().join("locket.toml");
+        let mut source = std::fs::read_to_string(&path)?;
+        source.push_str(
+            r#"
+# Keep command annotations
+[commands.dev]
+argv = ["node", "a b.js"]
+require_agent = true
+inherit_env = ["PATH", "HOME"]
+external_env_sources = ["ide"]
+"#,
+        );
+        std::fs::write(&path, &source)?;
+        let parsed = locket_core::PolicyDocument::from_toml_str(&source)?;
+        let mut snapshot = locket_agent::CommandPolicySnapshot::from_policy(
+            resolved.config.project_id.as_str(),
+            &parsed.commands["dev"],
+            1,
+        );
+        snapshot.required_secrets = vec!["DATABASE_URL".into()];
+        snapshot.allowed_secrets = snapshot.required_secrets.clone();
+        let request = super::EditorPolicyMutation {
+            project_id: resolved.config.project_id.to_string(),
+            mode: "edit".into(),
+            original_name: "dev".into(),
+            policy: snapshot,
+            confirmation: None,
+        };
+        super::apply_editor_policy(&context, &mut Vec::new(), &request)?;
+        let saved = std::fs::read_to_string(&path)?;
+        assert!(saved.contains("# Keep command annotations"));
+        let raw: toml::Value = toml::from_str(&saved)?;
+        assert_eq!(raw["commands"]["dev"]["argv"][1].as_str(), Some("a b.js"));
+        let policy = locket_core::PolicyDocument::from_toml_str(&saved)?;
+        assert!(policy.commands["dev"].require_agent);
+        assert_eq!(policy.commands["dev"].inherit_env, ["PATH", "HOME"]);
+        let index = crate::open_store(&context)?
+            .get_command_policy_index(resolved.config.project_id.as_str(), "dev")?
+            .ok_or("policy index")?;
+        assert_eq!(index.normalized_json["allowed_secrets"], serde_json::json!(["DATABASE_URL"]));
+        Ok(())
     }
 }

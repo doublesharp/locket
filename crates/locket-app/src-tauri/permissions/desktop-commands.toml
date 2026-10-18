@@ -2,8 +2,21 @@
 
 [[permission]]
 identifier = "desktop-commands"
-description = "Allows the Locket webview to invoke the metadata-scoped desktop commands registered by this crate."
+description = "Allows the Locket webview to invoke the project-scoped desktop commands registered by this crate."
 commands.allow = [
+  "desktop_list_projects",
+  "desktop_open_project",
+  "desktop_initialize_project",
+  "desktop_import_env",
+  "desktop_start_agent",
+  "desktop_run_policy",
+  "desktop_save_policy",
+  "desktop_variable_readiness",
+  "desktop_team_sync_status",
+  "desktop_team_sync_configure",
+  "desktop_team_sync_now",
+  "desktop_team_sync_rename_profile",
+  "desktop_team_sync_preserve_override",
   "agent_status",
   "agent_subscribe_status",
   "agent_lock",

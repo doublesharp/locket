@@ -72,6 +72,7 @@ export interface CommandPolicyRow {
   allowedSecrets: string[];
   confirm: boolean;
   requireUserVerification: boolean;
+  requireAgent: boolean;
   allowRemoteDocker: boolean;
   ttlSeconds: number;
   envMode: 'minimal' | 'inherit' | 'strict';
@@ -105,7 +106,7 @@ export interface AuditLogRow {
   secretAlias?: string;
   metadataJson: string; // pre-serialized, never raw object
   denialReason?: string;
-  hmacOk: boolean;
+  hmacOk: boolean | null;
 }
 
 export interface ScanFindingRow {

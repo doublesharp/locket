@@ -20,7 +20,7 @@ fn stores_lists_and_revokes_devices() -> Result<(), Box<dyn Error>> {
 
     assert!(test_store.store.revoke_device("lk_proj_test", "lk_dev_test", 200)?);
     assert!(test_store.store.get_active_local_device("lk_proj_test")?.is_none());
-    assert!(test_store.store.list_devices("lk_proj_test", false)?.is_empty());
+    assert_eq!(test_store.store.list_devices("lk_proj_test", false)?.len(), 0);
     let all = test_store.store.list_devices("lk_proj_test", true)?;
     assert_eq!(all.len(), 1);
     assert_eq!(all[0].revoked_at, Some(200));
@@ -121,5 +121,17 @@ fn replace_local_device_rolls_back_when_audit_append_fails() -> Result<(), Box<d
         |row| row.get(0),
     )?;
     assert_eq!(audit_count, 0);
+    Ok(())
+}
+
+#[test]
+fn bundle_recipient_rejects_revoked_and_removed_devices() -> Result<(), Box<dyn Error>> {
+    let test = open_initialized_store()?;
+    insert_project_profile(&test.store)?;
+    let device = test_device();
+    test.store.insert_device(&device)?;
+    assert!(!test.store.bundle_recipient_is_denied("lk_proj_test", &[2; 32])?);
+    test.store.revoke_device("lk_proj_test", &device.id, 200)?;
+    assert!(test.store.bundle_recipient_is_denied("lk_proj_test", &[2; 32])?);
     Ok(())
 }

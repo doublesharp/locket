@@ -30,7 +30,7 @@ fn stores_lists_finds_and_revokes_passkey_credentials() -> Result<(), Box<dyn Er
     );
 
     assert!(test_store.store.revoke_passkey_credential("lk_proj_test", "lk_passkey_test", 200)?);
-    assert!(test_store.store.list_passkey_credentials("lk_proj_test", false)?.is_empty());
+    assert_eq!(test_store.store.list_passkey_credentials("lk_proj_test", false)?.len(), 0);
     let all = test_store.store.list_passkey_credentials("lk_proj_test", true)?;
     assert_eq!(all.len(), 1);
     assert_eq!(all[0].revoked_at, Some(200));

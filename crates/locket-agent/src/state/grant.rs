@@ -27,6 +27,8 @@ impl GrantBinding {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "PascalCase")]
 pub enum GrantAction {
+    /// Configure or explicitly trigger locally authorized team synchronization.
+    TeamSync,
     /// Run a command policy.
     RunPolicy,
     /// Prepare a command policy for a trusted CLI execution path.
@@ -46,6 +48,10 @@ pub enum GrantAction {
     Export,
     /// Create or rotate one secret value through a gated path.
     SetSecret,
+    /// Import a batch into the selected profile.
+    ImportDotenv,
+    /// Persist an execution policy edit.
+    ApplyPolicy,
 }
 
 /// Metadata-only live grant record.
@@ -659,7 +665,7 @@ mod tests {
             let copied = v;
             assert_eq!(v, copied);
             let debug = format!("{v:?}");
-            assert!(!debug.is_empty());
+            assert_ne!(debug, "");
         }
     }
 

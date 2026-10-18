@@ -7,6 +7,16 @@ import AgentUnavailableBanner from './components/AgentUnavailableBanner.vue';
 import PolicyEditorForm from './components/PolicyEditorForm.vue';
 import ProfileSwitcherView from './views/ProfileSwitcherView.vue';
 import RevealModal from './components/RevealModal.vue';
+import UnlockModal from './components/UnlockModal.vue';
+import { auditHealth, auditRowVerified, unlockTtl, projectStatusMatches } from './dashboard/health';
+import { scopedProjectContext, actionAvailability } from './dashboard/context';
+import {
+  captureSelection,
+  withCurrentSelection,
+  initialProjectSelection,
+} from './profile/selection';
+import type { StartHereTarget } from './dashboard/startHere';
+import type { DesktopProjectContext, UnlockRequest } from './agent/types';
 import {
   copySecret,
   exportBundle,
@@ -20,7 +30,15 @@ import {
   lockVault,
   readConfig,
   recoveryRotate,
-  registerCommandPolicies,
+  desktopListProjects,
+  desktopOpenProject,
+  desktopInitializeProject,
+  desktopImportEnv,
+  desktopStartAgent,
+  desktopRunPolicy,
+  desktopSavePolicy,
+  unlockVault,
+  actionError,
   reveal as revealAgent,
   rotateSecret,
   scan as scanKnownValues,
@@ -31,7 +49,7 @@ import {
   verifyBundle,
 } from './agent/client';
 import type { SetSecretRequest, SetSecretResponse } from './agent/client';
-import { applyPolicyMutation, type PolicyFormMode } from './policy/form';
+import type { PolicyFormMode } from './policy/form';
 import { rememberTarget, type ProfileSwitchState } from './profile/switcher';
 import type { CommandPolicySnapshotWire } from './agent/types';
 import { deviceMemberRow } from './agent/deviceMembers';
@@ -44,7 +62,7 @@ import { useTray } from './composables/useTray';
 import { secretRowsWithDeprecationWarnings } from './secret/deprecationWarnings';
 import AuditLog from './views/AuditLog.vue';
 import BackupRecovery from './views/BackupRecovery.vue';
-import type { BundleAction } from './backup/actions';
+import { exportSelectionKey, type BundleAction } from './backup/actions';
 import DeviceMemberDirectory from './views/DeviceMemberDirectory.vue';
 import ExecutionMonitor from './views/ExecutionMonitor.vue';
 import PolicyEditor from './views/PolicyEditor.vue';
@@ -96,12 +114,41 @@ type ViewKey =
   | 'recovery'
   | 'settings';
 
-const { status, error, loading, lastSeenAt, connected, refresh } = useAgent();
+const { status: agentStatus, error, loading, lastSeenAt, connected, refresh } = useAgent();
+const selectedProject = ref<DesktopProjectContext | null>(null);
+const selectionGeneration = ref(0);
+const status = computed(() =>
+  projectStatusMatches(agentStatus.value, selectedProject.value, connected.value)
+    ? agentStatus.value
+    : null,
+);
+const activeContext = computed(() =>
+  scopedProjectContext(agentStatus.value, selectedProject.value, connected.value),
+);
+const projectConnected = computed(
+  () => selectedProject.value !== null || status.value?.project_id != null,
+);
+const projectPath = ref('');
+const knownProjects = ref<DesktopProjectContext[]>([]);
+const desktopAvailable = isTauri();
+const desktopBusy = ref(false);
+const desktopError = ref<string | null>(null);
+const desktopNotice = ref<string | null>(null);
+const unlockOpen = ref(false);
+const unlockBusy = ref(false);
+const unlockError = ref<string | null>(null);
+const envPath = ref('.env');
+const importOverwrite = ref(false);
+const importConfirmation = ref('');
+const importLiteral = ref(false);
+const commandRunning = ref(false);
+const commandRunError = ref<string | null>(null);
+const commandRunNotice = ref<string | null>(null);
 useTray(status, error);
 
 const connectionLabel = computed<string>(() => {
   if (!connected.value) {
-    return 'Reconnecting…';
+    return desktopAvailable ? 'Disconnected' : 'Desktop required';
   }
   if (lastSeenAt.value === null) {
     return 'Connected';
@@ -147,41 +194,53 @@ const navGroups: ReadonlyArray<{
   label: string;
   items: ReadonlyArray<{ key: ViewKey; label: string }>;
 }> = [
-  { label: 'Start', items: [{ key: 'dashboard', label: 'Overview' }] },
   {
-    label: 'Use',
+    label: 'Workspace',
     items: [
-      { key: 'secrets', label: 'Secrets' },
-      { key: 'secret-editor', label: 'Add or rotate' },
-      { key: 'policies', label: 'Run policies' },
-      { key: 'execution', label: 'Runs' },
+      { key: 'dashboard', label: 'Project' },
+      { key: 'secrets', label: 'Variables' },
+      { key: 'policies', label: 'Commands' },
+      { key: 'execution', label: 'Activity' },
+      { key: 'team', label: 'Team' },
+      { key: 'settings', label: 'Settings' },
     ],
   },
-  {
-    label: 'Safety',
-    items: [
-      { key: 'scan', label: 'Scan' },
-      { key: 'audit', label: 'Audit' },
-      { key: 'recovery', label: 'Recovery' },
-    ],
-  },
-  {
-    label: 'Share',
-    items: [
-      { key: 'team', label: 'Invites' },
-      { key: 'devices', label: 'Devices' },
-      { key: 'profiles', label: 'Profiles' },
-    ],
-  },
-  { label: 'History', items: [{ key: 'versions', label: 'Versions' }] },
-  { label: 'Settings', items: [{ key: 'settings', label: 'Preferences' }] },
 ];
+const secondaryItems = computed<Array<{ key: ViewKey; label: string }>>(() => {
+  if (['secrets', 'secret-editor', 'versions'].includes(currentView.value))
+    return [
+      { key: 'secrets', label: 'Variables' },
+      { key: 'secret-editor', label: 'Import or add' },
+      ...(selectedSecret.value
+        ? [{ key: 'versions' as const, label: 'Selected variable history' }]
+        : []),
+    ];
+  if (['execution', 'audit', 'scan'].includes(currentView.value))
+    return [
+      { key: 'execution', label: 'Runs' },
+      { key: 'audit', label: 'Audit' },
+      { key: 'scan', label: 'Scan project' },
+    ];
+  if (['team', 'devices'].includes(currentView.value))
+    return [
+      { key: 'team', label: 'Sharing' },
+      { key: 'devices', label: 'People and devices' },
+    ];
+  if (['settings', 'profiles', 'recovery'].includes(currentView.value))
+    return [
+      { key: 'settings', label: 'Preferences' },
+      { key: 'profiles', label: 'Environments' },
+      { key: 'recovery', label: 'Backup and recovery' },
+    ];
+  return [];
+});
 
 const lockLabel = computed<string>(() => {
   if (loading.value && status.value === null && error.value === null) {
     return 'Connecting…';
   }
-  if (status.value === null) {
+  if (selectedProject.value && !status.value) return 'Unknown';
+  if (!connected.value || status.value === null) {
     return 'Unavailable';
   }
   switch (status.value.lock_state) {
@@ -202,7 +261,7 @@ const profileAlias = ref<string | null>(null);
 const projectLabel = computed<string>(() =>
   privacyLabel(
     'project',
-    status.value?.project_id,
+    selectedProject.value?.project_name ?? status.value?.project_id,
     settings.value.privacyRedactNames,
     projectAlias.value,
   ),
@@ -210,7 +269,7 @@ const projectLabel = computed<string>(() =>
 const profileLabel = computed<string>(() =>
   privacyLabel(
     'profile',
-    status.value?.profile_name,
+    selectedProject.value?.profile_name ?? status.value?.profile_name,
     settings.value.privacyRedactNames,
     profileAlias.value,
   ),
@@ -238,6 +297,26 @@ const deviceMembersError = ref<string | null>(null);
 const deviceMembersLastRefreshed = ref<string | undefined>(undefined);
 const policiesLoading = ref<boolean>(false);
 const policiesError = ref<string | null>(null);
+const policiesLastRefreshed = ref<string | undefined>();
+const completedSetupContexts = ref<Set<string>>(new Set());
+const setupContext = computed(
+  () =>
+    `${selectedProject.value?.project_id ?? status.value?.project_id ?? ''}:${selectedProject.value?.profile_name ?? status.value?.profile_name ?? ''}`,
+);
+const setupComplete = computed(() => completedSetupContexts.value.has(setupContext.value));
+watch([secrets, policies, sessions], () => {
+  if (
+    status.value &&
+    secretsLastRefreshed.value &&
+    policiesLastRefreshed.value &&
+    sessionsLastRefreshed.value &&
+    secrets.value.length &&
+    policies.value.length &&
+    sessions.value.length
+  ) {
+    completedSetupContexts.value = new Set([...completedSetupContexts.value, setupContext.value]);
+  }
+});
 const settingsLoading = ref<boolean>(false);
 const settingsError = ref<string | null>(null);
 const auditLoading = ref<boolean>(false);
@@ -250,7 +329,30 @@ const lastScanAt = ref<string | undefined>(undefined);
 const backupBusy = ref<boolean>(false);
 const backupNotice = ref<string | null>(null);
 const backupError = ref<string | null>(null);
-const auditChainOk = ref<boolean>(true);
+const backupPreviewKey = ref<string | null>(null);
+const backupPreviewMessage = ref<string | null>(null);
+const auditChainOk = ref<boolean | null>(null);
+
+function accessFor(loaded: boolean, pending: boolean, requestError: string | null) {
+  return actionAvailability({
+    projectSelected: selectedProject.value !== null,
+    connected: connected.value,
+    scoped: activeContext.value !== null,
+    unlocked: status.value?.lock_state === 'unlocked',
+    loaded,
+    loading: pending,
+    error: requestError,
+  });
+}
+const policyAccess = computed(() =>
+  accessFor(!!policiesLastRefreshed.value, policiesLoading.value, policiesError.value),
+);
+const secretAccess = computed(() =>
+  accessFor(!!secretsLastRefreshed.value, secretsLoading.value, secretsError.value),
+);
+const teamAccess = computed(() =>
+  accessFor(!!auditLastRefreshed.value, auditLoading.value, auditError.value),
+);
 
 const secretRows = computed<SecretRowMeta[]>(() =>
   secretRowsWithDeprecationWarnings(secrets.value, versions.value, policies.value, nowUnixNanos()),
@@ -258,7 +360,7 @@ const secretRows = computed<SecretRowMeta[]>(() =>
 
 const settings = ref<SettingsState>({
   privacyRedactNames: false,
-  unlockTtlSeconds: 0,
+  unlockTtlSeconds: 900,
   requireUserVerification: false,
   dangerousProfileFlag: false,
   agentVersion: status.value?.agent_version ?? 'unknown',
@@ -429,11 +531,14 @@ async function handleTrayMenuAction(action: TrayMenuAction): Promise<void> {
       currentView.value = 'dashboard';
       break;
     case 'lock-vault':
-      await lockVault();
+      {
+        const result = await lockVault();
+        if (!result.ok) desktopError.value = actionError(result.error);
+      }
       await refresh();
       break;
     case 'unlock-vault':
-      currentView.value = 'settings';
+      openUnlock();
       break;
     case 'switch-profile':
       currentView.value = 'profiles';
@@ -540,7 +645,7 @@ async function handleRevealSelectedSecret(): Promise<void> {
     revealError.value = 'Select a secret in the list before revealing.';
     return;
   }
-  const profileId = status.value?.profile_name;
+  const profileId = activeContext.value?.profile_id;
   if (profileId === null || profileId === undefined) {
     revealError.value = 'Active profile unavailable.';
     return;
@@ -580,7 +685,7 @@ async function handleCopySelectedSecret(): Promise<void> {
     copyError.value = 'Select a secret in the list before copying.';
     return;
   }
-  const profileId = status.value?.profile_name;
+  const profileId = activeContext.value?.profile_id;
   if (profileId === null || profileId === undefined) {
     copyError.value = 'Active profile unavailable.';
     return;
@@ -599,15 +704,17 @@ async function handleCopySelectedSecret(): Promise<void> {
   }
 }
 
-function triggerVerify(): void {
-  void refresh();
-  void refreshSecrets();
-  void refreshVersions();
-  void refreshRuntimeSessions();
-  void refreshDeviceMembers();
-  void refreshPolicies();
-  void refreshAuditLog();
-  void verifyAuditChain();
+async function triggerVerify(): Promise<void> {
+  await refresh();
+  await Promise.all([
+    refreshSecrets(),
+    refreshVersions(),
+    refreshRuntimeSessions(),
+    refreshDeviceMembers(),
+    refreshPolicies(),
+    refreshAuditLog(),
+  ]);
+  await verifyAuditChain();
 }
 
 function nowUnixNanos(): number {
@@ -615,47 +722,32 @@ function nowUnixNanos(): number {
 }
 
 const secretsRequest = computed<ListSecretsRequest | null>(() => {
-  const currentStatus = status.value;
-  if (currentStatus?.project_id === null || currentStatus?.project_id === undefined) {
-    return null;
-  }
-  if (currentStatus.profile_name === null || currentStatus.profile_name === undefined) {
-    return null;
-  }
+  const context = activeContext.value;
+  if (context === null) return null;
   return {
-    project_id: currentStatus.project_id,
-    profile_id: currentStatus.profile_name,
+    project_id: context.project_id,
+    profile_id: context.profile_id,
     redact_names: settings.value.privacyRedactNames,
   };
 });
 
 const versionsRequest = computed<ListVersionsRequest | null>(() => {
-  const currentStatus = status.value;
-  if (currentStatus?.project_id === null || currentStatus?.project_id === undefined) {
-    return null;
-  }
-  if (currentStatus.profile_name === null || currentStatus.profile_name === undefined) {
-    return null;
-  }
+  const context = activeContext.value;
+  if (context === null) return null;
   return {
-    project_id: currentStatus.project_id,
-    profile_id: currentStatus.profile_name,
+    project_id: context.project_id,
+    profile_id: context.profile_id,
     now_unix_nanos: nowUnixNanos(),
     redact_names: settings.value.privacyRedactNames,
   };
 });
 
 const runtimeSessionRequest = computed<ListRuntimeSessionsRequest | null>(() => {
-  const currentStatus = status.value;
-  if (currentStatus?.project_id === null || currentStatus?.project_id === undefined) {
-    return null;
-  }
-  if (currentStatus.profile_name === null || currentStatus.profile_name === undefined) {
-    return null;
-  }
+  const context = activeContext.value;
+  if (context === null) return null;
   return {
-    project_id: currentStatus.project_id,
-    profile_id: currentStatus.profile_name,
+    project_id: context.project_id,
+    profile_id: context.profile_id,
     privacy_redact_names: settings.value.privacyRedactNames,
   };
 });
@@ -683,19 +775,6 @@ const deviceMembersRequest = computed<ListDeviceMembersRequest | null>(() => {
   };
 });
 
-function secretErrorLabel(error: AgentClientError): string {
-  switch (error.kind) {
-    case 'unavailable':
-      return 'Agent unavailable.';
-    case 'protocol':
-      return 'Secret request failed.';
-    case 'rejected':
-      return error.code;
-    default:
-      return 'Secret request failed.';
-  }
-}
-
 let secretRefreshSequence = 0;
 
 async function refreshSecrets(): Promise<void> {
@@ -720,7 +799,8 @@ async function refreshSecrets(): Promise<void> {
     secretsLastRefreshed.value = new Date().toISOString();
   } else {
     secrets.value = [];
-    secretsError.value = secretErrorLabel(result.error);
+    secretsError.value = actionError(result.error);
+    secretsLastRefreshed.value = undefined;
   }
   secretsLoading.value = false;
 }
@@ -776,19 +856,6 @@ watch(versionsRequest, () => {
   void refreshVersions();
 });
 
-function sessionErrorLabel(error: AgentClientError): string {
-  switch (error.kind) {
-    case 'unavailable':
-      return 'Agent unavailable.';
-    case 'protocol':
-      return 'Session request failed.';
-    case 'rejected':
-      return error.code;
-    default:
-      return 'Session request failed.';
-  }
-}
-
 let sessionRefreshSequence = 0;
 
 async function refreshRuntimeSessions(): Promise<void> {
@@ -813,7 +880,8 @@ async function refreshRuntimeSessions(): Promise<void> {
     sessionsLastRefreshed.value = new Date().toISOString();
   } else {
     sessions.value = [];
-    sessionsError.value = sessionErrorLabel(result.error);
+    sessionsError.value = actionError(result.error);
+    sessionsLastRefreshed.value = undefined;
   }
   sessionsLoading.value = false;
 }
@@ -821,19 +889,6 @@ async function refreshRuntimeSessions(): Promise<void> {
 watch(runtimeSessionRequest, () => {
   void refreshRuntimeSessions();
 });
-
-function policyErrorLabel(error: AgentClientError): string {
-  switch (error.kind) {
-    case 'unavailable':
-      return 'Agent unavailable.';
-    case 'protocol':
-      return 'Policy request failed.';
-    case 'rejected':
-      return error.code;
-    default:
-      return 'Policy request failed.';
-  }
-}
 
 let policyRefreshSequence = 0;
 
@@ -844,6 +899,7 @@ async function refreshPolicies(): Promise<void> {
     policies.value = [];
     policiesError.value = null;
     policiesLoading.value = false;
+    policiesLastRefreshed.value = undefined;
     return;
   }
 
@@ -855,9 +911,11 @@ async function refreshPolicies(): Promise<void> {
   }
   if (result.ok) {
     policies.value = result.value.rows.map(commandPolicyRow);
+    policiesLastRefreshed.value = new Date().toISOString();
   } else {
     policies.value = [];
-    policiesError.value = policyErrorLabel(result.error);
+    policiesError.value = actionError(result.error);
+    policiesLastRefreshed.value = undefined;
   }
   policiesLoading.value = false;
 }
@@ -887,32 +945,55 @@ watch(
   { immediate: true },
 );
 
+watch(
+  selectedProject,
+  () => {
+    selectionGeneration.value++;
+    profileSwitchInProgress.value = false;
+    profileSwitchError.value = null;
+  },
+  { flush: 'sync' },
+);
+
 async function handleProfileSwitch(payload: {
   profileName: string;
   confirmation: string | undefined;
   dangerous: boolean;
 }): Promise<void> {
-  const projectId = status.value?.project_id;
-  if (projectId === null || projectId === undefined) {
-    profileSwitchError.value = 'Active project unavailable.';
+  const captured = captureSelection(selectedProject.value, selectionGeneration.value);
+  if (!captured || !activeContext.value || profileSwitchInProgress.value) {
+    profileSwitchError.value =
+      'Connect and unlock the selected project before switching environments.';
     return;
   }
   profileSwitchInProgress.value = true;
   profileSwitchError.value = null;
-  const result = await setActiveProfile({
-    project_id: projectId,
-    profile_name: payload.profileName,
-    confirmation: payload.confirmation,
-    privacy_redact_names: settings.value.privacyRedactNames,
-  });
-  profileSwitchInProgress.value = false;
-  if (!result.ok) {
-    profileSwitchError.value = profileSwitchErrorLabel(result.error);
-    return;
-  }
-  profileSwitchState.value = rememberTarget(profileSwitchState.value, payload.profileName);
-  profileSwitchLastAt.value = new Date().toISOString();
-  await refresh();
+  await withCurrentSelection(
+    captured,
+    () => captureSelection(selectedProject.value, selectionGeneration.value),
+    () =>
+      setActiveProfile({
+        project_id: captured.projectId,
+        profile_name: payload.profileName,
+        confirmation: payload.confirmation,
+        privacy_redact_names: settings.value.privacyRedactNames,
+      }),
+    async (result) => {
+      profileSwitchInProgress.value = false;
+      if (!result.ok) {
+        profileSwitchError.value = profileSwitchErrorLabel(result.error);
+        return;
+      }
+      selectedProject.value = {
+        ...selectedProject.value!,
+        profile_id: result.value.profile_id,
+        profile_name: result.value.profile_name,
+      };
+      profileSwitchState.value = rememberTarget(profileSwitchState.value, payload.profileName);
+      profileSwitchLastAt.value = new Date().toISOString();
+      await refresh();
+    },
+  );
 }
 
 function profileSwitchErrorLabel(err: AgentClientError): string {
@@ -934,18 +1015,21 @@ const policyFormSubmitting = ref<boolean>(false);
 const policyFormError = ref<string | null>(null);
 
 function openPolicyCreate(): void {
+  if (!policyAccess.value.enabled) return;
   policyFormMode.value = 'create';
   policyFormRow.value = null;
   policyFormError.value = null;
 }
 
 function openPolicyEdit(row: CommandPolicyRow): void {
+  if (!policyAccess.value.enabled) return;
   policyFormMode.value = 'edit';
   policyFormRow.value = row;
   policyFormError.value = null;
 }
 
 function openPolicyDelete(row: CommandPolicyRow): void {
+  if (!policyAccess.value.enabled) return;
   policyFormMode.value = 'delete';
   policyFormRow.value = row;
   policyFormError.value = null;
@@ -957,53 +1041,29 @@ function dismissPolicyForm(): void {
   policyFormError.value = null;
 }
 
-function snapshotsFromCurrentRows(): CommandPolicySnapshotWire[] {
-  const projectId = status.value?.project_id ?? '';
-  return policies.value.map<CommandPolicySnapshotWire>((row) => ({
-    project_id: projectId,
-    name: row.name,
-    command_kind: row.commandKind,
-    command_preview: row.commandPreview,
-    required_secrets: row.requiredSecrets,
-    optional_secrets: row.optionalSecrets,
-    allowed_secrets: row.allowedSecrets,
-    confirm: row.confirm,
-    require_user_verification: row.requireUserVerification,
-    require_agent: false,
-    allow_remote_docker: row.allowRemoteDocker,
-    ttl_seconds: row.ttlSeconds,
-    env_mode: row.envMode,
-    override_mode: row.overrideMode,
-    updated_at_unix_nanos: Date.parse(row.updatedAt) * 1_000_000,
-  }));
-}
-
 async function submitPolicyForm(payload: {
   mode: PolicyFormMode;
   snapshot: CommandPolicySnapshotWire;
   originalName: string;
+  confirmation?: string;
 }): Promise<void> {
-  const projectId = status.value?.project_id;
-  if (projectId === null || projectId === undefined) {
+  const projectId = activeContext.value?.project_id;
+  if (!policyAccess.value.enabled || projectId === undefined) {
     policyFormError.value = 'Active project unavailable.';
     return;
   }
   policyFormSubmitting.value = true;
   policyFormError.value = null;
-  const next = applyPolicyMutation(
-    snapshotsFromCurrentRows(),
-    payload.mode,
-    payload.snapshot,
-    payload.originalName,
-  );
-  const result = await registerCommandPolicies({
+  const result = await desktopSavePolicy({
     project_id: projectId,
-    policies: next,
-    audit_profile_id: status.value?.profile_name ?? undefined,
+    mode: payload.mode,
+    original_name: payload.originalName,
+    policy: payload.snapshot,
+    confirmation: payload.confirmation,
   });
   policyFormSubmitting.value = false;
   if (!result.ok) {
-    policyFormError.value = policyErrorLabel(result.error);
+    policyFormError.value = actionError(result.error);
     return;
   }
   dismissPolicyForm();
@@ -1063,26 +1123,13 @@ const auditRequest = computed<ListAuditRequest | null>(() => {
   }
   return {
     project_id: projectId,
-    profile_id: null,
+    profile_id: activeContext.value?.profile_id ?? null,
     action: null,
     status: null,
     limit: 100,
     redact_names: settings.value.privacyRedactNames,
   };
 });
-
-function auditErrorLabel(error: AgentClientError): string {
-  switch (error.kind) {
-    case 'unavailable':
-      return 'Agent unavailable.';
-    case 'protocol':
-      return 'Audit request failed.';
-    case 'rejected':
-      return error.code;
-    default:
-      return 'Audit request failed.';
-  }
-}
 
 function auditStatusLabel(status: string): AuditLogRow['status'] {
   switch (status.toUpperCase()) {
@@ -1098,13 +1145,6 @@ function auditStatusLabel(status: string): AuditLogRow['status'] {
 
 function auditTimestamp(timestampUnixNanos: number): string {
   return new Date(Math.trunc(timestampUnixNanos / 1_000_000)).toISOString();
-}
-
-function auditRowHmacOk(row: AuditWireRow, chainStatus: AuditChainStatus): boolean {
-  if (chainStatus.hmac_ok !== false || chainStatus.first_break_sequence === null) {
-    return true;
-  }
-  return row.sequence < chainStatus.first_break_sequence;
 }
 
 function auditLogRow(row: AuditWireRow, chainStatus: AuditChainStatus): AuditLogRow {
@@ -1125,7 +1165,7 @@ function auditLogRow(row: AuditWireRow, chainStatus: AuditChainStatus): AuditLog
     secretName: row.secret_name ?? undefined,
     metadataJson: JSON.stringify(metadata),
     denialReason: statusLabel === 'DENIED' ? row.status : undefined,
-    hmacOk: auditRowHmacOk(row, chainStatus),
+    hmacOk: chainStatus.locked ? null : auditRowVerified(chainStatus, row.sequence),
   };
 }
 
@@ -1136,7 +1176,10 @@ async function refreshAuditLog(): Promise<void> {
   const sequence = (auditRefreshSequence += 1);
   if (request === null) {
     auditRows.value = [];
-    auditChainOk.value = true;
+    rawAuditRows.value = [];
+    auditLoading.value = false;
+    auditLastRefreshed.value = undefined;
+    auditChainOk.value = null;
     return;
   }
 
@@ -1147,7 +1190,10 @@ async function refreshAuditLog(): Promise<void> {
     return;
   }
   if (result.ok) {
-    const hmacOk = result.value.chain_status.hmac_ok !== false;
+    const hmacOk =
+      result.value.chain_status.locked || status.value?.lock_state !== 'unlocked'
+        ? null
+        : result.value.chain_status.hmac_ok;
     auditRows.value = result.value.rows.map((row) => auditLogRow(row, result.value.chain_status));
     rawAuditRows.value = [...result.value.rows];
     auditChainOk.value = hmacOk;
@@ -1155,8 +1201,9 @@ async function refreshAuditLog(): Promise<void> {
   } else {
     auditRows.value = [];
     rawAuditRows.value = [];
-    auditError.value = auditErrorLabel(result.error);
-    auditChainOk.value = true;
+    auditError.value = actionError(result.error);
+    auditLastRefreshed.value = undefined;
+    auditChainOk.value = null;
   }
   auditLoading.value = false;
 }
@@ -1165,50 +1212,50 @@ const recentActivityRows = computed(() => {
   const okCount = auditRows.value.filter((row) => row.status === 'OK').length;
   const deniedCount = auditRows.value.filter((row) => row.status === 'DENIED').length;
   const failedCount = auditRows.value.filter(
-    (row) => row.status === 'FAILED' || !row.hmacOk,
+    (row) => row.status === 'FAILED' || row.hmacOk === false,
   ).length;
   return [
-    { label: 'OK', value: okCount.toString(), tone: 'ok' },
-    { label: 'Denied', value: deniedCount.toString(), tone: deniedCount === 0 ? 'ok' : 'warn' },
-    { label: 'Failed', value: failedCount.toString(), tone: failedCount === 0 ? 'ok' : 'warn' },
+    {
+      label: 'OK',
+      value: auditLastRefreshed.value ? okCount.toString() : 'Unknown',
+      tone: 'neutral',
+    },
+    {
+      label: 'Denied',
+      value: auditLastRefreshed.value ? deniedCount.toString() : 'Unknown',
+      tone: deniedCount === 0 ? 'neutral' : 'warn',
+    },
+    {
+      label: 'Failed',
+      value: auditLastRefreshed.value ? failedCount.toString() : 'Unknown',
+      tone: failedCount === 0 ? 'neutral' : 'warn',
+    },
     {
       label: 'Audit',
-      value: auditChainOk.value ? 'safe' : 'check',
-      tone: auditChainOk.value ? 'ok' : 'warn',
+      value: auditHealth(auditChainOk.value).label,
+      tone: auditHealth(auditChainOk.value).tone,
     },
   ];
 });
 
 async function verifyAuditChain(): Promise<void> {
   const request = auditRequest.value;
-  if (request === null) {
-    auditRows.value = [];
-    auditChainOk.value = true;
+  auditChainOk.value = null;
+  if (request === null) return;
+  const result = await verifyAudit({ project_id: request.project_id });
+  if (auditRequest.value?.project_id !== request.project_id) return;
+  if (!result.ok) {
+    auditChainOk.value = null;
+    auditError.value = actionError(result.error);
     return;
   }
-  const result = await verifyAudit({ project_id: request.project_id });
-  if (result.ok) {
-    auditChainOk.value = result.value.hmac_ok !== false;
-  }
-  await refreshAuditLog();
+  auditChainOk.value = result.value.locked ? null : result.value.hmac_ok;
+  auditLastRefreshed.value = new Date().toISOString();
 }
 
 watch(auditRequest, () => {
   void refreshAuditLog();
 });
-
-function scanErrorLabel(error: AgentClientError): string {
-  switch (error.kind) {
-    case 'unavailable':
-      return 'Agent unavailable.';
-    case 'protocol':
-      return 'Scan request failed.';
-    case 'rejected':
-      return error.code;
-    default:
-      return 'Scan request failed.';
-  }
-}
 
 function normalizeSeverity(severity: string): ScanFindingRow['severity'] {
   switch (severity.toLowerCase()) {
@@ -1242,7 +1289,20 @@ function scanFindingRow(finding: ScanFinding, index: number): ScanFindingRow {
 async function triggerRescan(): Promise<void> {
   scanning.value = true;
   scanError.value = null;
-  const result = await scanKnownValues({ paths: [], require_known: false });
+  const context = status.value?.project_id;
+  if (!context) {
+    scanError.value = 'Connect and unlock this project, then retry the scan.';
+    scanning.value = false;
+    return;
+  }
+  const result = await scanKnownValues({
+    paths: selectedProject.value ? [selectedProject.value.root] : [],
+    require_known: false,
+  });
+  if (status.value?.project_id !== context) {
+    scanning.value = false;
+    return;
+  }
   if (result.ok) {
     findings.value = result.value.findings.map(scanFindingRow);
     scanLocked.value = result.value.locked;
@@ -1250,7 +1310,8 @@ async function triggerRescan(): Promise<void> {
   } else {
     findings.value = [];
     scanLocked.value = false;
-    scanError.value = scanErrorLabel(result.error);
+    scanError.value = actionError(result.error);
+    lastScanAt.value = undefined;
   }
   scanning.value = false;
 }
@@ -1281,15 +1342,30 @@ async function triggerBackupAction(action: BundleAction): Promise<void> {
 
   switch (action.kind) {
     case 'export': {
+      if (
+        !action.request.previewOnly &&
+        backupPreviewKey.value !== exportSelectionKey(action.request)
+      ) {
+        backupError.value = 'Preview the current export scope before exporting.';
+        backupBusy.value = false;
+        return;
+      }
       const result = await exportBundle({
         project_id: projectId,
-        profile_id: status.value?.profile_name ?? null,
+        profile_id: activeContext.value?.profile_id ?? null,
         recipient_descriptor: action.request.recipientDescriptor,
         scope: action.request.scope,
         include_audit: action.request.includeAudit,
         output_path: action.request.outputPath || null,
+        include_personal: action.request.includePersonal,
+        include_history: action.request.includeHistory,
+        preview_only: action.request.previewOnly,
       });
       if (result.ok) {
+        if (action.request.previewOnly && result.value.status === 'preview') {
+          backupPreviewKey.value = exportSelectionKey(action.request);
+          backupPreviewMessage.value = result.value.message;
+        }
         backupNotice.value = `${result.value.status}: ${result.value.message}`;
         await refresh();
       } else {
@@ -1372,7 +1448,165 @@ async function handleEditorReveal(row: SecretRowMeta): Promise<void> {
   await handleRevealSelectedSecret();
 }
 
+async function refreshProjectConnections(): Promise<void> {
+  const generation = selectionGeneration.value;
+  const result = await desktopListProjects();
+  if (result.ok) {
+    knownProjects.value = result.value;
+    if (generation !== selectionGeneration.value) return;
+    const initial = initialProjectSelection(result.value, selectedProject.value);
+    if (!selectedProject.value && initial) {
+      selectedProject.value = initial;
+      projectPath.value = initial.root;
+      await refresh();
+    }
+  } else if (generation === selectionGeneration.value && desktopAvailable)
+    desktopError.value = actionError(result.error);
+}
+
+async function connectProject(initialize = false, path = projectPath.value): Promise<void> {
+  if (desktopBusy.value || !path.trim()) return;
+  selectionGeneration.value++;
+  profileSwitchInProgress.value = false;
+  profileSwitchError.value = null;
+  desktopBusy.value = true;
+  desktopError.value = null;
+  desktopNotice.value = null;
+  const result = initialize
+    ? await desktopInitializeProject({ path: path.trim() })
+    : await desktopOpenProject({ path: path.trim() });
+  if (result.ok) {
+    selectedProject.value = result.value;
+    selectedSecret.value = null;
+    unlockOpen.value = false;
+    projectPath.value = result.value.root;
+    desktopNotice.value = `Connected to ${result.value.project_name}.`;
+    await refreshProjectConnections();
+    await refresh();
+  } else desktopError.value = actionError(result.error);
+  desktopBusy.value = false;
+}
+async function startAgent(): Promise<void> {
+  if (desktopBusy.value) return;
+  desktopBusy.value = true;
+  desktopError.value = null;
+  const result = await desktopStartAgent({
+    project_id: selectedProject.value?.project_id ?? status.value?.project_id ?? undefined,
+  });
+  if (!result.ok) desktopError.value = actionError(result.error);
+  else {
+    desktopNotice.value = 'Agent started. Refreshing connection…';
+    await refresh();
+  }
+  desktopBusy.value = false;
+}
+function openUnlock(): void {
+  unlockError.value = null;
+  if (!projectConnected.value) {
+    currentView.value = 'dashboard';
+    desktopError.value = 'Connect a project before unlocking.';
+    return;
+  }
+  unlockOpen.value = true;
+}
+async function handleUnlock(source: UnlockRequest['source']): Promise<void> {
+  const projectId = selectedProject.value?.project_id ?? status.value?.project_id;
+  if (!projectId || unlockBusy.value) return;
+  unlockBusy.value = true;
+  unlockError.value = null;
+  const profileId = selectedProject.value?.profile_id;
+  const result = await unlockVault({
+    project_id: projectId,
+    ttl_seconds: unlockTtl(settings.value.unlockTtlSeconds),
+    source,
+    ...(profileId ? { audit: { profile_id: profileId } } : {}),
+  });
+  if (source.kind === 'passphrase') source.passphrase = '';
+  if (result.ok) {
+    unlockOpen.value = false;
+    await refresh();
+    await triggerVerify();
+  } else unlockError.value = actionError(result.error);
+  unlockBusy.value = false;
+}
+async function importEnv(): Promise<void> {
+  const projectId = selectedProject.value?.project_id ?? status.value?.project_id;
+  if (!secretAccess.value.enabled || !projectId || desktopBusy.value || !envPath.value.trim())
+    return;
+  desktopBusy.value = true;
+  desktopError.value = null;
+  desktopNotice.value = null;
+  const result = await desktopImportEnv({
+    project_id: projectId,
+    path: envPath.value.trim(),
+    overwrite: importOverwrite.value,
+    literal: importLiteral.value,
+    confirmation: importConfirmation.value || undefined,
+  });
+  if (!result.ok) desktopError.value = actionError(result.error);
+  else {
+    desktopNotice.value = result.value.summary;
+    importConfirmation.value = '';
+    await refreshSecrets();
+  }
+  desktopBusy.value = false;
+}
+async function runCommand(row: CommandPolicyRow): Promise<void> {
+  const projectId = activeContext.value?.project_id;
+  if (!policyAccess.value.enabled || !projectId || commandRunning.value) return;
+  commandRunning.value = true;
+  commandRunError.value = null;
+  commandRunNotice.value = null;
+  const result = await desktopRunPolicy({ project_id: projectId, policy_name: row.name });
+  if (!result.ok) commandRunError.value = actionError(result.error);
+  else if (!result.value.launched)
+    commandRunError.value =
+      'The terminal did not launch. Check the desktop terminal configuration and retry.';
+  else {
+    commandRunNotice.value = 'Opened in your terminal. Complete any approval there.';
+    await refreshRuntimeSessions();
+  }
+  commandRunning.value = false;
+}
+function handleNextAction(target: StartHereTarget): void {
+  if (target === 'connect') {
+    document.getElementById('project-path')?.focus();
+    return;
+  }
+  if (target === 'start-agent') {
+    void startAgent();
+    return;
+  }
+  if (target === 'unlock') {
+    openUnlock();
+    return;
+  }
+  if (target === 'refresh') {
+    triggerVerify();
+    return;
+  }
+  currentView.value = target;
+  if (target === 'policies' && policiesLastRefreshed.value && policies.value.length === 0)
+    openPolicyCreate();
+}
+watch(
+  () =>
+    `${status.value?.project_id ?? ''}:${status.value?.profile_name ?? ''}:${status.value?.lock_state ?? ''}`,
+  () => {
+    findings.value = [];
+    lastScanAt.value = undefined;
+    scanError.value = null;
+    scanLocked.value = false;
+    auditChainOk.value = null;
+    auditLastRefreshed.value = undefined;
+    auditError.value = null;
+    backupPreviewKey.value = null;
+    backupPreviewMessage.value = null;
+  },
+);
+
 onMounted(() => {
+  void refreshProjectConnections();
   void listen<TrayMenuAction>('tray-menu-action', (event) => {
     void handleTrayMenuAction(event.payload);
   })
@@ -1398,7 +1632,7 @@ onUnmounted(() => {
           <dd>{{ lockLabel }}</dd>
           <dt>Project</dt>
           <dd>{{ projectLabel }}</dd>
-          <dt>Profile</dt>
+          <dt>Environment</dt>
           <dd>{{ profileLabel }}</dd>
           <dt>Agent</dt>
           <dd>
@@ -1453,13 +1687,150 @@ onUnmounted(() => {
 
     <main class="shell__main">
       <AgentUnavailableBanner v-if="error" :error="error" />
+      <p v-if="!desktopAvailable" class="shell__notice">
+        Browser preview is disconnected. Open the Locket desktop app to connect projects, unlock,
+        import values, and run commands.
+      </p>
+      <div class="shell__toolbar" aria-label="Vault actions">
+        <button
+          v-if="!connected"
+          type="button"
+          :disabled="!desktopAvailable || desktopBusy"
+          @click="startAgent"
+        >
+          {{ desktopBusy ? 'Starting…' : 'Start agent' }}
+        </button>
+        <button
+          v-if="lockLabel !== 'Unlocked' && projectConnected"
+          type="button"
+          :disabled="!desktopAvailable || unlockBusy"
+          @click="openUnlock"
+        >
+          Unlock
+        </button>
+      </div>
+      <nav v-if="secondaryItems.length" class="shell__toolbar" aria-label="Section navigation">
+        <button
+          v-for="item in secondaryItems"
+          :key="item.key"
+          type="button"
+          :aria-current="currentView === item.key ? 'page' : undefined"
+          @click="selectView(item.key)"
+        >
+          {{ item.label }}
+        </button>
+      </nav>
+      <section
+        v-if="currentView === 'dashboard'"
+        class="shell__panel"
+        aria-labelledby="connect-heading"
+      >
+        <h2 id="connect-heading">Project connection</h2>
+        <p>Open a folder with locket.toml, or initialize a project in an existing folder.</p>
+        <form class="shell__toolbar" @submit.prevent="connectProject(false)">
+          <label
+            >Project folder
+            <input
+              id="project-path"
+              v-model="projectPath"
+              type="text"
+              placeholder="/path/to/project"
+              autocomplete="off"
+              :disabled="desktopBusy || !desktopAvailable"
+          /></label>
+          <button type="submit" :disabled="desktopBusy || !desktopAvailable || !projectPath.trim()">
+            Open project
+          </button>
+          <button
+            type="button"
+            :disabled="desktopBusy || !desktopAvailable || !projectPath.trim()"
+            @click="connectProject(true)"
+          >
+            Initialize project
+          </button>
+        </form>
+        <div v-if="knownProjects.length" class="shell__toolbar">
+          <span>Known projects</span
+          ><button
+            v-for="project in knownProjects"
+            :key="project.root"
+            type="button"
+            :disabled="desktopBusy"
+            @click="connectProject(false, project.root)"
+          >
+            {{ settings.privacyRedactNames ? 'Project' : project.project_name }}
+          </button>
+        </div>
+      </section>
+      <section
+        v-if="currentView === 'secret-editor'"
+        class="shell__panel"
+        aria-labelledby="import-heading"
+      >
+        <h2 id="import-heading">Import an env file</h2>
+        <p v-if="secretAccess.guidance" role="status">{{ secretAccess.guidance }}</p>
+        <form @submit.prevent="importEnv">
+          <label
+            >File path
+            <input v-model="envPath" type="text" autocomplete="off" :disabled="desktopBusy"
+          /></label>
+          <p>Paths are relative to the connected project. The original file remains in place.</p>
+          <details>
+            <summary>Import options</summary>
+            <label
+              ><input v-model="importOverwrite" type="checkbox" /> Replace existing values</label
+            ><label
+              ><input v-model="importLiteral" type="checkbox" /> Keep expansion syntax as literal
+              text</label
+            >
+          </details>
+          <label v-if="importOverwrite && settings.dangerousProfileFlag">
+            Type {{ activeContext?.profile_name }} to confirm replacement in this environment
+            <input
+              v-model="importConfirmation"
+              type="text"
+              autocomplete="off"
+              :disabled="desktopBusy"
+            />
+          </label>
+          <button
+            type="submit"
+            :disabled="
+              !desktopAvailable ||
+              desktopBusy ||
+              !secretAccess.enabled ||
+              !envPath.trim() ||
+              (importOverwrite &&
+                settings.dangerousProfileFlag &&
+                importConfirmation !== activeContext?.profile_name)
+            "
+          >
+            {{ desktopBusy ? 'Importing…' : 'Import variables' }}
+          </button>
+        </form>
+      </section>
+      <p v-if="desktopError" role="alert" class="shell__notice">{{ desktopError }}</p>
+      <p v-if="desktopNotice" role="status" class="shell__notice">{{ desktopNotice }}</p>
 
       <ProjectDashboard
         v-if="currentView === 'dashboard'"
+        :privacy-mode="settings.privacyRedactNames"
+        :project-id="activeContext?.project_id"
+        :profile-id="activeContext?.profile_id"
         :lock-label="lockLabel"
         :project-label="projectLabel"
         :profile-label="profileLabel"
         :loading="loading"
+        :project-connected="projectConnected"
+        :setup-complete="setupComplete"
+        :connected="connected"
+        :secrets-loaded="!!secretsLastRefreshed && !secretsError"
+        :policies-loaded="!!policiesLastRefreshed && !policiesError"
+        :audit-error="auditError"
+        :audit-last-refreshed="auditLastRefreshed"
+        :scan-locked="scanLocked"
+        :scan-error="scanError"
+        :sessions-last-refreshed="sessionsLastRefreshed"
         :secrets="secrets"
         :versions="versions"
         :sessions="sessions"
@@ -1469,6 +1840,7 @@ onUnmounted(() => {
         :settings="settings"
         :audit-chain-ok="auditChainOk"
         :last-scan-at="lastScanAt"
+        @action="handleNextAction"
         @navigate="selectView"
         @refresh="triggerVerify"
       />
@@ -1480,6 +1852,8 @@ onUnmounted(() => {
         :loading="secretsLoading"
         :error-message="secretsError"
         :last-refreshed-at="secretsLastRefreshed"
+        :metadata-loaded="secretAccess.enabled"
+        :action-guidance="secretAccess.guidance"
         @select="selectSecret"
         @refresh="refreshSecrets"
       />
@@ -1491,8 +1865,10 @@ onUnmounted(() => {
         :loading="secretsLoading"
         :error-message="secretsError"
         :last-refreshed-at="secretsLastRefreshed"
-        :project-id="status?.project_id"
-        :profile-id="status?.profile_name"
+        :metadata-loaded="secretAccess.enabled"
+        :action-guidance="secretAccess.guidance"
+        :project-id="activeContext?.project_id"
+        :profile-id="activeContext?.profile_id"
         :on-set-secret="handleSetSecret"
         :on-rotate-secret="handleRotateSecret"
         @refresh="refreshSecrets"
@@ -1501,8 +1877,8 @@ onUnmounted(() => {
 
       <SecretVersionHistory
         v-else-if="currentView === 'versions'"
-        :rows="versions"
-        secret-label="All secrets"
+        :rows="versions.filter((row) => row.secretName === selectedSecret?.name)"
+        :secret-label="secretLabel(selectedSecret, settings.privacyRedactNames)"
         :loading="versionsLoading"
         :error-message="versionsError"
         :last-refreshed-at="versionsLastRefreshed"
@@ -1534,6 +1910,9 @@ onUnmounted(() => {
         :rows="auditRows"
         :privacy-mode="settings.privacyRedactNames"
         :chain-ok="auditChainOk"
+        :loading="auditLoading"
+        :error-message="auditError"
+        :last-checked-at="auditLastRefreshed"
         @verify="triggerVerify"
       />
 
@@ -1549,10 +1928,19 @@ onUnmounted(() => {
 
       <PolicyEditor
         v-else-if="currentView === 'policies'"
+        :project-id="activeContext?.project_id"
+        :profile-id="activeContext?.profile_id"
         :rows="policies"
         :privacy-mode="settings.privacyRedactNames"
         :loading="policiesLoading || loading"
         :error-message="policiesError"
+        :actions-enabled="policyAccess.enabled"
+        :metadata-loaded="policyAccess.enabled"
+        :action-guidance="policyAccess.guidance"
+        :running="commandRunning"
+        :run-error="commandRunError"
+        :run-notice="commandRunNotice"
+        @run="runCommand"
         @refresh="refreshPolicies"
         @create="openPolicyCreate"
         @edit="openPolicyEdit"
@@ -1571,17 +1959,26 @@ onUnmounted(() => {
 
       <TeamInviteView
         v-else-if="currentView === 'team'"
+        :project-id="activeContext?.project_id"
+        :privacy-mode="settings.privacyRedactNames"
         :audit-rows="rawAuditRows"
         :dangerous-profiles="settings.dangerousProfileFlag ? (status?.profile_name ?? '') : ''"
         :require-accept-user-verification="settings.requireUserVerification"
         :loading="auditLoading"
         :error-message="auditError"
         :last-refreshed-at="auditLastRefreshed"
+        :metadata-loaded="teamAccess.enabled"
+        :action-guidance="teamAccess.guidance"
         @refresh="refreshAuditLog"
       />
 
       <template v-else-if="currentView === 'recovery'">
-        <BackupRecovery @action="triggerBackupAction" />
+        <BackupRecovery
+          :busy="backupBusy"
+          :preview-key="backupPreviewKey"
+          :preview-message="backupPreviewMessage"
+          @action="triggerBackupAction"
+        />
         <p v-if="backupBusy" class="shell__notice">Backup action running…</p>
         <p v-if="backupNotice" class="shell__notice">{{ backupNotice }}</p>
         <p v-if="backupError" role="alert" class="shell__notice">{{ backupError }}</p>
@@ -1600,8 +1997,16 @@ onUnmounted(() => {
     </main>
 
     <RevealModal ref="revealModal" />
+    <UnlockModal
+      v-if="unlockOpen"
+      :project-label="projectLabel"
+      :busy="unlockBusy"
+      :error-message="unlockError"
+      @submit="handleUnlock"
+      @dismiss="unlockOpen = false"
+    />
     <PolicyEditorForm
-      v-if="policyFormMode !== null && status?.project_id"
+      v-if="policyFormMode !== null && policyAccess.enabled"
       :mode="policyFormMode"
       :row="policyFormRow"
       :project-id="status?.project_id ?? ''"
@@ -1817,6 +2222,64 @@ html,
   overflow: auto;
 }
 
+.shell__toolbar {
+  display: flex;
+  align-items: end;
+  gap: 0.65rem;
+  flex-wrap: wrap;
+}
+.shell__panel {
+  background: #161a22;
+  border: 1px solid #303744;
+  border-radius: 0.5rem;
+  padding: 1.1rem;
+}
+.shell__panel h2 {
+  font-size: 1rem;
+  margin-top: 0;
+}
+.shell__panel p {
+  color: #aeb7c6;
+  font-size: 0.9rem;
+}
+.shell__panel label {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin: 0.4rem 0.7rem 0.4rem 0;
+}
+.shell__panel input[type='text'] {
+  min-width: min(25rem, 60vw);
+}
+.shell__main input[type='text'],
+.shell__toolbar button,
+.shell__panel button {
+  background: #10141c;
+  color: #e6e8ec;
+  border: 1px solid #465064;
+  border-radius: 0.35rem;
+  padding: 0.55rem 0.75rem;
+  font: inherit;
+}
+.shell__main button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.shell__toolbar button[aria-current='page'] {
+  border-color: #f8d77a;
+  color: #f8d77a;
+}
+.shell__toolbar:empty {
+  display: none;
+}
+@media (max-width: 760px) {
+  .shell {
+    grid-template-columns: 160px minmax(0, 1fr);
+  }
+  .shell__main {
+    padding: 1rem;
+  }
+}
 .shell__notice {
   margin: 0;
   padding: 0.5rem 0.75rem;

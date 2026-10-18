@@ -42,7 +42,7 @@ impl Store {
         fingerprint: &SecretFingerprintRecord,
         audit: Option<AuditContext<'_>>,
     ) -> Result<(), StoreError> {
-        let transaction = self.connection.transaction()?;
+        let transaction = self.connection.savepoint()?;
         transaction.execute(
             "INSERT INTO secrets(
                id, project_id, profile_id, name, source, origin, required,
@@ -226,7 +226,7 @@ impl Store {
         deprecation: VersionDeprecation,
         audit: Option<AuditContext<'_>>,
     ) -> Result<(), StoreError> {
-        let transaction = self.connection.transaction()?;
+        let transaction = self.connection.savepoint()?;
         transaction.execute(
             "UPDATE secret_versions
              SET state = 'deprecated', deprecated_at = ?3, grace_until = ?4
@@ -310,7 +310,7 @@ impl Store {
         fingerprint: &SecretFingerprintRecord,
         audit: Option<AuditContext<'_>>,
     ) -> Result<(), StoreError> {
-        let transaction = self.connection.transaction()?;
+        let transaction = self.connection.savepoint()?;
         match target {
             SecretCopyTarget::Create(secret) => {
                 transaction.execute(
@@ -453,7 +453,7 @@ impl Store {
         purged_at: i64,
         audit: Option<AuditContext<'_>>,
     ) -> Result<bool, StoreError> {
-        let transaction = self.connection.transaction()?;
+        let transaction = self.connection.savepoint()?;
         let mut changed_any = false;
         for version in versions {
             let changed = transaction.execute(

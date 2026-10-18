@@ -776,7 +776,7 @@ mod tests {
         // We can't easily allocate 256MiB+; instead, validate the cap constant is enforced
         // by checking serialize succeeds on small payload (smoke).
         let bytes = container.serialize().unwrap();
-        assert!(!bytes.is_empty());
+        assert_ne!(bytes.len(), 0);
     }
 
     #[test]
@@ -937,7 +937,7 @@ mod tests {
             BundleContainer::new(sample_manifest(), Vec::new()).expect("valid container");
         let bytes = container.serialize().unwrap();
         let parsed = BundleContainer::deserialize(&bytes).unwrap();
-        assert!(parsed.encrypted_payload.is_empty());
+        assert_eq!(parsed.encrypted_payload.len(), 0);
     }
 
     #[test]
@@ -946,7 +946,7 @@ mod tests {
         let recipient_keys = [public_key_bytes(&id.to_public())];
         let encrypted = encrypt_bundle_payload_for_age_recipients(b"", &recipient_keys).unwrap();
         let decrypted = decrypt_bundle_payload_with_age_identity(&encrypted, &id).unwrap();
-        assert!(decrypted.is_empty());
+        assert_eq!(decrypted.len(), 0);
     }
 
     #[test]
@@ -955,7 +955,7 @@ mod tests {
         let cloned = e.clone();
         assert_eq!(e, cloned);
         let display = e.to_string();
-        assert!(!display.is_empty());
+        assert_ne!(display, "");
     }
 
     #[test]

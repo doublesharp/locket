@@ -733,13 +733,13 @@ mod tests {
     fn malformed_fingerprint_does_not_panic() {
         // Non-hex characters short-circuit but never panic.
         let result = safety_words_from_fingerprint_hex("zz");
-        assert!(result.is_empty());
+        assert_eq!(result.len(), 0);
         let result = safety_words_from_fingerprint_hex("");
-        assert!(result.is_empty());
+        assert_eq!(result.len(), 0);
         // Odd length + garbage tail.
         let result = safety_words_from_fingerprint_hex("00");
         // Fewer than 2 bytes decoded -> no full window.
-        assert!(result.is_empty());
+        assert_eq!(result.len(), 0);
     }
 
     #[test]

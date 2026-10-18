@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
 
+import { exportSelectionKey } from '../backup/actions';
 import type {
   BundleAction,
   ExportDraft,
@@ -10,6 +11,11 @@ import type {
 } from '../backup/actions';
 
 defineOptions({ name: 'BackupRecovery' });
+const props = defineProps<{
+  busy?: boolean;
+  previewKey?: string | null;
+  previewMessage?: string | null;
+}>();
 
 const emit = defineEmits<{
   (e: 'action', action: BundleAction): void;
@@ -19,6 +25,9 @@ const exportDraft = ref<ExportDraft>({
   recipientDescriptor: '',
   scope: 'active-profile',
   includeAudit: false,
+  includePersonal: false,
+  includeHistory: false,
+  previewOnly: false,
   outputPath: '',
 });
 
@@ -44,11 +53,16 @@ const canImport = computed<boolean>(() => importDraft.value.bundlePath.trim().le
 const canVerify = computed<boolean>(() => verifyDraft.value.bundlePath.trim().length > 0);
 const canRotate = computed<boolean>(() => rotateDraft.value.acknowledgedOneTimeDisplay);
 
-function exportAction(): void {
+const previewMatches = computed(
+  () => props.previewKey === exportSelectionKey(exportDraft.value) && !!props.previewMessage,
+);
+
+function exportAction(previewOnly = false): void {
+  if (props.busy || (!previewOnly && !previewMatches.value)) return;
   emit('action', {
     kind: 'export',
     label: 'export sealed bundle',
-    request: { ...exportDraft.value },
+    request: { ...exportDraft.value, previewOnly },
   });
 }
 
@@ -87,7 +101,7 @@ function rotateAction(): void {
       <section class="view__section" aria-labelledby="backup-export-heading">
         <header class="view__section-header">
           <h3 id="backup-export-heading">Export sealed bundle</h3>
-          <span class="badge badge--safe">metadata only</span>
+          <span class="badge badge--safe">encrypted values</span>
         </header>
 
         <label class="view__field">
@@ -102,14 +116,14 @@ function rotateAction(): void {
         </label>
 
         <fieldset class="view__fieldset">
-          <legend>Profiles</legend>
+          <legend>Environments</legend>
           <label>
             <input v-model="exportDraft.scope" type="radio" value="active-profile" />
-            <span>Active profile</span>
+            <span>Active environment</span>
           </label>
           <label>
             <input v-model="exportDraft.scope" type="radio" value="all-profiles" />
-            <span>All profiles</span>
+            <span>All environments</span>
           </label>
         </fieldset>
 
@@ -118,12 +132,40 @@ function rotateAction(): void {
           <span>Include audit rows</span>
         </label>
 
+        <p>
+          Shared variables and current versions only by default. Preview the recipient and selection
+          before exporting.
+        </p>
+        <label class="view__field view__field--inline"
+          ><input v-model="exportDraft.includePersonal" type="checkbox" /><span
+            >Include my overrides and this machine</span
+          ></label
+        >
+        <label class="view__field view__field--inline"
+          ><input v-model="exportDraft.includeHistory" type="checkbox" /><span
+            >Include previous versions</span
+          ></label
+        >
         <label class="view__field">
           <span>Output path</span>
           <input v-model.trim="exportDraft.outputPath" type="text" autocomplete="off" />
         </label>
 
-        <button type="button" class="view__action" :disabled="!canExport" @click="exportAction">
+        <button
+          type="button"
+          class="view__action"
+          :disabled="!canExport || props.busy"
+          @click="exportAction(true)"
+        >
+          Preview scope
+        </button>
+        <p v-if="previewMatches" role="status" class="view__preview">{{ props.previewMessage }}</p>
+        <button
+          type="button"
+          class="view__action"
+          :disabled="!canExport || !previewMatches || props.busy"
+          @click="exportAction(false)"
+        >
           Export
         </button>
       </section>
@@ -134,6 +176,10 @@ function rotateAction(): void {
           <span class="badge badge--warning">conflict review</span>
         </header>
 
+        <p>
+          Imported commands require explicit local approval before running. Legacy v1 bundles do not
+          authenticate their issuer.
+        </p>
         <label class="view__field">
           <span>Bundle path</span>
           <input v-model.trim="importDraft.bundlePath" type="text" autocomplete="off" />
@@ -148,20 +194,25 @@ function rotateAction(): void {
           <legend>Conflict mode</legend>
           <label>
             <input v-model="importDraft.conflictMode" type="radio" value="review" />
-            <span>Review</span>
+            <span>Review only, no changes</span>
           </label>
           <label>
             <input v-model="importDraft.conflictMode" type="radio" value="accept-incoming" />
-            <span>Incoming</span>
+            <span>Import and replace conflicting values</span>
           </label>
           <label>
             <input v-model="importDraft.conflictMode" type="radio" value="accept-local" />
-            <span>Local</span>
+            <span>Import new values and keep local conflicts</span>
           </label>
         </fieldset>
 
-        <button type="button" class="view__action" :disabled="!canImport" @click="importAction">
-          Import
+        <button
+          type="button"
+          class="view__action"
+          :disabled="!canImport || props.busy"
+          @click="importAction"
+        >
+          {{ importDraft.conflictMode === 'review' ? 'Review bundle' : 'Apply import' }}
         </button>
       </section>
 
@@ -239,6 +290,10 @@ function rotateAction(): void {
 </template>
 
 <style scoped>
+.view__preview {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 .view {
   background: #0f1115;
   color: #e6e8ec;

@@ -440,3 +440,7 @@ mod recovery;
 mod scan_redact;
 mod secrets_crud;
 mod source_precedence;
+
+mod variable_contract;
+
+mod team_pending_cli;

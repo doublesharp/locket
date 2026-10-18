@@ -35,6 +35,7 @@ pub fn compose_run_command(
     )?;
     let mut prepared =
         prepare_compose_policy_execution(context, &args.policy, &compose_args, parent_env)?;
+    super::run::write_configuration_warnings(&prepared.resolved, &prepared.policy, output)?;
     let status = prepared.execution.command().current_dir(&context.cwd).status()?;
     let audit_status = if status.success() { "SUCCESS" } else { "FAILED" };
     write_docker_policy_audit_if_available(context, &mut prepared, audit_status)?;
@@ -71,7 +72,7 @@ mod tests {
             return Err("empty compose profile must be rejected".into());
         };
         assert!(error.to_string().contains("compose profile must not be empty"));
-        assert!(output.is_empty());
+        assert_eq!(output.len(), 0);
         Ok(())
     }
 }

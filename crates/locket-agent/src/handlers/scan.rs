@@ -723,7 +723,7 @@ mod tests {
         assert_eq!(success.id, "req-scan");
         let decoded: ScanResponse = serde_json::from_value(success.payload)?;
         assert!(decoded.locked);
-        assert!(decoded.findings.is_empty());
+        assert_eq!(decoded.findings.len(), 0);
         Ok(())
     }
 
@@ -788,7 +788,7 @@ mod tests {
         let response = handle_scan(&envelope, &state, 1).await;
         let payload = scan_payload(response)?;
         assert!(payload.locked);
-        assert!(payload.findings.is_empty());
+        assert_eq!(payload.findings.len(), 0);
         Ok(())
     }
 

@@ -34,7 +34,7 @@ fn automation_clients_store_public_metadata_and_revocation() -> Result<(), Box<d
     assert_eq!(by_name.id, "lk_client_test");
 
     assert!(test_store.store.revoke_automation_client("lk_proj_test", "lk_client_test", 300)?);
-    assert!(test_store.store.list_automation_clients("lk_proj_test", false)?.is_empty());
+    assert_eq!(test_store.store.list_automation_clients("lk_proj_test", false)?.len(), 0);
     let revoked = test_store.store.list_automation_clients("lk_proj_test", true)?;
     assert_eq!(revoked[0].revoked_at, Some(300));
     assert!(!test_store.store.revoke_automation_client("lk_proj_test", "lk_client_test", 400)?);

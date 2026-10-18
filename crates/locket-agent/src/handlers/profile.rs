@@ -76,6 +76,8 @@ enum SetActiveProfileError {
     TomlDeserialize(#[from] toml::de::Error),
     #[error(transparent)]
     TomlSerialize(#[from] toml::ser::Error),
+    #[error(transparent)]
+    PolicyFile(#[from] locket_platform::PolicyFileError),
 }
 
 impl SetActiveProfileError {
@@ -88,7 +90,8 @@ impl SetActiveProfileError {
             Self::MetadataInvalid(_)
             | Self::Io(_)
             | Self::TomlDeserialize(_)
-            | Self::TomlSerialize(_) => "MetadataInvalid",
+            | Self::TomlSerialize(_)
+            | Self::PolicyFile(_) => "MetadataInvalid",
             Self::Store(error) => match error.locket_error() {
                 locket_core::LocketError::StorageBusy => "StorageBusy",
                 locket_core::LocketError::SchemaNewerThanBinary => "SchemaNewerThanBinary",
@@ -217,8 +220,14 @@ fn read_project_config(path: &Path) -> Result<ProjectConfig, SetActiveProfileErr
 }
 
 fn write_project_config(path: &Path, config: &ProjectConfig) -> Result<(), SetActiveProfileError> {
-    let text = toml::to_string_pretty(config)?;
-    fs::write(path, text)?;
+    let mut document = locket_platform::PolicyFileDocument::read(path)?;
+    let replacement: toml::Value = toml::from_str(&toml::to_string_pretty(config)?)?;
+    if let (Some(current), Some(fields)) = (document.as_table_mut(), replacement.as_table()) {
+        for (key, value) in fields {
+            current.insert(key.clone(), value.clone());
+        }
+    }
+    document.save()?;
     Ok(())
 }
 

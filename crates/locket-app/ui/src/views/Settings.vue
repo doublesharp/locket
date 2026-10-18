@@ -76,7 +76,7 @@ function dangerousProfileLabel(value: boolean): string {
           <dd>{{ userVerificationLabel(state.requireUserVerification) }}</dd>
         </div>
         <div class="view__definition">
-          <dt>Dangerous profile flag</dt>
+          <dt>Dangerous environment</dt>
           <dd>{{ dangerousProfileLabel(state.dangerousProfileFlag) }}</dd>
         </div>
       </dl>

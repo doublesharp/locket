@@ -491,7 +491,7 @@ fn scan_locked_vault_runs_metadata_only_but_require_known_fails()
         return Err("locked scan --require-known must fail closed".into());
     };
     assert_eq!(error.exit_code(), locket_core::LocketError::UnlockRequired.exit_code());
-    assert!(require_known_output.is_empty());
+    assert_eq!(require_known_output.len(), 0);
     Ok(())
 }
 

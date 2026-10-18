@@ -8,6 +8,14 @@ JSON protocol. The build/lint/test scripts remain scaffolded so
 follow-up UI subtasks can extend the extension without touching the
 project setup.
 
+## Project workflow
+
+Trust the workspace and install the matching Locket CLI on an absolute PATH outside the project. The extension reads the active editor or terminal directory, finds its Locket project through the CLI, and uses the stored project/profile IDs. With multiple workspace folders, it asks you to choose only when the active editor and terminal do not identify one.
+
+Unlock and audit use the project's resolved local store. Reveal and Copy ask for a portable secret name and open an interactive CLI terminal. The CLI uses the project's current profile and owns consent, local verification, and clipboard expiry. The extension does not capture plaintext or announce that a copy succeeded. Reveal writes plaintext to the terminal, where it can remain in scrollback. Dangerous-profile reads may require explicit CLI consent; the extension never supplies bypass flags. Switching profiles asks for the target name and, when required by the agent, a typed dangerous-profile confirmation.
+
+Run Policy lists saved policies and launches the selected command in an integrated terminal. CLI confirmations and exit status remain visible there. Create Terminal registers a names-only IDE session for that terminal. Project sessions are never installed in the global terminal environment.
+
 ## Build
 
 ```sh

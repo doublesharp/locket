@@ -24,6 +24,7 @@ export function commandPolicyRow(row: CommandPolicyWireRow): CommandPolicyRow {
     allowedSecrets: row.allowed_secrets,
     confirm: row.confirm,
     requireUserVerification: row.require_user_verification,
+    requireAgent: row.require_agent,
     allowRemoteDocker: row.allow_remote_docker,
     ttlSeconds: row.ttl_seconds,
     envMode: row.env_mode,

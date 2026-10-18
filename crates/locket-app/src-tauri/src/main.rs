@@ -9,19 +9,20 @@
 // `unused_crate_dependencies` at the bin boundary; pull each in
 // explicitly so the lint stays quiet without disabling it.
 use arboard as _;
+use base64 as _;
 use directories as _;
 use locket_agent as _;
 use locket_app as _;
 use locket_core as _;
 use locket_platform as _;
-#[cfg(test)]
 use locket_store as _;
 use serde as _;
 use serde_json as _;
-#[cfg(test)]
+use sha2 as _;
 use tempfile as _;
 use thiserror as _;
 use tokio as _;
+use toml as _;
 
 fn main() -> tauri::Result<()> {
     locket_desktop_lib::run()

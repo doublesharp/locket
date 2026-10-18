@@ -6,6 +6,9 @@ export interface ExportDraft {
   recipientDescriptor: string;
   scope: ExportScope;
   includeAudit: boolean;
+  includePersonal: boolean;
+  includeHistory: boolean;
+  previewOnly: boolean;
   outputPath: string;
 }
 
@@ -47,3 +50,14 @@ export type BundleAction =
       label: string;
       request: RotateDraft;
     };
+
+export function exportSelectionKey(draft: ExportDraft): string {
+  return JSON.stringify([
+    draft.recipientDescriptor,
+    draft.scope,
+    draft.includeAudit,
+    draft.includePersonal,
+    draft.includeHistory,
+    draft.outputPath,
+  ]);
+}

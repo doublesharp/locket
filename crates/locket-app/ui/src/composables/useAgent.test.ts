@@ -35,6 +35,10 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
+async function settle(): Promise<void> {
+  for (let index = 0; index < 12; index++) await Promise.resolve();
+}
+
 function setup() {
   const scope = effectScope();
   const state = scope.run(useAgent)!;
@@ -45,6 +49,10 @@ function setup() {
 beforeEach(() => {
   vi.resetAllMocks();
   vi.mocked(subscribeStatus).mockResolvedValue({ ok: true, value: vi.fn() });
+  vi.mocked(fetchStatus).mockResolvedValue({
+    ok: true,
+    status: { ...event('status'), project_id: 'selected', profile_name: 'development' },
+  });
 });
 
 describe('useAgent lifecycle', () => {
@@ -73,50 +81,86 @@ describe('useAgent lifecycle', () => {
     expect(unlisten).toHaveBeenCalledTimes(1);
   });
 
-  it('initializes from a heartbeat after remount without rerendering subsequent heartbeats', () => {
-    const { scope, state, options } = setup();
-    try {
-      options.onHeartbeat?.(event('heartbeat'));
-      expect(state.status.value?.lock_state).toBe('locked');
-      expect(state.loading.value).toBe(false);
-      expect(state.connected.value).toBe(true);
-      const initial = state.status.value;
-      options.onHeartbeat?.(event('heartbeat'));
-      expect(state.status.value).toBe(initial);
-    } finally {
-      scope.stop();
-    }
-  });
-
-  it('does not let a pending refresh overwrite a newer locked status', async () => {
-    const pending = deferred<AgentStatusResult>();
-    vi.mocked(fetchStatus).mockReturnValue(pending.promise);
+  it('treats global frames as invalidation and obtains native scoped identity', async () => {
     const { scope, state, onStatus } = setup();
     try {
-      const refresh = state.refresh();
-      onStatus(event('status', 'locked'));
-      pending.resolve({ ok: true, status: event('status', 'unlocked') });
-      await refresh;
-      expect(state.status.value?.lock_state).toBe('locked');
-      expect(state.loading.value).toBe(false);
+      onStatus(event('status', 'unlocked'));
+      await state.refresh();
+      expect(fetchStatus).toHaveBeenCalled();
+      expect(state.status.value).toMatchObject({
+        project_id: 'selected',
+        profile_name: 'development',
+        lock_state: 'locked',
+      });
+      expect(state.connected.value).toBe(true);
     } finally {
       scope.stop();
     }
   });
 
-  it('keeps the most recent refresh when requests complete out of order', async () => {
-    const older = deferred<AgentStatusResult>();
-    const newer = deferred<AgentStatusResult>();
-    vi.mocked(fetchStatus).mockReturnValueOnce(older.promise).mockReturnValueOnce(newer.promise);
-    const { scope, state } = setup();
+  it('refreshes on every heartbeat so expired unlocks cannot remain unlocked', async () => {
+    vi.mocked(fetchStatus).mockResolvedValueOnce({
+      ok: true,
+      status: {
+        ...event('status', 'unlocked'),
+        project_id: 'selected',
+        profile_name: 'development',
+      },
+    });
+    const { scope, state, options } = setup();
+    try {
+      await state.refresh();
+      expect(state.status.value?.lock_state).toBe('unlocked');
+      options.onHeartbeat?.(event('heartbeat', 'unlocked'));
+      await state.refresh();
+      expect(state.status.value?.lock_state).toBe('locked');
+    } finally {
+      scope.stop();
+    }
+  });
+
+  it('serializes a burst into one pending refresh and one latest refresh', async () => {
+    const pending = deferred<AgentStatusResult>();
+    vi.mocked(fetchStatus).mockReturnValueOnce(pending.promise);
+    const { scope, state, onStatus, options } = setup();
     try {
       const first = state.refresh();
-      const second = state.refresh();
-      newer.resolve({ ok: true, status: event('status', 'locked') });
-      await second;
-      older.resolve({ ok: true, status: event('status', 'unlocked') });
+      onStatus(event('status', 'unlocked'));
+      options.onHeartbeat?.(event('heartbeat'));
+      onStatus(event('status'));
+      expect(fetchStatus).toHaveBeenCalledTimes(1);
+      pending.resolve({
+        ok: true,
+        status: { ...event('status', 'unlocked'), project_id: 'old', profile_name: 'old' },
+      });
       await first;
-      expect(state.status.value?.lock_state).toBe('locked');
+      expect(fetchStatus).toHaveBeenCalledTimes(2);
+      expect(state.status.value?.project_id).toBe('selected');
+    } finally {
+      scope.stop();
+    }
+  });
+
+  it('fails closed when native scoped status rejects and ignores late success after disconnect', async () => {
+    const { scope, state, options } = setup();
+    try {
+      await state.refresh();
+      vi.mocked(fetchStatus).mockResolvedValueOnce({
+        ok: false,
+        error: { kind: 'protocol', reason: 'Selected project unavailable' },
+      });
+      options.onHeartbeat?.(event('heartbeat'));
+      await settle();
+      expect(state.status.value).toBeNull();
+      expect(state.connected.value).toBe(false);
+      const pending = deferred<AgentStatusResult>();
+      vi.mocked(fetchStatus).mockReturnValueOnce(pending.promise);
+      const refresh = state.refresh();
+      options.onDisconnected?.();
+      pending.resolve({ ok: true, status: event('status', 'unlocked') });
+      await refresh;
+      expect(state.status.value).toBeNull();
+      expect(state.connected.value).toBe(false);
     } finally {
       scope.stop();
     }

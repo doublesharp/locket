@@ -365,7 +365,7 @@ mod tests {
         request.source = None;
         assert_eq!(list_versions(&request)?.rows.len(), 6);
         request.profile_id = "lk_prof_other".to_owned();
-        assert!(list_versions(&request)?.rows.is_empty());
+        assert_eq!(list_versions(&request)?.rows.len(), 0);
 
         Ok(())
     }

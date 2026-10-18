@@ -32,7 +32,7 @@ fn exec_all_force_injects_active_profile_secrets_and_writes_audit()
         &context,
         &mut output,
     )?;
-    assert!(String::from_utf8(output)?.is_empty());
+    assert_eq!(String::from_utf8(output)?, "");
 
     let store = crate::open_store(&context)?;
     let metadata: String = store.connection().query_row(
@@ -165,7 +165,7 @@ fn exec_injects_secret_into_child_scope() -> Result<(), Box<dyn std::error::Erro
         &mut exec_output,
     )?;
 
-    assert!(String::from_utf8(exec_output)?.is_empty());
+    assert_eq!(String::from_utf8(exec_output)?, "");
     let store = locket_store::Store::open(directory.path().join("store.db"))?;
     let session = store.connection().query_row(
         "SELECT policy_name, ended_at IS NOT NULL, exit_status, secret_names_json
@@ -240,7 +240,7 @@ fn exec_secret_requires_unlocked_vault_before_spawn() -> Result<(), Box<dyn std:
         return Err("locked exec --secret must fail".into());
     };
     assert_eq!(error.exit_code(), locket_core::LocketError::UnlockRequired.exit_code());
-    assert!(String::from_utf8(output)?.is_empty());
+    assert_eq!(String::from_utf8(output)?, "");
     assert!(!directory.path().join("spawned-locked").exists());
     Ok(())
 }
@@ -294,7 +294,7 @@ inherit_env = ["PATH"]
         &context,
         &mut run_output,
     )?;
-    assert!(String::from_utf8(run_output)?.is_empty());
+    assert_eq!(String::from_utf8(run_output)?, "");
     let presence = std::fs::read_to_string(directory.path().join("env-presence.txt"))?;
     assert_eq!(presence, "DATABASE_URL=present\nOPENAI_API_KEY=present\n");
     assert!(!presence.contains("postgres://localhost/app"));
@@ -2045,5 +2045,108 @@ inherit_env = ["PATH"]
     };
     assert!(compose_err.to_string().contains("remote Docker context is denied by default"));
 
+    Ok(())
+}
+
+#[test]
+fn generic_run_reuses_saved_exact_argv_and_policy_authorization()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    crate::set_secret_value(
+        &context,
+        &test_secret_write_args("API_KEY"),
+        "fixture-value",
+        "manual",
+        1000,
+    )?;
+    let config = directory.path().join("locket.toml");
+    let mut text = std::fs::read_to_string(&config)?;
+    text.push_str("\n[commands.dev]\nargv = [\"/bin/sh\", \"-c\", \"test \\\"$API_KEY\\\" = fixture-value\"]\nrequired_secrets = [\"API_KEY\"]\n");
+    std::fs::write(&config, text)?;
+    run_with_context(
+        Cli::try_parse_from([
+            "locket",
+            "run",
+            "--",
+            "/bin/sh",
+            "-c",
+            "test \"$API_KEY\" = fixture-value",
+        ])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    let store = crate::open_store(&context)?;
+    let resolved = crate::require_project(&context)?;
+    let sessions = store.list_incomplete_runtime_sessions(resolved.config.project_id.as_str())?;
+    assert_eq!(sessions, [] as [locket_store::RuntimeSessionRecord; 0]);
+    let policy: String = store.connection().query_row(
+        "SELECT policy_name FROM runtime_sessions ORDER BY started_at DESC LIMIT 1",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(policy, "dev");
+    Ok(())
+}
+
+#[test]
+fn generic_run_new_argv_requires_approval_and_persists_only_chosen_profile_names()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let key_store: Arc<dyn MasterKeyStore + Send + Sync> =
+        Arc::new(MemoryMasterKeyStore::default());
+    let context =
+        test_context_with_key_store_and_confirmation(&directory, Arc::clone(&key_store), "no");
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    crate::set_secret_value(
+        &context,
+        &test_secret_write_args("API_KEY"),
+        "fixture-value",
+        "manual",
+        1000,
+    )?;
+    let before = std::fs::read_to_string(directory.path().join("locket.toml"))?;
+    let error = run_with_context(
+        Cli::try_parse_from(["locket", "run", "--", "/usr/bin/true"])?,
+        &context,
+        &mut Vec::new(),
+    )
+    .err()
+    .ok_or("new command must be approved")?;
+    assert!(error.to_string().contains("confirmation"));
+    assert_eq!(std::fs::read_to_string(directory.path().join("locket.toml"))?, before);
+    let approved =
+        test_context_with_key_store_and_confirmation(&directory, key_store, "approve dev");
+    let mut output = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "run", "--", "/usr/bin/true"])?,
+        &approved,
+        &mut output,
+    )?;
+    let resolved = crate::require_project(&approved)?;
+    let document = crate::read_policy_document(&directory.path().join("locket.toml"))?;
+    assert_eq!(
+        document.commands["dev"]
+            .required_secrets
+            .iter()
+            .map(locket_core::SecretName::as_str)
+            .collect::<Vec<_>>(),
+        vec!["API_KEY"]
+    );
+    assert_eq!(
+        document.commands["dev"].command,
+        locket_core::CommandSpec::Argv(vec!["/usr/bin/true".to_owned()])
+    );
+    let store = crate::open_store(&approved)?;
+    assert!(store.get_command_policy_index(resolved.config.project_id.as_str(), "dev")?.is_some());
     Ok(())
 }

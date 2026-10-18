@@ -89,6 +89,7 @@ pub fn exec_command(
         override_mode: locket_exec::EnvOverrideMode::Locket,
     };
     let prepared = locket_exec::prepare_execution(&request).map_err(exec_prepare_error)?;
+    validate_exec_configuration(&resolved_project, &secret_names, &prepared.env, output)?;
     let _ = first_secret;
     let status = if unique_names.is_empty() {
         prepared.command().status()?
@@ -128,6 +129,33 @@ pub fn exec_command(
     }
     writeln!(output, "child exited with status {status}")?;
     Err(child_exit_error(status))
+}
+
+fn validate_exec_configuration(
+    resolved: &ResolvedProject,
+    secret_names: &[String],
+    env: &locket_exec::EnvMap,
+    output: &mut impl Write,
+) -> Result<(), CliError> {
+    // Ad-hoc exec selects existing vault names explicitly. Contracts validate these
+    // values but do not authorize additional names or apply saved-command defaults.
+    let document = crate::read_policy_document(&resolved.root.join(crate::LOCKET_TOML))?;
+    for name in secret_names {
+        let contract = document.variables.get(name);
+        if let (Some(contract), Some(value)) = (contract, env.get(name)) {
+            contract
+                .validate_value(value)
+                .map_err(|error| crate::runtime::error::invalid_policy_error(error.to_string()))?;
+        }
+        let classification = contract
+            .map_or(locket_core::VariableClassification::Secret, |contract| {
+                contract.classification
+            });
+        if let Some(warning) = locket_core::variable_exposure_warning(name, classification) {
+            writeln!(output, "warning: {warning}")?;
+        }
+    }
+    Ok(())
 }
 
 fn confirm_exec_all_scope(

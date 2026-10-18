@@ -12,3 +12,7 @@ pub mod scan;
 pub mod secrets;
 pub mod set_secret;
 pub mod versions;
+
+pub mod mutations;
+
+pub mod team_sync;

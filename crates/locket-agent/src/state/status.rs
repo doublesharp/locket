@@ -52,12 +52,25 @@ pub struct StatusPayload {
     /// Count of unresolved scan warnings from the most recent scan signal.
     #[serde(default)]
     pub scan_warning_count: u32,
+    /// Whether the scan count applies to this status scope.
+    #[serde(default = "scan_count_known_by_default", skip_serializing_if = "scan_count_is_known")]
+    pub scan_warning_count_known: bool,
     /// Recent audit health summary, metadata-only.
     #[serde(default)]
     pub recent_audit_status: RecentAuditStatus,
     /// Count of active warnings for expiring or expired pinned references.
     #[serde(default)]
     pub pinned_reference_warning_count: u32,
+}
+
+// serde skip_serializing_if requires a reference argument.
+#[allow(clippy::trivially_copy_pass_by_ref)]
+const fn scan_count_is_known(known: &bool) -> bool {
+    *known
+}
+
+const fn scan_count_known_by_default() -> bool {
+    true
 }
 
 impl StatusPayload {
@@ -73,6 +86,7 @@ impl StatusPayload {
             unlock_ttl_seconds: None,
             running_session_count: 0,
             scan_warning_count: 0,
+            scan_warning_count_known: true,
             recent_audit_status: RecentAuditStatus::Unknown,
             pinned_reference_warning_count: 0,
         }

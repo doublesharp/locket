@@ -1046,7 +1046,7 @@ mod tests {
         assert!(!error.ok);
         assert_eq!(error.error, ERROR_GRANT_REQUIRED);
         assert!(!error.retryable);
-        assert!(!error.message.is_empty());
+        assert_ne!(error.message, "");
     }
 
     #[tokio::test(flavor = "current_thread")]

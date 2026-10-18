@@ -279,7 +279,7 @@ fn inline_suppression_removes_high_entropy_findings_on_same_line() {
 
     let result = partition_inline_suppressions(&text, findings);
 
-    assert!(result.kept.is_empty());
+    assert_eq!(result.kept.len(), 0);
     assert_eq!(result.suppressed.len(), 1);
     let suppressed = &result.suppressed[0];
     assert_eq!(suppressed.kind, FindingKind::HighEntropy);
@@ -298,7 +298,7 @@ fn inline_suppression_supports_next_line_marker() {
 
     let result = partition_inline_suppressions(&text, findings);
 
-    assert!(result.kept.is_empty());
+    assert_eq!(result.kept.len(), 0);
     assert_eq!(result.suppressed.len(), 1);
     assert_eq!(result.suppressed[0].kind, FindingKind::HighEntropy);
     assert_eq!(result.suppressed[0].line, 2);
@@ -313,7 +313,7 @@ fn next_line_marker_skips_blank_lines_to_next_non_empty_line() {
 
     let result = partition_inline_suppressions(&text, findings);
 
-    assert!(result.kept.is_empty());
+    assert_eq!(result.kept.len(), 0);
     assert_eq!(result.suppressed.len(), 1);
     assert_eq!(result.suppressed[0].line, 4);
     assert_eq!(result.suppressed[0].reason, "");
@@ -334,7 +334,7 @@ fn inline_suppression_does_not_silence_known_secret_matches() {
     let result = partition_inline_suppressions(text, vec![suppressed_finding.clone()]);
 
     assert_eq!(result.kept, vec![suppressed_finding]);
-    assert!(result.suppressed.is_empty());
+    assert_eq!(result.suppressed.len(), 0);
 }
 
 #[test]
@@ -345,7 +345,7 @@ fn inline_suppression_does_not_silence_provider_token_or_env_file_findings() {
 
     let result = partition_inline_suppressions(&text, findings);
 
-    assert!(result.suppressed.is_empty());
+    assert_eq!(result.suppressed.len(), 0);
     assert!(result.kept.iter().any(|finding| finding.kind == FindingKind::ProviderTokenPattern));
     assert!(result.kept.iter().any(|finding| finding.kind == FindingKind::EnvFileMarker));
 }
@@ -357,8 +357,8 @@ fn next_line_marker_on_last_line_is_a_noop() {
 
     let result = partition_inline_suppressions(text, findings);
 
-    assert!(result.kept.is_empty());
-    assert!(result.suppressed.is_empty());
+    assert_eq!(result.kept.len(), 0);
+    assert_eq!(result.suppressed.len(), 0);
 }
 
 #[test]
@@ -371,7 +371,7 @@ fn line_marker_does_not_match_next_line_marker_substring() {
 
     assert_eq!(result.kept.len(), 1);
     assert_eq!(result.kept[0].kind, FindingKind::HighEntropy);
-    assert!(result.suppressed.is_empty());
+    assert_eq!(result.suppressed.len(), 0);
 }
 
 #[test]
@@ -467,7 +467,7 @@ fn scan_text_with_multiple_findings_preserves_line_numbers() {
 #[test]
 fn scan_text_returns_empty_for_clean_text() {
     let findings = scan_text("clean.rs", "let x = 42;\nlet name = \"hello world\";\n");
-    assert!(findings.is_empty());
+    assert_eq!(findings.len(), 0);
 }
 
 #[test]
@@ -483,8 +483,8 @@ fn shannon_entropy_increases_with_character_diversity() {
 fn suppression_result_default_is_empty() {
     use super::SuppressionResult;
     let result = SuppressionResult::default();
-    assert!(result.kept.is_empty());
-    assert!(result.suppressed.is_empty());
+    assert_eq!(result.kept.len(), 0);
+    assert_eq!(result.suppressed.len(), 0);
 }
 
 #[test]
@@ -498,7 +498,7 @@ fn strict_partition_suppresses_high_entropy_finding_via_locket_suppress_directiv
 
     let result = partition_inline_suppressions_strict(&text, findings)?;
 
-    assert!(result.kept.is_empty());
+    assert_eq!(result.kept.len(), 0);
     assert_eq!(result.suppressed.len(), 1);
     assert_eq!(result.suppressed[0].kind, FindingKind::HighEntropy);
     assert_eq!(result.suppressed[0].reason, "known random fixture");
@@ -520,7 +520,7 @@ fn strict_partition_block_directive_suppresses_inner_findings()
 
     let result = partition_inline_suppressions_strict(&text, findings)?;
 
-    assert!(result.kept.is_empty());
+    assert_eq!(result.kept.len(), 0);
     assert_eq!(result.suppressed.len(), 1);
     assert_eq!(result.suppressed[0].reason, "vendored fixtures section");
     Ok(())

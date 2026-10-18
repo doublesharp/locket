@@ -6,6 +6,7 @@
 import { computed, ref, watch } from 'vue';
 
 import CommandHandoff from '../components/CommandHandoff.vue';
+import TeamSharingPanel from '../components/TeamSharingPanel.vue';
 import {
   defaultAcceptForm,
   defaultIssueForm,
@@ -32,6 +33,8 @@ import {
 import type { AuditWireRow } from '../agent/types';
 
 interface Props {
+  projectId?: string;
+  privacyMode?: boolean;
   /** Audit rows for the active project, used for invite reconstruction. */
   auditRows: ReadonlyArray<AuditWireRow>;
   /** Comma-separated list of dangerous-profile names from agent settings. */
@@ -39,6 +42,8 @@ interface Props {
   /** Whether team_accept enforces fresh user-verification. */
   requireAcceptUserVerification: boolean;
   loading: boolean;
+  metadataLoaded: boolean;
+  actionGuidance?: string | null;
   errorMessage?: string | null;
   lastRefreshedAt?: string;
 }
@@ -88,7 +93,7 @@ const issueConfirmationMatches = computed<boolean>(() =>
   issueDangerousConfirmationMatches(issueValidation.value, issueDangerousConfirmation.value),
 );
 const issueCanSubmit = computed<boolean>(() => {
-  if (!issueValidation.value.valid) {
+  if (!props.metadataLoaded || !issueValidation.value.valid) {
     return false;
   }
   if (issueRequiresConfirmation.value && !issueConfirmationMatches.value) {
@@ -98,10 +103,14 @@ const issueCanSubmit = computed<boolean>(() => {
 });
 
 const acceptValidation = computed(() => validateAcceptForm(acceptForm.value));
-const acceptCanSubmit = computed<boolean>(() => acceptValidation.value.valid);
+const acceptCanSubmit = computed<boolean>(
+  () => props.metadataLoaded && acceptValidation.value.valid,
+);
 
 const revokeValidation = computed(() => validateRevokeForm(revokeForm.value));
-const revokeCanSubmit = computed<boolean>(() => revokeValidation.value.valid);
+const revokeCanSubmit = computed<boolean>(
+  () => props.metadataLoaded && revokeValidation.value.valid,
+);
 
 const issueCliCommand = computed<string | null>(() =>
   issueCanSubmit.value ? teamInviteIssueCliCommand(issueForm.value) : null,
@@ -113,7 +122,7 @@ const revokeCliCommand = computed<string | null>(() =>
   revokeCanSubmit.value ? teamInviteRevokeCliCommand(revokeForm.value.inviteId) : null,
 );
 const agentRequestCliCommand = computed<string | null>(() =>
-  issueForm.value.deviceDescriptor.trim().length > 0
+  props.metadataLoaded && issueForm.value.deviceDescriptor.trim().length > 0
     ? agentInviteRequestCliCommand(issueForm.value.deviceDescriptor)
     : null,
 );
@@ -147,7 +156,7 @@ function statusBadge(status: TeamInviteRow['status']): string {
 <template>
   <section class="view" aria-labelledby="team-invite-heading">
     <header class="view__header">
-      <h2 id="team-invite-heading">Team invites</h2>
+      <h2 id="team-invite-heading">Team sharing</h2>
       <div class="view__actions">
         <span v-if="lastRefreshedAt" class="view__muted">
           <time :datetime="lastRefreshedAt">{{ lastRefreshedAt }}</time>
@@ -168,261 +177,280 @@ function statusBadge(status: TeamInviteRow['status']): string {
       </label>
     </header>
 
-    <p v-if="errorMessage" class="view__error">{{ errorMessage }}</p>
-
-    <p class="view__notice" role="note">
-      {{ TEAM_INVITE_DESKTOP_NOTICE }}
-    </p>
-
-    <section aria-labelledby="team-invite-list-heading" class="view__panel">
-      <h3 id="team-invite-list-heading" class="view__panel-heading">Pending and recent invites</h3>
-      <p v-if="loading" class="view__loading" role="status">Loading invite history…</p>
-      <p v-else-if="filteredRows.length === 0" class="view__empty">
-        No matching invites in audit history.
+    <TeamSharingPanel :project-id="projectId" :privacy-mode="privacyMode" />
+    <details v-if="!privacyMode">
+      <summary>Legacy invite history and advanced commands</summary>
+      <p class="view__notice">
+        Legacy invites require local pending invite state. Use signed team updates above for a fresh
+        machine.
       </p>
-      <table v-else class="view__table" aria-describedby="team-invite-list-heading">
-        <thead>
-          <tr>
-            <th scope="col">Invite id</th>
-            <th scope="col">Direction</th>
-            <th scope="col">Status</th>
-            <th scope="col">Recipient / Issuer</th>
-            <th scope="col">Role</th>
-            <th scope="col">Profiles</th>
-            <th scope="col">Created</th>
-            <th scope="col">Expires</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="row in filteredRows" :key="row.id">
-            <td>
-              <code>{{ row.id }}</code>
-            </td>
-            <td>{{ row.direction }}</td>
-            <td>
-              <span class="badge" :class="statusBadge(row.status)">{{ row.status }}</span>
-            </td>
-            <td>
-              <span v-if="row.direction === 'issued'">{{ row.recipientLabel ?? '—' }}</span>
-              <span v-else>{{ row.issuerLabel ?? '—' }}</span>
-            </td>
-            <td>{{ row.role ?? '—' }}</td>
-            <td>
-              <span v-if="row.profiles.length > 0">{{ row.profiles.join(', ') }}</span>
-              <span v-else class="view__muted">—</span>
-            </td>
-            <td>
-              <time :datetime="row.createdAt">{{ row.createdAt }}</time>
-            </td>
-            <td>
-              <time v-if="row.expiresAt" :datetime="row.expiresAt">{{ row.expiresAt }}</time>
-              <span v-else class="view__muted">—</span>
-            </td>
-          </tr>
-        </tbody>
-      </table>
-    </section>
+      <p v-if="errorMessage" class="view__error">{{ errorMessage }}</p>
 
-    <section aria-labelledby="team-invite-issue-heading" class="view__panel">
-      <h3 id="team-invite-issue-heading" class="view__panel-heading">Issue invite</h3>
-      <form @submit.prevent>
-        <label class="view__field">
-          <span>Recipient label</span>
-          <input
-            v-model="issueForm.recipientLabel"
-            type="text"
-            autocomplete="off"
-            spellcheck="false"
-            data-testid="team-invite-recipient"
-          />
-          <span v-if="issueValidation.errors.recipientLabel" class="view__error">
-            {{ issueValidation.errors.recipientLabel }}
-          </span>
-        </label>
-        <label class="view__field">
-          <span>Recipient device descriptor</span>
-          <textarea
-            v-model="issueForm.deviceDescriptor"
-            rows="2"
-            autocomplete="off"
-            spellcheck="false"
-            data-testid="team-invite-descriptor"
-          />
-          <span v-if="issueValidation.errors.deviceDescriptor" class="view__error">
-            {{ issueValidation.errors.deviceDescriptor }}
-          </span>
-        </label>
-        <div class="view__row">
+      <p class="view__notice" role="note">
+        {{ TEAM_INVITE_DESKTOP_NOTICE }}
+      </p>
+
+      <section aria-labelledby="team-invite-list-heading" class="view__panel">
+        <h3 id="team-invite-list-heading" class="view__panel-heading">
+          Pending and recent invites
+        </h3>
+        <p v-if="actionGuidance" class="view__empty" role="status">{{ actionGuidance }}</p>
+        <p v-else-if="loading" class="view__loading" role="status">Loading invite history…</p>
+        <p v-else-if="metadataLoaded && filteredRows.length === 0" class="view__empty">
+          No matching invites in audit history.
+        </p>
+        <table
+          v-else-if="metadataLoaded"
+          class="view__table"
+          aria-describedby="team-invite-list-heading"
+        >
+          <thead>
+            <tr>
+              <th scope="col">Invite id</th>
+              <th scope="col">Direction</th>
+              <th scope="col">Status</th>
+              <th scope="col">Recipient / Issuer</th>
+              <th scope="col">Role</th>
+              <th scope="col">Profiles</th>
+              <th scope="col">Created</th>
+              <th scope="col">Expires</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="row in filteredRows" :key="row.id">
+              <td>
+                <code>{{ row.id }}</code>
+              </td>
+              <td>{{ row.direction }}</td>
+              <td>
+                <span class="badge" :class="statusBadge(row.status)">{{ row.status }}</span>
+              </td>
+              <td>
+                <span v-if="row.direction === 'issued'">{{ row.recipientLabel ?? '—' }}</span>
+                <span v-else>{{ row.issuerLabel ?? '—' }}</span>
+              </td>
+              <td>{{ row.role ?? '—' }}</td>
+              <td>
+                <span v-if="row.profiles.length > 0">{{ row.profiles.join(', ') }}</span>
+                <span v-else class="view__muted">—</span>
+              </td>
+              <td>
+                <time :datetime="row.createdAt">{{ row.createdAt }}</time>
+              </td>
+              <td>
+                <time v-if="row.expiresAt" :datetime="row.expiresAt">{{ row.expiresAt }}</time>
+                <span v-else class="view__muted">—</span>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section aria-labelledby="team-invite-issue-heading" class="view__panel">
+        <h3 id="team-invite-issue-heading" class="view__panel-heading">Issue invite</h3>
+        <form @submit.prevent>
           <label class="view__field">
-            <span>Role</span>
-            <select v-model="issueForm.role">
-              <option value="developer">developer</option>
-              <option value="maintainer">maintainer</option>
-              <option value="owner">owner</option>
-              <option value="read-only">read-only</option>
-            </select>
-          </label>
-          <label class="view__field">
-            <span>Expiry (ISO 8601)</span>
+            <span>Recipient label</span>
             <input
-              v-model="issueForm.expiresAt"
-              type="datetime-local"
+              v-model="issueForm.recipientLabel"
+              type="text"
               autocomplete="off"
               spellcheck="false"
+              data-testid="team-invite-recipient"
             />
-            <span v-if="issueValidation.errors.expiresAt" class="view__error">
-              {{ issueValidation.errors.expiresAt }}
+            <span v-if="issueValidation.errors.recipientLabel" class="view__error">
+              {{ issueValidation.errors.recipientLabel }}
             </span>
           </label>
-        </div>
-        <label class="view__field">
-          <span>Profiles (comma-separated)</span>
-          <input
-            v-model="issueForm.profiles"
-            type="text"
-            autocomplete="off"
-            spellcheck="false"
-            data-testid="team-invite-profiles"
-          />
-          <span v-if="issueValidation.errors.profiles" class="view__error">
-            {{ issueValidation.errors.profiles }}
-          </span>
-        </label>
-        <p v-if="issueRequiresConfirmation" class="view__warn" role="status">
-          This invite includes the dangerous profile(s):
-          <strong>{{ issueValidation.dangerousMatches.join(', ') }}</strong
-          >. Type each dangerous profile name to confirm.
+          <label class="view__field">
+            <span>Recipient device descriptor</span>
+            <textarea
+              v-model="issueForm.deviceDescriptor"
+              rows="2"
+              autocomplete="off"
+              spellcheck="false"
+              data-testid="team-invite-descriptor"
+            />
+            <span v-if="issueValidation.errors.deviceDescriptor" class="view__error">
+              {{ issueValidation.errors.deviceDescriptor }}
+            </span>
+          </label>
+          <div class="view__row">
+            <label class="view__field">
+              <span>Role</span>
+              <select v-model="issueForm.role">
+                <option value="developer">developer</option>
+                <option value="maintainer">maintainer</option>
+                <option value="owner">owner</option>
+                <option value="read-only">read-only</option>
+              </select>
+            </label>
+            <label class="view__field">
+              <span>Expiry (ISO 8601)</span>
+              <input
+                v-model="issueForm.expiresAt"
+                type="datetime-local"
+                autocomplete="off"
+                spellcheck="false"
+              />
+              <span v-if="issueValidation.errors.expiresAt" class="view__error">
+                {{ issueValidation.errors.expiresAt }}
+              </span>
+            </label>
+          </div>
+          <label class="view__field">
+            <span>Profiles (comma-separated)</span>
+            <input
+              v-model="issueForm.profiles"
+              type="text"
+              autocomplete="off"
+              spellcheck="false"
+              data-testid="team-invite-profiles"
+            />
+            <span v-if="issueValidation.errors.profiles" class="view__error">
+              {{ issueValidation.errors.profiles }}
+            </span>
+          </label>
+          <p v-if="issueRequiresConfirmation" class="view__warn" role="status">
+            This invite includes the dangerous profile(s):
+            <strong>{{ issueValidation.dangerousMatches.join(', ') }}</strong
+            >. Type each dangerous profile name to confirm.
+          </p>
+          <label v-if="issueRequiresConfirmation" class="view__field">
+            <span>Type dangerous profile name(s)</span>
+            <input
+              v-model="issueDangerousConfirmation"
+              type="text"
+              autocomplete="off"
+              spellcheck="false"
+              data-testid="team-invite-dangerous-confirmation"
+            />
+          </label>
+          <div class="view__form-actions">
+            <CommandHandoff
+              v-if="issueCliCommand"
+              :command="issueCliCommand"
+              label="Issue invite command"
+              data-testid="team-invite-issue-cli-command"
+            />
+            <CommandHandoff
+              v-if="agentRequestCliCommand"
+              :command="agentRequestCliCommand"
+              label="Agent request command"
+              data-testid="agent-invite-request-cli-command"
+            />
+            <CommandHandoff
+              v-if="agentIssueCliCommand"
+              :command="agentIssueCliCommand"
+              label="Agent invite command"
+              data-testid="agent-invite-create-cli-command"
+            />
+            <span v-else class="view__muted">Complete the fields to show the CLI command.</span>
+          </div>
+        </form>
+      </section>
+
+      <section aria-labelledby="team-invite-accept-heading" class="view__panel">
+        <h3 id="team-invite-accept-heading" class="view__panel-heading">Accept invite</h3>
+        <form @submit.prevent>
+          <label class="view__field">
+            <span>Paste invite text</span>
+            <textarea
+              v-model="acceptForm.inviteText"
+              rows="6"
+              spellcheck="false"
+              autocomplete="off"
+              data-testid="team-invite-accept-text"
+            />
+            <span v-if="acceptValidation.errors.inviteText" class="view__error">
+              {{ acceptValidation.errors.inviteText }}
+            </span>
+          </label>
+          <label class="view__field">
+            <span>Issuer device fingerprint (64 hex)</span>
+            <input
+              v-model="acceptForm.fingerprintConfirmation"
+              type="text"
+              autocomplete="off"
+              spellcheck="false"
+              data-testid="team-invite-accept-fingerprint"
+            />
+            <span v-if="acceptValidation.errors.fingerprintConfirmation" class="view__error">
+              {{ acceptValidation.errors.fingerprintConfirmation }}
+            </span>
+          </label>
+          <label v-if="acceptForm.requireUserVerification" class="view__check">
+            <input v-model="acceptForm.userVerified" type="checkbox" />
+            I have completed local user verification (platform prompt / hardware key / passphrase
+            fallback).
+            <span v-if="acceptValidation.errors.userVerified" class="view__error">
+              {{ acceptValidation.errors.userVerified }}
+            </span>
+          </label>
+          <div class="view__form-actions">
+            <CommandHandoff
+              v-if="acceptCliCommand"
+              :command="acceptCliCommand"
+              label="Accept pasted invite command"
+              data-testid="team-invite-accept-cli-command"
+            />
+            <CommandHandoff
+              v-if="agentAcceptCliCommand"
+              :command="agentAcceptCliCommand"
+              label="Accept pasted agent invite command"
+              data-testid="agent-invite-accept-cli-command"
+            />
+            <span v-else class="view__muted">Complete the checks to show the CLI command.</span>
+          </div>
+        </form>
+      </section>
+
+      <section aria-labelledby="team-invite-revoke-heading" class="view__panel">
+        <h3 id="team-invite-revoke-heading" class="view__panel-heading">Revoke invite</h3>
+        <p class="view__muted">
+          Owners and the issuing maintainer may revoke an outstanding invite.
         </p>
-        <label v-if="issueRequiresConfirmation" class="view__field">
-          <span>Type dangerous profile name(s)</span>
-          <input
-            v-model="issueDangerousConfirmation"
-            type="text"
-            autocomplete="off"
-            spellcheck="false"
-            data-testid="team-invite-dangerous-confirmation"
-          />
-        </label>
-        <div class="view__form-actions">
-          <CommandHandoff
-            v-if="issueCliCommand"
-            :command="issueCliCommand"
-            label="Issue invite command"
-            data-testid="team-invite-issue-cli-command"
-          />
-          <CommandHandoff
-            v-if="agentRequestCliCommand"
-            :command="agentRequestCliCommand"
-            label="Agent request command"
-            data-testid="agent-invite-request-cli-command"
-          />
-          <CommandHandoff
-            v-if="agentIssueCliCommand"
-            :command="agentIssueCliCommand"
-            label="Agent invite command"
-            data-testid="agent-invite-create-cli-command"
-          />
-          <span v-else class="view__muted">Complete the fields to show the CLI command.</span>
-        </div>
-      </form>
-    </section>
-
-    <section aria-labelledby="team-invite-accept-heading" class="view__panel">
-      <h3 id="team-invite-accept-heading" class="view__panel-heading">Accept invite</h3>
-      <form @submit.prevent>
-        <label class="view__field">
-          <span>Paste invite text</span>
-          <textarea
-            v-model="acceptForm.inviteText"
-            rows="6"
-            spellcheck="false"
-            autocomplete="off"
-            data-testid="team-invite-accept-text"
-          />
-          <span v-if="acceptValidation.errors.inviteText" class="view__error">
-            {{ acceptValidation.errors.inviteText }}
-          </span>
-        </label>
-        <label class="view__field">
-          <span>Issuer device fingerprint (64 hex)</span>
-          <input
-            v-model="acceptForm.fingerprintConfirmation"
-            type="text"
-            autocomplete="off"
-            spellcheck="false"
-            data-testid="team-invite-accept-fingerprint"
-          />
-          <span v-if="acceptValidation.errors.fingerprintConfirmation" class="view__error">
-            {{ acceptValidation.errors.fingerprintConfirmation }}
-          </span>
-        </label>
-        <label v-if="acceptForm.requireUserVerification" class="view__check">
-          <input v-model="acceptForm.userVerified" type="checkbox" />
-          I have completed local user verification (platform prompt / hardware key / passphrase
-          fallback).
-          <span v-if="acceptValidation.errors.userVerified" class="view__error">
-            {{ acceptValidation.errors.userVerified }}
-          </span>
-        </label>
-        <div class="view__form-actions">
-          <CommandHandoff
-            v-if="acceptCliCommand"
-            :command="acceptCliCommand"
-            label="Accept pasted invite command"
-            data-testid="team-invite-accept-cli-command"
-          />
-          <CommandHandoff
-            v-if="agentAcceptCliCommand"
-            :command="agentAcceptCliCommand"
-            label="Accept pasted agent invite command"
-            data-testid="agent-invite-accept-cli-command"
-          />
-          <span v-else class="view__muted">Complete the checks to show the CLI command.</span>
-        </div>
-      </form>
-    </section>
-
-    <section aria-labelledby="team-invite-revoke-heading" class="view__panel">
-      <h3 id="team-invite-revoke-heading" class="view__panel-heading">Revoke invite</h3>
-      <p class="view__muted">Owners and the issuing maintainer may revoke an outstanding invite.</p>
-      <form @submit.prevent>
-        <label class="view__field">
-          <span>Invite id</span>
-          <input
-            v-model="revokeForm.inviteId"
-            type="text"
-            autocomplete="off"
-            spellcheck="false"
-            data-testid="team-invite-revoke-id"
-          />
-          <span v-if="revokeValidation.errors.inviteId" class="view__error">
-            {{ revokeValidation.errors.inviteId }}
-          </span>
-        </label>
-        <label class="view__field">
-          <span>Type the invite id again to confirm</span>
-          <input
-            v-model="revokeForm.confirmation"
-            type="text"
-            autocomplete="off"
-            spellcheck="false"
-            data-testid="team-invite-revoke-confirm"
-          />
-          <span v-if="revokeValidation.errors.confirmation" class="view__error">
-            {{ revokeValidation.errors.confirmation }}
-          </span>
-        </label>
-        <div class="view__form-actions">
-          <CommandHandoff
-            v-if="revokeCliCommand"
-            :command="revokeCliCommand"
-            label="Revoke invite command"
-            data-testid="team-invite-revoke-cli-command"
-          />
-          <span v-else class="view__muted">Complete the confirmation to show the CLI command.</span>
-        </div>
-      </form>
-    </section>
+        <form @submit.prevent>
+          <label class="view__field">
+            <span>Invite id</span>
+            <input
+              v-model="revokeForm.inviteId"
+              type="text"
+              autocomplete="off"
+              spellcheck="false"
+              data-testid="team-invite-revoke-id"
+            />
+            <span v-if="revokeValidation.errors.inviteId" class="view__error">
+              {{ revokeValidation.errors.inviteId }}
+            </span>
+          </label>
+          <label class="view__field">
+            <span>Type the invite id again to confirm</span>
+            <input
+              v-model="revokeForm.confirmation"
+              type="text"
+              autocomplete="off"
+              spellcheck="false"
+              data-testid="team-invite-revoke-confirm"
+            />
+            <span v-if="revokeValidation.errors.confirmation" class="view__error">
+              {{ revokeValidation.errors.confirmation }}
+            </span>
+          </label>
+          <div class="view__form-actions">
+            <CommandHandoff
+              v-if="revokeCliCommand"
+              :command="revokeCliCommand"
+              label="Revoke invite command"
+              data-testid="team-invite-revoke-cli-command"
+            />
+            <span v-else class="view__muted"
+              >Complete the confirmation to show the CLI command.</span
+            >
+          </div>
+        </form>
+      </section>
+    </details>
   </section>
 </template>
 

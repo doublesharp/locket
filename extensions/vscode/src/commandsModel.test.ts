@@ -107,8 +107,6 @@ test('command routing table covers every spec command and uses unique ids', () =
     { commandId: 'locket.switchProfile', agentMethod: 'SetActiveProfile' },
     { commandId: 'locket.runPolicy', agentMethod: 'ListPolicies' },
     { commandId: 'locket.scanWorkspace', agentMethod: 'ScanKnownValues' },
-    { commandId: 'locket.revealSecret', agentMethod: 'Reveal' },
-    { commandId: 'locket.copySecret', agentMethod: 'Copy' },
     { commandId: 'locket.openAuditView', agentMethod: 'ListAudit' },
   ];
   assert.deepEqual([...LOCKET_COMMAND_ROUTES], expected);

@@ -16,6 +16,7 @@
 // stays quiet for crates referenced only via path lookups in other tests
 // or by the surrounding lib crate.
 use arboard as _;
+use base64 as _;
 use directories as _;
 use locket_agent as _;
 use locket_core as _;
@@ -23,10 +24,12 @@ use locket_platform as _;
 use locket_store as _;
 use serde as _;
 use serde_json as _;
+use sha2 as _;
 use tauri as _;
 use tempfile as _;
 use thiserror as _;
 use tokio as _;
+use toml as _;
 
 use locket_app::{TrayIconState, tray_icon_states};
 use locket_desktop_lib::{LOCKET_TRAY_ID, icon_bytes_for, tooltip_for};

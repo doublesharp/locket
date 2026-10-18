@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue';
-
+import { computed } from 'vue';
+import VariableReadinessPanel from '../components/VariableReadinessPanel.vue';
 import type {
   AuditLogRow,
   CommandPolicyRow,
@@ -11,21 +11,20 @@ import type {
   VersionHistoryRow,
 } from '../types/views';
 import { startHereActions, type StartHereTarget } from '../dashboard/startHere';
-
-type DashboardTarget =
-  | StartHereTarget
-  | 'secrets'
-  | 'versions'
-  | 'devices'
-  | 'profiles'
-  | 'recovery';
-type ProjectProfileSearchScope = 'all' | 'project' | 'profile';
-
-interface Props {
+import { auditHealth, scanHealth } from '../dashboard/health';
+const props = defineProps<{
+  projectId?: string;
+  profileId?: string;
+  privacyMode?: boolean;
   lockLabel: string;
   projectLabel: string;
   profileLabel: string;
   loading: boolean;
+  setupComplete: boolean;
+  projectConnected: boolean;
+  connected: boolean;
+  secretsLoaded: boolean;
+  policiesLoaded: boolean;
   secrets: SecretRowMeta[];
   versions: VersionHistoryRow[];
   sessions: RuntimeSessionRow[];
@@ -33,266 +32,127 @@ interface Props {
   findings: ScanFindingRow[];
   policies: CommandPolicyRow[];
   settings: SettingsState;
-  auditChainOk: boolean;
+  auditChainOk: boolean | null;
+  auditError?: string | null;
+  auditLastRefreshed?: string;
   lastScanAt?: string;
-}
-
-const props = defineProps<Props>();
-const projectProfileSearch = ref<string>('');
-const projectProfileSearchScope = ref<ProjectProfileSearchScope>('all');
-
-const emit = defineEmits<{
-  (e: 'navigate', target: DashboardTarget): void;
-  (e: 'refresh'): void;
+  scanLocked: boolean;
+  scanError?: string | null;
+  sessionsLastRefreshed?: string;
 }>();
-
-const secretCount = computed<number>(() => props.secrets.length);
-const deprecatedCount = computed<number>(
-  () => props.versions.filter((row) => row.state === 'deprecated').length,
+const emit = defineEmits<{
+  action: [target: StartHereTarget];
+  navigate: [target: 'secrets' | 'execution' | 'audit' | 'scan' | 'profiles'];
+  refresh: [];
+}>();
+const startActions = computed(() => startHereActions(props));
+const audit = computed(() => auditHealth(props.auditChainOk));
+const scan = computed(() =>
+  scanHealth(props.lastScanAt, props.scanLocked, props.scanError, props.findings.length),
 );
-const runningSessionCount = computed<number>(
-  () => props.sessions.filter((row) => row.state === 'running').length,
-);
-const failedSessionCount = computed<number>(
+const failedRuns = computed(
   () => props.sessions.filter((row) => row.state === 'failed' || row.state === 'stale').length,
 );
-const scanWarningCount = computed<number>(
-  () =>
-    props.findings.filter((row) => row.severity === 'high' || row.severity === 'critical').length,
-);
-const auditIssueCount = computed<number>(
-  () => props.auditRows.filter((row) => row.status !== 'OK' || !row.hmacOk).length,
-);
-const startActions = computed(() =>
-  startHereActions({
-    lockLabel: props.lockLabel,
-    secrets: props.secrets,
-    policies: props.policies,
-    sessions: props.sessions,
-    auditRows: props.auditRows,
-    findings: props.findings,
-    auditChainOk: props.auditChainOk,
-    lastScanAt: props.lastScanAt,
-  }),
-);
-const projectProfileRows = computed(() => [
-  {
-    kind: 'project' as const,
-    label: props.projectLabel,
-    detail: props.lockLabel === 'Unavailable' ? 'agent unavailable' : 'active project',
-  },
-  {
-    kind: 'profile' as const,
-    label: props.profileLabel,
-    detail: props.settings.dangerousProfileFlag ? 'dangerous profile' : 'active profile',
-  },
-]);
-const filteredProjectProfileRows = computed(() => {
-  const query = projectProfileSearch.value.trim().toLowerCase();
-  return projectProfileRows.value.filter((row) => {
-    const scopeMatches =
-      projectProfileSearchScope.value === 'all' || projectProfileSearchScope.value === row.kind;
-    const queryMatches =
-      query.length === 0 ||
-      row.label.toLowerCase().includes(query) ||
-      row.detail.toLowerCase().includes(query);
-    return scopeMatches && queryMatches;
-  });
-});
-
-const statusClass = computed<string>(() => {
-  switch (props.lockLabel) {
-    case 'Unlocked':
-      return 'dashboard__status--ok';
-    case 'Locked':
-      return 'dashboard__status--locked';
-    case 'Connecting…':
-      return 'dashboard__status--pending';
-    default:
-      return 'dashboard__status--error';
-  }
-});
-
-const healthRows = computed(() => [
-  {
-    label: 'Audit chain',
-    value: props.auditChainOk ? 'verified' : 'attention',
-    tone: props.auditChainOk ? 'ok' : 'warn',
-  },
-  {
-    label: 'Scan warnings',
-    value: scanWarningCount.value.toString(),
-    tone: scanWarningCount.value === 0 ? 'ok' : 'warn',
-  },
-  {
-    label: 'Runtime failures',
-    value: failedSessionCount.value.toString(),
-    tone: failedSessionCount.value === 0 ? 'ok' : 'warn',
-  },
-  {
-    label: 'Privacy mode',
-    value: props.settings.privacyRedactNames ? 'aliases' : 'exact names',
-    tone: props.settings.privacyRedactNames ? 'ok' : 'neutral',
-  },
-]);
-
-function navigate(target: DashboardTarget): void {
-  emit('navigate', target);
-}
-
-function refresh(): void {
-  emit('refresh');
-}
 </script>
-
 <template>
   <section class="dashboard" aria-labelledby="project-dashboard-heading">
     <header class="dashboard__header">
       <div>
-        <h2 id="project-dashboard-heading">Project dashboard</h2>
-        <p class="dashboard__context">
-          <span>{{ projectLabel }}</span>
-          <span aria-hidden="true">/</span>
-          <span>{{ profileLabel }}</span>
-        </p>
+        <h2 id="project-dashboard-heading">Project</h2>
+        <p class="dashboard__context">{{ projectLabel }} / {{ profileLabel }}</p>
       </div>
-      <button type="button" class="dashboard__refresh" :disabled="loading" @click="refresh">
-        {{ loading ? 'Refreshing' : 'Refresh' }}
+      <button type="button" class="dashboard__refresh" :disabled="loading" @click="emit('refresh')">
+        {{ loading ? 'Refreshing…' : 'Refresh' }}
       </button>
     </header>
-
-    <section class="dashboard__status" aria-label="Agent status">
-      <div :class="['dashboard__lock', statusClass]">
-        <span class="dashboard__lock-label">Vault</span>
-        <strong>{{ lockLabel }}</strong>
-      </div>
-      <dl class="dashboard__facts">
-        <div>
-          <dt>Agent</dt>
-          <dd>{{ settings.agentVersion }}</dd>
-        </div>
-        <div>
-          <dt>Unlock TTL</dt>
-          <dd>{{ settings.unlockTtlSeconds }}s</dd>
-        </div>
-        <div>
-          <dt>User verification</dt>
-          <dd>{{ settings.requireUserVerification ? 'required' : 'not required' }}</dd>
-        </div>
-      </dl>
-    </section>
-
     <section class="dashboard__start" aria-labelledby="dashboard-start-heading">
       <div class="dashboard__section-head">
         <h3 id="dashboard-start-heading">Start here</h3>
-        <span>{{ startActions.length === 0 ? 'Ready' : `${startActions.length} next` }}</span>
+        <span>{{
+          setupComplete ? 'Setup complete' : startActions.length ? 'Next step' : 'Setup complete'
+        }}</span>
       </div>
-      <ol v-if="startActions.length > 0" class="dashboard__start-list">
+      <ol v-if="startActions.length" class="dashboard__start-list">
         <li v-for="action in startActions" :key="action.id">
           <div>
-            <strong :class="`dashboard__start-title dashboard__start-title--${action.tone}`">
-              {{ action.title }}
-            </strong>
+            <strong>{{ action.title }}</strong>
             <p>{{ action.detail }}</p>
           </div>
-          <button type="button" class="dashboard__start-action" @click="navigate(action.target)">
+          <button
+            type="button"
+            class="dashboard__start-action"
+            @click="emit('action', action.target)"
+          >
             {{ action.actionLabel }}
           </button>
         </li>
       </ol>
       <p v-else class="dashboard__start-empty">
-        Project setup is complete for the signals Locket can verify locally.
+        Your project has variables, commands, and a recorded run. Sharing is optional.
       </p>
     </section>
-
-    <section class="dashboard__metrics" aria-label="Project summary">
-      <button type="button" class="dashboard__metric" @click="navigate('secrets')">
-        <span>Secrets</span>
-        <strong>{{ secretCount }}</strong>
-      </button>
-      <button type="button" class="dashboard__metric" @click="navigate('versions')">
-        <span>Deprecated versions</span>
-        <strong>{{ deprecatedCount }}</strong>
-      </button>
-      <button type="button" class="dashboard__metric" @click="navigate('execution')">
-        <span>Running sessions</span>
-        <strong>{{ runningSessionCount }}</strong>
-      </button>
-      <button type="button" class="dashboard__metric" @click="navigate('audit')">
-        <span>Audit issues</span>
-        <strong>{{ auditIssueCount }}</strong>
-      </button>
-    </section>
-
-    <section class="dashboard__search" aria-labelledby="dashboard-search-heading">
-      <div class="dashboard__search-header">
-        <h3 id="dashboard-search-heading">Project and profile search</h3>
-        <div class="dashboard__search-scopes" aria-label="Filter project and profile results">
-          <button
-            type="button"
-            :class="[
-              'dashboard__scope',
-              { 'dashboard__scope--active': projectProfileSearchScope === 'all' },
-            ]"
-            @click="projectProfileSearchScope = 'all'"
-          >
-            All
-          </button>
-          <button
-            type="button"
-            :class="[
-              'dashboard__scope',
-              { 'dashboard__scope--active': projectProfileSearchScope === 'project' },
-            ]"
-            @click="projectProfileSearchScope = 'project'"
-          >
-            Projects
-          </button>
-          <button
-            type="button"
-            :class="[
-              'dashboard__scope',
-              { 'dashboard__scope--active': projectProfileSearchScope === 'profile' },
-            ]"
-            @click="projectProfileSearchScope = 'profile'"
-          >
-            Profiles
-          </button>
-        </div>
+    <VariableReadinessPanel
+      :project-id="projectId"
+      :profile-id="profileId"
+      :privacy-mode="privacyMode"
+      :refresh-key="
+        policies.map((row) => row.updatedAt).join('|') +
+        ':' +
+        secrets.map((row) => row.id + row.currentVersion).join('|')
+      "
+    />
+    <section class="dashboard__status" aria-label="Agent status">
+      <div class="dashboard__lock">
+        <span class="dashboard__lock-label">Vault</span><strong>{{ lockLabel }}</strong>
       </div>
-      <label class="dashboard__search-box">
-        <span>Search metadata</span>
-        <input
-          v-model="projectProfileSearch"
-          type="search"
-          autocomplete="off"
-          placeholder="Filter current project or profile"
-        />
-      </label>
-      <ul class="dashboard__search-results">
-        <li v-for="row in filteredProjectProfileRows" :key="row.kind">
-          <span>{{ row.kind }}</span>
-          <strong>{{ row.label }}</strong>
-          <em>{{ row.detail }}</em>
-        </li>
-        <li v-if="filteredProjectProfileRows.length === 0" class="dashboard__search-empty">
-          <span>No matching metadata</span>
-        </li>
-      </ul>
+      <dl class="dashboard__facts">
+        <div>
+          <dt>Agent</dt>
+          <dd>{{ connected ? settings.agentVersion : 'Disconnected' }}</dd>
+        </div>
+        <div>
+          <dt>Environment</dt>
+          <dd>{{ profileLabel }}</dd>
+        </div>
+        <div>
+          <dt>Unlock duration</dt>
+          <dd>{{ settings.unlockTtlSeconds || 900 }} seconds</dd>
+        </div>
+      </dl>
     </section>
-
+    <section class="dashboard__metrics" aria-label="Project summary">
+      <button type="button" class="dashboard__metric" @click="emit('navigate', 'secrets')">
+        <span>Variables</span><strong>{{ secretsLoaded ? secrets.length : 'Unknown' }}</strong>
+      </button>
+      <button type="button" class="dashboard__metric" @click="emit('navigate', 'execution')">
+        <span>Recorded runs</span
+        ><strong>{{ sessionsLastRefreshed ? sessions.length : 'Unknown' }}</strong>
+      </button>
+      <button type="button" class="dashboard__metric" @click="emit('navigate', 'audit')">
+        <span>Audit chain</span
+        ><strong :class="`dashboard__health-${audit.tone}`">{{ audit.label }}</strong>
+      </button>
+      <button type="button" class="dashboard__metric" @click="emit('navigate', 'scan')">
+        <span>Project scan</span
+        ><strong :class="`dashboard__health-${scan.tone}`">{{ scan.label }}</strong>
+      </button>
+    </section>
     <section class="dashboard__health" aria-labelledby="dashboard-health-heading">
-      <h3 id="dashboard-health-heading">Health</h3>
-      <ul>
-        <li v-for="row in healthRows" :key="row.label">
-          <span>{{ row.label }}</span>
-          <strong :class="`dashboard__health-${row.tone}`">{{ row.value }}</strong>
-        </li>
-      </ul>
+      <h3 id="dashboard-health-heading">Checks for this project</h3>
+      <p>
+        Audit: {{ audit.label
+        }}<span v-if="auditLastRefreshed"> · Last checked {{ auditLastRefreshed }}</span>
+      </p>
+      <p v-if="auditError" role="alert">{{ auditError }} Retry from Activity.</p>
+      <p>
+        Scan: {{ scan.label }}<span v-if="lastScanAt"> · Last checked {{ lastScanAt }}</span
+        >. Scans check this project's files and available known values.
+      </p>
+      <p v-if="scanError" role="alert">{{ scanError }} Retry the scan.</p>
+      <p v-if="sessionsLastRefreshed">Failed or stale runs: {{ failedRuns }}</p>
     </section>
   </section>
 </template>
-
 <style scoped>
 .dashboard {
   color: #e6e8ec;

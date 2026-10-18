@@ -69,10 +69,24 @@ impl MasterKeyStore for KeyringMasterKeyStore {
     }
 }
 
-/// In-memory master-key store for tests and deterministic integration harnesses.
-#[derive(Debug, Default)]
+/// In-memory master-key store for short-lived operations and deterministic tests.
+#[derive(Default)]
 pub struct MemoryMasterKeyStore {
     key: Mutex<Option<(String, KeyBytes)>>,
+}
+
+impl std::fmt::Debug for MemoryMasterKeyStore {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("MemoryMasterKeyStore").finish_non_exhaustive()
+    }
+}
+impl Drop for MemoryMasterKeyStore {
+    fn drop(&mut self) {
+        let key = self.key.get_mut().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some((_, bytes)) = key.as_mut() {
+            bytes.zeroize();
+        }
+    }
 }
 
 impl MasterKeyStore for MemoryMasterKeyStore {

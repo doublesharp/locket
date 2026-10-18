@@ -4,7 +4,7 @@ use hmac::{Hmac, KeyInit, Mac};
 use locket_core::{
     AUDIT_HMAC_LEN, AuditHmacInput, Timestamp, audit_hmac_v1_bytes, canonical_json_string,
 };
-use rusqlite::{OptionalExtension, Transaction, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::{Map, Value, json};
 use sha2::Sha256;
 
@@ -176,7 +176,7 @@ pub fn audit_log_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Au
 }
 
 pub fn append_optional_audit(
-    transaction: &Transaction<'_>,
+    transaction: &Connection,
     audit: Option<AuditContext<'_>>,
 ) -> Result<(), StoreError> {
     if let Some(audit) = audit {
@@ -186,7 +186,7 @@ pub fn append_optional_audit(
 }
 
 fn read_audit_rows(
-    transaction: &Transaction<'_>,
+    transaction: &Connection,
     project_id: &str,
 ) -> Result<Vec<StoredAuditRow>, StoreError> {
     let mut statement = transaction.prepare(
@@ -379,7 +379,7 @@ fn verify_audit_rows(
 }
 
 pub fn append_audit(
-    transaction: &Transaction<'_>,
+    transaction: &Connection,
     audit_key: &[u8],
     audit: &AuditWrite<'_>,
 ) -> Result<(), StoreError> {
@@ -599,6 +599,7 @@ const KNOWN_AUDIT_METADATA_FIELDS: &[&str] = &[
     "applied_blob_count",
     "applied_command_policy_count",
     "applied_profile_count",
+    "archived_local_profile_count",
     "applied_profile_key_count",
     "applied_secret_count",
     "applied_secret_version_count",
@@ -849,7 +850,7 @@ impl Store {
         audit_key: &[u8],
         audit: &AuditWrite<'_>,
     ) -> Result<(), StoreError> {
-        let transaction = self.connection.transaction()?;
+        let transaction = self.connection.savepoint()?;
         append_audit(&transaction, audit_key, audit)?;
         transaction.commit()?;
         Ok(())

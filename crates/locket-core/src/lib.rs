@@ -13,7 +13,7 @@ pub mod error;
 pub mod policy;
 
 pub use configuration::{env, metadata, privacy, project, time};
-pub use formats::{audit, bundle, invite, pgp_word_list, update_manifest};
+pub use formats::{audit, bundle, dotenv, invite, pgp_word_list, update_manifest};
 pub use identity::{id, profile_name, reference_uri, secret_name};
 
 pub use audit::{
@@ -49,6 +49,8 @@ pub use pgp_word_list::{
 pub use policy::{
     CommandPolicy, CommandSpec, ExternalEnvSource, MAX_COMMAND_POLICY_TTL_SECONDS, PathEnvSet,
     PolicyDocument, PolicyFieldSource, PolicyParseError, SecretAccessPolicy,
+    VariableClassification, VariableContract, VariableReadinessRow, VariableReadinessState,
+    VariableType, variable_exposure_warning,
 };
 pub use privacy::privacy_alias;
 pub use profile_name::{InvalidProfileName, MAX_PROFILE_NAME_LEN, ProfileName};
@@ -64,3 +66,5 @@ pub use update_manifest::{
     build_update_manifest_fetch_request, verify_update_manifest,
     verify_update_manifest_key_rotation,
 };
+
+pub use formats::team_package;

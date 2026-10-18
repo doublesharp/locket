@@ -66,3 +66,66 @@ Policy source of truth:
 - The SQLite `command_policies` table stores a normalized local index/cache used by the agent, UI, tray, VS Code, and policy doctor.
 - `policy add`, `policy allow`, `policy require`, `policy edit`, and `policy delete` update `locket.toml` first, then refresh the SQLite index in the same user-visible operation.
 - If `locket.toml` and SQLite disagree, `locket.toml` wins after a successful parse; invalid TOML fails closed and leaves the prior SQLite index read-only for diagnostics only.
+
+## Variable contracts
+
+Projects may add commit-safe descriptions, setup guidance, classification, and
+literal public defaults under `[variables.<NAME>]`. These tables are separate
+from `[secrets.<NAME>]`, which continues to contain only access restrictions.
+
+```toml
+[variables.DATABASE_URL]
+classification = "secret"
+type = "url"
+description = "Database connection for the API."
+setup_hint = "Ask a teammate for a local development database."
+
+[variables.NEXT_PUBLIC_API_URL]
+classification = "public"
+type = "url"
+default = "http://localhost:3001"
+description = "API endpoint included in browser code."
+```
+
+Classification defaults to `secret`. Type defaults to `string`; `integer`
+requires a signed 64-bit integer, `boolean` requires exactly `true` or `false`,
+and `url` requires an absolute URL accepted by the URL parser. URL syntax
+validation does not verify an endpoint or its trustworthiness. NUL characters
+are invalid. Descriptions and setup hints must be safe to commit and contain
+no credentials.
+
+Only explicitly public variables may have a default. Defaults are literal
+strings: Locket performs no shell expansion, interpolation, or reference
+resolution, and rejects `lk://` references in defaults. Unknown contract fields
+and invalid defaults fail validation with value-free diagnostics.
+
+A contract never grants access. Existing `required_secrets`, `optional_secrets`,
+path scopes, and secret ACLs determine which names a command can receive. Public
+defaults fill only those authorized names that have no value after existing
+source and override rules. They do not overwrite inherited, external, or vault
+values, and do not hide source conflicts. Resolved values are checked against
+the declared type before the child process starts.
+
+Secret-classified or unclassified `VITE_` and `NEXT_PUBLIC_` names produce a
+browser-exposure warning before launch. A public classification describes
+intent; it does not bypass encrypted-store access, reveal, copy, or ACL rules.
+
+For CI without a local vault, agent, or credentials:
+
+```sh
+locket env validate --policy dev --provided-name DATABASE_URL --json
+```
+
+This offline command reads project contracts and supplied names only. It applies
+the current directory's path scope and ACLs, checks required-name coverage, and
+reports metadata with `mode = "names-only"` and `values_checked = false`. It
+never starts a process, reads external env files or process environment values,
+opens the local vault, contacts the agent, or resolves Compose/IDE sources.
+Exit status is 0 for complete coverage, 1 for missing required names, and 2 for
+an invalid contract, policy, input, or authorization. Provided names establish
+coverage only, not valid values or access to a real credential.
+
+`env inspect` shows source labels and missing-value setup guidance without
+values. Its existing external-source resolution may invoke Compose, so use
+`env validate` for the offline check. Older Locket binaries reject the new
+`variables` root key; use matching CLI, desktop, and editor release versions.

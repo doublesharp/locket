@@ -22,7 +22,7 @@ pub const EXAMPLE_FILE: &str = ".env.example";
 pub const GITIGNORE_FILE: &str = ".gitignore";
 pub const EXAMPLE_BEGIN: &str = "# --- BEGIN LOCKET MANAGED ---";
 pub const EXAMPLE_END: &str = "# --- END LOCKET MANAGED ---";
-pub const GITIGNORE_ENTRIES: [&str; 4] = [".env", ".env.*", ".locket.local", ".locketignore"];
+pub const GITIGNORE_ENTRIES: [&str; 4] = locket_platform::SECRET_FILE_IGNORE_PATTERNS;
 
 #[derive(Debug)]
 pub struct ExampleWriteResult {
@@ -77,27 +77,7 @@ pub fn write_example_emit_audit(
 }
 
 pub fn ensure_gitignore(root: &Path) -> Result<(), CliError> {
-    let path = root.join(GITIGNORE_FILE);
-    let existing = match fs::read_to_string(&path) {
-        Ok(content) => content,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => String::new(),
-        Err(error) => return Err(error.into()),
-    };
-
-    let mut content = existing.clone();
-    for entry in GITIGNORE_ENTRIES {
-        if !existing.lines().any(|line| line.trim() == entry) {
-            if !content.is_empty() && !content.ends_with('\n') {
-                content.push('\n');
-            }
-            content.push_str(entry);
-            content.push('\n');
-        }
-    }
-
-    if content != existing {
-        fs::write(path, content)?;
-    }
+    locket_platform::ensure_secret_file_ignores(root)?;
     Ok(())
 }
 

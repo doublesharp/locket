@@ -167,7 +167,7 @@ fn ai_safe_finish_after_suppression_emits_only_metadata_and_is_idempotent() {
     assert_eq!(chunks[0].text, "lk_redacted_BUFFER_LIMIT");
     let final_chunks = redactor.finish();
     assert_eq!(final_chunks.len(), 1);
-    assert!(final_chunks[0].text.is_empty());
+    assert_eq!(final_chunks[0].text, "");
     assert!(final_chunks[0].unterminated_partial_line);
     assert!(!final_chunks[0].buffer_limit_reached);
     assert!(redactor.finish().is_empty());

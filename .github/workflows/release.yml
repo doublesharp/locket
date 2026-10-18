@@ -12,17 +12,22 @@ permissions:
   attestations: write
 
 env:
-  CARGO_INCREMENTAL: "1"
+  CARGO_INCREMENTAL: "0"
   CARGO_JOBS: "2"
   LOCKET_RELEASE_RUNNER_ATTESTED: ${{ vars.LOCKET_RELEASE_RUNNER_ID }}
   RUST_BACKTRACE: "1"
 
 jobs:
   build:
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
     name: auditable release build
     runs-on: ${{ fromJSON(vars.LOCKET_RELEASE_RUNNER_LABELS || '["ubuntu-24.04"]') }}
     environment: release
     steps:
+      - name: Prepare temporary path
+        run: echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
+
       - name: Require release tag
         if: github.event_name != 'workflow_dispatch' && !startsWith(github.ref, 'refs/tags/v')
         run: exit 1
@@ -35,6 +40,11 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+
+      - name: Verify release versions
+        env:
+          LOCKET_RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
+        run: node scripts/distribution.mjs versions
 
       - name: Install Rust toolchain
         run: rustup show
@@ -111,3 +121,9 @@ jobs:
             target/quality/**
             supply-chain-exceptions.json
           if-no-files-found: error
+
+  validate-packages:
+    needs: build
+    uses: ./.github/workflows/package-validation.yml
+    permissions:
+      contents: read

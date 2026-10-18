@@ -20,8 +20,12 @@ skip_or_check() {
   fi
 }
 
+check node scripts/distribution.mjs versions
+check node --test scripts/distribution.test.mjs
+check python3 scripts/package_contents_test.py
 check bash -n scripts/package-vscode-extension.sh
 check bash -n scripts/package-native-installers.sh
+check bash -n scripts/package-cargo-auditable.sh
 check bash -n scripts/render-homebrew-formula.sh
 check bash -n scripts/release-operator-runbook.sh
 check bash -n scripts/validate-local-user-auth-real-host.sh
@@ -78,10 +82,10 @@ for (const dir of fs.readdirSync("crates")) {
 
 skip_or_check ruby ruby -c dist/homebrew/locket.rb
 skip_or_check ruby ruby -c dist/homebrew/locket.rb.in
-check scripts/render-homebrew-formula.sh --version 0.1.0 --url https://github.com/doublesharp/locket/releases/download/v0.1.0/locket-0.1.0-src.tar.gz --sha256 1111111111111111111111111111111111111111111111111111111111111111 --out target/package/homebrew/locket.rb
+check scripts/render-homebrew-formula.sh --version 0.1.0 --url https://github.com/doublesharp/locket/releases/download/v0.1.0/locket-0.1.0-src.tar.gz --sha256 1111111111111111111111111111111111111111111111111111111111111111 --out "${LOCKET_BUILD_ROOT:-${CARGO_TARGET_DIR:-target}}/package/homebrew/locket.rb"
 skip_or_check plutil plutil -lint dist/installers/macos/entitlements.plist
 skip_or_check xmllint xmllint --noout dist/installers/macos/distribution.xml
-skip_or_check actionlint actionlint .github/workflows/ci.yml .github/workflows/release.yml .github/workflows/fuzz-nightly.yml
+skip_or_check actionlint actionlint .github/workflows/ci.yml .github/workflows/release.yml .github/workflows/fuzz-nightly.yml .github/workflows/package-validation.yml
 
 check scripts/package-native-installers.sh --target all --dry-run
 
@@ -101,7 +105,7 @@ fi
 
 if command -v pnpm >/dev/null 2>&1; then
   if [[ -d extensions/vscode/node_modules ]]; then
-    check pnpm --dir extensions/vscode exec vsce ls --no-dependencies
+    (cd extensions/vscode && check node_modules/.bin/vsce ls --no-dependencies)
   else
     echo "skip: extensions/vscode/node_modules missing; run pnpm --dir extensions/vscode install --frozen-lockfile for VSIX packaging checks"
   fi

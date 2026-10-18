@@ -10,7 +10,6 @@ use std::sync::Mutex;
 use directories::ProjectDirs;
 use serde::Deserialize;
 
-#[cfg(debug_assertions)]
 use tauri::Manager as _;
 use tauri::{Emitter as _, RunEvent};
 
@@ -22,6 +21,7 @@ use tempfile as _;
 
 mod agent_client;
 mod clipboard;
+mod desktop_actions;
 mod tray;
 
 pub use agent_client::{
@@ -280,7 +280,7 @@ fn cancel_status_subscription() {
 #[tauri::command]
 async fn agent_status() -> Result<locket_agent::StatusPayload, AgentClientError> {
     let path = agent_client::resolve_socket_path();
-    agent_client::fetch_status(&path).await
+    desktop_actions::selected_agent_status(&path).await
 }
 
 /// Tauri command bridging `SubscribeStatus` stream frames to webview events.
@@ -436,9 +436,15 @@ struct DesktopSetActiveProfileRequest {
 
 impl DesktopSetActiveProfileRequest {
     fn into_agent_request(self) -> Result<locket_agent::SetActiveProfileRequest, AgentClientError> {
+        let store_path = resolve_path(self.store_path, default_store_path)?;
+        let config_path = match self.config_path {
+            Some(path) => path,
+            None => desktop_actions::project_config_path(&store_path, &self.project_id)
+                .map_err(|reason| AgentClientError::Protocol { reason })?,
+        };
         Ok(locket_agent::SetActiveProfileRequest {
-            config_path: resolve_path(self.config_path, default_config_path)?,
-            store_path: resolve_path(self.store_path, default_store_path)?,
+            config_path,
+            store_path,
             project_id: self.project_id,
             profile_name: self.profile_name,
             confirmation: self.confirmation,
@@ -469,8 +475,23 @@ async fn agent_set_active_profile(
 async fn agent_reveal(
     request: locket_agent::RevealRequest,
 ) -> Result<locket_agent::RevealResponse, AgentClientError> {
-    let path = agent_client::resolve_socket_path();
-    agent_client::invoke_method(&path, locket_agent::AgentMethod::Reveal, &request).await
+    let store = resolve_path(request.store_path.clone(), default_store_path)?;
+    let project =
+        request.project_id.clone().map(Ok).unwrap_or_else(desktop_actions::selected_project_id)?;
+    let mut request = request;
+    request.store_path = Some(store.clone());
+    request.project_id = Some(project.clone());
+    desktop_actions::invoke_granted(
+        locket_agent::AgentMethod::Reveal,
+        locket_agent::GrantAction::Reveal,
+        serde_json::to_value(&request).map_err(|_| AgentClientError::Protocol {
+            reason: "Invalid secret access request.".into(),
+        })?,
+        &store,
+        &project,
+        &request.profile_id,
+    )
+    .await
 }
 
 /// Tauri command exposing the agent's `Copy` RPC to the webview.
@@ -478,8 +499,23 @@ async fn agent_reveal(
 async fn agent_copy(
     request: locket_agent::CopyRequest,
 ) -> Result<locket_agent::CopyResponse, AgentClientError> {
-    let path = agent_client::resolve_socket_path();
-    agent_client::invoke_method(&path, locket_agent::AgentMethod::Copy, &request).await
+    let store = resolve_path(request.store_path.clone(), default_store_path)?;
+    let project =
+        request.project_id.clone().map(Ok).unwrap_or_else(desktop_actions::selected_project_id)?;
+    let mut request = request;
+    request.store_path = Some(store.clone());
+    request.project_id = Some(project.clone());
+    desktop_actions::invoke_granted(
+        locket_agent::AgentMethod::Copy,
+        locket_agent::GrantAction::Copy,
+        serde_json::to_value(&request).map_err(|_| AgentClientError::Protocol {
+            reason: "Invalid secret access request.".into(),
+        })?,
+        &store,
+        &project,
+        &request.profile_id,
+    )
+    .await
 }
 
 /// Tauri command exposing the agent's `ScanKnownValues` RPC.
@@ -675,7 +711,7 @@ async fn agent_list_secrets(
 /// metadata-only `rotate` flag forced to `false`. The desktop never
 /// holds the unwrapped key; the agent enforces the live grant + unlock
 /// cache on its side.
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 struct DesktopSetSecretRequest {
     store_path: Option<PathBuf>,
     project_id: String,
@@ -705,7 +741,7 @@ impl DesktopSetSecretRequest {
             rotate,
             grace_until: self.grace_until,
             grant_id: self.grant_id,
-            binding: None,
+            binding: Some(desktop_actions::native_binding()?),
         })
     }
 }
@@ -721,8 +757,16 @@ async fn agent_set_secret(
     request: DesktopSetSecretRequest,
 ) -> Result<locket_agent::SetSecretResponse, AgentClientError> {
     let agent_request = request.into_agent_request(false)?;
-    let path = agent_client::resolve_socket_path();
-    agent_client::invoke_method(&path, locket_agent::AgentMethod::SetSecret, &agent_request).await
+    desktop_actions::invoke_granted(
+        locket_agent::AgentMethod::SetSecret,
+        locket_agent::GrantAction::SetSecret,
+        serde_json::to_value(&agent_request)
+            .map_err(|_| AgentClientError::Protocol { reason: "Invalid secret request.".into() })?,
+        std::path::Path::new(&agent_request.store_path),
+        &agent_request.project_id,
+        &agent_request.profile_id,
+    )
+    .await
 }
 
 /// Tauri command bridging the desktop secret editor to the agent's
@@ -734,8 +778,16 @@ async fn agent_rotate_secret(
     request: DesktopSetSecretRequest,
 ) -> Result<locket_agent::SetSecretResponse, AgentClientError> {
     let agent_request = request.into_agent_request(true)?;
-    let path = agent_client::resolve_socket_path();
-    agent_client::invoke_method(&path, locket_agent::AgentMethod::SetSecret, &agent_request).await
+    desktop_actions::invoke_granted(
+        locket_agent::AgentMethod::SetSecret,
+        locket_agent::GrantAction::SetSecret,
+        serde_json::to_value(&agent_request)
+            .map_err(|_| AgentClientError::Protocol { reason: "Invalid secret request.".into() })?,
+        std::path::Path::new(&agent_request.store_path),
+        &agent_request.project_id,
+        &agent_request.profile_id,
+    )
+    .await
 }
 
 /// Tauri command exposing metadata-only desktop settings.
@@ -808,7 +860,6 @@ struct DesktopClipboardCopyRequest {
     profile_id: String,
     project_id: Option<String>,
     store_path: Option<PathBuf>,
-    grant_id: Option<String>,
     ttl_seconds: Option<u32>,
 }
 
@@ -833,17 +884,27 @@ async fn agent_copy_secret(
             unsupported_reason: "wayland-session".to_owned(),
         });
     }
-    let path = agent_client::resolve_socket_path();
+    let store = resolve_path(request.store_path.clone(), default_store_path)?;
+    let project =
+        request.project_id.clone().map(Ok).unwrap_or_else(desktop_actions::selected_project_id)?;
     let agent_request = locket_agent::CopyRequest {
         secret_name: request.secret_name,
         profile_id: request.profile_id,
-        project_id: request.project_id,
-        store_path: request.store_path,
-        grant_id: request.grant_id,
+        project_id: Some(project.clone()),
+        store_path: Some(store.clone()),
+        grant_id: None,
         binding: None,
     };
-    let response: locket_agent::CopyResponse =
-        agent_client::invoke_method(&path, locket_agent::AgentMethod::Copy, &agent_request).await?;
+    let response: locket_agent::CopyResponse = desktop_actions::invoke_granted(
+        locket_agent::AgentMethod::Copy,
+        locket_agent::GrantAction::Copy,
+        serde_json::to_value(&agent_request)
+            .map_err(|_| AgentClientError::Protocol { reason: "Invalid copy request.".into() })?,
+        &store,
+        &project,
+        &agent_request.profile_id,
+    )
+    .await?;
     let ttl_seconds = request.ttl_seconds.unwrap_or(response.ttl_seconds.max(1));
     if let Err(error) = clipboard::write_clipboard(&response.value) {
         return Err(AgentClientError::Protocol {
@@ -928,6 +989,19 @@ pub fn run() -> tauri::Result<()> {
     let _ = locket_platform::init_platform_keyring();
     let app = tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
+            desktop_actions::desktop_list_projects,
+            desktop_actions::desktop_open_project,
+            desktop_actions::desktop_initialize_project,
+            desktop_actions::desktop_import_env,
+            desktop_actions::desktop_start_agent,
+            desktop_actions::desktop_run_policy,
+            desktop_actions::desktop_save_policy,
+            desktop_actions::desktop_variable_readiness,
+            desktop_actions::desktop_team_sync_status,
+            desktop_actions::desktop_team_sync_configure,
+            desktop_actions::desktop_team_sync_now,
+            desktop_actions::desktop_team_sync_rename_profile,
+            desktop_actions::desktop_team_sync_preserve_override,
             agent_status,
             agent_subscribe_status,
             agent_lock,
@@ -961,6 +1035,9 @@ pub fn run() -> tauri::Result<()> {
             tray_set_privacy_context,
         ])
         .setup(|app| {
+            if let Ok(path) = app.path().resource_dir() {
+                desktop_actions::set_resource_root(path);
+            }
             #[cfg(debug_assertions)]
             {
                 if let Some(window) = app.get_webview_window("main") {
@@ -1252,7 +1329,10 @@ mod tests {
             assert_eq!(set_secret.rotate, rotate);
             assert_eq!(set_secret.grace_until, Some(123));
             assert_eq!(set_secret.grant_id.as_deref(), Some("grant-1"));
-            assert!(set_secret.binding.is_none());
+            assert_eq!(
+                set_secret.binding.as_ref().map(|binding| binding.pid),
+                Some(std::process::id())
+            );
             assert_eq!(set_secret.project_id, "lk_proj_test");
             assert_eq!(set_secret.profile_id, "lk_prof_test");
             assert_eq!(set_secret.secret_name, "DATABASE_URL");

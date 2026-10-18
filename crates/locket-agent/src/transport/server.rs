@@ -483,9 +483,43 @@ impl AgentSocketState {
             unlock_ttl_seconds: summary.max_remaining_seconds,
             running_session_count: u32::try_from(running_session_count).unwrap_or(u32::MAX),
             scan_warning_count: metrics.scan_warning_count,
+            scan_warning_count_known: true,
             recent_audit_status: metrics.recent_audit_status,
             pinned_reference_warning_count: metrics.pinned_reference_warning_count,
         }
+    }
+
+    /// Builds project-scoped health without borrowing another project's unlock.
+    /// Profile labels are resolved by the caller against local project metadata.
+    pub async fn status_snapshot_for_project(&self, project_id: &str, now: i128) -> StatusPayload {
+        let mut snapshot = self.status_snapshot(now).await;
+        snapshot.project_id = Some(project_id.to_owned());
+        let remaining = self.unlock_cache.lock().await.lookup(project_id, now).map(|entry| {
+            u64::try_from((entry.expires_at_unix_nanos() - now) / 1_000_000_000).unwrap_or(0)
+        });
+        snapshot.lock_state =
+            if remaining.is_some() { LockState::Unlocked } else { LockState::Locked };
+        snapshot.unlock_ttl_seconds = remaining;
+        snapshot.live_grant_count =
+            u32::try_from(self.grants.lock().await.count_for_project(project_id))
+                .unwrap_or(u32::MAX);
+        snapshot.running_session_count = u32::try_from(
+            self.runtime_sessions
+                .lock()
+                .await
+                .iter()
+                .filter(|session| session.project_id == project_id && session.ended_at.is_none())
+                .count(),
+        )
+        .unwrap_or(u32::MAX);
+        // These metrics are global; unknown is more accurate than presenting a
+        // different project's audit/scan result as this project's health.
+        // Preserve the global warning signal for the application tray, but mark
+        // it unknown for project-specific summaries.
+        snapshot.scan_warning_count_known = false;
+        snapshot.recent_audit_status = RecentAuditStatus::Unknown;
+        snapshot.pinned_reference_warning_count = 0;
+        snapshot
     }
 
     pub(crate) async fn publish_status_snapshot(&self, now_unix_nanos: i128) -> StatusPayload {
@@ -816,8 +850,27 @@ pub async fn dispatch(envelope: &RequestEnvelope, state: &AgentSocketState) -> R
         return response;
     }
     match envelope.method() {
+        Ok(AgentMethod::TeamSyncStatus) => {
+            crate::handlers::team_sync::handle_team_sync_status(envelope, state).await
+        }
+        Ok(AgentMethod::TeamSyncConfigure) => {
+            crate::handlers::team_sync::handle_team_sync_configure(envelope, state).await
+        }
+        Ok(AgentMethod::TeamSyncNow) => {
+            crate::handlers::team_sync::handle_team_sync_now(envelope, state).await
+        }
+        Ok(AgentMethod::TeamSyncReconcile) => {
+            crate::handlers::team_sync::handle_team_sync_reconcile(envelope, state).await
+        }
         Ok(AgentMethod::Status) => {
-            let snapshot = state.status_snapshot(current_unix_nanos()).await;
+            let now = current_unix_nanos();
+            let snapshot = match envelope.payload.get("project_id") {
+                Some(serde_json::Value::String(project_id)) if !project_id.trim().is_empty() => {
+                    state.status_snapshot_for_project(project_id, now).await
+                }
+                Some(serde_json::Value::Null) | None => state.status_snapshot(now).await,
+                _ => return error_response(envelope, "ProtocolError", "invalid Status project_id"),
+            };
             let payload = serde_json::to_value(snapshot).unwrap_or(serde_json::Value::Null);
             ResponseEnvelope::Success(SuccessEnvelope::new(envelope.id.clone(), payload))
         }
@@ -889,6 +942,12 @@ pub async fn dispatch(envelope: &RequestEnvelope, state: &AgentSocketState) -> R
         Ok(AgentMethod::PrepareExec) => prepare_exec_dispatch(envelope, state).await,
         Ok(AgentMethod::ListSecrets) => handle_list_secrets(envelope),
         Ok(AgentMethod::ListVersions) => handle_list_versions(envelope),
+        Ok(AgentMethod::ImportDotenv) => {
+            crate::mutations::handle_import_dotenv(envelope, state, current_unix_nanos()).await
+        }
+        Ok(AgentMethod::ApplyPolicy) => {
+            crate::mutations::handle_apply_policy(envelope, state, current_unix_nanos()).await
+        }
         Ok(AgentMethod::SetSecret) => {
             crate::set_secret::handle_set_secret(envelope, state, current_unix_nanos()).await
         }
@@ -1481,6 +1540,34 @@ mod cache_status_tests {
     use super::*;
     use crate::unlock_cache::{UnlockCache, UnlockEntry, UnlockMethod};
     use tokio::sync::Mutex;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn scoped_status_does_not_borrow_another_projects_unlock() {
+        let cache = Arc::new(Mutex::new(UnlockCache::default()));
+        cache.lock().await.insert(
+            "project-a".into(),
+            UnlockEntry::new(
+                b"test-key".to_vec(),
+                1_000_000_000,
+                Duration::from_secs(60),
+                UnlockMethod::Passphrase,
+            ),
+        );
+        let state =
+            AgentSocketState::for_tests("test", crate::peer_cred::current_process_uid(), cache);
+        let locked = state.status_snapshot_for_project("project-b", 1_500_000_000).await;
+        assert_eq!(locked.project_id.as_deref(), Some("project-b"));
+        assert_eq!(locked.lock_state, LockState::Locked);
+        assert_eq!(locked.unlock_ttl_seconds, None);
+        assert!(!locked.scan_warning_count_known);
+        let live = state.status_snapshot_for_project("project-a", 1_500_000_000).await;
+        assert_eq!(live.lock_state, LockState::Unlocked);
+        assert_eq!(live.unlock_ttl_seconds, Some(59));
+        assert_eq!(live.profile_name, None);
+        let expired = state.status_snapshot_for_project("project-a", 61_000_000_000).await;
+        assert_eq!(expired.lock_state, LockState::Locked);
+        assert_eq!(expired.unlock_ttl_seconds, None);
+    }
 
     #[tokio::test(flavor = "current_thread")]
     async fn status_reports_unlocked_when_cache_has_live_entry() {

@@ -1,62 +1,86 @@
 <script setup lang="ts">
-import { ref } from 'vue';
-
-defineProps<{
-  projectLabel: string;
-}>();
-
-const emit = defineEmits<{
-  (event: 'submit', passphrase: string): void;
-  (event: 'dismiss'): void;
-}>();
-
-const passphrase = ref<string>('');
-
+import { ref, watch } from 'vue';
+import type { UnlockRequest } from '../agent/types';
+const props = defineProps<{ projectLabel: string; busy: boolean; errorMessage?: string | null }>();
+const emit = defineEmits<{ submit: [source: UnlockRequest['source']]; dismiss: [] }>();
+const passphrase = ref('');
+const usePassphrase = ref(false);
+watch(
+  () => props.errorMessage,
+  () => {
+    passphrase.value = '';
+  },
+);
+watch(usePassphrase, () => {
+  passphrase.value = '';
+});
 function onSubmit(): void {
-  if (passphrase.value.length === 0) {
-    return;
-  }
-  emit('submit', passphrase.value);
+  if (props.busy || (usePassphrase.value && !passphrase.value)) return;
+  emit(
+    'submit',
+    usePassphrase.value
+      ? { kind: 'passphrase', passphrase: passphrase.value }
+      : { kind: 'os-keychain' },
+  );
   passphrase.value = '';
 }
-
 function onDismiss(): void {
-  passphrase.value = '';
-  emit('dismiss');
+  if (!props.busy) {
+    passphrase.value = '';
+    emit('dismiss');
+  }
 }
 </script>
-
 <template>
   <div class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="unlock-title">
     <form class="modal" @submit.prevent="onSubmit">
       <h2 id="unlock-title">Unlock vault</h2>
       <p class="modal__caption">Project: {{ projectLabel }}</p>
-      <label class="modal__field">
+      <p class="modal__caption">
+        Unlocks this project for a limited time. The system may ask for verification.
+      </p>
+      <label
+        ><input v-model="usePassphrase" type="checkbox" :disabled="props.busy" /> Use a passphrase
+        instead</label
+      >
+      <label v-if="usePassphrase" class="modal__field">
         <span>Passphrase</span>
         <input
           v-model="passphrase"
           type="password"
-          autocomplete="current-password"
+          autocomplete="off"
+          :disabled="props.busy"
           required
           autofocus
         />
       </label>
+      <p v-if="props.errorMessage" role="alert">{{ props.errorMessage }}</p>
       <div class="modal__actions">
-        <button type="button" class="modal__btn modal__btn--ghost" @click="onDismiss">
+        <button
+          type="button"
+          class="modal__btn modal__btn--ghost"
+          :disabled="props.busy"
+          @click="onDismiss"
+        >
           Cancel
         </button>
         <button
           type="submit"
           class="modal__btn modal__btn--primary"
-          :disabled="passphrase.length === 0"
+          :disabled="props.busy || (usePassphrase && !passphrase)"
         >
-          Unlock
+          {{
+            props.busy
+              ? 'Unlocking…'
+              : usePassphrase
+                ? 'Unlock with passphrase'
+                : 'Use system keychain'
+          }}
         </button>
       </div>
     </form>
   </div>
 </template>
-
 <style scoped>
 .modal-backdrop {
   position: fixed;

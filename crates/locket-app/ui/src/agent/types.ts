@@ -13,6 +13,7 @@ export interface AgentStatus {
   unlock_ttl_seconds: number | null;
   running_session_count: number;
   scan_warning_count: number;
+  scan_warning_count_known?: boolean;
   recent_audit_status: 'unknown' | 'ok' | 'warning';
   pinned_reference_warning_count: number;
 }
@@ -255,6 +256,9 @@ export interface ExportBundleRequest {
   scope: BundleExportScope;
   include_audit: boolean;
   output_path?: string | null;
+  include_personal?: boolean;
+  include_history?: boolean;
+  preview_only?: boolean;
 }
 
 export interface ImportBundleRequest {
@@ -519,4 +523,67 @@ export interface VersionWireRow {
 
 export interface ListVersionsResponse {
   rows: VersionWireRow[];
+}
+
+export interface DesktopProjectContext {
+  root: string;
+  project_id: string;
+  project_name: string;
+  profile_id: string;
+  profile_name: string;
+}
+export interface DesktopImportEnvRequest {
+  confirmation?: string;
+  project_id: string;
+  path: string;
+  overwrite: boolean;
+  literal: boolean;
+}
+export interface DesktopSavePolicyRequest {
+  project_id: string;
+  mode: 'create' | 'edit' | 'delete';
+  original_name: string;
+  policy: CommandPolicySnapshotWire;
+  confirmation?: string;
+}
+export interface UnlockRequest {
+  project_id: string;
+  ttl_seconds: number;
+  source: { kind: 'os-keychain' } | { kind: 'passphrase'; passphrase: string };
+  audit?: { profile_id: string };
+}
+
+export interface VariableReadinessRow {
+  name: string;
+  required: boolean;
+  classification: 'secret' | 'public';
+  state: 'ready' | 'missing' | 'optional' | 'unverified';
+  selected_source?: string | null;
+  description?: string | null;
+  setup_hint?: string | null;
+  next_action?: string | null;
+  warning?: string | null;
+}
+export interface VariableReadinessResponse {
+  project_id: string;
+  profile_id: string;
+  profile_name: string;
+  policies: {
+    policy_name: string;
+    profile_id: string;
+    rows: VariableReadinessRow[];
+    error?: string | null;
+  }[];
+}
+export type TeamSyncStatus = import('../team/sync').TeamSyncStatus;
+export interface TeamSyncRenameProfileRequest {
+  project_id: string;
+  incoming_profile_id: string;
+  local_profile_id: string;
+  new_name: string;
+}
+export interface TeamSyncPreserveOverrideRequest {
+  project_id: string;
+  incoming_profile_id: string;
+  local_secret_id: string;
 }

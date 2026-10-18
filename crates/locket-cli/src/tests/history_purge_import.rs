@@ -459,7 +459,7 @@ fn history_unknown_source_fails_without_listing_other_sources()
         &mut history_output,
     );
     assert!(result.is_err(), "missing source should error");
-    assert!(history_output.is_empty());
+    assert_eq!(history_output.len(), 0);
     Ok(())
 }
 
@@ -535,6 +535,32 @@ fn import_env_encrypts_values_and_refreshes_example() -> Result<(), Box<dyn std:
     )?;
 
     let mut import_output = Vec::new();
+    let error = run_with_context(
+        Cli::try_parse_from(["locket", "import", ".env"])?,
+        &context,
+        &mut import_output,
+    )
+    .err()
+    .ok_or("invalid dotenv must fail before writes")?;
+    assert!(error.to_string().contains("line 2"));
+    assert!(!error.to_string().contains("value"));
+    let import_output = String::from_utf8(import_output)?;
+    assert!(import_output.contains("imported: 0"));
+    assert!(import_output.contains("invalid: 1"));
+    let store = crate::open_store(&context)?;
+    let resolved = crate::require_project(&context)?;
+    let profile = crate::default_profile(&store, &resolved.config)?;
+    assert_eq!(
+        store.list_secrets_by_profile(resolved.config.project_id.as_str(), &profile.id)?,
+        [] as [locket_store::SecretRecord; 0]
+    );
+    assert!(directory.path().join(".env").exists());
+    assert!(!import_output.contains("postgres://localhost/app"));
+    std::fs::write(
+        directory.path().join(".env"),
+        "DATABASE_URL=postgres://localhost/app\nOPENAI_API_KEY='sk_test_sample'\n",
+    )?;
+    let mut import_output = Vec::new();
     run_with_context(
         Cli::try_parse_from(["locket", "import", ".env"])?,
         &context,
@@ -542,7 +568,6 @@ fn import_env_encrypts_values_and_refreshes_example() -> Result<(), Box<dyn std:
     )?;
     let import_output = String::from_utf8(import_output)?;
     assert!(import_output.contains("imported: 2"));
-    assert!(import_output.contains("invalid: 1"));
     assert!(import_output.contains("profile: dev"));
     assert!(import_output.contains("source: user-local"));
     assert!(import_output.contains("missing_in_profile: none"));
@@ -775,5 +800,104 @@ fn import_with_delete_confirmation_removes_env_and_emits_example()
     assert!(!example.contains(secret_value), "secret value must not appear in .env.example");
     assert!(!example.contains("tok_test_abc123"), "secret value must not appear in .env.example");
 
+    Ok(())
+}
+
+#[test]
+fn import_multiline_empty_and_literal_values_roundtrip_without_expansion()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    std::fs::write(
+        directory.path().join(".env"),
+        "MULTILINE='first\nsecond'\nEMPTY=''\nLITERAL='${HOME}'\n",
+    )?;
+    let error = run_with_context(
+        Cli::try_parse_from(["locket", "import", ".env"])?,
+        &context,
+        &mut Vec::new(),
+    )
+    .err()
+    .ok_or("expansion must fail by default")?;
+    assert!(error.to_string().contains("line 4"));
+    run_with_context(
+        Cli::try_parse_from(["locket", "import", ".env", "--literal"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    for (name, expected) in
+        [("MULTILINE", "first\nsecond\n"), ("EMPTY", "\n"), ("LITERAL", "${HOME}\n")]
+    {
+        let mut output = Vec::new();
+        run_with_context(
+            Cli::try_parse_from(["locket", "get", name, "--reveal", "--force"])?,
+            &context,
+            &mut output,
+        )?;
+        assert_eq!(String::from_utf8(output)?, expected);
+    }
+    Ok(())
+}
+
+#[test]
+fn import_rolls_back_all_values_when_a_later_write_fails() -> Result<(), Box<dyn std::error::Error>>
+{
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    let store = crate::open_store(&context)?;
+    store.connection().execute_batch("CREATE TRIGGER reject_second_import BEFORE INSERT ON secrets WHEN NEW.name = 'SECOND' BEGIN SELECT RAISE(ABORT, 'fixture rejection'); END;")?;
+    std::fs::write(directory.path().join(".env"), "FIRST=one\nSECOND=two\n")?;
+    assert!(
+        run_with_context(
+            Cli::try_parse_from(["locket", "import", ".env"])?,
+            &context,
+            &mut Vec::new()
+        )
+        .is_err()
+    );
+    let resolved = crate::require_project(&context)?;
+    let profile = crate::default_profile(&store, &resolved.config)?;
+    assert_eq!(
+        store.list_secrets_by_profile(resolved.config.project_id.as_str(), &profile.id)?,
+        [] as [locket_store::SecretRecord; 0]
+    );
+    let rows: i64 = store.connection().query_row(
+        "SELECT COUNT(*) FROM audit_log WHERE action='IMPORT'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(rows, 0);
+    assert!(directory.path().join(".env").exists());
+    Ok(())
+}
+
+#[test]
+fn import_never_deletes_skipped_plaintext_values() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let key_store: Arc<dyn MasterKeyStore + Send + Sync> =
+        Arc::new(MemoryMasterKeyStore::default());
+    let context =
+        test_context_with_key_store_and_confirmation(&directory, key_store, "delete .env");
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    crate::set_secret_value(&context, &test_secret_write_args("EXISTS"), "old", "manual", 1000)?;
+    std::fs::write(directory.path().join(".env"), "EXISTS=new\n")?;
+    let mut output = Vec::new();
+    run_with_context(Cli::try_parse_from(["locket", "import", ".env"])?, &context, &mut output)?;
+    assert!(directory.path().join(".env").exists());
+    assert!(String::from_utf8(output)?.contains("delete_env: kept"));
     Ok(())
 }

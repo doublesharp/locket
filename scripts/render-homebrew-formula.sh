@@ -3,7 +3,7 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 template="${repo_root}/dist/homebrew/locket.rb.in"
-out="${HOMEBREW_FORMULA_OUT:-${repo_root}/target/package/homebrew/locket.rb}"
+out="${HOMEBREW_FORMULA_OUT:-${LOCKET_BUILD_ROOT:-${CARGO_TARGET_DIR:-${repo_root}/target}}/package/homebrew/locket.rb}"
 version=""
 url=""
 sha256=""

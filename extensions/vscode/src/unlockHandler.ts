@@ -38,8 +38,8 @@ export interface UnlockHandlerUi {
   /// Show an error toast.
   readonly showError: (message: string) => void;
   /// Optional override for the active profile id (carried into the
-  /// audit block). The command in `commands.ts` resolves it from the
-  /// most recent `Status` snapshot; the test suite passes `null`.
+  /// audit block). The command resolves its actual stored ID through
+  /// CLI project metadata; independent tests can pass `null`.
   readonly profileId?: string | null;
 }
 

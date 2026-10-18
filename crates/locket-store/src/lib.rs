@@ -9,6 +9,7 @@ use std::path::Path;
 use rusqlite::Connection;
 
 mod access;
+mod atomic;
 mod auditing;
 mod database;
 mod error;
@@ -33,7 +34,9 @@ pub use keys::KeyRecord;
 pub use passkey::{
     DEFAULT_WEBAUTHN_RELYING_PARTY_ID, PasskeyCredentialRecord, PasskeyPrfWrapRecord,
 };
-pub use profile::{ProfileDangerousAudit, ProfileDangerousChange, ProfileRecord};
+pub use profile::{
+    ProfileDangerousAudit, ProfileDangerousChange, ProfileRecord, archive_empty_profile_for_import,
+};
 pub use project::ProjectRecord;
 pub use roots::ProjectRootRecord;
 pub use runtime_session::{
@@ -69,6 +72,21 @@ impl Store {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, StoreError> {
         let connection = Connection::open(path)?;
         schema::configure_connection(&connection)?;
+        Ok(Self { connection })
+    }
+
+    /// Opens an existing `SQLite` database without schema or journal-mode writes.
+    ///
+    /// Only a 5000 ms busy timeout is configured. This never creates a missing
+    /// database or runs migrations; database writes are denied by the open flags.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::Sqlite`] when the existing database cannot be opened.
+    pub fn open_read_only(path: impl AsRef<Path>) -> Result<Self, StoreError> {
+        let connection =
+            Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        connection.busy_timeout(std::time::Duration::from_millis(5_000))?;
         Ok(Self { connection })
     }
 

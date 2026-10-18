@@ -265,6 +265,7 @@ struct VerifiedBundleDecryption {
 #[derive(Debug, Default, Clone, Copy)]
 #[allow(clippy::struct_field_names)]
 struct AppliedBundleCounts {
+    archived_local_profile_count: usize,
     profile_count: usize,
     secret_count: usize,
     secret_version_count: usize,
@@ -358,13 +359,31 @@ pub fn export_bundle_command(
     ensure_project_exists(&store, resolved.config.project_id.as_str())?;
     ensure_trusted_project_root(&store, &resolved)?;
     let recipients = bundle_recipients(&args.recipients)?;
+    for recipient in &recipients {
+        if store.bundle_recipient_is_denied(
+            resolved.config.project_id.as_str(),
+            &recipient.sealing_public_key,
+        )? {
+            return Err(crate::access_denied_error(
+                "recipient device is revoked or its member was removed",
+            ));
+        }
+    }
     let recipient_fingerprints =
         recipients.iter().map(|recipient| recipient.fingerprint.clone()).collect::<Vec<_>>();
     let selected_profiles = selected_bundle_profiles(&store, &resolved, args)?;
     let user_verification = confirm_dangerous_profile_export(context, output, &selected_profiles)?;
     let timestamp = now_unix_nanos()?;
-    let payload =
-        bundle_payload(context, &store, &resolved, &selected_profiles, args.include_audit)?;
+    let payload = bundle_payload(
+        context,
+        &store,
+        &resolved,
+        &selected_profiles,
+        args.include_audit,
+        args.include_personal,
+        args.include_history,
+    )?;
+    write_bundle_preview(output, &recipient_fingerprints, &payload, args)?;
     let plaintext_payload = zeroize::Zeroizing::new(serde_json::to_vec(&payload)?);
     let recipient_keys =
         recipients.iter().map(|recipient| recipient.sealing_public_key).collect::<Vec<_>>();
@@ -432,6 +451,34 @@ pub fn export_bundle_command(
     Ok(())
 }
 
+fn write_bundle_preview(
+    output: &mut impl Write,
+    recipient_fingerprints: &[String],
+    payload: &SealedBundlePayloadV1,
+    args: &ExportArgs,
+) -> Result<(), CliError> {
+    writeln!(output, "export_preview: recipients={}", recipient_fingerprints.join(","))?;
+    writeln!(
+        output,
+        "excluded: personal={} history={}",
+        !args.include_personal, !args.include_history
+    )?;
+    for secret in &payload.secrets {
+        writeln!(
+            output,
+            "selected: {} source={} current_version={}",
+            secret.name, secret.source, secret.current_version
+        )?;
+    }
+    if payload.secret_count == 0 {
+        writeln!(
+            output,
+            "No team-managed values selected. For a deliberate personal backup, use --include-personal; add --include-history for prior versions."
+        )?;
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_lines)]
 pub fn import_bundle_command(
     context: &RuntimeContext,
@@ -447,6 +494,14 @@ pub fn import_bundle_command(
     if bundle.manifest.project_id != project_id {
         return Err(bundle_verification_error("bundle project id does not match current project"));
     }
+    writeln!(
+        output,
+        "issuer: unauthenticated; v1 bundle encryption does not authenticate its sender"
+    )?;
+    writeln!(
+        output,
+        "command_definitions: proposed metadata only; approve separately in locket.toml"
+    )?;
     let resolution = ConflictResolution::from_args(args);
 
     let device = store
@@ -462,6 +517,13 @@ pub fn import_bundle_command(
     let payload: SealedBundlePayloadV1 = serde_json::from_slice(&plaintext).map_err(|error| {
         bundle_verification_error(format!("bundle verification failed: {error}"))
     })?;
+    for policy in &payload.command_policies {
+        writeln!(
+            output,
+            "proposed_command: {} (requires local approval in locket.toml)",
+            policy.name
+        )?;
+    }
     let counts = ImportedBundleCounts {
         profile_count: payload.profile_count,
         secret_count: payload.secret_count,
@@ -469,6 +531,18 @@ pub fn import_bundle_command(
         command_policy_count: payload.command_policy_count,
     };
 
+    if !args.accept_incoming && !args.accept_local {
+        writeln!(
+            output,
+            "import_preview: profiles={} secrets={} proposed_commands={}",
+            payload.profiles.len(),
+            payload.secrets.len(),
+            payload.command_policies.len()
+        )?;
+        return Err(invalid_reference_error(
+            "unauthenticated bundle requires explicit acceptance: --accept-incoming or --accept-local applies secret/profile data only; command definitions remain proposals",
+        ));
+    }
     let now = now_unix_nanos()?;
     let (master_key, _master_key_source) = load_master_key(context, project_id)?;
     let outcome = apply_bundle_payload(
@@ -560,6 +634,7 @@ pub fn import_bundle_command(
     writeln!(output, "applied_command_policy_count: {}", applied.command_policy_count)?;
     writeln!(output, "applied_profile_key_count: {}", applied.profile_key_count)?;
     writeln!(output, "imported_audit_chain_count: {}", applied.imported_audit_chain_count)?;
+    writeln!(output, "archived_local_profile_count: {}", applied.archived_local_profile_count)?;
     writeln!(output, "conflict_identical: {}", conflicts.identical)?;
     writeln!(output, "conflict_newer_incoming: {}", conflicts.newer_incoming)?;
     writeln!(output, "conflict_divergent: {}", conflicts.divergent)?;
@@ -637,6 +712,26 @@ fn apply_bundle_payload(
     now: i64,
 ) -> Result<ApplyOutcome, CliError> {
     let bundle_digest_bytes = decode_bundle_digest(&manifest.payload_digest)?;
+    for key in &payload.profile_keys {
+        let purpose = parse_key_purpose(&key.purpose)?;
+        if store.get_key_by_scope(project_id, Some(&key.profile_id), purpose.as_str())?.is_some() {
+            let local = crate::runtime::key_access::load_profile_key_with_master(
+                store,
+                project_id,
+                &key.profile_id,
+                purpose,
+                receiver_master_key,
+            )?;
+            let incoming = BASE64URL_NOPAD
+                .decode(key.key_material_b64.as_bytes())
+                .map_err(|_| metadata_invalid_error("invalid profile key encoding"))?;
+            if local.as_slice() != incoming.as_slice() {
+                return Err(metadata_invalid_error(
+                    "bundle profile key conflicts with local keys; import into a separate store to preserve existing secrets",
+                ));
+            }
+        }
+    }
     let mut retained_secrets = BTreeSet::new();
     let mut rotated_versions = Vec::new();
     let mut applied = AppliedBundleCounts::default();
@@ -653,6 +748,32 @@ fn apply_bundle_payload(
     validate_bundle_project_scope(&transaction, project_id, payload)?;
 
     for profile in &payload.profiles {
+        use rusqlite::OptionalExtension as _;
+        let same_name: Option<String> = transaction
+            .query_row(
+                "SELECT id FROM profiles WHERE project_id = ?1 AND name = ?2 AND id != ?3",
+                params![project_id, profile.name, profile.profile_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(map_apply_sqlite_error)?;
+        if let Some(local_id) = same_name {
+            let count: i64 = transaction
+                .query_row(
+                    "SELECT COUNT(*) FROM secrets WHERE profile_id = ?1",
+                    [&local_id],
+                    |row| row.get(0),
+                )
+                .map_err(map_apply_sqlite_error)?;
+            if count != 0 {
+                return Err(metadata_invalid_error(
+                    "same-name local profile contains secrets with incompatible identity; import into a separate store",
+                ));
+            }
+            locket_store::archive_empty_profile_for_import(&transaction, project_id, &local_id)?
+                .ok_or_else(|| metadata_invalid_error("local profile is no longer empty"))?;
+            applied.archived_local_profile_count += 1;
+        }
         match read_local_profile(&transaction, project_id, &profile.profile_id)? {
             None => {
                 transaction
@@ -778,48 +899,8 @@ fn apply_bundle_payload(
     }
 
     // Command policies: upsert is always idempotent.
-    for policy in &payload.command_policies {
-        let policy_json = command_policy_value(policy);
-        let exists = transaction
-            .query_row(
-                "SELECT 1 FROM command_policies WHERE project_id = ?1 AND name = ?2",
-                params![project_id, policy.name],
-                |_| Ok(()),
-            )
-            .map(Some)
-            .or_else(|error| {
-                if matches!(error, rusqlite::Error::QueryReturnedNoRows) {
-                    Ok(None)
-                } else {
-                    Err(error)
-                }
-            })
-            .map_err(map_apply_sqlite_error)?
-            .is_some();
-        let policy_text = serde_json::to_string(&policy_json).map_err(CliError::from)?;
-        let normalized_text = policy_text.clone();
-        transaction
-            .execute(
-                "INSERT INTO command_policies(
-                   project_id, name, policy_json, normalized_json, created_at, updated_at
-                 )
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?5)
-                 ON CONFLICT(project_id, name) DO UPDATE SET
-                   policy_json = excluded.policy_json,
-                   normalized_json = excluded.normalized_json,
-                   updated_at = excluded.updated_at",
-                params![project_id, policy.name, policy_text, normalized_text, now],
-            )
-            .map_err(map_apply_sqlite_error)?;
-        if exists {
-            conflicts.identical = conflicts.identical.saturating_add(1);
-        } else {
-            applied.command_policy_count = applied.command_policy_count.saturating_add(1);
-            conflicts.applied = conflicts.applied.saturating_add(1);
-        }
-    }
+    // Unsigned bundles carry proposed definitions only. Never mutate command authority.
 
-    // Secrets: insert when absent, otherwise resolve via the conflict matrix.
     for secret in &payload.secrets {
         match read_local_secret(&transaction, &secret.id)? {
             None => {
@@ -1379,10 +1460,6 @@ fn decode_bundle_blob(blob: &SealedBundleBlobV1) -> Result<SecretBlobRecord, Cli
     })
 }
 
-fn command_policy_value(policy: &SealedBundleCommandPolicyV1) -> Value {
-    serde_json::to_value(policy).unwrap_or(Value::Null)
-}
-
 fn parse_key_purpose(value: &str) -> Result<KeyPurpose, CliError> {
     match value {
         v if v == KeyPurpose::ProfileSecret.as_str() => Ok(KeyPurpose::ProfileSecret),
@@ -1622,7 +1699,15 @@ fn try_decrypt_bundle_for_local_device(
     let Some(device) = store.get_active_local_device(project_id)? else {
         return Ok(None);
     };
-    if !bundle.manifest.recipient_fingerprints.iter().any(|fp| fp == &device.fingerprint) {
+    if !bundle
+        .manifest
+        .recipient_fingerprints
+        .iter()
+        .map(|fp| store.device_matches_bundle_recipient(&device, fp))
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .any(|matches| matches)
+    {
         return Ok(None);
     }
     // Fingerprint match: from here on a failure must surface as
@@ -1721,6 +1806,8 @@ fn bundle_payload(
     resolved: &ResolvedProject,
     profiles: &[ProfileRecord],
     include_audit: bool,
+    include_personal: bool,
+    include_history: bool,
 ) -> Result<SealedBundlePayloadV1, CliError> {
     let command_policies = bundle_command_policies(resolved)?;
     let mut profile_payloads = Vec::with_capacity(profiles.len());
@@ -1730,19 +1817,26 @@ fn bundle_payload(
     let mut profile_keys = Vec::with_capacity(profiles.len().saturating_mul(2));
     let mut active_secret_count = 0_usize;
     for profile in profiles {
-        let active_secrets =
-            store.list_active_secrets_by_profile(&profile.project_id, &profile.id)?;
-        active_secret_count = active_secret_count.saturating_add(active_secrets.len());
+        let active_secrets = store.select_bundle_secrets(
+            &profile.project_id,
+            &profile.id,
+            include_personal,
+            include_history,
+        )?;
+        let active_count = active_secrets
+            .iter()
+            .filter(|(secret, _)| secret.state == "active" && secret.deleted_at.is_none())
+            .count();
+        active_secret_count = active_secret_count.saturating_add(active_count);
         profile_payloads.push(SealedBundleProfileV1 {
             profile_id: profile.id.clone(),
             name: profile.name.clone(),
             dangerous: profile.dangerous,
-            active_secret_count: active_secrets.len(),
+            active_secret_count: active_count,
             created_at: profile.created_at,
         });
         profile_keys.extend(bundle_profile_keys(context, store, &profile.project_id, &profile.id)?);
-        for secret in store.list_secrets_by_profile(&profile.project_id, &profile.id)? {
-            let versions = store.list_secret_versions(&secret.id)?;
+        for (secret, versions) in active_secrets {
             for version in versions {
                 if let Some(blob) = store.get_blob(&secret.id, version.version)? {
                     blobs.push(bundle_blob(blob));
@@ -2330,6 +2424,10 @@ fn write_bundle_audit_if_available(
             .insert("command_policy_count".to_owned(), Value::from(counts.command_policy_count));
     }
     if let Some(applied_counts) = request.applied_counts {
+        metadata.insert(
+            "archived_local_profile_count".to_owned(),
+            Value::from(applied_counts.archived_local_profile_count),
+        );
         metadata
             .insert("applied_profile_count".to_owned(), Value::from(applied_counts.profile_count));
         metadata
@@ -2404,6 +2502,104 @@ mod tests {
         Ok(apply_bundle_payload(
             store, project, payload, resolution, false, &manifest, &[42; 32], 300,
         )?)
+    }
+
+    #[test]
+    fn import_archives_empty_same_name_profile_from_another_store()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let mut store = Store::open(dir.path().join("store.db"))?;
+        store.initialize_schema()?;
+        store.insert_project_if_absent("project", "project", 1)?;
+        store.connection().execute("INSERT INTO profiles(id,project_id,name,dangerous,created_at) VALUES ('local-profile','project','dev',0,1)", [])?;
+        let payload = import_fixture("remote-profile", "secret", 1)?;
+        import_apply(&mut store, "project", &payload, ConflictResolution::AcceptIncoming)?;
+        assert_eq!(
+            store.get_profile_by_name("project", "dev")?.ok_or("imported dev profile missing")?.id,
+            "remote-profile"
+        );
+        assert_eq!(store.list_secrets_by_profile("project", "remote-profile")?.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn failed_import_restores_archived_profile_name_and_identity()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let mut store = Store::open(dir.path().join("store.db"))?;
+        store.initialize_schema()?;
+        store.insert_project_if_absent("project", "project", 1)?;
+        store.insert_profile_if_absent("local-profile", "project", "dev", false, 1)?;
+        let mut payload = import_fixture("remote-profile", "secret", 1)?;
+        payload.blobs[0].ciphertext_b64 = "%invalid".into();
+        assert!(
+            import_apply(&mut store, "project", &payload, ConflictResolution::AcceptIncoming)
+                .is_err()
+        );
+        assert_eq!(
+            store.get_profile_by_name("project", "dev")?.ok_or("original restored")?.id,
+            "local-profile"
+        );
+        assert_eq!(store.list_profiles("project")?.len(), 1);
+        assert_eq!(
+            store.list_secrets_by_profile("project", "remote-profile")?,
+            Vec::<locket_store::SecretRecord>::new()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn same_name_populated_local_profile_is_not_replaced() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let dir = tempfile::tempdir()?;
+        let mut store = Store::open(dir.path().join("store.db"))?;
+        store.initialize_schema()?;
+        store.insert_project_if_absent("project", "project", 1)?;
+        import_apply(
+            &mut store,
+            "project",
+            &import_fixture("local-profile", "local-secret", 1)?,
+            ConflictResolution::AcceptIncoming,
+        )?;
+        assert!(
+            import_apply(
+                &mut store,
+                "project",
+                &import_fixture("remote-profile", "remote-secret", 1)?,
+                ConflictResolution::AcceptIncoming
+            )
+            .is_err()
+        );
+        assert_eq!(
+            store.get_profile_by_name("project", "dev")?.ok_or("original retained")?.id,
+            "local-profile"
+        );
+        assert_eq!(store.list_profiles("project")?.len(), 1);
+        assert_eq!(store.list_secrets_by_profile("project", "local-profile")?.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn unsigned_policy_cannot_widen_existing_command_authority()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let mut store = Store::open(dir.path().join("store.db"))?;
+        store.initialize_schema()?;
+        store.insert_project_if_absent("project", "project", 1)?;
+        let restricted = r#"{"allowed_secrets":["SAFE"],"confirm":true}"#;
+        store.connection().execute("INSERT INTO command_policies(project_id,name,policy_json,normalized_json,created_at,updated_at) VALUES ('project','deploy',?1,?1,1,1)", [restricted])?;
+        let mut payload = import_fixture("profile", "secret", 1)?;
+        payload.command_policies.push(serde_json::from_value(serde_json::json!({
+            "name":"deploy","command_kind":"argv","argv":["sh","-c","evil"],"shell":null,
+            "allowed_secrets":["*"],"required_secrets":[],"optional_secrets":[],"inherit_env":[],
+            "env_mode":"inherit","override_mode":"allow","override_explicit":true,"external_env_sources":[],
+            "allow_remote_docker":true,"confirm":false,"require_user_verification":false,"ttl_seconds":999_999
+        }))?);
+        payload.command_policy_count = 1;
+        import_apply(&mut store, "project", &payload, ConflictResolution::AcceptIncoming)?;
+        let actual: String = store.connection().query_row("SELECT policy_json FROM command_policies WHERE project_id = 'project' AND name = 'deploy'", [], |row| row.get(0))?;
+        assert_eq!(actual, restricted);
+        Ok(())
     }
 
     fn import_fixture(

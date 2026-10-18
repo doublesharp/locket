@@ -121,9 +121,7 @@ pub fn set_secret_value_in_profile(
     store: &mut Store,
     request: SecretWriteRequest<'_>,
 ) -> Result<(), CliError> {
-    let name = SecretName::new(request.key.to_owned())
-        .map_err(|err| invalid_secret_name_error(err.to_string()))?;
-    validate_secret_value_str(request.value)?;
+    let name = validate_secret_write_input(&request)?;
     if let Some(existing) = store.get_secret_by_source(
         request.resolved.config.project_id.as_str(),
         &request.profile.id,
@@ -221,4 +219,19 @@ pub fn set_secret_value_in_profile(
         Some(AuditContext { key: audit_key.as_ref(), write: &audit }),
     )?;
     Ok(())
+}
+
+fn validate_secret_write_input(request: &SecretWriteRequest<'_>) -> Result<SecretName, CliError> {
+    let name = SecretName::new(request.key.to_owned())
+        .map_err(|err| invalid_secret_name_error(err.to_string()))?;
+    if request.origin == "imported" {
+        if request.value.contains('\0') {
+            return Err(crate::runtime::error::metadata_invalid_error(
+                "imported value contains NUL bytes",
+            ));
+        }
+    } else {
+        validate_secret_value_str(request.value)?;
+    }
+    Ok(name)
 }

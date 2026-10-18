@@ -16,6 +16,8 @@ interface Props {
   rows: SecretRowMeta[];
   privacyMode: boolean;
   loading: boolean;
+  metadataLoaded: boolean;
+  actionGuidance?: string | null;
   errorMessage?: string | null;
   lastRefreshedAt?: string;
 }
@@ -61,7 +63,9 @@ function clearFilters(): void {
   searchQuery.value = '';
 }
 
-const isEmpty = computed<boolean>(() => !props.loading && props.rows.length === 0);
+const isEmpty = computed<boolean>(
+  () => props.metadataLoaded && !props.loading && props.rows.length === 0,
+);
 const isFilteredEmpty = computed<boolean>(
   () => !props.loading && props.rows.length > 0 && filteredRows.value.length === 0,
 );
@@ -76,11 +80,11 @@ function displayName(row: SecretRowMeta): string {
 function sourceLabel(source: SecretRowMeta['source']): string {
   switch (source) {
     case 'team':
-      return 'team';
+      return 'Shared';
     case 'user-local':
-      return 'user-local';
+      return 'My override';
     case 'machine-local':
-      return 'machine-local';
+      return 'This machine';
     default:
       return source;
   }
@@ -171,9 +175,9 @@ function onKey(event: KeyboardEvent, row: SecretRowMeta): void {
         <button
           v-for="option in [
             { value: 'all', label: 'All' },
-            { value: 'team', label: 'Team' },
-            { value: 'user-local', label: 'User-local' },
-            { value: 'machine-local', label: 'Machine-local' },
+            { value: 'team', label: 'Shared' },
+            { value: 'user-local', label: 'My override' },
+            { value: 'machine-local', label: 'This machine' },
           ] as const"
           :key="option.value"
           type="button"
@@ -237,12 +241,13 @@ function onKey(event: KeyboardEvent, row: SecretRowMeta): void {
       </button>
     </fieldset>
 
-    <p v-if="errorMessage" class="view__error">{{ errorMessage }}</p>
+    <p v-if="actionGuidance" class="view__empty" role="status">{{ actionGuidance }}</p>
+    <p v-else-if="errorMessage" class="view__error">{{ errorMessage }}</p>
 
     <p v-else-if="loading" class="view__loading" role="status">Loading secret metadata…</p>
 
     <p v-else-if="isEmpty" class="view__empty">
-      No secrets in this profile yet. Run <code>locket set &lt;KEY&gt;</code> or
+      No variables in this environment yet. Run <code>locket set &lt;KEY&gt;</code> or
       <code>locket import &lt;file.env&gt;</code>.
     </p>
 

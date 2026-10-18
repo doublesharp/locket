@@ -89,6 +89,9 @@ pub fn init(
             }
         };
         write_init_summary(output, &resolved.config, completion.master_key_source, true)?;
+        if io::stdin().is_terminal() {
+            super::setup::offer_interactive_setup(context, output)?;
+        }
         return Ok(());
     }
 
@@ -133,6 +136,9 @@ pub fn init(
         }
     };
     write_init_summary(output, &config, completion.master_key_source, false)?;
+    if io::stdin().is_terminal() {
+        super::setup::offer_interactive_setup(context, output)?;
+    }
     Ok(())
 }
 

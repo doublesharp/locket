@@ -6,6 +6,7 @@ use std::fs;
 use std::io::Write;
 use std::path::Path;
 
+use locket_core::dotenv::{DotenvOptions, parse_dotenv};
 use locket_core::{LocketError, ProfileName, SecretName};
 use locket_crypto::KeyPurpose;
 use locket_store::{
@@ -18,7 +19,7 @@ use super::set::{SecretWriteRequest, set_secret_value_in_profile};
 use crate::runtime::RuntimeContext;
 use crate::runtime::error::{
     CliError, confirmation_failed_error, invalid_profile_name_error, invalid_secret_name_error,
-    profile_not_found_error, secret_not_found_error,
+    metadata_invalid_error, profile_not_found_error, secret_not_found_error,
 };
 use crate::runtime::key_access::load_project_key;
 use crate::runtime::prompts::ConfirmationReader;
@@ -46,65 +47,58 @@ pub fn import_command(
     let env_file_text = fs::read_to_string(&path)?;
     let source = args.source.unwrap_or(SecretSourceArg::UserLocal);
     let source_name = source_arg_to_str(source);
-    let parsed = parse_env_import(&env_file_text);
-    let env_names = parsed
-        .iter()
-        .filter_map(|entry| match entry {
-            EnvImportEntry::Secret { key, .. } => Some(key.clone()),
-            EnvImportEntry::Invalid => None,
-        })
-        .collect::<BTreeSet<_>>();
+    let parsed = validated_import_entries(&env_file_text, args.literal, output)?;
+    let env_names = parsed.iter().map(|entry| entry.key.clone()).collect::<BTreeSet<_>>();
     let mut imported = 0_u32;
     let mut overwritten = 0_u32;
     let mut skipped = 0_u32;
-    let mut invalid = 0_u32;
     let mut skipped_names = BTreeSet::new();
 
-    for entry in parsed {
-        match entry {
-            EnvImportEntry::Secret { key, value } => {
-                match set_secret_value_in_profile(
-                    context,
-                    &mut store,
-                    SecretWriteRequest {
-                        resolved: &resolved,
-                        profile: &profile,
-                        key: &key,
-                        source: source_name,
-                        value: &value,
-                        origin: "imported",
-                        audit_action: "IMPORT",
-                        timestamp: now_unix_nanos()?,
-                    },
-                ) {
-                    Ok(()) => imported += 1,
-                    Err(CliError::Typed { kind: LocketError::SecretAlreadyExists, .. })
-                        if args.overwrite =>
-                    {
-                        rotate_import_secret_value_in_profile(
-                            context,
-                            &mut store,
-                            ImportRotateRequest {
-                                resolved: &resolved,
-                                profile: &profile,
-                                key: &key,
-                                source: source_name,
-                                value: &value,
-                                timestamp: now_unix_nanos()?,
-                            },
-                        )?;
-                        overwritten += 1;
-                    }
-                    Err(CliError::Typed { kind: LocketError::SecretAlreadyExists, .. }) => {
-                        skipped += 1;
-                        skipped_names.insert(key);
-                    }
-                    Err(error) => return Err(error),
+    store.with_atomic_write(|store| -> Result<(), CliError> {
+        for entry in parsed {
+            let locket_core::dotenv::DotenvEntry { key, value, .. } = entry;
+            match set_secret_value_in_profile(
+                context,
+                store,
+                SecretWriteRequest {
+                    resolved: &resolved,
+                    profile: &profile,
+                    key: &key,
+                    source: source_name,
+                    value: &value,
+                    origin: "imported",
+                    audit_action: "IMPORT",
+                    timestamp: now_unix_nanos()?,
+                },
+            ) {
+                Ok(()) => imported += 1,
+                Err(CliError::Typed { kind: LocketError::SecretAlreadyExists, .. })
+                    if args.overwrite =>
+                {
+                    rotate_import_secret_value_in_profile(
+                        context,
+                        store,
+                        ImportRotateRequest {
+                            resolved: &resolved,
+                            profile: &profile,
+                            key: &key,
+                            source: source_name,
+                            value: &value,
+                            timestamp: now_unix_nanos()?,
+                        },
+                    )?;
+                    overwritten += 1;
                 }
+                Err(CliError::Typed { kind: LocketError::SecretAlreadyExists, .. }) => {
+                    skipped += 1;
+                    skipped_names.insert(key);
+                }
+                Err(error) => return Err(error),
             }
-            EnvImportEntry::Invalid => invalid += 1,
         }
-    }
+
+        Ok(())
+    })?;
 
     refresh_example_for_project_if_enabled(context)?;
     ensure_gitignore(&resolved.root)?;
@@ -115,7 +109,7 @@ pub fn import_command(
     writeln!(output, "imported: {imported}")?;
     writeln!(output, "overwritten: {overwritten}")?;
     writeln!(output, "skipped: {skipped}")?;
-    writeln!(output, "invalid: {invalid}")?;
+    writeln!(output, "invalid: 0")?;
     writeln!(output, "profile: {}", profile.name)?;
     writeln!(output, "source: {source_name}")?;
     writeln!(output, "env_names: {}", env_names.len())?;
@@ -123,9 +117,39 @@ pub fn import_command(
     writeln!(output, "skipped_names: {}", format_name_set(&skipped_names))?;
     writeln!(output, "missing_in_profile: {}", format_name_set(&missing_in_profile))?;
     writeln!(output, "extra_in_profile: {}", format_name_set(&extra_in_profile))?;
-    write_env_delete_prompt(output, &path, context.confirmation_reader.as_ref())?;
+    if skipped == 0 && imported + overwritten > 0 {
+        write_env_delete_prompt(output, &path, context.confirmation_reader.as_ref())?;
+    } else {
+        writeln!(output, "delete_env: kept")?;
+    }
     writeln!(output, "metadata_only: yes")?;
     Ok(())
+}
+
+fn validated_import_entries(
+    text: &str,
+    literal: bool,
+    output: &mut impl Write,
+) -> Result<Vec<locket_core::dotenv::DotenvEntry>, CliError> {
+    let document = parse_dotenv(text, DotenvOptions { literal });
+    for warning in &document.warnings {
+        writeln!(output, "warning: line {}: {}", warning.line, warning.message)?;
+    }
+    if !document.errors.is_empty() {
+        writeln!(output, "imported: 0")?;
+        writeln!(output, "invalid: {}", document.errors.len())?;
+        writeln!(output, "delete_env: kept")?;
+        writeln!(output, "metadata_only: yes")?;
+        return Err(metadata_invalid_error(
+            document
+                .errors
+                .iter()
+                .map(|error| format!("line {}: {}", error.line, error.message))
+                .collect::<Vec<_>>()
+                .join("; "),
+        ));
+    }
+    Ok(document.entries)
 }
 
 fn import_target_profile(
@@ -177,15 +201,11 @@ fn write_env_delete_prompt(
         writeln!(output, "delete_env_prompt: not_applicable")?;
         return Ok(());
     }
-    let confirmation = if let Ok(c) = confirmation_reader
+    writeln!(output, "delete_env_prompt: type 'delete .env' to remove the plaintext .env file")?;
+    output.flush()?;
+    let Ok(confirmation) = confirmation_reader
         .read_confirmation("type 'delete .env' to remove the plaintext .env file")
-    {
-        writeln!(
-            output,
-            "delete_env_prompt: type 'delete .env' to remove the plaintext .env file"
-        )?;
-        c
-    } else {
+    else {
         writeln!(output, "delete_env_prompt: skipped_noninteractive")?;
         writeln!(output, "delete_env: kept")?;
         return Ok(());
@@ -199,11 +219,14 @@ fn write_env_delete_prompt(
     Ok(())
 }
 
+#[cfg(test)]
 pub enum EnvImportEntry {
     Secret { key: String, value: String },
     Invalid,
 }
 
+/// Legacy line-oriented regression helper. Strict commands use `parse_dotenv`.
+#[cfg(test)]
 pub fn parse_env_import(content: &str) -> Vec<EnvImportEntry> {
     content
         .lines()
@@ -217,6 +240,7 @@ pub fn parse_env_import(content: &str) -> Vec<EnvImportEntry> {
         .collect()
 }
 
+#[cfg(test)]
 fn parse_env_line(line: &str) -> EnvImportEntry {
     let line = line.strip_prefix("export ").unwrap_or(line);
     let Some((key, value)) = line.split_once('=') else {
@@ -237,12 +261,14 @@ fn parse_env_line(line: &str) -> EnvImportEntry {
     EnvImportEntry::Secret { key: key.to_owned(), value }
 }
 
+#[cfg(test)]
 const fn has_unmatched_env_quote(value: &str) -> bool {
     let bytes = value.as_bytes();
     matches!(bytes.first(), Some(b'"')) && !matches!(bytes.last(), Some(b'"'))
         || matches!(bytes.first(), Some(b'\'')) && !matches!(bytes.last(), Some(b'\''))
 }
 
+#[cfg(test)]
 fn unquote_env_value(value: &str) -> String {
     if value.len() >= 2 {
         let bytes = value.as_bytes();

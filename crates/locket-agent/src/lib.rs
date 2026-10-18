@@ -12,8 +12,8 @@ mod transport;
 
 pub(crate) use auditing::{audit, audit_deny, audit_verify, degraded_audit};
 pub(crate) use handlers::{
-    auth, backup, clients, config, device_members, policies, prepare_exec, profile, resolve,
-    reveal, scan, secrets, set_secret, versions,
+    auth, backup, clients, config, device_members, mutations, policies, prepare_exec, profile,
+    resolve, reveal, scan, secrets, set_secret, versions,
 };
 pub(crate) use protocol::{envelope, error, framing, method};
 pub(crate) use state::{
@@ -106,3 +106,19 @@ pub const PROTOCOL_VERSION: u16 = 1;
 #[cfg(test)]
 #[path = "tests.rs"]
 mod tests;
+
+pub use mutations::{
+    ApplyPolicyRequest, ApplyPolicyResponse, ImportDiagnostic, ImportDotenvRequest,
+    ImportDotenvResponse, MutationError, MutationScope, apply_policy_with_master,
+    import_dotenv_with_master,
+};
+
+pub mod team_sync;
+
+pub use handlers::team_sync::{TeamSyncConfigureRequest, TeamSyncRequest, spawn_team_sync_poll};
+
+#[cfg(test)]
+use x25519_dalek as _;
+
+pub use protocol::team_sync::{TeamSyncAction, TeamSyncReconcileRequest};
+pub use team_sync::{PendingCollision, PendingProfileDetails};

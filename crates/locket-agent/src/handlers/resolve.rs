@@ -447,6 +447,43 @@ fn authorize_policy_reference(
             LocketError::PolicyNotFound,
         ));
     };
+    // New indexes bind to their durable source. If a file save succeeds but
+    // its derived-index update fails, the previous permissions cannot survive.
+    // Legacy indexes keep compatibility until their next explicit local edit.
+    if let Some(path) =
+        policy.normalized_json.get("source_path").and_then(serde_json::Value::as_str)
+    {
+        let current = std::fs::symlink_metadata(path)
+            .ok()
+            .filter(|metadata| metadata.file_type().is_file())
+            .and_then(|_| std::fs::read_to_string(path).ok())
+            .and_then(|source| toml::from_str::<toml::Value>(&source).ok());
+        let matches = current.as_ref().is_some_and(|document| {
+            let digest_matches = policy
+                .normalized_json
+                .get("source_digest")
+                .and_then(Value::as_str)
+                .is_none_or(|expected| {
+                    locket_core::policy::policy_source_digest(document, policy_name).ok().as_deref()
+                        == Some(expected)
+                });
+            digest_matches
+                && document.get("project_id").and_then(toml::Value::as_str) == Some(project_id)
+                && document
+                    .get("commands")
+                    .and_then(|commands| commands.get(policy_name))
+                    .and_then(|command| serde_json::to_value(command).ok())
+                    .as_ref()
+                    == Some(&policy.policy_json)
+        });
+        if !matches {
+            return Err(ResolveFailure::new(
+                ERROR_ACCESS_DENIED,
+                "command configuration changed; refresh and approve the local command before resolving references",
+                LocketError::AccessDenied,
+            ));
+        }
+    }
     let Some(allowed_secrets) =
         policy.normalized_json.get("allowed_secrets").and_then(serde_json::Value::as_array)
     else {
@@ -695,7 +732,7 @@ mod tests {
     const POLICY_NAME: &str = "deploy";
 
     struct ResolveFixture {
-        _directory: TempDir,
+        directory: TempDir,
         store_path: PathBuf,
         master_key: locket_crypto::KeyBytes,
         profile_secret_key: locket_crypto::KeyBytes,
@@ -773,13 +810,54 @@ mod tests {
             &expected_value,
         )?;
         Ok(ResolveFixture {
-            _directory: directory,
+            directory,
             store_path,
             master_key,
             profile_secret_key,
             profile_fingerprint_key,
             expected_value,
         })
+    }
+
+    #[test]
+    fn source_bound_policy_index_cannot_outlive_durable_authorization()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let fixture = build_fixture()?;
+        let path = fixture.directory.path().join("locket.toml");
+        let prefix = format!(
+            "schema_version=1\nproject_id=\"{PROJECT_ID}\"\nname=\"test\"\ndefault_profile=\"dev\"\n[commands.{POLICY_NAME}]\nargv=[\"pnpm\",\"deploy\"]\n"
+        );
+        std::fs::write(&path, format!("{prefix}required_secrets=[\"{SECRET_NAME}\"]\n"))?;
+        let original_source = std::fs::read_to_string(&path)?;
+        let document: toml::Value = toml::from_str(&original_source)?;
+        let digest = locket_core::policy::policy_source_digest(&document, POLICY_NAME)?;
+        let mut store = Store::open(&fixture.store_path)?;
+        store.upsert_command_policy_index(
+            PROJECT_ID,
+            POLICY_NAME,
+            &json!({"argv":["pnpm","deploy"],"required_secrets":[SECRET_NAME]}),
+            &json!({"allowed_secrets":[SECRET_NAME],"source_path":path,"source_digest":digest}),
+            2,
+            None,
+        )?;
+        assert!(
+            super::authorize_policy_reference(&store, PROJECT_ID, POLICY_NAME, SECRET_NAME).is_ok()
+        );
+        std::fs::write(
+            &path,
+            format!("{original_source}\n[paths.api]\nrequired_secrets=[\"API_TOKEN\"]\n"),
+        )?;
+        assert!(
+            super::authorize_policy_reference(&store, PROJECT_ID, POLICY_NAME, SECRET_NAME)
+                .is_err()
+        );
+        std::fs::write(&path, &prefix)?;
+        assert!(
+            super::authorize_policy_reference(&store, PROJECT_ID, POLICY_NAME, SECRET_NAME)
+                .is_err()
+        );
+        assert!(store.get_command_policy_index(PROJECT_ID, POLICY_NAME)?.is_some());
+        Ok(())
     }
 
     fn insert_policy_index(
@@ -1122,7 +1200,7 @@ mod tests {
         assert_eq!(error.id, "req-resolve");
         assert_eq!(error.error, ERROR_GRANT_REQUIRED);
         assert!(!error.retryable);
-        assert!(!error.message.is_empty());
+        assert_ne!(error.message, "");
         Ok(())
     }
 

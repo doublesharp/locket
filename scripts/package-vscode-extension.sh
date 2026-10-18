@@ -19,7 +19,9 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 pnpm_bin="${PNPM:-pnpm}"
 node_bin="${NODE:-node}"
-out_dir="${VSIX_OUT_DIR:-${repo_root}/target/package/vscode}"
+build_root="${LOCKET_BUILD_ROOT:-${CARGO_TARGET_DIR:-${repo_root}/target}}"
+out_dir="${VSIX_OUT_DIR:-${build_root}/package/vscode}"
+stage="${out_dir}/stage"
 
 sign_mode=0
 sign_key=""
@@ -65,7 +67,7 @@ if ! command -v "${node_bin}" >/dev/null 2>&1; then
   exit 127
 fi
 
-package_name="$("${node_bin}" -e 'const p = require(process.argv[1]); process.stdout.write(p.name);' "${repo_root}/extensions/vscode/package.json")"
+"${node_bin}" "${repo_root}/scripts/distribution.mjs" versions >/dev/null
 package_version="$("${node_bin}" -e 'const p = require(process.argv[1]); process.stdout.write(p.version);' "${repo_root}/extensions/vscode/package.json")"
 
 # Output naming: unsigned -> locket-<version>.vsix
@@ -87,9 +89,20 @@ mkdir -p "${out_dir}"
 rm -f "${vsix_path}" "${digest_path}" "${build_vsix_path}"
 [[ -n "${signature_path}" ]] && rm -f "${signature_path}"
 
-"${pnpm_bin}" --dir "${repo_root}/extensions/vscode" install --frozen-lockfile
-"${pnpm_bin}" --dir "${repo_root}/extensions/vscode" run build
-"${pnpm_bin}" --dir "${repo_root}/extensions/vscode" exec vsce package --no-dependencies --out "${build_vsix_path}"
+# Compile and package a clean staging tree. Never write extension/out into the checkout.
+if [[ ! -x "${repo_root}/extensions/vscode/node_modules/.bin/vsce" ]]; then
+  echo "extension dependencies missing; run pnpm install --frozen-lockfile first" >&2
+  exit 66
+fi
+mkdir -p "${stage}"
+# This directory is exclusively owned by this packaging invocation.
+rm -rf "${stage}/out"
+cp "${repo_root}/extensions/vscode/package.json" "${repo_root}/extensions/vscode/README.md" "${repo_root}/extensions/vscode/.vscodeignore" "${stage}/"
+"${node_bin}" "${repo_root}/extensions/vscode/node_modules/typescript/bin/tsc" -p "${repo_root}/extensions/vscode/tsconfig.json" --outDir "${stage}/out"
+# Test fixtures are not shipped and need not remain in the staging tree.
+find "${stage}/out" -type f -name '*.test.js*' -delete
+(cd "${stage}" && "${repo_root}/extensions/vscode/node_modules/.bin/vsce" package --no-dependencies --out "${build_vsix_path}")
+python3 "${repo_root}/scripts/check-package-contents.py" --vsix "${build_vsix_path}" --version "${package_version}"
 
 if [[ $sign_mode -eq 1 ]]; then
   sign_tool="${LOCKET_VSIX_SIGN_TOOL:-${repo_root}/tools/vsix-sign.sh}"

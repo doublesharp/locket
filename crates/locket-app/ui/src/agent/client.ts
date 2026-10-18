@@ -4,6 +4,12 @@
 
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import type {
+  DesktopProjectContext,
+  DesktopImportEnvRequest,
+  DesktopSavePolicyRequest,
+  UnlockRequest,
+} from './types';
 
 import type {
   AgentClientError,
@@ -397,4 +403,84 @@ export async function copySecret(
   request: CopySecretRequest,
 ): Promise<AgentResult<CopySecretResponse>> {
   return callTyped<CopySecretResponse>('agent_copy_secret', { request });
+}
+
+export async function desktopListProjects(): Promise<AgentResult<DesktopProjectContext[]>> {
+  return callTyped('desktop_list_projects', {});
+}
+export async function desktopOpenProject(request: {
+  path: string;
+}): Promise<AgentResult<DesktopProjectContext>> {
+  return callTyped('desktop_open_project', { request });
+}
+export async function desktopInitializeProject(request: {
+  path: string;
+}): Promise<AgentResult<DesktopProjectContext>> {
+  return callTyped('desktop_initialize_project', { request });
+}
+export async function desktopImportEnv(
+  request: DesktopImportEnvRequest,
+): Promise<AgentResult<{ summary: string }>> {
+  return callTyped('desktop_import_env', { request });
+}
+export async function desktopStartAgent(request: {
+  project_id?: string;
+}): Promise<AgentResult<void>> {
+  return callTyped('desktop_start_agent', { request });
+}
+export async function desktopRunPolicy(request: {
+  project_id: string;
+  policy_name: string;
+}): Promise<AgentResult<{ launched: boolean; command: string }>> {
+  return callTyped('desktop_run_policy', { request });
+}
+export async function desktopSavePolicy(
+  request: DesktopSavePolicyRequest,
+): Promise<AgentResult<void>> {
+  return callTyped('desktop_save_policy', { request });
+}
+export async function unlockVault(request: UnlockRequest): Promise<AgentResult<void>> {
+  return callTyped('agent_unlock', { request });
+}
+export function actionError(error: AgentClientError): string {
+  if (error.kind === 'unavailable')
+    return `${error.display_reason} ${error.next_action} Desktop actions require the Locket desktop app.`;
+  if (error.kind === 'rejected')
+    return `${error.display_reason || error.message || error.code} (${error.code}). ${error.next_action || 'Check this project and environment access, then retry.'}`;
+  return `${error.reason}. Fix the reported issue, then retry.`;
+}
+
+export async function desktopVariableReadiness(request: {
+  project_id: string;
+  policy_name?: string;
+}): Promise<AgentResult<import('./types').VariableReadinessResponse>> {
+  return callTyped('desktop_variable_readiness', { request });
+}
+export async function desktopTeamSyncStatus(request: {
+  project_id: string;
+}): Promise<AgentResult<import('./types').TeamSyncStatus>> {
+  return callTyped('desktop_team_sync_status', { request });
+}
+export async function desktopTeamSyncConfigure(request: {
+  project_id: string;
+  folder: string;
+  allow_dangerous?: boolean;
+}): Promise<AgentResult<import('./types').TeamSyncStatus>> {
+  return callTyped('desktop_team_sync_configure', { request });
+}
+export async function desktopTeamSyncNow(request: {
+  project_id: string;
+}): Promise<AgentResult<import('./types').TeamSyncStatus>> {
+  return callTyped('desktop_team_sync_now', { request });
+}
+
+export async function desktopTeamSyncRenameProfile(
+  request: import('./types').TeamSyncRenameProfileRequest,
+): Promise<AgentResult<import('./types').TeamSyncStatus>> {
+  return callTyped('desktop_team_sync_rename_profile', { request });
+}
+export async function desktopTeamSyncPreserveOverride(
+  request: import('./types').TeamSyncPreserveOverrideRequest,
+): Promise<AgentResult<import('./types').TeamSyncStatus>> {
+  return callTyped('desktop_team_sync_preserve_override', { request });
 }

@@ -2,7 +2,7 @@ import { AgentClient, AgentClientError } from './agentClient';
 import { RequestGrantDirectoryPayload, ResolvedLocketProject } from './commandsModel';
 import {
   EnvironmentVariableCollectionLike,
-  applyIdeEnvSessionToTerminals,
+  clearIdeEnvSessionFromTerminals,
   registerIdeEnvSessionWithAgent,
 } from './ideEnvSession';
 import {
@@ -15,6 +15,7 @@ export interface TerminalAutobindHandlerDeps {
   readonly agentClient: AgentClient;
   readonly environmentVariableCollection: EnvironmentVariableCollectionLike;
   readonly autobindContext: TerminalAutobindContext;
+  readonly resolveProject?: (cwd: string | undefined) => Promise<ResolvedLocketProject | undefined>;
   readonly storePath: string;
   readonly sessionIdFactory?: () => string;
   readonly notifyDirectoryGrantRejected: (reason: string) => void;
@@ -30,8 +31,8 @@ export interface TerminalAutobindOutcome {
 
 /// Event handler that runs whenever VS Code opens an integrated terminal.
 /// Performs two best-effort actions:
-///   1. Inject `LOCKET_IDE_ENV_SESSION` into the environment-variable
-///      collection so subsequent terminals see the value.
+///   1. Return a names-only session for explicit per-terminal injection while
+///      clearing any stale global session from previous extension versions.
 ///   2. Fire-and-forget a directory `RequestGrant`. On rejection with a
 ///      typed agent error, surface a single warning notification per
 ///      session via `notifyDirectoryGrantRejected`.
@@ -39,7 +40,13 @@ export async function handleOpenTerminal(
   cwd: string | undefined,
   deps: TerminalAutobindHandlerDeps,
 ): Promise<TerminalAutobindOutcome> {
-  const plan = planTerminalAutobind(cwd, deps.autobindContext);
+  // A project session must never leak through VS Code's global environment to
+  // unrelated terminals. Callers apply the returned session only to their terminal.
+  clearIdeEnvSessionFromTerminals(deps.environmentVariableCollection);
+  let project: ResolvedLocketProject | undefined;
+  try { project = deps.resolveProject === undefined ? deps.autobindContext.resolveProject(cwd) : await deps.resolveProject(cwd); }
+  catch { return {applied:false}; }
+  const plan = planTerminalAutobind(cwd, {...deps.autobindContext, resolveProject:()=>project});
   if (plan === undefined) {
     return { applied: false };
   }
@@ -47,13 +54,9 @@ export async function handleOpenTerminal(
   const session = await registerIdeEnvSessionWithAgent({
     agentClient: deps.agentClient,
     project: plan.project,
-    storePath: deps.storePath,
+    storePath: plan.project.storePath ?? deps.storePath,
     sessionIdFactory: deps.sessionIdFactory,
   });
-  if (session !== undefined) {
-    applyIdeEnvSessionToTerminals(deps.environmentVariableCollection, session.sessionId);
-  }
-
   // Fire-and-forget; we deliberately do not await this from the caller's
   // perspective so terminal creation never blocks on the agent.
   void requestDirectoryGrant(deps, plan.grantPayload);

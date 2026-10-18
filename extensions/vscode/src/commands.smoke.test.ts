@@ -86,18 +86,6 @@ const EXPECTED_COMMAND_PAYLOADS: ReadonlyArray<{
     },
   },
   {
-    commandId: 'locket.revealSecret',
-    agentMethod: 'Reveal',
-    payload: { secret_name: SECRET_NAME, profile_id: PROFILE_ID },
-  },
-  {
-    commandId: 'locket.copySecret',
-    agentMethod: 'Copy',
-    // `Copy` reuses the same builder as `Reveal` because the agent
-    // contract for both gated-access flows is identical.
-    payload: { secret_name: SECRET_NAME, profile_id: PROFILE_ID },
-  },
-  {
     commandId: 'locket.openAuditView',
     agentMethod: 'ListAudit',
     payload: {

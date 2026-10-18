@@ -22,7 +22,6 @@ use crate::commands::agent::ensure_agent_running_for_execution;
 #[cfg(all(unix, not(test)))]
 use crate::commands::agent::request_agent_once;
 use crate::commands::config::spec::{config_get_value, read_user_config};
-use crate::commands::secrets::import::{EnvImportEntry, parse_env_import};
 use crate::runtime::RuntimeContext;
 use crate::runtime::error::{
     CliError, child_exit_error, confirmation_failed_error, corrupt_db_error, exec_prepare_error,
@@ -39,6 +38,7 @@ use crate::{
     open_store, require_project, write_runtime_policy_audit_if_available,
     write_runtime_policy_denial_audit_if_available,
 };
+use locket_core::dotenv::{DotenvOptions, parse_dotenv};
 
 /// Inputs needed to run a prepared command under a runtime session record.
 pub struct RuntimeExecutionRequest<'a> {
@@ -125,14 +125,16 @@ pub fn run_command(
     run_args: &RunArgs,
 ) -> Result<(), CliError> {
     let resolved = require_project(context)?;
-    let effective = if run_args.runner_args.is_empty() {
-        load_command_policy_or_audit_denial(context, &resolved, &run_args.policy)?
-    } else {
-        load_runner_policy(context, &resolved, run_args)?
-    };
+    let effective = resolve_run_policy(context, output, &resolved, run_args)?;
     let policy = &effective.policy;
+    let mut store = open_store(context)?;
+    ensure_trusted_project_root(&store, &resolved)?;
+    let profile = effective_policy_profile(&store, &resolved, &effective)?;
 
-    let confirmation_source = if policy.confirm {
+    let confirmation_source = if policy.confirm || profile.dangerous {
+        if profile.dangerous {
+            writeln!(output, "dangerous_environment: {}", profile.name)?;
+        }
         let expected = format!("run {}", policy.name);
         writeln!(output, "type '{expected}' to confirm run")?;
         let confirmation = context.confirmation_reader.read_confirmation("run")?;
@@ -161,9 +163,6 @@ pub fn run_command(
     } else {
         None
     };
-    let mut store = open_store(context)?;
-    ensure_trusted_project_root(&store, &resolved)?;
-    let profile = effective_policy_profile(&store, &resolved, &effective)?;
     ensure_agent_running_for_execution(context)?;
     let prepared_policy =
         match prepare_policy_execution(context, output, &store, &resolved, &profile, policy) {
@@ -219,18 +218,149 @@ pub fn run_command(
     Err(child_exit_error(status))
 }
 
-fn load_runner_policy(
+/// Reviews and saves a detected project command without running it.
+pub fn approve_project_command(
     context: &RuntimeContext,
+    output: &mut impl Write,
+    resolved: &ResolvedProject,
+    argv: Vec<String>,
+) -> Result<(), CliError> {
+    resolve_run_policy(
+        context,
+        output,
+        resolved,
+        &RunArgs { policy: String::new(), runner_args: Vec::new(), argv },
+    )?;
+    Ok(())
+}
+
+fn resolve_run_policy(
+    context: &RuntimeContext,
+    output: &mut impl Write,
     resolved: &ResolvedProject,
     run_args: &RunArgs,
 ) -> Result<crate::EffectiveCommandPolicy, CliError> {
-    let expanded = expand_runner_command(&run_args.policy, &run_args.runner_args, &resolved.root)?;
-    load_effective_command_policy_for_argv(
-        resolved,
-        expanded.policy_name,
-        expanded.argv,
+    let explicit_argv = run_args.policy.is_empty();
+    if !explicit_argv && run_args.runner_args.is_empty() && run_args.argv.is_empty() {
+        return load_command_policy_or_audit_denial(context, resolved, &run_args.policy);
+    }
+    let argv = requested_run_argv(run_args, &resolved.root)?;
+    let document = crate::read_policy_document(&resolved.root.join(crate::LOCKET_TOML))?;
+    let matched = document
+        .commands
+        .get("dev")
+        .filter(|policy| policy.command == CommandSpec::Argv(argv.clone()))
+        .or_else(|| {
+            document
+                .commands
+                .values()
+                .find(|policy| policy.command == CommandSpec::Argv(argv.clone()))
+        });
+    if let Some(policy) = matched {
+        return load_command_policy_or_audit_denial(context, resolved, &policy.name);
+    }
+    let policy_name = next_command_name(&document);
+    let mut effective =
+        load_effective_command_policy_for_argv(resolved, policy_name, argv, &context.cwd)?;
+    let store = open_store(context)?;
+    ensure_trusted_project_root(&store, resolved)?;
+    let profile = effective_policy_profile(&store, resolved, &effective)?;
+    let names = crate::active_profile_secret_names(
+        &store,
+        resolved.config.project_id.as_str(),
+        &profile.id,
+    )?;
+    let mut required = names
+        .into_iter()
+        .map(|name| {
+            SecretName::new(name).map_err(|_| invalid_policy_error("invalid secret metadata"))
+        })
+        .collect::<Result<BTreeSet<_>, _>>()?;
+    required.extend(effective.policy.required_secrets.iter().cloned());
+    effective.policy.optional_secrets.retain(|name| !required.contains(name));
+    effective.policy.required_secrets = required.iter().cloned().collect();
+    required.extend(effective.policy.optional_secrets.iter().cloned());
+    effective.policy.allowed_secrets = required.into_iter().collect();
+    effective.policy.confirm |= profile.dangerous;
+    // Re-evaluate ACLs with the proposed names. Existing path-scope requirements are
+    // preserved, and the durable writer will validate the full policy again.
+    let mut proposed_document = document;
+    proposed_document.commands.insert(effective.policy.name.clone(), effective.policy.clone());
+    crate::enforce_secret_access_policies(
+        &proposed_document,
+        &effective.policy,
+        &resolved.root,
         &context.cwd,
-    )
+    )?;
+    writeln!(output, "proposed_command: {}", effective.policy.name)?;
+    writeln!(output, "argv: {}", serde_json::to_string(&policy_argv(&effective.policy))?)?;
+    writeln!(output, "working_directory: {}", context.cwd.display())?;
+    writeln!(output, "profile: {}", profile.name)?;
+    writeln!(
+        output,
+        "secret_names: {}",
+        effective
+            .policy
+            .required_secrets
+            .iter()
+            .map(SecretName::as_str)
+            .collect::<Vec<_>>()
+            .join(",")
+    )?;
+    if profile.dangerous {
+        writeln!(output, "dangerous_profile: {}", profile.name)?;
+    }
+    let expected = format!("approve {}", effective.policy.name);
+    writeln!(output, "type '{expected}' to save this command and approve these names")?;
+    output.flush()?;
+    let confirmation = context.confirmation_reader.read_confirmation("command approval")?;
+    if confirmation.trim_end_matches(['\r', '\n']) != expected {
+        return Err(confirmation_failed_error("command approval confirmation did not match"));
+    }
+    if profile.dangerous {
+        writeln!(output, "type '{}' to confirm access to this dangerous profile", profile.name)?;
+        output.flush()?;
+        let confirmation = context.confirmation_reader.read_confirmation("dangerous profile")?;
+        if confirmation.trim_end_matches(['\r', '\n']) != profile.name {
+            return Err(confirmation_failed_error("dangerous profile confirmation did not match"));
+        }
+    }
+    let mut base_policy = effective.policy.clone();
+    if let Some(scope) = proposed_document.path_scope_for(&resolved.root, &context.cwd) {
+        let scoped =
+            scope.required_secrets.iter().chain(&scope.optional_secrets).collect::<BTreeSet<_>>();
+        base_policy.required_secrets.retain(|name| !scoped.contains(name));
+        base_policy.optional_secrets.retain(|name| !scoped.contains(name));
+        base_policy.allowed_secrets.retain(|name| !scoped.contains(name));
+    }
+    crate::commands::policy::persist_command_policy(context, resolved, &base_policy)?;
+    load_command_policy_or_audit_denial(context, resolved, &effective.policy.name)
+}
+
+fn requested_run_argv(run_args: &RunArgs, project_root: &Path) -> Result<Vec<String>, CliError> {
+    let argv = if run_args.policy.is_empty() {
+        if run_args.argv.is_empty() {
+            return Err(invalid_policy_error("provide a saved command or -- <command>"));
+        }
+        run_args.argv.clone()
+    } else {
+        let mut args = run_args.runner_args.clone();
+        args.extend(run_args.argv.iter().cloned());
+        expand_runner_command(&run_args.policy, &args, project_root)?.argv
+    };
+    Ok(argv)
+}
+
+fn next_command_name(document: &locket_core::PolicyDocument) -> String {
+    let mut policy_name = "dev".to_owned();
+    if document.commands.contains_key(&policy_name) {
+        let mut suffix = 2;
+        while document.commands.contains_key(&format!("dev_{suffix}")) {
+            suffix += 1;
+        }
+        policy_name = format!("dev_{suffix}");
+    }
+    policy_name
 }
 
 fn expand_runner_command(
@@ -342,6 +472,83 @@ pub(crate) fn runner_policy_name_for_tests(runner: &str, args: &[String]) -> Str
     runner_policy_name(runner, args)
 }
 
+/// Names whose availability can be checked without running external commands.
+pub struct RequiredVariableAvailability {
+    pub missing: Vec<String>,
+    pub unknown: Vec<String>,
+}
+
+pub fn required_variable_availability(
+    store: &Store,
+    resolved: &ResolvedProject,
+    profile: &ProfileRecord,
+    policy: &CommandPolicy,
+) -> Result<RequiredVariableAvailability, CliError> {
+    let selections = policy_secret_selections(store, resolved, profile, policy)?;
+    let mut external_names = BTreeSet::new();
+    let mut deferred_source = false;
+    for source in &policy.external_env_sources {
+        match source {
+            ExternalEnvSource::Parent => {
+                external_names.extend(
+                    policy
+                        .allowed_secrets
+                        .iter()
+                        .filter(|name| std::env::var_os(name.as_str()).is_some())
+                        .map(|name| name.as_str().to_owned()),
+                );
+            }
+            ExternalEnvSource::File(path) => {
+                external_names
+                    .extend(resolve_external_env_file(path, &resolved.root, policy)?.into_keys());
+            }
+            ExternalEnvSource::Compose | ExternalEnvSource::Ide => deferred_source = true,
+        }
+    }
+    let document = crate::read_policy_document(&resolved.root.join(crate::LOCKET_TOML))?;
+    external_names.extend(
+        document
+            .variables
+            .iter()
+            .filter(|(name, contract)| {
+                contract.default.is_some()
+                    && policy
+                        .allowed_secrets
+                        .iter()
+                        .any(|allowed| allowed.as_str() == name.as_str())
+            })
+            .map(|(name, _)| name.clone()),
+    );
+    let parent =
+        std::env::vars().map(|(name, value)| (name, locket_exec::env_value(value))).collect();
+    let inherit = policy.inherit_env.iter().map(String::as_str).collect::<Vec<_>>();
+    let inherited = locket_exec::merge_environment(
+        &parent,
+        locket_exec::DEFAULT_SAFE_ALLOWLIST,
+        &inherit,
+        &locket_exec::EnvMap::new(),
+        &locket_exec::EnvMap::new(),
+        policy.env_mode,
+        policy.override_behavior,
+    )
+    .map_err(|_| invalid_policy_error("environment resolution failed"))?;
+    external_names.extend(inherited.into_keys());
+    let mut result = RequiredVariableAvailability { missing: Vec::new(), unknown: Vec::new() };
+    for selection in selections {
+        if selection.required
+            && selection.selected.is_none()
+            && !external_names.contains(&selection.name)
+        {
+            if deferred_source {
+                result.unknown.push(selection.name);
+            } else {
+                result.missing.push(selection.name);
+            }
+        }
+    }
+    Ok(result)
+}
+
 fn prepare_policy_execution(
     context: &RuntimeContext,
     output: &mut impl Write,
@@ -378,13 +585,7 @@ fn prepare_policy_execution(
         &ComposeConfigCommand::docker(),
         ide_ctx.as_ref(),
     )?;
-    let missing_required = missing_required_secret_names(&selections, &external_env);
-    if !missing_required.is_empty() {
-        return Err(invalid_policy_error(format!(
-            "required secret(s) missing: {}",
-            missing_required.join(",")
-        )));
-    }
+    write_configuration_warnings(resolved, policy, output)?;
 
     let locket_env = if let Some(agent_access) = agent_access.as_ref() {
         policy_locket_env_via_agent(context, resolved, profile, policy, &selections, agent_access)?
@@ -420,7 +621,8 @@ fn prepare_policy_execution(
         env_mode: policy.env_mode,
         override_mode: policy.override_behavior,
     };
-    let prepared = locket_exec::prepare_execution(&request).map_err(exec_prepare_error)?;
+    let mut prepared = locket_exec::prepare_execution(&request).map_err(exec_prepare_error)?;
+    finalize_configuration_environment(resolved, policy, &mut prepared.env)?;
     let external_env_names = external_env.keys().map(ToOwned::to_owned).collect::<Vec<_>>();
     let secret_names = unique_secret_names(
         selections
@@ -432,7 +634,14 @@ fn prepare_policy_execution(
         secret_names
             .iter()
             .map(String::as_str)
-            .chain(reference_secret_names.iter().map(String::as_str)),
+            .chain(reference_secret_names.iter().map(String::as_str))
+            .chain(
+                policy
+                    .allowed_secrets
+                    .iter()
+                    .filter(|name| prepared.env.contains_key(name.as_str()))
+                    .map(SecretName::as_str),
+            ),
     );
     let external_env_names = unique_secret_names(external_env_names.iter().map(String::as_str));
 
@@ -717,11 +926,25 @@ fn resolve_external_env_file(
         policy.allowed_secrets.iter().map(|name| name.as_str().to_owned()).collect::<BTreeSet<_>>();
     let contents = fs::read_to_string(&canonical_candidate)?;
     let mut env = locket_exec::EnvMap::new();
-    for entry in parse_env_import(&contents) {
-        if let EnvImportEntry::Secret { key, value } = entry
-            && allowed_names.contains(&key)
-        {
-            env.insert(key, locket_exec::env_value(value));
+    // External sources are data, never shell programs. Only a malformed
+    // assignment to a name this command can receive affects its execution.
+    let document = parse_dotenv(&contents, DotenvOptions { literal: true });
+    if let Some(error) = document.errors.iter().find(|error| {
+        let line = contents.lines().nth(error.line.saturating_sub(1)).unwrap_or("").trim_start();
+        let line = line.strip_prefix("export ").map_or(line, str::trim_start);
+        let key = line
+            .split_once('=')
+            .map_or_else(|| line.split_whitespace().next().unwrap_or(""), |(key, _)| key.trim());
+        allowed_names.contains(key)
+    }) {
+        return Err(metadata_invalid_error(format!(
+            "external env file line {}: {}",
+            error.line, error.message
+        )));
+    }
+    for entry in document.entries {
+        if allowed_names.contains(&entry.key) {
+            env.insert(entry.key, locket_exec::env_value(entry.value));
         }
     }
     Ok(env)
@@ -793,21 +1016,6 @@ fn compose_env_value_as_string(value: &serde_json::Value) -> Option<String> {
     }
 }
 
-fn missing_required_secret_names<'a>(
-    selections: &'a [PolicySecretSelection],
-    external_env: &locket_exec::EnvMap,
-) -> Vec<&'a str> {
-    selections
-        .iter()
-        .filter(|selection| {
-            selection.required
-                && selection.selected.is_none()
-                && !external_env.contains_key(&selection.name)
-        })
-        .map(|selection| selection.name.as_str())
-        .collect()
-}
-
 fn policy_locket_env(
     context: &RuntimeContext,
     store: &Store,
@@ -866,6 +1074,7 @@ fn prepare_agent_policy_access(
     selections: &[PolicySecretSelection],
 ) -> Result<AgentPolicyAccess, CliError> {
     unlock_agent_for_policy(context, resolved, policy)?;
+    crate::commands::policy::refresh_command_policy_for_run(context, resolved, &policy.name)?;
     let binding = agent_grant_binding()?;
     let needs_reference_grant = policy_command_has_lk_references(policy)
         || selections.iter().any(|s| s.selected.is_some())
@@ -1396,5 +1605,375 @@ fn denial_failure_reason(error: &CliError) -> &'static str {
             _ => "policy_rejected",
         },
         _ => "policy_rejected",
+    }
+}
+
+/// Applies authorized public fallbacks, then checks only the final selected values.
+pub fn finalize_configuration_environment(
+    resolved: &ResolvedProject,
+    policy: &CommandPolicy,
+    env: &mut locket_exec::EnvMap,
+) -> Result<(), CliError> {
+    let document = crate::read_policy_document(&resolved.root.join(crate::LOCKET_TOML))?;
+    document.apply_variable_defaults(policy, env);
+    let missing = policy
+        .required_secrets
+        .iter()
+        .filter(|name| !env.contains_key(name.as_str()))
+        .map(|name| {
+            let guidance = document.variables.get(name.as_str());
+            let mut item = format!("{name}; run `locket set {name}`");
+            if let Some(description) = guidance.and_then(|contract| contract.description.as_deref())
+            {
+                item.push_str("; ");
+                item.push_str(description);
+            }
+            if let Some(hint) = guidance.and_then(|contract| contract.setup_hint.as_deref()) {
+                item.push_str("; ");
+                item.push_str(hint);
+            }
+            item
+        })
+        .collect::<Vec<_>>();
+    if !missing.is_empty() {
+        return Err(invalid_policy_error(format!(
+            "required secret(s) missing: {}",
+            missing.join(", ")
+        )));
+    }
+    document
+        .validate_variable_values(policy, env)
+        .map_err(|error| invalid_policy_error(error.to_string()))
+}
+
+pub fn write_configuration_warnings(
+    resolved: &ResolvedProject,
+    policy: &CommandPolicy,
+    output: &mut impl Write,
+) -> Result<(), CliError> {
+    let document = crate::read_policy_document(&resolved.root.join(crate::LOCKET_TOML))?;
+    for row in document.variable_readiness(policy, &std::collections::BTreeMap::new(), false) {
+        if let Some(warning) = row.warning {
+            writeln!(output, "warning: {warning}")?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod approval_tests {
+    use clap::Parser;
+    use std::collections::VecDeque;
+    use std::sync::{Arc, Mutex};
+    struct Confirmations(Mutex<VecDeque<String>>);
+    impl crate::ConfirmationReader for Confirmations {
+        fn read_confirmation(&self, _prompt: &str) -> Result<String, crate::CliError> {
+            self.0
+                .lock()
+                .map_err(|_| crate::confirmation_failed_error("fixture lock"))?
+                .pop_front()
+                .ok_or_else(|| crate::confirmation_failed_error("unexpected prompt"))
+        }
+    }
+    #[test]
+    fn external_file_preserves_literal_data_and_ignores_unrelated_invalid_names()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        std::fs::write(
+            directory.path().join("local.env"),
+            "OTHER=pa$$\nlower=x\nAPI_KEY=token$literal\n",
+        )?;
+        let doc = locket_core::PolicyDocument::from_toml_str(
+            "schema_version=1\n[commands.dev]\nargv=[\"true\"]\nrequired_secrets=[\"API_KEY\"]",
+        )?;
+        let env = super::resolve_external_env_file(
+            std::path::Path::new("local.env"),
+            directory.path(),
+            &doc.commands["dev"],
+        )?;
+        assert_eq!(env.len(), 1);
+        assert!(env.contains_key("API_KEY"));
+        Ok(())
+    }
+
+    #[test]
+    fn approval_does_not_move_subtree_variables_into_global_command()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let mut context = crate::tests::test_context(&directory);
+        crate::run_with_context(
+            crate::Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey"])?,
+            &context,
+            &mut Vec::new(),
+        )?;
+        let path = directory.path().join("locket.toml");
+        let text = std::fs::read_to_string(&path)?;
+        std::fs::write(
+            &path,
+            format!("{text}\n[paths.\"packages/api\"]\nrequired_secrets=[\"PACKAGE_ONLY\"]\n"),
+        )?;
+        std::fs::create_dir_all(directory.path().join("packages/api"))?;
+        context.cwd = directory.path().join("packages/api");
+        context.confirmation_reader =
+            Arc::new(Confirmations(Mutex::new(VecDeque::from(["approve dev".into()]))));
+        let resolved = crate::require_project(&context)?;
+        let effective = super::resolve_run_policy(
+            &context,
+            &mut Vec::new(),
+            &resolved,
+            &crate::RunArgs {
+                policy: String::new(),
+                runner_args: Vec::new(),
+                argv: vec!["true".into()],
+            },
+        )?;
+        assert!(
+            effective.policy.required_secrets.iter().any(|name| name.as_str() == "PACKAGE_ONLY")
+        );
+        let saved = crate::read_policy_document(&path)?;
+        assert_eq!(saved.commands["dev"].required_secrets, [] as [locket_core::SecretName; 0]);
+        Ok(())
+    }
+
+    #[test]
+    fn previously_safe_command_requires_confirmation_after_environment_becomes_dangerous()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let mut context = crate::tests::test_context(&directory);
+        crate::run_with_context(
+            crate::Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey"])?,
+            &context,
+            &mut Vec::new(),
+        )?;
+        crate::run_with_context(
+            crate::Cli::try_parse_from(["locket", "policy", "add", "dev", "--", "/usr/bin/true"])?,
+            &context,
+            &mut Vec::new(),
+        )?;
+        let resolved = crate::require_project(&context)?;
+        crate::open_store(&context)?.connection().execute(
+            "UPDATE profiles SET dangerous=1 WHERE project_id=?1",
+            [resolved.config.project_id.as_str()],
+        )?;
+        context.confirmation_reader =
+            Arc::new(Confirmations(Mutex::new(VecDeque::from(["wrong".into()]))));
+        let result = super::run_command(
+            &context,
+            &mut Vec::new(),
+            &crate::RunArgs { policy: "dev".into(), runner_args: Vec::new(), argv: Vec::new() },
+        );
+        assert!(matches!(result,Err(error) if error.exit_code()==68));
+        Ok(())
+    }
+
+    #[test]
+    fn approved_dangerous_command_retains_confirmation_on_later_runs()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let mut context = crate::tests::test_context(&directory);
+        crate::run_with_context(
+            crate::Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey"])?,
+            &context,
+            &mut Vec::new(),
+        )?;
+        let resolved = crate::require_project(&context)?;
+        let store = crate::open_store(&context)?;
+        store.connection().execute(
+            "UPDATE profiles SET dangerous=1 WHERE project_id=?1",
+            [resolved.config.project_id.as_str()],
+        )?;
+        context.confirmation_reader = Arc::new(Confirmations(Mutex::new(VecDeque::from([
+            "approve dev".to_owned(),
+            "dev".to_owned(),
+        ]))));
+        let effective = super::resolve_run_policy(
+            &context,
+            &mut Vec::new(),
+            &resolved,
+            &crate::RunArgs {
+                policy: String::new(),
+                runner_args: Vec::new(),
+                argv: vec!["/usr/bin/true".to_owned()],
+            },
+        )?;
+        assert!(effective.policy.confirm);
+        Ok(())
+    }
+    #[test]
+    fn runner_reuses_saved_dev_authorization_and_security_gates()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let context = crate::tests::test_context(&directory);
+        crate::run_with_context(
+            crate::Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey"])?,
+            &context,
+            &mut Vec::new(),
+        )?;
+        std::fs::write(
+            directory.path().join("package.json"),
+            r#"{"scripts":{"dev":"touch must-not-run"}}"#,
+        )?;
+        let path = directory.path().join("locket.toml");
+        let mut text = std::fs::read_to_string(&path)?;
+        text.push_str("\n[commands.dev]\nargv=[\"npm\",\"run\",\"dev\"]\nrequired_secrets=[\"API_KEY\"]\nconfirm=true\nrequire_user_verification=true\nenv_mode=\"strict\"\n");
+        std::fs::write(path, text)?;
+        let resolved = crate::require_project(&context)?;
+        let effective = super::resolve_run_policy(
+            &context,
+            &mut Vec::new(),
+            &resolved,
+            &crate::RunArgs {
+                policy: "npm".to_owned(),
+                runner_args: vec!["dev".to_owned()],
+                argv: Vec::new(),
+            },
+        )?;
+        assert_eq!(effective.policy.name, "dev");
+        assert!(effective.policy.confirm);
+        assert!(effective.policy.require_user_verification);
+        assert_eq!(effective.policy.required_secrets[0].as_str(), "API_KEY");
+        assert_eq!(effective.policy.env_mode, locket_core::EnvMode::Strict);
+        assert!(!directory.path().join("must-not-run").exists());
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod configuration_runtime_tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn configuration_contract_runtime_defaults_are_fallbacks_and_names_only()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let context = crate::tests::test_context(&directory);
+        crate::run_with_context(
+            crate::Cli::try_parse_from([
+                "locket",
+                "init",
+                "--name",
+                "fixture",
+                "--profile",
+                "dev",
+            ])?,
+            &context,
+            &mut Vec::new(),
+        )?;
+        let path = context.cwd.join("locket.toml");
+        let mut text = fs::read_to_string(&path)?;
+        text.push_str(
+            r"
+[commands.check]
+argv=['echo']
+required_secrets=['PORT','API_URL']
+optional_secrets=['NEXT_PUBLIC_TOKEN']
+external_env_sources=[{file='.fixture-env'}]
+[variables.PORT]
+classification='public'
+type='integer'
+default='3001'
+[variables.API_URL]
+classification='public'
+type='url'
+default='http://localhost:3001/default-canary'
+[variables.UNAUTHORIZED]
+classification='public'
+default='must-not-inject'
+",
+        );
+        fs::write(&path, text)?;
+        fs::write(
+            context.cwd.join(".fixture-env"),
+            "API_URL=http://localhost:4000/external-canary\n",
+        )?;
+        let resolved = require_project(&context)?;
+        let store = open_store(&context)?;
+        let policy = load_effective_command_policy(&resolved, "check", &context.cwd)?.policy;
+        let profile = default_profile(&store, &resolved.config)?;
+        let mut output = Vec::new();
+        let prepared =
+            prepare_policy_execution(&context, &mut output, &store, &resolved, &profile, &policy)?;
+        assert_eq!(prepared.prepared.env.get("PORT").map(|value| value.as_str()), Some("3001"));
+        assert_eq!(
+            prepared.prepared.env.get("API_URL").map(|value| value.as_str()),
+            Some("http://localhost:4000/external-canary")
+        );
+        assert!(!prepared.prepared.env.contains_key("UNAUTHORIZED"));
+        // Execute only this synthetic assertion helper, never the fixture's app command.
+        #[cfg(unix)]
+        {
+            let mut command = std::process::Command::new("/bin/sh");
+            command.arg("-c").arg("test \"$PORT\" = 3001 && test \"$API_URL\" = http://localhost:4000/external-canary && test -z \"$UNAUTHORIZED\"").env_clear();
+            for (name, value) in &prepared.prepared.env {
+                command.env(name, value.as_str());
+            }
+            assert!(command.status()?.success());
+        }
+
+        let text = String::from_utf8(output)?;
+        assert!(text.contains("browser bundles"));
+        assert!(!text.contains("external-canary"));
+        Ok(())
+    }
+
+    #[test]
+    fn configuration_contract_final_values_validate_after_source_precedence()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let context = crate::tests::test_context(&directory);
+        crate::run_with_context(
+            crate::Cli::try_parse_from([
+                "locket",
+                "init",
+                "--name",
+                "fixture",
+                "--profile",
+                "dev",
+            ])?,
+            &context,
+            &mut Vec::new(),
+        )?;
+        crate::set_secret_value(
+            &context,
+            &crate::tests::test_secret_write_args("PORT"),
+            "secret-canary-invalid-integer",
+            "manual",
+            1_000,
+        )?;
+        let path = context.cwd.join("locket.toml");
+        let mut text = fs::read_to_string(&path)?;
+        text.push_str("\n[commands.keep_external]\nargv=['not-a-real-project-command']\nrequired_secrets=['PORT']\nexternal_env_sources=[{file='.synthetic-env'}]\noverride='preserve'\n[commands.use_vault]\nargv=['not-a-real-project-command']\nrequired_secrets=['PORT']\nexternal_env_sources=[{file='.synthetic-env'}]\noverride='locket'\n[variables.PORT]\ntype='integer'\n");
+        fs::write(path, text)?;
+        fs::write(context.cwd.join(".synthetic-env"), "PORT=4000\n")?;
+        let resolved = require_project(&context)?;
+        let store = open_store(&context)?;
+        let profile = default_profile(&store, &resolved.config)?;
+        let keep = load_effective_command_policy(&resolved, "keep_external", &context.cwd)?.policy;
+        let prepared = prepare_policy_execution(
+            &context,
+            &mut Vec::new(),
+            &store,
+            &resolved,
+            &profile,
+            &keep,
+        )?;
+        assert_eq!(prepared.prepared.env["PORT"].as_str(), "4000");
+        let policy = load_effective_command_policy(&resolved, "use_vault", &context.cwd)?.policy;
+        let result = prepare_policy_execution(
+            &context,
+            &mut Vec::new(),
+            &store,
+            &resolved,
+            &profile,
+            &policy,
+        );
+        let Err(error) = result else {
+            return Err("invalid selected value must fail before spawn".into());
+        };
+        assert!(error.to_string().contains("PORT"));
+        assert!(error.to_string().contains("integer"));
+        assert!(!error.to_string().contains("secret-canary"));
+        Ok(())
     }
 }

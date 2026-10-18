@@ -332,11 +332,9 @@ pub async fn handle_register_command_policies(
             }
         };
 
-    let audit_key = {
-        let cache = state.unlock_cache.lock().await;
-        cache.lookup(&typed.project_id, now_unix_nanos).map(|entry| entry.key_bytes().to_vec())
-    };
-    let Some(audit_key) = audit_key else {
+    // Keep authorization alive through audit and snapshot publication so Lock waits.
+    let cache = state.unlock_cache.lock().await;
+    let Some(entry) = cache.lookup(&typed.project_id, now_unix_nanos) else {
         return ResponseEnvelope::Error(ErrorEnvelope::new(
             request.id.clone(),
             "UnlockRequired",
@@ -344,13 +342,16 @@ pub async fn handle_register_command_policies(
             false,
         ));
     };
-
+    let Ok(master): Result<locket_crypto::KeyBytes, _> = entry.key_bytes().try_into() else {
+        return ResponseEnvelope::Error(ErrorEnvelope::new(
+            request.id.clone(),
+            "CorruptDb",
+            "invalid cached key",
+            false,
+        ));
+    };
+    let master = zeroize::Zeroizing::new(master);
     let policy_count = typed.policies.len();
-    {
-        let mut snapshots = state.command_policies.lock().await;
-        replace_project_snapshots(&mut snapshots, &typed.project_id, typed.policies);
-    }
-
     let metadata = json!({
         "schema_version": 1,
         "action": "POLICY_UPDATE",
@@ -374,25 +375,39 @@ pub async fn handle_register_command_policies(
         metadata_json: &metadata,
         timestamp,
     };
-    let mut store = match Store::open(&typed.store_path) {
-        Ok(store) => store,
-        Err(error) => {
-            return ResponseEnvelope::Error(ErrorEnvelope::new(
-                request.id.clone(),
-                "CorruptDb",
-                format!("failed to open store: {error}"),
-                false,
-            ));
-        }
-    };
-    if let Err(error) = store.append_audit(&audit_key, &audit) {
+    let Ok(mut store) = Store::open(&typed.store_path) else {
         return ResponseEnvelope::Error(ErrorEnvelope::new(
             request.id.clone(),
             "CorruptDb",
-            format!("failed to append POLICY_UPDATE audit row: {error}"),
+            "failed to open policy audit store",
+            false,
+        ));
+    };
+    let Ok(audit_key) = crate::set_secret::load_project_key_with_master(
+        &store,
+        &typed.project_id,
+        locket_crypto::KeyPurpose::Audit,
+        &master,
+    ) else {
+        return ResponseEnvelope::Error(ErrorEnvelope::new(
+            request.id.clone(),
+            "CorruptDb",
+            "failed to derive policy audit key",
+            false,
+        ));
+    };
+    let mut snapshots = state.command_policies.lock().await;
+    if store.append_audit(audit_key.as_ref(), &audit).is_err() {
+        return ResponseEnvelope::Error(ErrorEnvelope::new(
+            request.id.clone(),
+            "CorruptDb",
+            "failed to append POLICY_UPDATE audit row",
             false,
         ));
     }
+    replace_project_snapshots(&mut snapshots, &typed.project_id, typed.policies);
+    drop(snapshots);
+    drop(cache);
 
     ResponseEnvelope::Success(SuccessEnvelope::new(request.id.clone(), serde_json::Value::Null))
 }

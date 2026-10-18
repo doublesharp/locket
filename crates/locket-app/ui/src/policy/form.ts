@@ -71,7 +71,7 @@ export function policyFormFromRow(row: CommandPolicyRow): PolicyFormState {
     allowedSecrets: row.allowedSecrets.join(', '),
     confirm: row.confirm,
     requireUserVerification: row.requireUserVerification,
-    requireAgent: false,
+    requireAgent: row.requireAgent,
     allowRemoteDocker: row.allowRemoteDocker,
     ttlSeconds: row.ttlSeconds,
     envMode: row.envMode,
@@ -80,7 +80,7 @@ export function policyFormFromRow(row: CommandPolicyRow): PolicyFormState {
 }
 
 const NAME_PATTERN = /^[A-Za-z0-9._-]+$/;
-const SECRET_NAME_PATTERN = /^[A-Z][A-Z0-9_]*$/;
+const SECRET_NAME_PATTERN = /^[A-Z_][A-Z0-9_]*$/;
 const COMMAND_PREVIEW_MAX = 4096;
 
 /** Normalize a `KEY, KEY2` list into a deduped, trimmed array. */
@@ -124,10 +124,14 @@ export function validatePolicyForm(state: PolicyFormState): PolicyFormValidation
     }
   }
 
-  if (Number.isNaN(state.ttlSeconds) || state.ttlSeconds < 0) {
+  if (required.some((name) => optional.includes(name))) {
+    errors.optionalSecrets = 'A variable cannot be both required and optional.';
+  }
+
+  if (!Number.isInteger(state.ttlSeconds) || state.ttlSeconds < 0) {
     errors.ttlSeconds = 'TTL must be a non-negative integer.';
-  } else if (state.ttlSeconds > 86_400) {
-    errors.ttlSeconds = 'TTL must be at most 86400 seconds (24h).';
+  } else if (state.ttlSeconds > 28_800) {
+    errors.ttlSeconds = 'TTL must be at most 28800 seconds (8h).';
   }
 
   return { errors, valid: Object.keys(errors).length === 0 };

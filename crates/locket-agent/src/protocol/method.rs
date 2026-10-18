@@ -7,6 +7,14 @@ use thiserror::Error;
 /// V1 agent RPC method names.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AgentMethod {
+    /// Read team synchronization status.
+    TeamSyncStatus,
+    /// Configure an explicitly selected encrypted exchange folder.
+    TeamSyncConfigure,
+    /// Process encrypted team updates with a live local grant.
+    TeamSyncNow,
+    /// Resolve a verified incoming profile collision using explicit local consent.
+    TeamSyncReconcile,
     /// Return metadata-only agent status.
     Status,
     /// Unlock local key material.
@@ -61,6 +69,10 @@ pub enum AgentMethod {
     ListVersions,
     /// Create or rotate one secret value through a gated path.
     SetSecret,
+    /// Import a selected dotenv file with an agent-owned key.
+    ImportDotenv,
+    /// Persist a selected project policy edit.
+    ApplyPolicy,
     /// Switch the active project profile.
     SetActiveProfile,
     /// Register a names-only IDE env-session map for an integrated terminal.
@@ -86,6 +98,10 @@ impl AgentMethod {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::TeamSyncStatus => "TeamSyncStatus",
+            Self::TeamSyncConfigure => "TeamSyncConfigure",
+            Self::TeamSyncNow => "TeamSyncNow",
+            Self::TeamSyncReconcile => "TeamSyncReconcile",
             Self::Status => "Status",
             Self::Unlock => "Unlock",
             Self::Lock => "Lock",
@@ -113,6 +129,8 @@ impl AgentMethod {
             Self::ListSecrets => "ListSecrets",
             Self::ListVersions => "ListVersions",
             Self::SetSecret => "SetSecret",
+            Self::ImportDotenv => "ImportDotenv",
+            Self::ApplyPolicy => "ApplyPolicy",
             Self::SetActiveProfile => "SetActiveProfile",
             Self::RegisterIdeEnvSession => "RegisterIdeEnvSession",
             Self::IdeEnvSession => "IdeEnvSession",
@@ -131,6 +149,10 @@ impl FromStr for AgentMethod {
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
+            "TeamSyncStatus" => Ok(Self::TeamSyncStatus),
+            "TeamSyncConfigure" => Ok(Self::TeamSyncConfigure),
+            "TeamSyncNow" => Ok(Self::TeamSyncNow),
+            "TeamSyncReconcile" => Ok(Self::TeamSyncReconcile),
             "Status" => Ok(Self::Status),
             "Unlock" => Ok(Self::Unlock),
             "Lock" => Ok(Self::Lock),
@@ -158,6 +180,8 @@ impl FromStr for AgentMethod {
             "ListSecrets" => Ok(Self::ListSecrets),
             "ListVersions" => Ok(Self::ListVersions),
             "SetSecret" => Ok(Self::SetSecret),
+            "ImportDotenv" => Ok(Self::ImportDotenv),
+            "ApplyPolicy" => Ok(Self::ApplyPolicy),
             "SetActiveProfile" => Ok(Self::SetActiveProfile),
             "RegisterIdeEnvSession" => Ok(Self::RegisterIdeEnvSession),
             "IdeEnvSession" => Ok(Self::IdeEnvSession),

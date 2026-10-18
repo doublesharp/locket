@@ -1,12 +1,12 @@
-//! Property tests for the `lkdev1_` device descriptor codec.
+//! Property tests for the `lkdev2_` device descriptor codec.
 //!
 //! Asserts the documented invariants:
 //! - **Round-trip.** Any valid [`DeviceRecord`] encodes to a
-//!   `lkdev1_`-prefixed string that decodes back to a structurally
+//!   `lkdev2_`-prefixed string that decodes back to a structurally
 //!   equivalent descriptor.
 //! - **Rejection.** Inputs that are missing the prefix, contain
 //!   non-base64url bytes after the prefix, decode to non-JSON, or
-//!   carry an unsupported version byte (`v != 1`) all return an
+//!   carry an unsupported version byte (`v != 2`) all return an
 //!   error rather than panicking or yielding a partial value.
 
 #![allow(clippy::panic)]
@@ -83,9 +83,9 @@ proptest! {
     #[test]
     fn descriptor_round_trip_preserves_wire_fields(record in device_record_strategy()) {
         let encoded = encode_device_descriptor(&record).unwrap();
-        prop_assert!(encoded.starts_with("lkdev1_"));
+        prop_assert!(encoded.starts_with("lkdev2_"));
         let decoded = decode_device_descriptor(&encoded).unwrap();
-        prop_assert_eq!(decoded.v, 1);
+        prop_assert_eq!(decoded.v, 2);
         prop_assert_eq!(&decoded.device_id, &record.id);
         prop_assert_eq!(&decoded.label, &record.name);
         prop_assert_eq!(&decoded.fingerprint_sha256, &record.fingerprint);
@@ -102,21 +102,21 @@ proptest! {
 
     /// Re-encoding a descriptor produced by `encode_device_descriptor`
     /// (after decoding once and rebuilding through serde) yields the
-    /// same `lkdev1_` payload — the codec is bit-stable for fields
+    /// same `lkdev2_` payload — the codec is bit-stable for fields
     /// that survive the round-trip.
     #[test]
     fn descriptor_payload_is_stable(record in device_record_strategy()) {
         let first = encode_device_descriptor(&record).unwrap();
         let decoded = decode_device_descriptor(&first).unwrap();
         let json = serde_json::to_vec(&decoded).unwrap();
-        let second = format!("lkdev1_{}", BASE64URL_NOPAD.encode(&json));
+        let second = format!("lkdev2_{}", BASE64URL_NOPAD.encode(&json));
         prop_assert_eq!(first, second);
     }
 
-    /// Inputs lacking the `lkdev1_` prefix are rejected.
+    /// Inputs lacking the `lkdev2_` prefix are rejected.
     #[test]
     fn descriptor_rejects_missing_prefix(prefix in "[a-z]{0,7}", body in "[A-Za-z0-9_-]{0,32}") {
-        prop_assume!(!format!("{prefix}{body}").starts_with("lkdev1_"));
+        prop_assume!(!format!("{prefix}{body}").starts_with("lkdev2_"));
         let input = format!("{prefix}{body}");
         prop_assert!(decode_device_descriptor(&input).is_err());
     }
@@ -124,13 +124,13 @@ proptest! {
     /// Inputs whose body is not valid base64url are rejected.
     #[test]
     fn descriptor_rejects_non_base64url_body(garbage in "[!@#$%^&*()=+]{1,16}") {
-        let input = format!("lkdev1_{garbage}");
+        let input = format!("lkdev2_{garbage}");
         prop_assert!(decode_device_descriptor(&input).is_err());
     }
 
-    /// Inputs whose decoded JSON carries `v != 1` are rejected.
+    /// Inputs whose decoded JSON carries `v != 2` are rejected.
     #[test]
-    fn descriptor_rejects_unsupported_version(record in device_record_strategy(), version in 2u16..=u16::MAX) {
+    fn descriptor_rejects_unsupported_version(record in device_record_strategy(), version in 3u16..=u16::MAX) {
         let descriptor = DeviceDescriptorV1 {
             v: version,
             device_id: record.id.clone(),
@@ -141,7 +141,7 @@ proptest! {
             safety_words: record.safety_words.clone(),
         };
         let json = serde_json::to_vec(&descriptor).unwrap();
-        let input = format!("lkdev1_{}", BASE64URL_NOPAD.encode(&json));
+        let input = format!("lkdev2_{}", BASE64URL_NOPAD.encode(&json));
         prop_assert!(decode_device_descriptor(&input).is_err());
     }
 
@@ -149,7 +149,7 @@ proptest! {
     /// JSON are rejected (no panic, no partial value).
     #[test]
     fn descriptor_rejects_invalid_json(noise in proptest::collection::vec(any::<u8>(), 0..32)) {
-        let input = format!("lkdev1_{}", BASE64URL_NOPAD.encode(&noise));
+        let input = format!("lkdev2_{}", BASE64URL_NOPAD.encode(&noise));
         let _ = decode_device_descriptor(&input);
     }
 }

@@ -576,7 +576,7 @@ fn purge_without_source_requires_explicit_source_when_multiple_sources_exist()
         &mut purge_output,
     );
     assert_error_contains(result, "pass --source");
-    assert!(String::from_utf8(purge_output)?.is_empty());
+    assert_eq!(String::from_utf8(purge_output)?, "");
 
     let store = locket_store::Store::open(directory.path().join("store.db"))?;
     let purge_count: i64 = store.connection().query_row(

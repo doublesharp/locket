@@ -621,7 +621,7 @@ impl Store {
         }
 
         let profiles_json = serde_json::to_string(&dedupe_profiles(profiles))?;
-        let transaction = self.connection.transaction()?;
+        let transaction = self.connection.savepoint()?;
         let updated = transaction.execute(
             "UPDATE team_invites
                 SET accepted_at = ?1

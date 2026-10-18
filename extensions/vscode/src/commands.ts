@@ -1,50 +1,51 @@
 // Command handlers for Locket VS Code command-palette entries.
 //
-// Every handler is a thin router over `AgentClient`. The extension never
-// performs key unwrap, never writes audit rows, and never persists secret
-// values; those are agent-side concerns.
+// Commands resolve local project metadata. Value access and saved policies
+// run through the CLI so its authorization and clipboard gates apply.
 
 import { randomBytes } from 'node:crypto';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 
-import { AgentClient, AgentMethod, StatusPayload } from './agentClient';
+import { AgentClient, AgentClientError } from './agentClient';
 import { buildAuditWebviewHtml } from './auditView';
 import {
-  CopyResponsePayload,
   ListAuditResponsePayload,
   ListPoliciesResponsePayload,
-  ResolvedLocketProject,
   agentErrorMessage,
   buildListAuditRequest,
   buildListPoliciesRequest,
   buildLockRequest,
-  buildPrepareExecRequest,
   buildScanKnownValuesRequest,
   buildSetActiveProfileRequest,
 } from './commandsModel';
-import {
-  RevealResponsePayload,
-  buildRevealRequest,
-  buildRevealWebviewHtml,
-  revealTtlMilliseconds,
-} from './revealWebview';
 import { runUnlockFlow } from './unlockHandler';
+import { ProjectContext } from './projectContext';
+import { resolveActiveProjectContext } from './vscodeProject';
+
+type ProjectResolver = () => Promise<ProjectContext | undefined>;
+export interface CommandDependencies {
+  readonly resolveProject?: ProjectResolver;
+}
 
 // Register every Locket command-palette entry against `agentClient`.
-export function registerLocketCommands(agentClient: AgentClient): vscode.Disposable {
+export function registerLocketCommands(agentClient: AgentClient, deps: CommandDependencies = {}): vscode.Disposable {
+  const resolveProject: ProjectResolver = async () => {
+    if (!vscode.workspace.isTrusted) { void vscode.window.showWarningMessage('Locket requires a trusted workspace.'); return undefined; }
+    try { return await (deps.resolveProject ?? resolveActiveProjectContext)(); }
+    catch (error) { void vscode.window.showErrorMessage(error instanceof Error ? error.message : 'Locket project metadata is unavailable.'); return undefined; }
+  };
   const disposables: vscode.Disposable[] = [
     vscode.commands.registerCommand('locket.revealSecret', () =>
-      revealSecret(agentClient),
+      revealSecret(resolveProject),
     ),
-    vscode.commands.registerCommand('locket.copySecret', () => copySecret(agentClient)),
-    vscode.commands.registerCommand('locket.unlock', () => unlock(agentClient)),
+    vscode.commands.registerCommand('locket.copySecret', () => copySecret(resolveProject)),
+    vscode.commands.registerCommand('locket.unlock', () => unlock(agentClient, resolveProject)),
     vscode.commands.registerCommand('locket.lock', () => lock(agentClient)),
-    vscode.commands.registerCommand('locket.switchProfile', () => switchProfile(agentClient)),
-    vscode.commands.registerCommand('locket.runPolicy', () => runPolicy(agentClient)),
+    vscode.commands.registerCommand('locket.switchProfile', () => switchProfile(agentClient, resolveProject)),
+    vscode.commands.registerCommand('locket.runPolicy', () => runPolicy(agentClient, resolveProject)),
     vscode.commands.registerCommand('locket.scanWorkspace', () => scanWorkspace(agentClient)),
-    vscode.commands.registerCommand('locket.openAuditView', () => openAuditView(agentClient)),
+    vscode.commands.registerCommand('locket.openAuditView', () => openAuditView(agentClient, resolveProject)),
   ];
   return new vscode.Disposable(() => {
     for (const item of disposables) {
@@ -53,171 +54,52 @@ export function registerLocketCommands(agentClient: AgentClient): vscode.Disposa
   });
 }
 
-async function promptForActiveProject(agentClient: AgentClient): Promise<{
-  projectId: string;
-  profileName: string | null;
-  profileId: string | null;
-} | undefined> {
-  let status: StatusPayload | undefined;
-  try {
-    status = await agentClient.status();
-  } catch {
-    status = undefined;
-  }
-  const resolvedProject = resolveFirstWorkspaceProject();
-  const fromStatus = typeof status?.project_id === 'string' ? status.project_id : '';
-  const fromResolver = resolvedProject?.projectId ?? '';
-  const projectId = await vscode.window.showInputBox({
-    title: 'Locket',
-    prompt: 'Project id',
-    placeHolder: fromStatus.length > 0 ? fromStatus : fromResolver.length > 0 ? fromResolver : 'lk_proj_...',
-    value: fromStatus.length > 0 ? fromStatus : fromResolver,
-    ignoreFocusOut: false,
-  });
-  if (projectId === undefined) {
-    return undefined;
-  }
-  const trimmedProjectId = projectId.trim();
-  const resolvedProfileId =
-    resolvedProject !== undefined && resolvedProject.projectId === trimmedProjectId
-      ? resolvedProject.defaultProfileId
-      : null;
-  return {
-    projectId,
-    profileName: typeof status?.profile_name === 'string' ? status.profile_name : null,
-    profileId: resolvedProfileId,
-  };
+async function revealSecret(resolveProject: ProjectResolver): Promise<void> {
+  await terminalValueAccess('Reveal', resolveProject);
 }
 
-function resolveFirstWorkspaceProject(): ResolvedLocketProject | undefined {
-  const folder = vscode.workspace.workspaceFolders?.[0];
-  if (folder === undefined) {
-    return undefined;
-  }
-  return resolveLocketProject(folder.uri.fsPath);
+async function copySecret(resolveProject: ProjectResolver): Promise<void> {
+  await terminalValueAccess('Copy', resolveProject);
 }
 
-async function revealSecret(agentClient: AgentClient): Promise<void> {
-  await gatedValueAccess(agentClient, 'Reveal', 'Locket Reveal');
-}
-
-async function copySecret(agentClient: AgentClient): Promise<void> {
-  await gatedValueAccess(agentClient, 'Copy', 'Locket Copy');
-}
-
-// Shared gated-access flow for `Reveal` and `Copy`. Reveal opens a
-// short-lived webview; Copy writes the value to the OS clipboard for
-// the response's TTL and then clears it.
-async function gatedValueAccess(
-  agentClient: AgentClient,
-  method: Extract<AgentMethod, 'Reveal' | 'Copy'>,
-  title: string,
+// Plaintext stays in the CLI/terminal or OS clipboard. The extension never
+// captures the value and never reports success before the CLI executes.
+async function terminalValueAccess(
+  action: 'Reveal' | 'Copy',
+  resolveProject: ProjectResolver,
 ): Promise<void> {
-  const secretName = await vscode.window.showInputBox({
-    title,
+  const project = await resolveProject();
+  if (project === undefined) { return; }
+  const enteredName = await vscode.window.showInputBox({
+    title: `Locket ${action} in Terminal`,
     prompt: 'Secret name',
     placeHolder: 'DATABASE_URL',
     ignoreFocusOut: false,
   });
-  if (secretName === undefined) {
+  if (enteredName === undefined) { return; }
+  const secretName = enteredName.trim();
+  if (!/^[A-Z_][A-Z0-9_]*$/u.test(secretName)) {
+    void vscode.window.showWarningMessage('Enter a portable secret name using A-Z, 0-9, and underscores.');
     return;
   }
-  const profileId = await vscode.window.showInputBox({
-    title,
-    prompt: 'Profile id',
-    placeHolder: 'default',
-    ignoreFocusOut: false,
+  const terminal = vscode.window.createTerminal({
+    name: `Locket ${action} approval: ${secretName}`,
+    shellPath: project.cliPath,
+    shellArgs: ['get', action === 'Reveal' ? '--reveal' : '--copy', '--', secretName],
+    cwd: project.root,
   });
-  if (profileId === undefined) {
-    return;
-  }
-  let request;
-  try {
-    request = buildRevealRequest(secretName, profileId);
-  } catch {
-    void vscode.window.showWarningMessage('Enter a secret name and profile id.');
-    return;
-  }
-  try {
-    if (method === 'Reveal') {
-      const response = await agentClient.invoke<RevealResponsePayload>('Reveal', request);
-      showRevealPanel(request.secret_name, response);
-    } else {
-      const response = await agentClient.invoke<CopyResponsePayload>('Copy', request);
-      await pushToClipboardWithTtl(response.value, response.ttl_seconds);
-      void vscode.window.showInformationMessage(
-        `Locket copied ${request.secret_name} to clipboard for ${Math.max(1, Math.floor(response.ttl_seconds))}s.`,
-      );
-    }
-  } catch (error) {
-    void vscode.window.showErrorMessage(agentErrorMessage(error));
-  }
-}
-
-function showRevealPanel(secretName: string, response: RevealResponsePayload): void {
-  const panel = vscode.window.createWebviewPanel(
-    'locketReveal',
-    'Locket Reveal',
-    vscode.ViewColumn.Active,
-    {
-      enableScripts: true,
-      retainContextWhenHidden: false,
-    },
+  terminal.show();
+  void vscode.window.showInformationMessage(
+    `Continue Locket ${action} approval in the terminal. The CLI uses this project's current profile, last detected as ${project.profileName}.`,
   );
-  const ttlMs = revealTtlMilliseconds(response.ttl_seconds);
-  const disposeTimer = setTimeout(() => {
-    panel.dispose();
-  }, ttlMs + 500);
-  panel.onDidDispose(() => {
-    clearTimeout(disposeTimer);
-  });
-  panel.webview.html = buildRevealWebviewHtml({
-    nonce: randomBytes(16).toString('base64'),
-    secretName,
-    ttlSeconds: response.ttl_seconds,
-    value: response.value,
-  });
 }
 
-// Push a value to the clipboard and clear it after `ttlSeconds`. The
-// TTL upper bound mirrors `revealTtlMilliseconds` so the clipboard
-// never holds plaintext longer than the gated-access spec allows.
-async function pushToClipboardWithTtl(value: string, ttlSeconds: number): Promise<void> {
-  await vscode.env.clipboard.writeText(value);
-  const ttlMs = revealTtlMilliseconds(ttlSeconds);
-  setTimeout(() => {
-    void (async () => {
-      const current = await vscode.env.clipboard.readText();
-      if (current === value) {
-        await vscode.env.clipboard.writeText('');
-      }
-    })();
-  }, ttlMs);
-}
-
-async function unlock(agentClient: AgentClient): Promise<void> {
-  // The agent owns the keychain/passphrase unwrap path: the wire
-  // payload now carries `project_id`, `passphrase: null`, a `ttl_seconds`
-  // hint, and an `audit` block with the store path so the agent can
-  // append the UNLOCK row. We attempt OS-keychain unwrap first
-  // (`passphrase: null`); on a typed `UnlockRequired` rejection we
-  // prompt for the vault passphrase and retry once. The flow itself
-  // lives in `unlockHandler.ts` so it can be unit-tested without the
-  // `vscode.window` API; this adapter just wires the prompts in.
+async function unlock(agentClient: AgentClient, resolveProject: ProjectResolver): Promise<void> {
+  const project = await resolveProject();
+  if (project === undefined) { return; }
   await runUnlockFlow(agentClient, {
-    promptProjectId: async () => {
-      const project = await promptForActiveProject(agentClient);
-      return project?.projectId;
-    },
-    promptStorePath: () =>
-      Promise.resolve(
-        vscode.window.showInputBox({
-          title: 'Locket Unlock',
-          prompt: 'Path to store.db',
-          placeHolder: '~/.locket/store.db',
-          ignoreFocusOut: false,
-        }),
-      ),
+    promptProjectId: async () => project.projectId,
+    promptStorePath: async () => project.storePath,
     promptPassphrase: () =>
       Promise.resolve(
         vscode.window.showInputBox({
@@ -235,7 +117,7 @@ async function unlock(agentClient: AgentClient): Promise<void> {
     showError: (message) => {
       void vscode.window.showErrorMessage(message);
     },
-    profileId: null,
+    profileId: project.defaultProfileId,
   });
 }
 
@@ -248,27 +130,9 @@ async function lock(agentClient: AgentClient): Promise<void> {
   }
 }
 
-async function switchProfile(agentClient: AgentClient): Promise<void> {
-  const project = await promptForActiveProject(agentClient);
+async function switchProfile(agentClient: AgentClient, resolveProject: ProjectResolver): Promise<void> {
+  const project = await resolveProject();
   if (project === undefined) {
-    return;
-  }
-  const configPath = await vscode.window.showInputBox({
-    title: 'Locket Switch Profile',
-    prompt: 'Path to project locket.toml',
-    placeHolder: '/path/to/project/locket.toml',
-    ignoreFocusOut: false,
-  });
-  if (configPath === undefined) {
-    return;
-  }
-  const storePath = await vscode.window.showInputBox({
-    title: 'Locket Switch Profile',
-    prompt: 'Path to store.db',
-    placeHolder: '~/.locket/store.db',
-    ignoreFocusOut: false,
-  });
-  if (storePath === undefined) {
     return;
   }
   const profileName = await vscode.window.showInputBox({
@@ -283,7 +147,7 @@ async function switchProfile(agentClient: AgentClient): Promise<void> {
   }
   let request;
   try {
-    request = buildSetActiveProfileRequest(configPath, storePath, project.projectId, profileName);
+    request = buildSetActiveProfileRequest(path.join(project.root, 'locket.toml'), project.storePath, project.projectId, profileName);
   } catch (error) {
     void vscode.window.showWarningMessage(
       error instanceof Error ? error.message : 'Locket switch profile inputs were invalid.',
@@ -291,15 +155,22 @@ async function switchProfile(agentClient: AgentClient): Promise<void> {
     return;
   }
   try {
-    await agentClient.invoke('SetActiveProfile', request);
+    try { await agentClient.invoke('SetActiveProfile', request); }
+    catch (error) {
+      if (!(error instanceof AgentClientError) || error.code !== 'ConfirmationFailed') { throw error; }
+      const confirmation = await vscode.window.showInputBox({title:'Locket Switch Profile',prompt:`Type '${request.profile_name}' to confirm this dangerous profile`,ignoreFocusOut:false});
+      if (confirmation === undefined) { return; }
+      if (confirmation !== request.profile_name) { void vscode.window.showWarningMessage('Profile confirmation did not match.'); return; }
+      await agentClient.invoke('SetActiveProfile', {...request, confirmation});
+    }
     void vscode.window.showInformationMessage(`Locket active profile is now ${request.profile_name}.`);
   } catch (error) {
     void vscode.window.showErrorMessage(agentErrorMessage(error));
   }
 }
 
-async function runPolicy(agentClient: AgentClient): Promise<void> {
-  const project = await promptForActiveProject(agentClient);
+async function runPolicy(agentClient: AgentClient, resolveProject: ProjectResolver): Promise<void> {
+  const project = await resolveProject();
   if (project === undefined) {
     return;
   }
@@ -332,46 +203,16 @@ async function runPolicy(agentClient: AgentClient): Promise<void> {
   if (pick === undefined) {
     return;
   }
-  const profileId = await profileIdForRunPolicy(project);
-  if (profileId === undefined) {
+  if (pick.label.startsWith('-') || /[\0\r\n]/u.test(pick.label)) {
+    void vscode.window.showWarningMessage('This policy name cannot be launched from the editor.');
     return;
   }
-  let prepareRequest;
-  try {
-    prepareRequest = buildPrepareExecRequest(project.projectId, profileId, pick.label);
-  } catch (error) {
-    void vscode.window.showWarningMessage(
-      error instanceof Error ? error.message : 'Locket run policy inputs were invalid.',
-    );
-    return;
-  }
-  try {
-    await agentClient.invoke('PrepareExec', prepareRequest);
-    void vscode.window.showInformationMessage(
-      `Locket prepared policy ${pick.label}. Run via the integrated terminal or CLI.`,
-    );
-  } catch (error) {
-    void vscode.window.showErrorMessage(agentErrorMessage(error));
-  }
-}
-
-async function profileIdForRunPolicy(project: {
-  readonly profileId: string | null;
-  readonly profileName: string | null;
-}): Promise<string | undefined> {
-  const resolvedProfileId = project.profileId?.trim() ?? '';
-  if (resolvedProfileId.length > 0) {
-    return resolvedProfileId;
-  }
-  return vscode.window.showInputBox({
-    title: 'Locket: Run Policy',
-    prompt: 'Profile id',
-    placeHolder: 'default',
-    ignoreFocusOut: false,
-  });
+  const terminal = vscode.window.createTerminal({name:`Locket: ${pick.label}`,shellPath:project.cliPath,shellArgs:['run',pick.label],cwd:project.root});
+  terminal.show();
 }
 
 async function scanWorkspace(agentClient: AgentClient): Promise<void> {
+  if (!vscode.workspace.isTrusted) { void vscode.window.showWarningMessage('Locket requires a trusted workspace.'); return; }
   const folders = vscode.workspace.workspaceFolders ?? [];
   const paths = folders.map((folder) => folder.uri.fsPath);
   if (paths.length === 0) {
@@ -386,23 +227,14 @@ async function scanWorkspace(agentClient: AgentClient): Promise<void> {
   }
 }
 
-async function openAuditView(agentClient: AgentClient): Promise<void> {
-  const project = await promptForActiveProject(agentClient);
+async function openAuditView(agentClient: AgentClient, resolveProject: ProjectResolver): Promise<void> {
+  const project = await resolveProject();
   if (project === undefined) {
-    return;
-  }
-  const storePath = await vscode.window.showInputBox({
-    title: 'Locket Audit',
-    prompt: 'Path to store.db',
-    placeHolder: '~/.locket/store.db',
-    ignoreFocusOut: false,
-  });
-  if (storePath === undefined) {
     return;
   }
   let request;
   try {
-    request = buildListAuditRequest(storePath, project.projectId);
+    request = buildListAuditRequest(project.storePath, project.projectId);
   } catch (error) {
     void vscode.window.showWarningMessage(
       error instanceof Error ? error.message : 'Locket audit inputs were invalid.',
@@ -427,52 +259,4 @@ async function openAuditView(agentClient: AgentClient): Promise<void> {
     rows: response.rows,
     chainStatus: response.chain_status,
   });
-}
-
-/// Resolves the Locket project that contains `cwd` by walking the
-/// VS Code workspace folders. The terminal-autobind handler calls this
-/// for every newly-opened integrated terminal; it must remain cheap and
-/// return `undefined` whenever `cwd` is outside any workspace folder.
-///
-/// VS Code does not expose project ids directly; we surface a stable
-/// fallback derived from the workspace folder name so the agent has a
-/// non-empty key to dedupe against. A real project id is resolved by
-/// the agent against `locket.toml` once a grant is requested.
-export function resolveLocketProject(cwd: string): ResolvedLocketProject | undefined {
-  const folders = vscode.workspace.workspaceFolders;
-  if (folders === undefined || folders.length === 0) {
-    return undefined;
-  }
-  const normalized = path.resolve(cwd);
-  let bestMatch: { root: string; name: string } | undefined;
-  for (const folder of folders) {
-    const root = folder.uri.fsPath;
-    if (normalized === root || normalized.startsWith(`${root}${path.sep}`)) {
-      if (bestMatch === undefined || root.length > bestMatch.root.length) {
-        bestMatch = { root, name: folder.name };
-      }
-    }
-  }
-  if (bestMatch === undefined) {
-    return undefined;
-  }
-  return {
-    root: bestMatch.root,
-    projectId: `lk_proj_${bestMatch.name}`,
-    defaultProfileId: 'default',
-  };
-}
-
-/// Returns the store-db path the extension uses for agent calls that
-/// need to address the local store (e.g. the autobind directory grant
-/// audit and the IDE env-session register payload). The shared default
-/// follows the same `~/.locket/store.db` convention the other commands
-/// use; users can override via the `LOCKET_STORE_PATH` environment
-/// variable when they keep the store outside the home directory.
-export function resolveStorePath(): string {
-  const override = process.env.LOCKET_STORE_PATH?.trim();
-  if (override !== undefined && override.length > 0) {
-    return override;
-  }
-  return path.join(os.homedir(), '.locket', 'store.db');
 }

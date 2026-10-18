@@ -85,6 +85,9 @@ const fn grant_action_label(action: GrantAction) -> &'static str {
         GrantAction::Redact => "Redact",
         GrantAction::Export => "Export",
         GrantAction::SetSecret => "SetSecret",
+        GrantAction::ImportDotenv => "ImportDotenv",
+        GrantAction::ApplyPolicy => "ApplyPolicy",
+        GrantAction::TeamSync => "TeamSync",
     }
 }
 

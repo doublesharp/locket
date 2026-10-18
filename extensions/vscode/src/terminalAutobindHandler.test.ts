@@ -21,7 +21,7 @@ const PROJECT: ResolvedLocketProject = {
   defaultProfileId: 'prof-dev',
 };
 
-test('handleOpenTerminal injects LOCKET_IDE_ENV_SESSION and fires a RequestGrant on terminal open', async () => {
+test('handleOpenTerminal returns a names-only session and fires a RequestGrant without global injection', async () => {
   const { socketPath, cleanup } = await temporarySocketPath();
   const observed: RequestEnvelope[] = [];
   const grantBarrier = createBarrier();
@@ -105,9 +105,7 @@ test('handleOpenTerminal injects LOCKET_IDE_ENV_SESSION and fires a RequestGrant
 
     assert.equal(outcome.applied, true);
     assert.equal(outcome.sessionId, 'session-uuid');
-    assert.deepEqual(collectionMutations, [
-      ['replace', LOCKET_IDE_ENV_SESSION_VARIABLE, 'session-uuid'],
-    ]);
+    assert.deepEqual(collectionMutations, []);
     const grantRequest = observed.find((r) => r.kind === 'RequestGrant');
     assert.notEqual(grantRequest, undefined);
     const body = required(grantRequest, 'expected RequestGrant payload').payload as Record<
@@ -250,3 +248,35 @@ function encodeResponse(response: object): Buffer {
   payload.copy(frame, 4);
   return frame;
 }
+
+test('terminal outside a project clears stale global project authorization', async () => {
+  const deleted:string[]=[];
+  const deps:TerminalAutobindHandlerDeps={
+    agentClient:new AgentClient({socketPath:'/dev/null',connectTimeoutMs:100}),
+    environmentVariableCollection:{replace:()=>assert.fail('never set project sessions globally'),delete:(name)=>deleted.push(name)},
+    autobindContext:{resolveProject:()=>undefined,pid:1,processStartTime:'fixture'},
+    storePath:'/fixture/store.db',notifyDirectoryGrantRejected:()=>undefined,warnOnce:new WarnOnceLatch(),
+  };
+  assert.deepEqual(await handleOpenTerminal('/project-b',deps),{applied:false});
+  assert.deepEqual(deleted,[LOCKET_IDE_ENV_SESSION_VARIABLE]);
+});
+
+test('async terminal resolution registers actual project/profile/store metadata without global injection', async()=>{
+  const calls:Array<{method:string;payload:unknown}>=[];
+  const deleted:string[]=[];
+  const deps:TerminalAutobindHandlerDeps={
+    agentClient:{invoke:async(method:string,payload:unknown)=>{calls.push({method,payload});return method==='ListPolicies'?{rows:[{allowed_secrets:['API_KEY']}]}:{};}} as unknown as AgentClient,
+    environmentVariableCollection:{replace:()=>assert.fail('project sessions must stay per-terminal'),delete:(name)=>deleted.push(name)},
+    autobindContext:{resolveProject:()=>undefined,pid:1,processStartTime:'fixture'},
+    resolveProject:async()=>({...PROJECT,storePath:'/actual/context/store.db'}),
+    storePath:'/wrong/legacy/store.db',sessionIdFactory:()=> 'project-session',
+    notifyDirectoryGrantRejected:()=>undefined,warnOnce:new WarnOnceLatch(),
+  };
+  const outcome=await handleOpenTerminal('/workspace/demo',deps);
+  assert.equal(outcome.sessionId,'project-session');
+  assert.deepEqual(deleted,[LOCKET_IDE_ENV_SESSION_VARIABLE]);
+  const registration=calls.find(call=>call.method==='RegisterIdeEnvSession')?.payload as Record<string,unknown>;
+  assert.equal(registration.store_path,'/actual/context/store.db');
+  assert.equal(registration.project_id,PROJECT.projectId);
+  assert.equal(registration.profile_id,PROJECT.defaultProfileId);
+});

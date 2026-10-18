@@ -228,7 +228,7 @@ fn restore_device_private_keys(
     restored: &mut RecoveryRestoreSummary,
 ) -> Result<(), CliError> {
     let project_id = resolved.config.project_id.as_str();
-    let store = open_store(context)?;
+    let mut store = open_store(context)?;
     let Some(device) = store.get_active_local_device(project_id)? else {
         return Ok(());
     };
@@ -242,10 +242,31 @@ fn restore_device_private_keys(
     if signing.len() != locket_crypto::KEY_LEN {
         return Err(CliError::Crypto(locket_crypto::CryptoError::InvalidWrappedKey));
     }
-    if signing.as_slice() != device.signing_public_key.as_slice() {
-        return Err(metadata_invalid_error("recovery envelope device signing key mismatch"));
+    let mut signing_key = zeroize::Zeroizing::new([0_u8; locket_crypto::KEY_LEN]);
+    signing_key.copy_from_slice(&signing);
+    let signing_public =
+        ed25519_dalek::SigningKey::from_bytes(&signing_key).verifying_key().to_bytes();
+    let legacy = !store.device_signing_is_v2(&device.id)?;
+    if (legacy && signing.as_slice() != device.signing_public_key.as_slice())
+        || (!legacy && signing_public.as_slice() != device.signing_public_key.as_slice())
+    {
+        // A recovery envelope from before explicit rotation may contain the disclosed seed.
+        // It proves sealing-key ownership only; never restore that seed as an active signer.
+        let sealing_public: [u8; 32] = device
+            .sealing_public_key
+            .as_slice()
+            .try_into()
+            .map_err(|_| metadata_invalid_error("invalid sealing key"))?;
+        let old_fingerprint =
+            crate::commands::team::device::device_fingerprint_hex(&signing_key, &sealing_public);
+        let old_public_fingerprint =
+            crate::commands::team::device::device_fingerprint_hex(&signing_public, &sealing_public);
+        if !store.device_matches_bundle_recipient(&device, &old_fingerprint)?
+            && !store.device_matches_bundle_recipient(&device, &old_public_fingerprint)?
+        {
+            return Err(metadata_invalid_error("recovery envelope device signing key mismatch"));
+        }
     }
-    restored.device_signing_private += 1;
 
     let sealing = open_required_device_recovery_entry(
         envelope,
@@ -261,7 +282,17 @@ fn restore_device_private_keys(
     sealing_key.copy_from_slice(&sealing);
     let storage =
         crate::commands::team::device::build_device_private_key_storage(context, project_id)?;
+    let derived = x25519_dalek::PublicKey::from(&x25519_dalek::StaticSecret::from(*sealing_key));
+    if derived.as_bytes().as_slice() != device.sealing_public_key.as_slice() {
+        return Err(metadata_invalid_error("recovery envelope device sealing key mismatch"));
+    }
     storage.store(&device.id, &sealing_key)?;
+    if legacy || signing_public.as_slice() != device.signing_public_key.as_slice() {
+        crate::commands::team::device::rotate_signing_identity(context, &mut store, &device)?;
+    } else {
+        storage.for_signing().store(&device.fingerprint, &signing_key)?;
+    }
+    restored.device_signing_private += 1;
     restored.device_sealing_private += 1;
     Ok(())
 }
@@ -525,11 +556,10 @@ fn replace_device_recovery_entries(
     if device.revoked_at.is_some() {
         return Ok(());
     }
-    if device.signing_public_key.len() != locket_crypto::KEY_LEN {
-        return Err(metadata_invalid_error("device signing key has unexpected length"));
-    }
-    let mut signing_private_key = zeroize::Zeroizing::new([0_u8; locket_crypto::KEY_LEN]);
-    signing_private_key.copy_from_slice(&device.signing_public_key);
+    let signing_private_key = zeroize::Zeroizing::new(
+        crate::commands::team::device::load_device_signing_key(context, &store, &device)?
+            .to_bytes(),
+    );
     let storage =
         crate::commands::team::device::build_device_private_key_storage(context, project_id)?;
     let sealing_private_key = storage.load(&device.id)?;

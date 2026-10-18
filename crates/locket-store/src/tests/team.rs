@@ -235,3 +235,64 @@ fn active_team_member_can_be_found_by_device_id() -> Result<(), Box<dyn Error>> 
     );
     Ok(())
 }
+
+#[test]
+fn legacy_schema_migration_revokes_pending_invites_without_promoting_devices()
+-> Result<(), Box<dyn Error>> {
+    let mut test = open_initialized_store()?;
+    insert_project_profile(&test.store)?;
+    test.store.insert_device(&test_device())?;
+    insert_team_with_pending_invite(&test.store, "legacy-invite")?;
+    test.store.connection().execute("DELETE FROM schema_migrations WHERE version >= 4", [])?;
+    test.store.connection().execute_batch(
+        "DROP TABLE device_signing_versions; DROP TABLE device_fingerprint_aliases;",
+    )?;
+    let outcome = test.store.initialize_schema()?;
+    assert_eq!(outcome.before, Some(3));
+    assert_eq!(outcome.after, crate::SCHEMA_VERSION);
+    assert!(!test.store.device_signing_is_v2("lk_dev_test")?);
+    let anchors: i64 =
+        test.store
+            .connection()
+            .query_row("SELECT COUNT(*) FROM team_sync_anchors", [], |row| row.get(0))?;
+    assert_eq!(anchors, 0, "legacy membership must never establish an owner pin");
+    let invite = test.store.get_team_invite("lk_team_test", "legacy-invite")?.unwrap();
+    assert!(invite.revoked_at.is_some());
+    assert_eq!(
+        test.store.get_active_local_device("lk_proj_test")?.unwrap().sealing_public_key,
+        vec![2; 32]
+    );
+    Ok(())
+}
+
+#[test]
+fn composed_invite_acceptance_rolls_back_membership_and_profile_updates()
+-> Result<(), Box<dyn Error>> {
+    let mut test = open_initialized_store()?;
+    insert_project_profile(&test.store)?;
+    test.store.insert_device(&test_device())?;
+    insert_team_with_pending_invite(&test.store, "atomic-invite")?;
+    let result = test.store.with_atomic_write::<(), StoreError>(|store| {
+        store
+            .connection()
+            .execute("UPDATE profiles SET name = 'changed' WHERE id = 'lk_prof_test'", [])?;
+        store.accept_team_invite_with_member_scope(
+            "atomic-invite",
+            100,
+            "accepted-member",
+            "lk_dev_test",
+            "local",
+            "developer",
+            &["dev".to_owned()],
+            None,
+        )?;
+        Err(StoreError::Sqlite(rusqlite::Error::InvalidQuery))
+    });
+    assert!(result.is_err());
+    assert!(
+        test.store.get_team_invite("lk_team_test", "atomic-invite")?.unwrap().accepted_at.is_none()
+    );
+    assert!(test.store.get_profile_by_name("lk_proj_test", "default")?.is_some());
+    assert!(test.store.get_team_member("lk_team_test", "accepted-member")?.is_none());
+    Ok(())
+}

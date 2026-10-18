@@ -95,7 +95,7 @@ fn client_add_list_and_revoke_are_metadata_only() -> Result<(), Box<dyn std::err
 
     let store = locket_store::Store::open(directory.path().join("store.db"))?;
     let resolved = crate::resolve_project(&context.cwd)?.ok_or("project should resolve")?;
-    assert!(store.list_automation_clients(resolved.config.project_id.as_str(), false)?.is_empty());
+    assert_eq!(store.list_automation_clients(resolved.config.project_id.as_str(), false)?.len(), 0);
     assert!(
         store.list_automation_clients(resolved.config.project_id.as_str(), true)?[0]
             .revoked_at
@@ -385,6 +385,7 @@ fn sealed_bundle_export_verify_and_import_are_metadata_only()
             "locket",
             "export",
             "--sealed",
+            "--include-personal",
             "--recipient",
             &descriptor,
             "--profile",
@@ -463,6 +464,7 @@ fn sealed_bundle_export_verify_and_import_are_metadata_only()
                 "locket",
                 "export",
                 "--sealed",
+                "--include-personal",
                 "--recipient",
                 &descriptor,
                 "--profile",
@@ -972,9 +974,9 @@ fn setup_guides_initialized_projects() -> Result<(), Box<dyn std::error::Error>>
     assert!(output.contains("project: app"));
     assert!(output.contains("profile: dev"));
     assert!(output.contains("metadata_only: yes"));
-    assert!(output.contains("locket import .env"));
     assert!(output.contains("locket policy add dev --"));
-    assert!(output.contains("locket setup agent"));
+    assert!(output.contains("next_action: locket policy add dev -- <command>"));
+    assert_eq!(output.lines().filter(|line| line.starts_with("- ")).count(), 1);
     Ok(())
 }
 
@@ -1068,14 +1070,14 @@ fn status_reports_metadata_summary_and_next_action() -> Result<(), Box<dyn std::
     let output = String::from_utf8(output)?;
     assert!(output.contains("project: app"));
     assert!(output.contains("default_profile: dev"));
-    assert!(output.contains("active_profile: dev"));
-    assert!(output.contains("lock_state: locked"));
+    assert!(output.contains("active_profile: unknown"));
+    assert!(output.contains("lock_state: unknown"));
     assert!(output.contains("agent_state: unavailable"));
     assert!(output.contains("running_sessions: 1"));
-    assert!(output.contains("scan_warnings: 1"), "{output}");
+    assert!(output.contains("scan_warnings: unknown"), "{output}");
     assert!(output.contains("trusted_root: yes"));
     assert!(output.contains("metadata_only: yes"));
-    assert!(output.contains("next_action: run locket scan"));
+    assert!(output.contains("next_action: run locket setup"));
     assert!(!output.contains("sk_test_sampleTokenValue123"));
     Ok(())
 }
@@ -1114,7 +1116,7 @@ fn status_redacts_project_and_profile_names_from_privacy_config()
     assert!(output.contains("project: project-"));
     assert!(output.contains("project_id: project-"));
     assert!(output.contains("default_profile: profile-"));
-    assert!(output.contains("active_profile: profile-"));
+    assert!(output.contains("active_profile: unknown"));
     assert!(!output.contains("project: app"));
     assert!(!output.contains("default_profile: dev"));
     assert!(!output.contains("active_profile: dev"));
@@ -1204,5 +1206,147 @@ fn completion_generates_shell_script() -> Result<(), Box<dyn std::error::Error>>
     let output = String::from_utf8(output)?;
     assert!(output.contains("_locket"));
     assert!(output.contains("bootstrap"));
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn status_uses_live_profile_and_lock_snapshot_and_scans_only_when_requested()
+-> Result<(), Box<dyn std::error::Error>> {
+    use std::io::{Read, Write};
+    use std::os::unix::net::UnixListener;
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    std::fs::write(directory.path().join("leak.txt"), "token=sk_test_statusFixtureValue123\n")?;
+    let project = crate::require_project(&context)?;
+    let expected_project_id = project.config.project_id.to_string();
+    for (snapshot, active, lock) in [
+        (
+            serde_json::json!({"project_id":project.config.project_id.as_str(),"profile_name":"staging","lock_state":"unlocked"}),
+            "staging",
+            "unlocked",
+        ),
+        (
+            serde_json::json!({"project_id":null,"profile_name":null,"lock_state":"locked"}),
+            "unknown",
+            "unknown",
+        ),
+    ] {
+        let socket = crate::agent_socket_path(&context);
+        let listener = UnixListener::bind(&socket)?;
+        let expected_project_id = expected_project_id.clone();
+        let thread = std::thread::spawn(move || -> Result<(), String> {
+            let (mut stream, _) = listener.accept().map_err(|e| e.to_string())?;
+            let mut buffer = Vec::new();
+            let request = loop {
+                if let Ok((request, _)) = locket_agent::decode_request_frame(
+                    &buffer,
+                    locket_agent::DEFAULT_MAX_MESSAGE_SIZE,
+                ) {
+                    break request;
+                }
+                let mut bytes = [0u8; 1024];
+                let count = stream.read(&mut bytes).map_err(|e| e.to_string())?;
+                if count == 0 {
+                    return Err("status client closed early".to_owned());
+                }
+                buffer.extend_from_slice(&bytes[..count]);
+            };
+            if request.method().map_err(|e| e.to_string())? != locket_agent::AgentMethod::Status {
+                return Err("expected read-only status request".to_owned());
+            }
+            if request.payload.get("project_id").and_then(serde_json::Value::as_str)
+                != Some(expected_project_id.as_str())
+            {
+                return Err("status request must be project-scoped".into());
+            }
+            let frame = locket_agent::encode_frame(
+                &locket_agent::SuccessEnvelope::new(request.id, snapshot),
+                locket_agent::DEFAULT_MAX_MESSAGE_SIZE,
+            )
+            .map_err(|e| e.to_string())?;
+            stream.write_all(&frame).map_err(|e| e.to_string())?;
+            Ok(())
+        });
+        let mut output = Vec::new();
+        run_with_context(Cli::try_parse_from(["locket", "status"])?, &context, &mut output)?;
+        thread
+            .join()
+            .map_err(|_| "status fixture thread panicked")?
+            .map_err(std::io::Error::other)?;
+        std::fs::remove_file(socket)?;
+        let output = String::from_utf8(output)?;
+        assert!(output.contains(&format!("active_profile: {active}")), "{output}");
+        assert!(output.contains(&format!("lock_state: {lock}")), "{output}");
+        assert!(output.contains("scan_warnings: unknown"));
+        assert!(!crate::agent_pid_path(&context).exists());
+    }
+    let mut output = Vec::new();
+    run_with_context(Cli::try_parse_from(["locket", "status", "--scan"])?, &context, &mut output)?;
+    assert!(String::from_utf8(output)?.contains("scan_warnings: 1"));
+    Ok(())
+}
+
+#[test]
+fn context_json_returns_real_metadata_and_never_creates_missing_stores()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    assert!(
+        run_with_context(
+            Cli::try_parse_from(["locket", "context", "--json"])?,
+            &context,
+            &mut Vec::new()
+        )
+        .is_err()
+    );
+    assert!(!context.store_path.exists());
+    run_with_context(
+        Cli::try_parse_from([
+            "locket",
+            "init",
+            "--no-device",
+            "--no-passkey",
+            "--name",
+            "identity-fixture",
+        ])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    crate::set_secret_value(
+        &context,
+        &test_secret_write_args("API_KEY"),
+        "private-identity-fixture",
+        "manual",
+        1000,
+    )?;
+    let resolved = crate::require_project(&context)?;
+    let store = crate::open_store(&context)?;
+    let profile = crate::default_profile(&store, &resolved.config)?;
+    let mut output = Vec::new();
+    run_with_context(Cli::try_parse_from(["locket", "context", "--json"])?, &context, &mut output)?;
+    let identity: serde_json::Value = serde_json::from_slice(&output)?;
+    assert_eq!(
+        identity,
+        serde_json::json!({"root":resolved.root,"project_id":resolved.config.project_id.as_str(),"project_name":"identity-fixture","profile_id":profile.id,"profile_name":"dev","store_path":context.store_path.canonicalize()?})
+    );
+    assert!(!String::from_utf8(output)?.contains("private-identity-fixture"));
+    assert!(!crate::agent_socket_path(&context).exists());
+    store
+        .connection()
+        .execute("UPDATE profiles SET name='missing-default' WHERE id=?1", [profile.id.as_str()])?;
+    assert!(
+        run_with_context(
+            Cli::try_parse_from(["locket", "context", "--json"])?,
+            &context,
+            &mut Vec::new()
+        )
+        .is_err()
+    );
     Ok(())
 }

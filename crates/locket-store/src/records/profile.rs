@@ -210,3 +210,116 @@ impl Store {
         }))
     }
 }
+
+/// Renames an empty local profile inside the caller's import transaction.
+///
+/// Keeps its identity, wrapped keys, audit references, grants and sessions intact.
+/// Returns `None` when the profile is absent or contains any secret rows.
+///
+/// # Errors
+/// Returns a storage error if names or profile metadata cannot be read or updated.
+pub fn archive_empty_profile_for_import(
+    connection: &rusqlite::Connection,
+    project_id: &str,
+    profile_id: &str,
+) -> Result<Option<String>, StoreError> {
+    use sha2::{Digest, Sha256};
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let original: Option<String> = connection.query_row(
+        "SELECT name FROM profiles WHERE project_id=?1 AND id=?2 AND NOT EXISTS (SELECT 1 FROM secrets WHERE profile_id=?2)",
+        (project_id, profile_id), |row| row.get(0),
+    ).optional()?;
+    let Some(original) = original else {
+        return Ok(None);
+    };
+    let prefix: String = original
+        .chars()
+        .filter(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '_'))
+        .collect();
+    let prefix = if prefix.as_bytes().first().is_some_and(u8::is_ascii_lowercase) {
+        prefix
+    } else {
+        "profile".into()
+    };
+    let digest = Sha256::digest(profile_id.as_bytes());
+    let short_id: String = digest[..6]
+        .iter()
+        .flat_map(|byte| {
+            [char::from(HEX[usize::from(byte >> 4)]), char::from(HEX[usize::from(byte & 15)])]
+        })
+        .collect();
+    for attempt in 0_u64.. {
+        let suffix = if attempt == 0 {
+            format!("-local-{short_id}")
+        } else {
+            format!("-local-{short_id}-{attempt}")
+        };
+        let prefix_len = prefix.len().min(64 - suffix.len());
+        let archived = format!("{}{suffix}", &prefix[..prefix_len]);
+        let exists: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM profiles WHERE project_id=?1 AND name=?2)",
+            (project_id, &archived),
+            |row| row.get(0),
+        )?;
+        if !exists {
+            connection.execute(
+                "UPDATE profiles SET name=?3 WHERE project_id=?1 AND id=?2",
+                (project_id, profile_id, &archived),
+            )?;
+            return Ok(Some(archived));
+        }
+    }
+    unreachable!("finite database cannot exhaust archival names")
+}
+
+#[cfg(test)]
+mod import_archive_tests {
+    use super::*;
+    #[test]
+    fn archival_names_are_valid_unique_and_roll_back_with_import()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let mut store = Store::open(directory.path().join("store.db"))?;
+        store.initialize_schema()?;
+        store.insert_project_if_absent("project", "project", 1)?;
+        let long_name = "a".repeat(64);
+        store.insert_profile_if_absent("local", "project", &long_name, true, 1)?;
+        let first = {
+            let transaction = store.connection_mut().transaction()?;
+            archive_empty_profile_for_import(&transaction, "project", "local")?
+                .ok_or("archival rename")?
+        };
+        assert_eq!(
+            store.get_profile_by_name("project", &long_name)?.ok_or("rolled back")?.id,
+            "local"
+        );
+        locket_core::ProfileName::new(first.clone())?;
+        store.insert_profile_if_absent("occupied", "project", &first, false, 1)?;
+        let next = archive_empty_profile_for_import(store.connection(), "project", "local")?
+            .ok_or("archival rename")?;
+        assert_ne!(first, next);
+        locket_core::ProfileName::new(next.clone())?;
+        let profile = store.get_profile_by_name("project", &next)?.ok_or("archived")?;
+        assert_eq!(profile.id, "local");
+        assert!(profile.dangerous);
+        Ok(())
+    }
+    #[test]
+    fn populated_profiles_are_never_archived_even_when_deleted()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let mut store = Store::open(directory.path().join("store.db"))?;
+        store.initialize_schema()?;
+        store.insert_project_if_absent("project", "project", 1)?;
+        store.insert_profile_if_absent("local", "project", "dev", false, 1)?;
+        store.connection().execute("INSERT INTO secrets(id,project_id,profile_id,name,source,origin,required,current_version,state,created_at,updated_at,deleted_at) VALUES ('secret','project','local','TOKEN','machine-local','manual',0,1,'deleted',1,1,1)", [])?;
+        assert!(
+            archive_empty_profile_for_import(store.connection(), "project", "local")?.is_none()
+        );
+        assert_eq!(
+            store.get_profile_by_name("project", "dev")?.ok_or("profile retained")?.id,
+            "local"
+        );
+        Ok(())
+    }
+}

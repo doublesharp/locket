@@ -12,7 +12,11 @@ use crate::{
     open_store, privacy_alias, resolve_project, root_hash,
 };
 
-pub fn status(context: &RuntimeContext, output: &mut impl Write) -> Result<(), CliError> {
+pub fn status_with_scan(
+    context: &RuntimeContext,
+    output: &mut impl Write,
+    scan: bool,
+) -> Result<(), CliError> {
     let Some(resolved) = resolve_project(&context.cwd)? else {
         writeln!(output, "locket: not initialized")?;
         writeln!(output, "next_action: run locket init")?;
@@ -36,14 +40,38 @@ pub fn status(context: &RuntimeContext, output: &mut impl Write) -> Result<(), C
     );
     let running_sessions =
         store.list_incomplete_runtime_sessions(resolved.config.project_id.as_str())?.len();
-    let scan_warning_count = status_scan_warning_count(&resolved.root)?;
+    let snapshot = crate::commands::agent::request_project_status_snapshot(
+        &crate::agent_socket_path(context),
+        resolved.config.project_id.as_str(),
+    )
+    .ok();
+    let project_snapshot = snapshot.as_ref().filter(|snapshot| {
+        snapshot.get("project_id").and_then(serde_json::Value::as_str)
+            == Some(resolved.config.project_id.as_str())
+    });
+    let active_name = project_snapshot
+        .and_then(|snapshot| snapshot.get("profile_name"))
+        .and_then(serde_json::Value::as_str);
+    let active_profile_label = active_name.map_or_else(
+        || "unknown".to_owned(),
+        |name| {
+            if redact_names { privacy_alias("profile", name) } else { name.to_owned() }
+        },
+    );
+    let lock_state = project_snapshot
+        .and_then(|snapshot| snapshot.get("lock_state"))
+        .and_then(serde_json::Value::as_str)
+        .filter(|state| matches!(*state, "locked" | "unlocked"))
+        .unwrap_or("unknown");
+    let scan_warning_count =
+        if scan { Some(status_scan_warning_count(&resolved.root)?) } else { None };
     let example_exists = resolved.root.join(EXAMPLE_FILE).exists();
     let next_action = status_next_action(
         project.as_ref(),
         profile.as_ref(),
         trusted,
         example_exists,
-        scan_warning_count,
+        scan_warning_count.unwrap_or(0),
     );
 
     writeln!(output, "project: {project_label}")?;
@@ -67,12 +95,16 @@ pub fn status(context: &RuntimeContext, output: &mut impl Write) -> Result<(), C
         )?;
     }
     writeln!(output, "default_profile: {profile_label}")?;
-    writeln!(output, "active_profile: {profile_label}")?;
-    writeln!(output, "lock_state: {}", status_lock_state(project.as_ref(), profile.as_ref()))?;
-    writeln!(output, "agent: unavailable")?;
-    writeln!(output, "agent_state: unavailable")?;
+    writeln!(output, "active_profile: {active_profile_label}")?;
+    writeln!(output, "lock_state: {lock_state}")?;
+    let agent_state = if snapshot.is_some() { "running" } else { "unavailable" };
+    writeln!(output, "agent: {agent_state}")?;
+    writeln!(output, "agent_state: {agent_state}")?;
     writeln!(output, "running_sessions: {running_sessions}")?;
-    writeln!(output, "scan_warnings: {scan_warning_count}")?;
+    match scan_warning_count {
+        Some(count) => writeln!(output, "scan_warnings: {count}")?,
+        None => writeln!(output, "scan_warnings: unknown")?,
+    }
     writeln!(output, "store: {}", if project.is_some() { "ready" } else { "partial" })?;
     writeln!(output, "trusted_root: {}", if trusted { "yes" } else { "no" })?;
     writeln!(output, "profile: {}", if profile.is_some() { "ready" } else { "missing" })?;
@@ -111,13 +143,6 @@ fn status_profile_label(
     }
 }
 
-const fn status_lock_state(
-    project: Option<&locket_store::ProjectRecord>,
-    profile: Option<&ProfileRecord>,
-) -> &'static str {
-    if project.is_none() || profile.is_none() { "unavailable" } else { "locked" }
-}
-
 fn status_scan_warning_count(root: &Path) -> Result<usize, CliError> {
     let mut findings = Vec::new();
     let mut suppressed = Vec::new();
@@ -143,6 +168,6 @@ const fn status_next_action(
     } else if scan_warning_count > 0 {
         "run locket scan"
     } else {
-        "none"
+        "run locket setup"
     }
 }

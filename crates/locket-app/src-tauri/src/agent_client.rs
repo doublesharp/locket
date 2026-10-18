@@ -309,11 +309,19 @@ async fn round_trip(
 ) -> Result<ResponseEnvelope, AgentClientError> {
     let frame = encode_frame(request, DEFAULT_MAX_MESSAGE_SIZE)?;
 
-    let result = tokio::time::timeout(REQUEST_TIMEOUT, exchange_frame(&mut stream, &frame)).await;
+    let mutation = matches!(request.kind.as_str(), "ImportDotenv" | "ApplyPolicy" | "SetSecret");
+    let timeout = if mutation { Duration::from_secs(30) } else { REQUEST_TIMEOUT };
+    let result = tokio::time::timeout(timeout, exchange_frame(&mut stream, &frame)).await;
     match result {
         Ok(Ok(envelope)) => Ok(envelope),
         Ok(Err(error)) => Err(error),
-        Err(_) => Err(AgentClientError::Protocol { reason: "request timed out".to_owned() }),
+        Err(_) => Err(AgentClientError::Protocol {
+            reason: if mutation {
+                "request timed out; outcome is unknown. Refresh before retrying".to_owned()
+            } else {
+                "request timed out".to_owned()
+            },
+        }),
     }
 }
 

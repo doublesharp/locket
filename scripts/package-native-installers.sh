@@ -4,20 +4,27 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 tauri_dir="${repo_root}/crates/locket-app/src-tauri"
 ui_dir="${repo_root}/crates/locket-app/ui"
-out_root="${NATIVE_INSTALLER_OUT_DIR:-${repo_root}/target/package/installers}"
-target="all"
+build_root="${LOCKET_BUILD_ROOT:-${CARGO_TARGET_DIR:-${repo_root}/target}}"
+export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-${build_root}}"
+out_root="${NATIVE_INSTALLER_OUT_DIR:-${build_root}/package/installers}"
+stage="${out_root}/stage"
+profile_root="${CARGO_TARGET_DIR}${CARGO_BUILD_TARGET:+/${CARGO_BUILD_TARGET}}/release"
+target="host"
 dry_run=0
+unsigned=0
 
 usage() {
   sed -n '1,120p' <<'USAGE'
 Usage:
-  scripts/package-native-installers.sh --target <all|macos-pkg|windows-msi|linux-deb|linux-rpm> [--dry-run]
+  scripts/package-native-installers.sh --target <all|macos-pkg|windows-msi|linux-deb|linux-rpm> [--dry-run] [--unsigned]
 
+Builds native desktop installers with a matching bundled CLI. --unsigned creates
+local validation artifacts without signing or notarization. Default target is host.
 Builds and signs native desktop installers. --dry-run validates repository
 manifests, command shape, and signing inputs without requiring credentials.
 
 Required signing environment:
-  macos-pkg:   APPLE_DEVELOPER_ID_INSTALLER, APPLE_ID,
+  macos-pkg:   APPLE_DEVELOPER_ID_APPLICATION, APPLE_DEVELOPER_ID_INSTALLER, APPLE_ID,
                APPLE_APP_SPECIFIC_PASSWORD, APPLE_TEAM_ID
   windows-msi: WINDOWS_EV_CERT_SHA1, WINDOWS_TIMESTAMP_URL
   linux-deb:   LOCKET_DEB_GPG_KEY
@@ -30,6 +37,10 @@ while [[ $# -gt 0 ]]; do
     --target)
       target="${2:-}"
       shift 2
+      ;;
+    --unsigned)
+      unsigned=1
+      shift
       ;;
     --dry-run)
       dry_run=1
@@ -62,6 +73,7 @@ require_tool() {
 
 require_env() {
   local name="$1"
+  [[ "${unsigned}" == "1" ]] && return 0
   if [[ -n "${!name:-}" ]]; then
     return 0
   fi
@@ -93,16 +105,49 @@ build_tauri_bundle() {
     echo "dry-run: would build Tauri bundles: ${bundles}"
     return 0
   fi
-  pnpm --dir "${ui_dir}" install --frozen-lockfile
-  pnpm --dir "${ui_dir}" build
-  (cd "${tauri_dir}" && cargo tauri build --bundles "${bundles}")
+  mkdir -p "${stage}/ui"
+  node "${repo_root}/scripts/distribution.mjs" versions >/dev/null
+  if [[ "${unsigned}" == "1" ]]; then
+    cargo build --locked --release -p locket-cli
+  else
+    if [[ -z "${LOCKET_RELEASE_RUNNER_ATTESTED:-}" || "${LOCKET_RELEASE_RUNNER_ATTESTED}" == "local-dev" ]]; then
+      echo "Signed packaging requires an attested isolated release runner; local-dev artifacts cannot be signed." >&2
+      exit 64
+    fi
+    require_tool cargo-auditable
+    require_tool cargo-audit
+    "${repo_root}/scripts/package-cargo-auditable.sh" build --locked --release -p locket-cli
+  fi
+  node "${ui_dir}/node_modules/vue-tsc/bin/vue-tsc.js" --project "${ui_dir}/tsconfig.json" --noEmit
+  (cd "${ui_dir}" && node node_modules/vite/bin/vite.js build --outDir "${stage}/ui")
+  cp "${profile_root}/locket${LOCKET_EXE_SUFFIX:-}" "${stage}/locket${LOCKET_EXE_SUFFIX:-}"
+  if [[ "${unsigned}" != "1" ]]; then
+    cargo audit bin "${stage}/locket${LOCKET_EXE_SUFFIX:-}"
+  fi
+  if [[ "$(uname -s)" == "Darwin" && "${unsigned}" != "1" ]]; then
+    codesign --force --options runtime --timestamp --sign "${APPLE_DEVELOPER_ID_APPLICATION}" "${stage}/locket"
+  fi
+  node "${repo_root}/scripts/distribution.mjs" overlay "${stage}/locket${LOCKET_EXE_SUFFIX:-}" "${stage}/ui" "${stage}/tauri-bundle.json"
+  if [[ "${unsigned}" == "1" ]]; then
+    (cd "${tauri_dir}" && APPLE_SIGNING_IDENTITY=- cargo tauri build --config "${stage}/tauri-bundle.json" --bundles "${bundles}")
+  else
+    (cd "${tauri_dir}" && APPLE_SIGNING_IDENTITY="${APPLE_DEVELOPER_ID_APPLICATION:-}" cargo tauri build --runner "${repo_root}/scripts/package-cargo-auditable.sh" --config "${stage}/tauri-bundle.json" --bundles "${bundles}")
+    cargo audit bin "${profile_root}/locket-desktop${LOCKET_EXE_SUFFIX:-}"
+  fi
 }
 
-copy_first_match() {
+copy_exact_match() {
   local pattern="$1"
   local destination="$2"
   local match=""
-  match="$(find "${repo_root}/target/release/bundle" -path "${pattern}" -type f | sort | head -n 1 || true)"
+  match="$(python3 - "${profile_root}/bundle" "${pattern}" <<'PYMATCH'
+import pathlib, sys
+matches = [p for p in pathlib.Path(sys.argv[1]).rglob('*') if p.is_file() and p.match(sys.argv[2])]
+if len(matches) != 1:
+    sys.exit(f'expected exactly one fresh bundle for {sys.argv[2]}, found {len(matches)}; clear stale bundle outputs')
+print(matches[0])
+PYMATCH
+)"
   if [[ -z "${match}" ]]; then
     echo "expected bundle output not found: ${pattern}" >&2
     exit 1
@@ -114,8 +159,9 @@ copy_first_match() {
 macos_pkg() {
   require_tool node
   require_tool pkgbuild
+  require_env APPLE_DEVELOPER_ID_APPLICATION
   require_tool productbuild
-  require_tool xcrun
+  [[ "${unsigned}" == "1" ]] || require_tool xcrun
   require_env APPLE_DEVELOPER_ID_INSTALLER
   require_env APPLE_ID
   require_env APPLE_APP_SPECIFIC_PASSWORD
@@ -127,24 +173,39 @@ macos_pkg() {
   fi
   local v component distribution pkg app_bundle
   v="$(version)"
-  app_bundle="${repo_root}/target/release/bundle/macos/Locket.app"
+  app_bundle="${profile_root}/bundle/macos/Locket.app"
+  python3 "${repo_root}/scripts/check-package-contents.py" --app "${app_bundle}" --version "${v}"
   component="${out_root}/macos/locket-component.pkg"
   distribution="${out_root}/macos/distribution.xml"
   pkg="${out_root}/macos/Locket-${v}-$(uname -m).pkg"
   mkdir -p "${out_root}/macos"
   sed "s#__LOCKET_VERSION__#${v}#g" "${repo_root}/dist/installers/macos/distribution.xml" > "${distribution}"
-  pkgbuild --component "${app_bundle}" --install-location /Applications --sign "${APPLE_DEVELOPER_ID_INSTALLER}" "${component}"
+  if [[ "${unsigned}" == "1" ]]; then
+    pkg="${out_root}/macos/Locket-${v}-$(uname -m)-unsigned.pkg"
+    pkgbuild --component "${app_bundle}" --identifier app.locket.desktop.pkg --version "${v}" --install-location /Applications "${component}"
+    productbuild --distribution "${distribution}" --package-path "${out_root}/macos" "${pkg}"
+    python3 "${repo_root}/scripts/check-package-contents.py" --pkg "${pkg}" --scratch-root "${stage}" --version "${v}"
+    echo "Unsigned macOS validation pkg: ${pkg}"
+    return 0
+  fi
+  cargo audit bin "${app_bundle}/Contents/MacOS/locket-desktop"
+  cargo audit bin "${app_bundle}/Contents/Resources/locket"
+  codesign --verify --deep --strict "${app_bundle}"
+  codesign --verify --strict "${app_bundle}/Contents/Resources/locket"
+  pkgbuild --component "${app_bundle}" --identifier app.locket.desktop.pkg --version "${v}" --install-location /Applications --sign "${APPLE_DEVELOPER_ID_INSTALLER}" "${component}"
   productbuild --distribution "${distribution}" --package-path "${out_root}/macos" --sign "${APPLE_DEVELOPER_ID_INSTALLER}" "${pkg}"
   xcrun notarytool submit "${pkg}" --apple-id "${APPLE_ID}" --password "${APPLE_APP_SPECIFIC_PASSWORD}" --team-id "${APPLE_TEAM_ID}" --wait
   xcrun stapler staple "${pkg}"
   pkgutil --check-signature "${pkg}"
   xcrun stapler validate "${pkg}"
+  python3 "${repo_root}/scripts/check-package-contents.py" --pkg "${pkg}" --scratch-root "${stage}" --version "${v}"
   echo "macOS pkg: ${pkg}"
 }
 
 windows_msi() {
+  export LOCKET_EXE_SUFFIX=.exe
   require_tool node
-  require_tool signtool
+  [[ "${unsigned}" == "1" ]] || require_tool signtool
   require_env WINDOWS_EV_CERT_SHA1
   require_env WINDOWS_TIMESTAMP_URL
   build_tauri_bundle msi
@@ -155,7 +216,8 @@ windows_msi() {
   local v out
   v="$(version)"
   out="${out_root}/windows/Locket-${v}-${PROCESSOR_ARCHITECTURE:-x64}.msi"
-  copy_first_match "*/msi/*.msi" "${out}"
+  copy_exact_match "*/msi/*.msi" "${out}"
+  [[ "${unsigned}" == "1" ]] && { echo "Unsigned Windows validation MSI: ${out}"; return 0; }
   signtool sign /fd SHA256 /tr "${WINDOWS_TIMESTAMP_URL}" /td SHA256 /sha1 "${WINDOWS_EV_CERT_SHA1}" "${out}"
   signtool verify /pa /v "${out}"
   echo "Windows MSI: ${out}"
@@ -163,7 +225,7 @@ windows_msi() {
 
 linux_deb() {
   require_tool node
-  require_tool debsign
+  [[ "${unsigned}" == "1" ]] || require_tool debsign
   require_env LOCKET_DEB_GPG_KEY
   build_tauri_bundle deb
   if [[ "${dry_run}" == "1" ]]; then
@@ -173,14 +235,15 @@ linux_deb() {
   local v out
   v="$(version)"
   out="${out_root}/linux/locket_${v}_$(uname -m).deb"
-  copy_first_match "*/deb/*.deb" "${out}"
+  copy_exact_match "*/deb/*.deb" "${out}"
+  [[ "${unsigned}" == "1" ]] && { echo "Unsigned Linux validation deb: ${out}"; return 0; }
   debsign -k"${LOCKET_DEB_GPG_KEY}" "${out}"
   echo "Linux deb: ${out}"
 }
 
 linux_rpm() {
   require_tool node
-  require_tool rpmsign
+  [[ "${unsigned}" == "1" ]] || require_tool rpmsign
   require_env LOCKET_RPM_GPG_NAME
   build_tauri_bundle rpm
   if [[ "${dry_run}" == "1" ]]; then
@@ -190,7 +253,8 @@ linux_rpm() {
   local v out
   v="$(version)"
   out="${out_root}/linux/locket-${v}-1.$(uname -m).rpm"
-  copy_first_match "*/rpm/*.rpm" "${out}"
+  copy_exact_match "*/rpm/*.rpm" "${out}"
+  [[ "${unsigned}" == "1" ]] && { echo "Unsigned Linux validation rpm: ${out}"; return 0; }
   rpmsign --define "_gpg_name ${LOCKET_RPM_GPG_NAME}" --addsign "${out}"
   rpm --checksig "${out}"
   echo "Linux rpm: ${out}"
@@ -198,6 +262,13 @@ linux_rpm() {
 
 run_target() {
   case "$1" in
+    host)
+      case "$(uname -s)" in
+        Darwin*) macos_pkg ;;
+        Linux*) linux_deb ;;
+        MINGW*|MSYS*|CYGWIN*|Windows_NT) export LOCKET_EXE_SUFFIX=.exe; windows_msi ;;
+        *) echo "unsupported packaging host" >&2; exit 64 ;;
+      esac ;;
     macos-pkg) macos_pkg ;;
     windows-msi) windows_msi ;;
     linux-deb) linux_deb ;;

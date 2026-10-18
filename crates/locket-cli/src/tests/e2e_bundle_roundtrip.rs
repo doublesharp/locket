@@ -58,6 +58,8 @@ fn export_sealed_bundle(
             "locket",
             "export",
             "--sealed",
+            "--include-personal",
+            "--include-history",
             "--recipient",
             &descriptor,
             "--profile",
@@ -1059,5 +1061,126 @@ fn bundle_import_sets_last_rotated_at_to_import_timestamp() -> Result<(), Box<dy
         post_last_rotated_at > 1_000_000_000,
         "post-import last_rotated_at ({post_last_rotated_at}) must be a real timestamp, not a sentinel"
     );
+    Ok(())
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn independent_stores_import_personal_backup_into_empty_dev_and_decrypt()
+-> Result<(), Box<dyn std::error::Error>> {
+    let sender_dir = tempdir()?;
+    let receiver_dir = tempdir()?;
+    let sender = test_context(&sender_dir);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app"])?,
+        &sender,
+        &mut Vec::new(),
+    )?;
+    fs::copy(sender_dir.path().join("locket.toml"), receiver_dir.path().join("locket.toml"))?;
+    let receiver = test_context(&receiver_dir);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "app"])?,
+        &receiver,
+        &mut Vec::new(),
+    )?;
+    let resolved = crate::resolve_project(receiver_dir.path())?.ok_or("receiver project")?;
+    let project_id = resolved.config.project_id.as_str();
+    let receiver_store = crate::open_store(&receiver)?;
+    let original_profile = receiver_store.get_profile_by_name(project_id, "dev")?.ok_or("dev")?;
+    let audit_key = crate::load_project_key(
+        &receiver,
+        &receiver_store,
+        project_id,
+        locket_crypto::KeyPurpose::Audit,
+    )?;
+    assert!(receiver_store.verify_audit_chain_read_only(project_id, audit_key.as_ref())?.hmac_ok);
+    receiver_store.connection().execute("INSERT INTO directory_grants(grant_id,project_id,profile_id,root_hash,directory_hash,grant_scope,created_at,updated_at) VALUES ('preserved-grant',?1,?2,zeroblob(32),zeroblob(32),'project-root',1,1)", rusqlite::params![project_id, original_profile.id])?;
+    receiver_store.connection().execute("INSERT INTO runtime_sessions(id,project_id,profile_id,process_id,process_start_time,started_at) VALUES ('preserved-session',?1,?2,1,1,1)", rusqlite::params![project_id, original_profile.id])?;
+    let original_keys = receiver_store
+        .connection()
+        .prepare("SELECT id,wrapped_material FROM keys WHERE profile_id=?1 ORDER BY id")?
+        .query_map([&original_profile.id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    let args = test_secret_write_args("TRANSFER_VALUE");
+    crate::set_secret_value(&sender, &args, "separate-store-value", "manual", 1000)?;
+    let mut pubkey = Vec::new();
+    run_with_context(Cli::try_parse_from(["locket", "device", "pubkey"])?, &receiver, &mut pubkey)?;
+    let pubkey = String::from_utf8(pubkey)?;
+    let descriptor = parse_field(&pubkey, "descriptor").ok_or("descriptor missing")?;
+    let bundle_path = sender_dir.path().join("personal-backup.locket-bundle");
+    run_with_context(
+        Cli::try_parse_from([
+            "locket",
+            "export",
+            "--sealed",
+            "--include-personal",
+            "--recipient",
+            descriptor,
+            "--output",
+            bundle_path.to_str().ok_or("bundle path is not UTF-8")?,
+        ])?,
+        &sender,
+        &mut Vec::new(),
+    )?;
+    // Preview must not import even nonconflicting rows until explicitly accepted.
+    assert!(
+        run_with_context(
+            Cli::try_parse_from([
+                "locket",
+                "import-bundle",
+                bundle_path.to_str().ok_or("bundle path is not UTF-8")?
+            ])?,
+            &receiver,
+            &mut Vec::new()
+        )
+        .is_err()
+    );
+    run_with_context(
+        Cli::try_parse_from([
+            "locket",
+            "import-bundle",
+            bundle_path.to_str().ok_or("bundle path is not UTF-8")?,
+            "--accept-incoming",
+        ])?,
+        &receiver,
+        &mut Vec::new(),
+    )?;
+    let mut value = Vec::new();
+    run_with_context(
+        Cli::try_parse_from(["locket", "get", "TRANSFER_VALUE", "--reveal", "--force"])?,
+        &receiver,
+        &mut value,
+    )?;
+    assert!(String::from_utf8(value)?.contains("separate-store-value"));
+    assert!(
+        receiver_store.verify_audit_chain_read_only(project_id, audit_key.as_ref())?.hmac_ok,
+        "import must preserve the real init BOOTSTRAP audit chain"
+    );
+    let archived = receiver_store
+        .list_profiles(project_id)?
+        .into_iter()
+        .find(|p| p.id == original_profile.id)
+        .ok_or("original profile deleted")?;
+    assert!(archived.name.starts_with("dev-local-"));
+    locket_core::ProfileName::new(archived.name)?;
+    for table in ["directory_grants", "runtime_sessions"] {
+        let id: String = receiver_store.connection().query_row(
+            &format!("SELECT profile_id FROM {table}"),
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(id, original_profile.id);
+    }
+    let preserved_keys = receiver_store
+        .connection()
+        .prepare("SELECT id,wrapped_material FROM keys WHERE profile_id=?1 ORDER BY id")?
+        .query_map([&original_profile.id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    assert_eq!(preserved_keys, original_keys);
+
     Ok(())
 }

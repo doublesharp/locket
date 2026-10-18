@@ -32,8 +32,8 @@
     "active": true,
     "targets": "all",
     "category": "DeveloperTool",
-    "shortDescription": "Local-first secrets control plane",
-    "longDescription": "Locket is a local-first secrets control plane for development environments.",
+    "shortDescription": "Encrypted local development variables",
+    "longDescription": "Locket keeps development variables encrypted locally and supplies them to approved commands.",
     "icon": [
       "icons/icon.png"
     ],

@@ -3012,6 +3012,7 @@ dependencies = [
  "data-encoding",
  "directories",
  "ed25519-dalek",
+ "libc",
  "locket-core",
  "locket-crypto",
  "locket-platform",
@@ -3022,10 +3023,12 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.0",
+ "shlex",
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
  "toml 1.1.6+spec-1.1.0",
+ "x25519-dalek",
  "zeroize",
 ]
 
@@ -3084,6 +3087,8 @@ dependencies = [
  "sha2 0.11.0",
  "thiserror 2.0.20",
  "toml 1.1.6+spec-1.1.0",
+ "toml_edit 0.25.15+spec-1.1.0",
+ "url",
  "zeroize",
 ]
 
@@ -3107,6 +3112,7 @@ name = "locket-desktop"
 version = "0.1.0"
 dependencies = [
  "arboard",
+ "base64 0.22.1",
  "directories",
  "locket-agent",
  "locket-app",
@@ -3115,11 +3121,13 @@ dependencies = [
  "locket-store",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
  "tauri",
  "tauri-build",
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
+ "toml 1.1.6+spec-1.1.0",
 ]
 
 [[package]]
@@ -3147,6 +3155,7 @@ dependencies = [
  "data-encoding",
  "hmac 0.13.0",
  "keyring-core",
+ "locket-core",
  "locket-crypto",
  "objc2",
  "objc2-foundation",
@@ -5658,6 +5667,7 @@ dependencies = [
  "indexmap 2.14.2",
  "toml_datetime 1.1.1+spec-1.1.0",
  "toml_parser",
+ "toml_writer",
  "winnow 1.0.4",
 ]
 

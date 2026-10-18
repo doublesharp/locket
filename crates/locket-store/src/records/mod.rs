@@ -6,3 +6,5 @@ pub mod profile;
 pub mod project;
 pub mod roots;
 pub mod team;
+
+pub mod sharing;

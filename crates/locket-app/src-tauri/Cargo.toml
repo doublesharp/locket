@@ -24,11 +24,16 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 arboard = { workspace = true }
+base64 = "0.22"
 directories = { workspace = true }
 locket-agent = { path = "../../locket-agent" }
 locket-app = { path = ".." }
 locket-core = { path = "../../locket-core" }
 locket-platform = { path = "../../locket-platform" }
+locket-store = { path = "../../locket-store" }
+sha2 = { workspace = true }
+toml = { workspace = true }
+tempfile = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tauri = { version = "2", features = ["tray-icon", "image-png"] }
@@ -36,7 +41,6 @@ thiserror = { workspace = true }
 tokio = { workspace = true }
 
 [dev-dependencies]
-locket-store = { path = "../../locket-store" }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true }

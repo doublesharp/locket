@@ -308,7 +308,7 @@ fn get_copy_writes_metadata_only_audit_without_value_leakage()
     assert!(copy_output.contains("metadata_only=yes"));
     assert!(copy_output.contains("clipboard_clear_supported=yes"));
     assert!(!copy_output.contains("postgres://localhost/app"));
-    assert!(copy_stderr.is_empty());
+    assert_eq!(copy_stderr, "");
 
     let store = locket_store::Store::open(directory.path().join("store.db"))?;
     let metadata: String = store.connection().query_row(
@@ -522,7 +522,7 @@ fn get_copy_verify_user_denial_audits_without_decrypting_or_copying()
         return Err("verification denial must fail".into());
     };
     assert_eq!(error.exit_code(), locket_core::LocketError::UserVerificationFailed.exit_code());
-    assert!(String::from_utf8(copy_output)?.is_empty());
+    assert_eq!(String::from_utf8(copy_output)?, "");
     assert!(!String::from_utf8(copy_stderr)?.contains("postgres://localhost/app"));
 
     let store = locket_store::Store::open(directory.path().join("store.db"))?;
@@ -674,7 +674,7 @@ fn reveal_verify_user_still_requires_unlocked_vault() -> Result<(), Box<dyn std:
         return Err("locked vault must fail before reveal".into());
     };
     assert_eq!(error.exit_code(), locket_core::LocketError::UnlockRequired.exit_code());
-    assert!(String::from_utf8(reveal_output)?.is_empty());
+    assert_eq!(String::from_utf8(reveal_output)?, "");
 
     // The CLI must mirror the locked-vault refusal into the degraded-audit
     // log under ${LOCKET_HOME}/audit-degraded.log. Names only - never

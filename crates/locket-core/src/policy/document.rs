@@ -35,6 +35,7 @@ const ALLOWED_ROOT_KEYS: &[&str] = &[
     "bootstrap",
     "scan",
     "example",
+    "variables",
 ];
 
 /// Parsed command policies from a `locket.toml` document.
@@ -42,6 +43,8 @@ const ALLOWED_ROOT_KEYS: &[&str] = &[
 pub struct PolicyDocument {
     /// Schema version declared at the document root.
     pub schema_version: u64,
+    /// Commit-safe variable contracts, separate from secret ACLs.
+    pub variables: BTreeMap<String, super::VariableContract>,
     /// Command policies keyed by `[commands.<name>]`.
     pub commands: BTreeMap<String, CommandPolicy>,
     /// Path-scoped environment sets keyed by `[paths."<relative-path>"]`.
@@ -71,8 +74,9 @@ impl PolicyDocument {
     /// `schema_version`, unknown top-level keys, malformed command tables,
     /// unsupported fields, or invalid normalized policy values.
     pub fn from_toml_str(input: &str) -> Result<Self, PolicyParseError> {
-        let value = toml::from_str::<toml::Value>(input)
-            .map_err(|source| PolicyParseError::Toml { message: source.to_string() })?;
+        let value = toml::from_str::<toml::Value>(input).map_err(|_| PolicyParseError::Toml {
+            message: "syntax error (source redacted)".into(),
+        })?;
         Self::from_toml_value(&value)
     }
 
@@ -93,7 +97,8 @@ impl PolicyDocument {
         let path_scopes = parse_path_scopes(root)?;
         let secret_access = parse_secret_access(root)?;
 
-        Ok(Self { schema_version, commands, path_scopes, secret_access })
+        let variables = super::variable_contract::parse_variables(root.get("variables"))?;
+        Ok(Self { schema_version, variables, commands, path_scopes, secret_access })
     }
 
     /// Finds the path scope that best matches `cwd` under `project_root`.

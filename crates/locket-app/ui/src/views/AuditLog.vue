@@ -1,12 +1,16 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
 
+import { auditHealth } from '../dashboard/health';
 import type { AuditLogRow } from '../types/views';
 
 interface Props {
   rows: AuditLogRow[];
   privacyMode: boolean;
-  chainOk: boolean;
+  chainOk: boolean | null;
+  loading?: boolean;
+  errorMessage?: string | null;
+  lastCheckedAt?: string;
 }
 
 const props = defineProps<Props>();
@@ -32,7 +36,7 @@ const isFilteredEmpty = computed<boolean>(
 
 const firstBrokenSequence = computed<number | null>(() => {
   for (const row of props.rows) {
-    if (!row.hmacOk) {
+    if (row.hmacOk === false) {
       return row.sequence;
     }
   }
@@ -40,7 +44,9 @@ const firstBrokenSequence = computed<number | null>(() => {
 });
 
 const chainBannerText = computed<string>(() => {
-  if (props.chainOk) {
+  if (props.chainOk === null)
+    return 'Audit chain has not been verified. Unlock this project and retry verification.';
+  if (props.chainOk === true) {
     return 'Audit chain verified.';
   }
   if (firstBrokenSequence.value !== null) {
@@ -85,7 +91,11 @@ function searchText(row: AuditLogRow): string {
     profileLabel(row),
     secretLabel(row),
     row.denialReason ?? '',
-    row.hmacOk ? 'hmac ok verified' : 'hmac broken failed',
+    row.hmacOk === true
+      ? 'hmac ok verified'
+      : row.hmacOk === false
+        ? 'hmac broken failed'
+        : 'hmac not verified',
   ]
     .join(' ')
     .toLowerCase();
@@ -130,7 +140,11 @@ function onVerify(): void {
       {{ chainBannerText }}
     </p>
 
-    <p v-if="isEmpty" class="view__empty">No audit rows.</p>
+    <p v-if="loading" role="status">Loading audit…</p>
+    <p v-if="errorMessage" role="alert">{{ errorMessage }} Retry verification.</p>
+    <p v-if="lastCheckedAt">Project audit last checked {{ lastCheckedAt }}</p>
+    <p class="view__muted">{{ auditHealth(chainOk).label }}</p>
+    <p v-if="isEmpty && !loading" class="view__empty">No audit rows.</p>
 
     <p v-else-if="isFilteredEmpty" class="view__empty">No matching audit rows.</p>
 

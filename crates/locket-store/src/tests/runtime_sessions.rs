@@ -82,11 +82,12 @@ fn runtime_session_secret_names_are_names_only_and_pruned_alone() -> Result<(), 
 
     let pruned = test_store.store.prune_runtime_session_secret_names("lk_proj_test", 100)?;
     assert_eq!(pruned, 1);
-    assert!(
+    assert_eq!(
         test_store
             .store
             .list_runtime_sessions_with_expired_secret_names("lk_proj_test", 100)?
-            .is_empty()
+            .len(),
+        0
     );
 
     let preserved = test_store.store.connection().query_row(
@@ -189,7 +190,7 @@ fn mark_completed_with_no_exit_status_records_signal_termination() -> Result<(),
     assert!(updated);
 
     let incomplete = test_store.store.list_incomplete_runtime_sessions("lk_proj_test")?;
-    assert!(incomplete.is_empty());
+    assert_eq!(incomplete.len(), 0);
 
     let exit_status: Option<i32> = test_store.store.connection().query_row(
         "SELECT exit_status FROM runtime_sessions WHERE id = 'lk_sess_signal'",
@@ -213,7 +214,7 @@ fn list_incomplete_returns_empty_after_all_sessions_completed() -> Result<(), Bo
     test_store.store.mark_runtime_session_completed("lk_sess_a", 150, Some(0), Some(1))?;
     test_store.store.mark_runtime_session_completed("lk_sess_b", 250, Some(0), Some(2))?;
 
-    assert!(test_store.store.list_incomplete_runtime_sessions("lk_proj_test")?.is_empty());
+    assert_eq!(test_store.store.list_incomplete_runtime_sessions("lk_proj_test")?.len(), 0);
     Ok(())
 }
 

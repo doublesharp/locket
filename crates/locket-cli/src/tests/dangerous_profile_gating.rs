@@ -162,7 +162,7 @@ fn get_metadata_dangerous_profile_without_flag_fails_and_audits()
         return Err("expected typed error".into());
     };
     assert_eq!(kind, locket_core::LocketError::DangerousProfileConfirmationRequired);
-    assert!(String::from_utf8(output)?.is_empty());
+    assert_eq!(String::from_utf8(output)?, "");
     assert_dangerous_denial_audit_row(&directory, "GET", "get")?;
     Ok(())
 }
@@ -370,7 +370,7 @@ fn copy_dangerous_profile_without_flag_fails_and_audits() -> Result<(), Box<dyn 
         locket_core::LocketError::DangerousProfileConfirmationRequired.exit_code()
     );
     assert!(clipboard.value().is_none(), "clipboard must remain untouched on refusal");
-    assert!(String::from_utf8(output)?.is_empty());
+    assert_eq!(String::from_utf8(output)?, "");
     assert_dangerous_denial_audit_row(&directory, "COPY", "clipboard")?;
     Ok(())
 }

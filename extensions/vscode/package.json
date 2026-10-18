@@ -2,7 +2,7 @@
   "name": "locket-vscode",
   "displayName": "Locket",
   "description": "Local-first secrets management for Visual Studio Code, backed by the Locket agent.",
-  "version": "0.0.0-dev",
+  "version": "0.1.0",
   "private": false,
   "license": "Apache-2.0 OR MIT",
   "publisher": "locket",
@@ -51,12 +51,12 @@
       },
       {
         "command": "locket.revealSecret",
-        "title": "Reveal Secret",
+        "title": "Reveal Secret in Terminal",
         "category": "Locket"
       },
       {
         "command": "locket.copySecret",
-        "title": "Copy Secret",
+        "title": "Copy Secret in Terminal",
         "category": "Locket"
       },
       {
@@ -72,15 +72,33 @@
     ],
     "menus": {
       "commandPalette": [
-        { "command": "locket.unlock" },
-        { "command": "locket.lock" },
-        { "command": "locket.switchProfile" },
-        { "command": "locket.runPolicy" },
-        { "command": "locket.scanWorkspace" },
-        { "command": "locket.revealSecret" },
-        { "command": "locket.copySecret" },
-        { "command": "locket.openAuditView" },
-        { "command": "locket.createTerminal" }
+        {
+          "command": "locket.unlock"
+        },
+        {
+          "command": "locket.lock"
+        },
+        {
+          "command": "locket.switchProfile"
+        },
+        {
+          "command": "locket.runPolicy"
+        },
+        {
+          "command": "locket.scanWorkspace"
+        },
+        {
+          "command": "locket.revealSecret"
+        },
+        {
+          "command": "locket.copySecret"
+        },
+        {
+          "command": "locket.openAuditView"
+        },
+        {
+          "command": "locket.createTerminal"
+        }
       ]
     }
   },

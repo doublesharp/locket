@@ -15,6 +15,7 @@
 // Pull dev-deps into the integration test target so `unused_crate_dependencies`
 // stays quiet for crates referenced only via path lookups below.
 use arboard as _;
+use base64 as _;
 use directories as _;
 use locket_agent as _;
 use locket_core as _;
@@ -22,10 +23,12 @@ use locket_desktop_lib as _;
 use locket_platform as _;
 use locket_store as _;
 use serde as _;
+use sha2 as _;
 use tauri as _;
 use tempfile as _;
 use thiserror as _;
 use tokio as _;
+use toml as _;
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -71,7 +74,7 @@ fn handler_command_names(source: &str) -> std::collections::BTreeSet<String> {
         .split(',')
         .map(str::trim)
         .filter(|name| !name.is_empty())
-        .map(String::from)
+        .map(|path| path.rsplit("::").next().unwrap_or(path).to_owned())
         .collect()
 }
 
@@ -88,7 +91,7 @@ fn attributed_command_names(source: &str) -> std::collections::BTreeSet<String> 
         let function_line = lines
             .iter()
             .skip(idx + 1)
-            .map(|line| line.trim_start())
+            .map(|line| line.trim_start().strip_prefix("pub(crate) ").unwrap_or(line.trim_start()))
             .find(|line| line.starts_with("async fn ") || line.starts_with("fn "))
             .unwrap_or_else(|| panic!("missing function after command attribute near line {idx}"));
         let name_start = function_line
@@ -254,10 +257,11 @@ fn capability_file_denies_default_and_lists_no_broad_permissions() {
 fn desktop_command_permission_matches_registered_handlers() {
     let source = read_text("src/lib.rs");
     let registered = handler_command_names(&source);
-    let attributed = attributed_command_names(&source);
+    let mut attributed = attributed_command_names(&source);
+    attributed.extend(attributed_command_names(&read_text("src/desktop_actions.rs")));
     assert_eq!(
         attributed, registered,
-        "every #[tauri::command] in src/lib.rs must be listed exactly once in generate_handler!",
+        "every desktop #[tauri::command] must be listed exactly once in generate_handler!",
     );
 
     let permission = read_text("permissions/desktop-commands.toml");
@@ -270,8 +274,10 @@ fn desktop_command_permission_matches_registered_handlers() {
         "permissions/desktop-commands.toml commands.allow must match the registered handlers",
     );
     assert!(
-        allowed.iter().all(|command| command.starts_with("agent_") || command.starts_with("tray_")),
-        "desktop command permission must expose only agent/tray scoped handlers",
+        allowed.iter().all(|command| command.starts_with("agent_")
+            || command.starts_with("tray_")
+            || command.starts_with("desktop_")),
+        "desktop command permission must expose only scoped agent/tray/desktop handlers",
     );
 }
 

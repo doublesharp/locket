@@ -427,11 +427,11 @@ fn passkey_register_is_unavailable_without_writing_metadata()
         return Err("registration must fail without a platform passkey integration".into());
     };
     assert_eq!(error.exit_code(), locket_core::LocketError::PolicyValidationIncomplete.exit_code(),);
-    assert!(register_output.is_empty());
+    assert_eq!(register_output.len(), 0);
 
     let store = locket_store::Store::open(directory.path().join("store.db"))?;
     let credentials = store.list_passkey_credentials(&project_id, true)?;
-    assert!(credentials.is_empty());
+    assert_eq!(credentials.len(), 0);
     let denied: i64 = store.connection().query_row(
         "SELECT COUNT(*) FROM audit_log WHERE action = 'PASSKEY_REGISTER' AND status = 'DENIED'",
         [],
@@ -722,7 +722,7 @@ fn passkey_list_and_remove_use_project_store_and_audit() -> Result<(), Box<dyn s
     assert!(!remove_output.contains("abcdef123456abcdef"));
 
     let active = store.list_passkey_credentials(&project_id, false)?;
-    assert!(active.is_empty());
+    assert_eq!(active.len(), 0);
     let all = store.list_passkey_credentials(&project_id, true)?;
     assert_eq!(all.len(), 1);
     assert!(all[0].revoked_at.is_some());
@@ -788,7 +788,7 @@ fn passkey_remove_requires_fresh_user_verification_before_revocation()
     };
     assert_eq!(error.exit_code(), locket_core::LocketError::UserVerificationFailed.exit_code());
     assert!(error.to_string().contains("local user verification"));
-    assert!(String::from_utf8(remove_output)?.is_empty());
+    assert_eq!(String::from_utf8(remove_output)?, "");
 
     let active = store.list_passkey_credentials(&project_id, false)?;
     assert_eq!(active.len(), 1);
@@ -890,7 +890,7 @@ fn unlock_with_verify_user_denial_returns_typed_error_and_writes_no_unlock_audit
         return Err("denied user verification must fail unlock".into());
     };
     assert_eq!(error.exit_code(), locket_core::LocketError::UserVerificationFailed.exit_code());
-    assert!(unlock_output.is_empty());
+    assert_eq!(unlock_output.len(), 0);
 
     let store = locket_store::Store::open(directory.path().join("store.db"))?;
     let unlock_count: i64 = store.connection().query_row(
@@ -1030,7 +1030,7 @@ fn unlock_returns_unlock_required_when_master_key_is_missing()
         return Err("locked-vault unlock must fail".into());
     };
     assert_eq!(unlock_error.exit_code(), locket_core::LocketError::UnlockRequired.exit_code(),);
-    assert!(unlock_output.is_empty());
+    assert_eq!(unlock_output.len(), 0);
     Ok(())
 }
 
