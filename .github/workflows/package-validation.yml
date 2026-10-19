@@ -5,10 +5,14 @@ on:
   workflow_call:
   pull_request:
     paths:
-      - 'scripts/*package*'
-      - 'scripts/distribution*'
-      - 'crates/locket-app/**'
+      - 'scripts/**'
+      - 'crates/**'
       - 'extensions/vscode/**'
+      - 'dist/installers/**'
+      - '.cargo/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
       - '.github/workflows/package-validation.yml'
 
 permissions:
@@ -136,6 +140,7 @@ jobs:
   installed-host:
     name: installed package on fresh ${{ matrix.os }}
     needs: unsigned-host
+    if: always() && !cancelled()
     strategy:
       fail-fast: false
       matrix:
@@ -175,6 +180,13 @@ jobs:
         with:
           name: locket-unsigned-${{ matrix.os }}-${{ github.sha }}
           path: ${{ runner.temp }}/locket/artifact
+      - name: Refresh Linux runtime package index
+        if: runner.os == 'Linux'
+        run: sudo apt-get update
+      - name: Verify downloaded editor package
+        run: |
+          vsix="$(python3 -c 'import pathlib,sys; files=list(pathlib.Path(sys.argv[1]).glob("*.vsix")); len(files)==1 or sys.exit(f"expected one downloaded VSIX, found {len(files)}"); print(files[0])' "$LOCKET_ACCEPTANCE_ARTIFACT/vscode")"
+          python3 scripts/check-package-contents.py --vsix "$vsix" --version "$(node scripts/distribution.mjs versions)"
       - name: Install and verify downloaded native package
         run: |
           python3 scripts/validate-installed-native.py --target host --installer-root "$LOCKET_ACCEPTANCE_ARTIFACT/installers" --scratch-root "$TMPDIR" --version "$(node scripts/distribution.mjs versions)"
