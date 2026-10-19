@@ -3,6 +3,7 @@
 //! Spins up the locket-agent socket server in-process and drives the
 //! desktop client against it. Covers the daemon-offline failure path,
 //! a successful round-trip, and reconnection after the daemon drops.
+#![cfg(unix)]
 #![allow(
     clippy::missing_docs_in_private_items,
     clippy::expect_used,

@@ -115,6 +115,12 @@ jobs:
           scripts/package-native-installers.sh --target host --unsigned
           scripts/package-vscode-extension.sh
           scripts/validate-packaged-os-canaries.sh --artifact-root "$LOCKET_BUILD_ROOT/package"
+      - name: Test Windows desktop IPC
+        if: runner.os == 'Windows'
+        run: |
+          TAURI_CONFIG="$(cat "$LOCKET_BUILD_ROOT/package/installers/stage/tauri-bundle.json")"
+          export TAURI_CONFIG
+          cargo test -p locket-desktop --release --all-targets --locked
       - name: Preserve unsigned build cache
         if: always() && !cancelled() && steps.unsigned-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4

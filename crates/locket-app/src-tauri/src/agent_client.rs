@@ -1,8 +1,8 @@
 //! Minimal client for the locket agent's v1 framed JSON protocol.
 //!
-//! Connects to the agent's Unix domain socket, exchanges framed
-//! request/response RPCs, and subscribes to the metadata-only status
-//! stream used by the system tray.
+//! Uses the agent's Unix socket or SID-scoped Windows named pipe for framed
+//! unary RPCs. Unix subscribes to metadata status; Windows polls the same
+//! unary Status RPC because its pipe server does not support subscriptions.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -15,10 +15,13 @@ use locket_agent::{
 use locket_core::{ErrorDisplayCopy, LocketError};
 use serde::{Serialize, de::DeserializeOwned};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::UnixStream;
+#[cfg(unix)]
+type AgentStream = tokio::net::UnixStream;
+#[cfg(target_os = "windows")]
+type AgentStream = tokio::net::windows::named_pipe::NamedPipeClient;
 use tokio::sync::{Notify, mpsc};
 
-/// Default subdirectory under the user's data dir for agent sockets.
+/// Fallback socket subdirectory when no platform runtime directory is available.
 const DEFAULT_DATA_DIR: &str = ".locket";
 
 /// Default socket file name relative to [`DEFAULT_DATA_DIR`].
@@ -32,6 +35,10 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Round-trip request timeout once a connection is established.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// Windows exposes unary RPCs, so poll for metadata invalidation once a second.
+#[cfg(target_os = "windows")]
+const WINDOWS_STATUS_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
 /// Initial reconnect backoff after the status stream drops.
 pub const RECONNECT_INITIAL_BACKOFF: Duration = Duration::from_secs(1);
@@ -158,25 +165,27 @@ impl From<ProtocolError> for AgentClientError {
     }
 }
 
-/// Resolve the path the desktop should try to connect to.
+/// Resolve the local agent endpoint, preserving `LOCKET_AGENT_SOCKET` overrides.
 ///
-/// Honors `LOCKET_AGENT_SOCKET` first; otherwise falls back to
-/// `<HOME>/.locket/agent.sock`. The default lines up with the CLI's
-/// own `agent_data_dir`/`agent_socket_path` derivation when the user
-/// has not overridden the store directory.
+/// Uses the CLI's macOS Application Support path, Linux XDG runtime path or
+/// home fallback, and the current user's SID-scoped Windows pipe. If Windows
+/// SID resolution fails, returns an empty endpoint that connect rejects.
 #[must_use]
 pub fn resolve_socket_path() -> PathBuf {
-    if let Ok(path) = std::env::var(SOCKET_PATH_ENV)
-        && !path.is_empty()
-    {
-        return PathBuf::from(path);
-    }
-    let home = home_dir().unwrap_or_else(|| PathBuf::from("."));
-    home.join(DEFAULT_DATA_DIR).join(DEFAULT_SOCKET_FILE)
-}
-
-fn home_dir() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(PathBuf::from)
+    let explicit = std::env::var_os(SOCKET_PATH_ENV);
+    let home = directories::BaseDirs::new()
+        .map_or_else(|| PathBuf::from("."), |directories| directories.home_dir().to_path_buf());
+    #[cfg(target_os = "windows")]
+    let windows_pipe = locket_platform::default_agent_pipe_name().ok().map(PathBuf::from);
+    #[cfg(not(target_os = "windows"))]
+    let windows_pipe: Option<PathBuf> = None;
+    endpoint_from_inputs(
+        std::env::consts::OS,
+        explicit.as_deref(),
+        &home,
+        std::env::var_os("XDG_RUNTIME_DIR").as_deref(),
+        windows_pipe.as_deref(),
+    )
 }
 
 /// Issue a single `Status` request to the agent.
@@ -221,10 +230,10 @@ pub async fn invoke_method<P: Serialize, R: DeserializeOwned>(
 
 /// Subscribe to metadata-only agent status events.
 ///
-/// Opens a dedicated `SubscribeStatus` connection and forwards decoded
-/// [`StatusEvent`] values into `sender` until the socket closes or the
-/// receiver is dropped. No per-read timeout is applied because the
-/// server is allowed to idle until its heartbeat interval.
+/// Unix opens a dedicated `SubscribeStatus` connection and forwards decoded
+/// [`StatusEvent`] values until the socket closes or the receiver is dropped.
+/// Windows polls unary Status and emits equivalent metadata snapshots and
+/// unchanged-status heartbeats. It never sends unsupported SubscribeStatus.
 ///
 /// # Errors
 ///
@@ -240,16 +249,37 @@ pub async fn stream_status_events(
 
 /// Cancellable variant of [`stream_status_events`].
 ///
-/// The reader stops as soon as `cancel` is flipped, sending one final
-/// `CancelSubscription` envelope upstream so the agent can release the
-/// subscriber slot cleanly. Used by the long-lived Tauri command so app
-/// shutdown can join the reader without dangling tasks.
+/// Cancellation stops an in-flight request or a blocked event send on Windows.
+/// Unix sends a best-effort `CancelSubscription` envelope before closing its
+/// dedicated stream. App shutdown can therefore stop both transport variants.
 ///
 /// # Errors
 ///
 /// Returns [`AgentClientError`] for unreachable sockets, write/flush
 /// failures, framing/JSON faults, and agent-side error envelopes.
 pub async fn stream_status_events_with_cancel(
+    socket_path: &Path,
+    sender: mpsc::Sender<StatusEvent>,
+    cancel: &CancelToken,
+) -> Result<(), AgentClientError> {
+    #[cfg(unix)]
+    {
+        stream_unix_status_events_with_cancel(socket_path, sender, cancel).await
+    }
+    #[cfg(target_os = "windows")]
+    {
+        poll_status_events_with(
+            || fetch_status(socket_path),
+            sender,
+            cancel,
+            WINDOWS_STATUS_POLL_INTERVAL,
+        )
+        .await
+    }
+}
+
+#[cfg(unix)]
+async fn stream_unix_status_events_with_cancel(
     socket_path: &Path,
     sender: mpsc::Sender<StatusEvent>,
     cancel: &CancelToken,
@@ -290,11 +320,36 @@ pub async fn stream_status_events_with_cancel(
     result
 }
 
-async fn connect(socket_path: &Path) -> Result<UnixStream, AgentClientError> {
+#[cfg(unix)]
+async fn connect(socket_path: &Path) -> Result<AgentStream, AgentClientError> {
     if !socket_path.exists() {
         return Err(AgentClientError::unavailable("agent socket not found", socket_path));
     }
-    match tokio::time::timeout(CONNECT_TIMEOUT, UnixStream::connect(socket_path)).await {
+    match tokio::time::timeout(CONNECT_TIMEOUT, AgentStream::connect(socket_path)).await {
+        Ok(Ok(stream)) => Ok(stream),
+        Ok(Err(error)) => {
+            Err(AgentClientError::unavailable(format!("connect failed: {error}"), socket_path))
+        }
+        Err(_) => Err(AgentClientError::unavailable("connect timed out", socket_path)),
+    }
+}
+
+#[cfg(target_os = "windows")]
+async fn connect(socket_path: &Path) -> Result<AgentStream, AgentClientError> {
+    if socket_path.as_os_str().is_empty() {
+        return Err(AgentClientError::unavailable(
+            "could not resolve the current user's agent pipe",
+            socket_path,
+        ));
+    }
+    // Named pipes do not have filesystem entries. The shared connector retries
+    // busy instances; this outer deadline bounds both retrying and initial open.
+    match tokio::time::timeout(
+        CONNECT_TIMEOUT,
+        locket_agent::connect_named_pipe_client(socket_path),
+    )
+    .await
+    {
         Ok(Ok(stream)) => Ok(stream),
         Ok(Err(error)) => {
             Err(AgentClientError::unavailable(format!("connect failed: {error}"), socket_path))
@@ -304,7 +359,7 @@ async fn connect(socket_path: &Path) -> Result<UnixStream, AgentClientError> {
 }
 
 async fn round_trip(
-    mut stream: UnixStream,
+    mut stream: AgentStream,
     request: &RequestEnvelope,
 ) -> Result<ResponseEnvelope, AgentClientError> {
     let frame = encode_frame(request, DEFAULT_MAX_MESSAGE_SIZE)?;
@@ -326,7 +381,7 @@ async fn round_trip(
 }
 
 async fn exchange_frame(
-    stream: &mut UnixStream,
+    stream: &mut AgentStream,
     frame: &[u8],
 ) -> Result<ResponseEnvelope, AgentClientError> {
     stream
@@ -341,7 +396,7 @@ async fn exchange_frame(
 }
 
 async fn read_response_frame(
-    stream: &mut UnixStream,
+    stream: &mut AgentStream,
 ) -> Result<ResponseEnvelope, AgentClientError> {
     let mut buffer: Vec<u8> = Vec::with_capacity(4096);
     let mut chunk = [0_u8; 4096];
@@ -363,8 +418,9 @@ async fn read_response_frame(
     }
 }
 
+#[cfg(unix)]
 async fn read_status_stream(
-    stream: &mut UnixStream,
+    stream: &mut AgentStream,
     sender: mpsc::Sender<StatusEvent>,
     cancel: &CancelToken,
 ) -> Result<(), AgentClientError> {
@@ -438,11 +494,77 @@ fn new_request_id() -> String {
     format!("desktop-{next}")
 }
 
-// Unit-level coverage of `resolve_socket_path` requires mutating
-// process environment, which races with other tests under cargo's
-// test runner. The integration tests in `tests/agent_client.rs`
-// exercise the live socket path end-to-end and cover the
-// daemon-offline failure mode.
+// Platform-testable endpoint resolver.
+fn endpoint_from_inputs(
+    platform: &str,
+    explicit: Option<&std::ffi::OsStr>,
+    home: &Path,
+    runtime: Option<&std::ffi::OsStr>,
+    windows_pipe: Option<&Path>,
+) -> PathBuf {
+    if let Some(explicit) = explicit.filter(|value| !value.is_empty()) {
+        return explicit.into();
+    }
+    match platform {
+        "windows" => windows_pipe.map_or_else(PathBuf::new, Path::to_path_buf),
+        "macos" => home
+            .join("Library")
+            .join("Application Support")
+            .join("locket")
+            .join(DEFAULT_SOCKET_FILE),
+        "linux" => runtime.filter(|value| !value.is_empty()).map_or_else(
+            || home.join(DEFAULT_DATA_DIR).join(DEFAULT_SOCKET_FILE),
+            |runtime| Path::new(runtime).join("locket").join(DEFAULT_SOCKET_FILE),
+        ),
+        _ => home.join(DEFAULT_DATA_DIR).join(DEFAULT_SOCKET_FILE),
+    }
+}
+
+// Windows status polling core, also tested without a real endpoint.
+#[cfg(any(target_os = "windows", test))]
+async fn poll_status_events_with<F, Fut>(
+    mut fetch: F,
+    sender: mpsc::Sender<StatusEvent>,
+    cancel: &CancelToken,
+    interval: Duration,
+) -> Result<(), AgentClientError>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<StatusPayload, AgentClientError>>,
+{
+    let mut previous = None;
+    let mut sequence = 0_u64;
+    loop {
+        let status = tokio::select! {
+            biased;
+            () = cancel.cancelled() => return Ok(()),
+            () = sender.closed() => return Ok(()),
+            result = fetch() => result?,
+        };
+        sequence = sequence.saturating_add(1);
+        let event = if previous.as_ref() == Some(&status) {
+            StatusEvent::heartbeat(sequence, status.clone())
+        } else {
+            StatusEvent::status(sequence, status.clone())
+        };
+        previous = Some(status);
+        tokio::select! {
+            biased;
+            () = cancel.cancelled() => return Ok(()),
+            result = sender.send(event) => if result.is_err() { return Ok(()); },
+        }
+        tokio::select! {
+            biased;
+            () = cancel.cancelled() => return Ok(()),
+            () = sender.closed() => return Ok(()),
+            () = tokio::time::sleep(interval) => {},
+        }
+    }
+}
+
+// Endpoint defaults are tested through injected platform/environment inputs.
+// Separate Unix socket and Windows named-pipe integration tests exercise
+// actual framed unary requests and the supported status transport.
 
 #[cfg(test)]
 mod tests {
@@ -503,3 +625,7 @@ mod tests {
         token.cancelled().await;
     }
 }
+
+#[cfg(test)]
+#[path = "agent_client_platform_tests.rs"]
+mod platform_tests;
