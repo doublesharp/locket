@@ -273,6 +273,7 @@ pub async fn stream_status_events_with_cancel(
             sender,
             cancel,
             WINDOWS_STATUS_POLL_INTERVAL,
+            Duration::from_secs(locket_agent::STATUS_HEARTBEAT_INTERVAL_SECS),
         )
         .await
     }
@@ -527,13 +528,15 @@ async fn poll_status_events_with<F, Fut>(
     sender: mpsc::Sender<StatusEvent>,
     cancel: &CancelToken,
     interval: Duration,
+    heartbeat_interval: Duration,
 ) -> Result<(), AgentClientError>
 where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Result<StatusPayload, AgentClientError>>,
 {
-    let mut previous = None;
+    let mut previous: Option<StatusPayload> = None;
     let mut sequence = 0_u64;
+    let mut heartbeat_deadline = tokio::time::Instant::now();
     loop {
         let status = tokio::select! {
             biased;
@@ -541,17 +544,34 @@ where
             () = sender.closed() => return Ok(()),
             result = fetch() => result?,
         };
-        sequence = sequence.saturating_add(1);
-        let event = if previous.as_ref() == Some(&status) {
-            StatusEvent::heartbeat(sequence, status.clone())
-        } else {
-            StatusEvent::status(sequence, status.clone())
-        };
-        previous = Some(status);
-        tokio::select! {
-            biased;
-            () = cancel.cancelled() => return Ok(()),
-            result = sender.send(event) => if result.is_err() { return Ok(()); },
+        let meaningful_change = previous.as_ref().is_none_or(|previous| {
+            // Countdown-only samples do not invalidate project metadata. A
+            // renewed or newly available TTL must still notify immediately.
+            let ttl_renewed_or_unavailable =
+                match (previous.unlock_ttl_seconds, status.unlock_ttl_seconds) {
+                    (Some(previous), Some(current)) => current > previous,
+                    (None, None) => false,
+                    _ => true,
+                };
+            let mut without_countdown = previous.clone();
+            without_countdown.unlock_ttl_seconds = status.unlock_ttl_seconds;
+            without_countdown != status || ttl_renewed_or_unavailable
+        });
+        // Compare renewals against the latest sample, not the last emitted TTL.
+        previous = Some(status.clone());
+        if meaningful_change || tokio::time::Instant::now() >= heartbeat_deadline {
+            sequence = sequence.saturating_add(1);
+            let event = if meaningful_change {
+                StatusEvent::status(sequence, status)
+            } else {
+                StatusEvent::heartbeat(sequence, status)
+            };
+            tokio::select! {
+                biased;
+                () = cancel.cancelled() => return Ok(()),
+                result = sender.send(event) => if result.is_err() { return Ok(()); },
+            }
+            heartbeat_deadline = tokio::time::Instant::now() + heartbeat_interval;
         }
         tokio::select! {
             biased;

@@ -274,9 +274,9 @@ fn cancel_status_subscription() {
 
 /// Tauri command exposing the agent client to the webview.
 ///
-/// Honors `LOCKET_AGENT_SOCKET` for the socket path, falls back to the
-/// user-default `~/.locket/agent.sock`, and returns either a metadata-only
-/// status payload or a typed [`AgentClientError`].
+/// Honors `LOCKET_AGENT_SOCKET`, otherwise resolves the platform's user socket
+/// or SID-scoped named pipe, and returns metadata-only status or a typed
+/// [`AgentClientError`].
 #[tauri::command]
 async fn agent_status() -> Result<locket_agent::StatusPayload, AgentClientError> {
     let path = agent_client::resolve_socket_path();

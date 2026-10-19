@@ -93,6 +93,7 @@ async fn status_polling_emits_real_snapshot_heartbeat_and_changed_status()
             sender,
             &task_cancel,
             Duration::from_millis(5),
+            Duration::from_millis(5),
         )
         .await
     });
@@ -131,6 +132,7 @@ async fn polling_cancellation_interrupts_pending_rpc() -> Result<(), Box<dyn std
             sender,
             &task_cancel,
             Duration::from_secs(30),
+            Duration::from_secs(30),
         )
         .await
     });
@@ -153,14 +155,16 @@ async fn polling_cancellation_interrupts_full_event_queue() -> Result<(), Box<dy
     let task = tokio::spawn(async move {
         poll_status_events_with(
             move || {
-                if task_calls.fetch_add(1, Ordering::SeqCst) == 1 {
+                let call = task_calls.fetch_add(1, Ordering::SeqCst);
+                if call == 1 {
                     task_blocked.notify_one();
                 }
-                std::future::ready(Ok(StatusPayload::locked("synthetic")))
+                std::future::ready(Ok(StatusPayload::locked(format!("synthetic-{call}"))))
             },
             sender,
             &task_cancel,
             Duration::from_millis(1),
+            Duration::from_secs(30),
         )
         .await
     });
@@ -185,10 +189,204 @@ async fn polling_propagates_rpc_failure_without_inventing_freshness() {
         sender,
         &CancelToken::new(),
         Duration::from_millis(1),
+        Duration::from_secs(30),
     )
     .await;
     assert!(
         matches!(result, Err(AgentClientError::Protocol { reason }) if reason == "synthetic failure")
     );
     assert!(receiver.recv().await.is_none());
+}
+
+#[tokio::test]
+async fn countdown_only_polls_wait_for_heartbeat_and_publish_latest_ttl()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (sender, mut receiver) = mpsc::channel(4);
+    let cancel = CancelToken::new();
+    let task_cancel = cancel.clone();
+    let mut first = true;
+    let task = tokio::spawn(async move {
+        poll_status_events_with(
+            move || {
+                let mut status = StatusPayload::locked("synthetic");
+                status.lock_state = LockState::Unlocked;
+                status.unlock_ttl_seconds = Some(if std::mem::take(&mut first) { 60 } else { 55 });
+                std::future::ready(Ok(status))
+            },
+            sender,
+            &task_cancel,
+            Duration::from_millis(1),
+            Duration::from_millis(20),
+        )
+        .await
+    });
+    let initial = tokio::time::timeout(Duration::from_secs(1), receiver.recv())
+        .await?
+        .ok_or("initial event")?;
+    let heartbeat = tokio::time::timeout(Duration::from_secs(1), receiver.recv())
+        .await?
+        .ok_or("heartbeat event")?;
+    cancel.cancel();
+    task.await??;
+    assert!(initial.is_state_change());
+    assert_eq!(initial.status.unlock_ttl_seconds, Some(60));
+    assert!(heartbeat.is_heartbeat());
+    assert_eq!(heartbeat.status.unlock_ttl_seconds, Some(55));
+    assert_eq!(heartbeat.sequence, initial.sequence + 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn ttl_renewal_after_countdown_is_meaningful_below_last_published_ttl()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut statuses = [60, 55, 58]
+        .map(|ttl| {
+            let mut status = StatusPayload::locked("synthetic");
+            status.lock_state = LockState::Unlocked;
+            status.unlock_ttl_seconds = Some(ttl);
+            status
+        })
+        .into_iter();
+    let (sender, mut receiver) = mpsc::channel(4);
+    let cancel = CancelToken::new();
+    let task_cancel = cancel.clone();
+    let task = tokio::spawn(async move {
+        poll_status_events_with(
+            move || {
+                let status = statuses.next();
+                async move {
+                    match status {
+                        Some(status) => Ok(status),
+                        None => std::future::pending().await,
+                    }
+                }
+            },
+            sender,
+            &task_cancel,
+            Duration::from_millis(1),
+            Duration::from_secs(30),
+        )
+        .await
+    });
+    let initial = tokio::time::timeout(Duration::from_secs(1), receiver.recv())
+        .await?
+        .ok_or("initial event")?;
+    let renewed = tokio::time::timeout(Duration::from_secs(1), receiver.recv())
+        .await?
+        .ok_or("renewal event")?;
+    cancel.cancel();
+    task.await??;
+    assert_eq!(initial.status.unlock_ttl_seconds, Some(60));
+    assert!(renewed.is_state_change());
+    assert_eq!(renewed.status.unlock_ttl_seconds, Some(58));
+    assert_eq!(renewed.sequence, initial.sequence + 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn non_ttl_metadata_change_is_emitted_during_heartbeat_quiet_period()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut initial = StatusPayload::locked("first");
+    initial.lock_state = LockState::Unlocked;
+    initial.unlock_ttl_seconds = Some(60);
+    let mut countdown = initial.clone();
+    countdown.unlock_ttl_seconds = Some(55);
+    let mut changed = countdown.clone();
+    changed.agent_version = "changed".into();
+    changed.unlock_ttl_seconds = Some(54);
+    let mut statuses = std::collections::VecDeque::from([initial, countdown, changed]);
+    let (sender, mut receiver) = mpsc::channel(4);
+    let cancel = CancelToken::new();
+    let task_cancel = cancel.clone();
+    let task = tokio::spawn(async move {
+        poll_status_events_with(
+            move || {
+                let status = statuses.pop_front();
+                async move {
+                    match status {
+                        Some(status) => Ok(status),
+                        None => std::future::pending().await,
+                    }
+                }
+            },
+            sender,
+            &task_cancel,
+            Duration::from_millis(1),
+            Duration::from_secs(30),
+        )
+        .await
+    });
+    let first = tokio::time::timeout(Duration::from_secs(1), receiver.recv())
+        .await?
+        .ok_or("initial event")?;
+    let second = tokio::time::timeout(Duration::from_secs(1), receiver.recv())
+        .await?
+        .ok_or("metadata event")?;
+    cancel.cancel();
+    task.await??;
+    assert!(second.is_state_change());
+    assert_eq!(second.status.agent_version, "changed");
+    assert_eq!(second.status.unlock_ttl_seconds, Some(54));
+    assert_eq!(second.sequence, first.sequence + 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn meaningful_change_resets_heartbeat_deadline() -> Result<(), Box<dyn std::error::Error>> {
+    let timestamps = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let task_timestamps = Arc::clone(&timestamps);
+    let (sender, mut receiver) = mpsc::channel(4);
+    let cancel = CancelToken::new();
+    let task_cancel = cancel.clone();
+    let heartbeat_interval = Duration::from_millis(50);
+    let mut sample = 0_u64;
+    let task = tokio::spawn(async move {
+        poll_status_events_with(
+            move || {
+                let index = sample;
+                sample += 1;
+                let timestamps = Arc::clone(&task_timestamps);
+                async move {
+                    if index > 0 {
+                        tokio::time::sleep(Duration::from_millis(30)).await;
+                    }
+                    timestamps
+                        .lock()
+                        .map_err(|_| AgentClientError::Protocol { reason: "fixture lock".into() })?
+                        .push(tokio::time::Instant::now());
+                    let mut status =
+                        StatusPayload::locked(if index == 0 { "initial" } else { "changed" });
+                    status.lock_state = LockState::Unlocked;
+                    status.unlock_ttl_seconds = Some(60_u64.saturating_sub(index));
+                    Ok(status)
+                }
+            },
+            sender,
+            &task_cancel,
+            Duration::from_millis(1),
+            heartbeat_interval,
+        )
+        .await
+    });
+    let initial = tokio::time::timeout(Duration::from_secs(1), receiver.recv())
+        .await?
+        .ok_or("initial event")?;
+    let changed = tokio::time::timeout(Duration::from_secs(1), receiver.recv())
+        .await?
+        .ok_or("meaningful event")?;
+    let heartbeat = tokio::time::timeout(Duration::from_secs(1), receiver.recv())
+        .await?
+        .ok_or("heartbeat event")?;
+    cancel.cancel();
+    task.await??;
+    assert!(initial.is_state_change() && changed.is_state_change() && heartbeat.is_heartbeat());
+    let timestamps = timestamps.lock().map_err(|_| "fixture lock")?;
+    let changed_index =
+        usize::try_from(60 - changed.status.unlock_ttl_seconds.ok_or("change ttl")?)?;
+    let heartbeat_index =
+        usize::try_from(60 - heartbeat.status.unlock_ttl_seconds.ok_or("heartbeat ttl")?)?;
+    assert!(
+        timestamps[heartbeat_index].duration_since(timestamps[changed_index]) >= heartbeat_interval
+    );
+    Ok(())
 }
