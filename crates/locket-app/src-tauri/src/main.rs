@@ -19,6 +19,7 @@ use locket_store as _;
 use serde as _;
 use serde_json as _;
 use sha2 as _;
+#[cfg(any(target_os = "macos", test))]
 use tempfile as _;
 use thiserror as _;
 use tokio as _;
