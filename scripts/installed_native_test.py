@@ -71,6 +71,29 @@ class NativeAcceptanceTests(unittest.TestCase):
         with self.assertRaises(subprocess.CalledProcessError):
             module.run([sys.executable, '-c', 'raise SystemExit(19)'])
 
+    @unittest.skipUnless(sys.platform == 'win32', 'Windows PowerShell execution regression')
+    def test_msi_property_reader_emits_only_value_when_com_methods_return_status(self):
+        module = self.load()
+        fixture = r'''
+$ErrorActionPreference = 'Stop'
+$record = [pscustomobject]@{}
+$record | Add-Member ScriptMethod StringData { param($index) 'Locket' }
+$view = [pscustomobject]@{Record=$record}
+$view | Add-Member ScriptMethod Execute { 0 }
+$view | Add-Member ScriptMethod Fetch { $this.Record }
+$view | Add-Member ScriptMethod Close { 0 }
+$database = [pscustomobject]@{View=$view}
+$database | Add-Member ScriptMethod OpenView { param($query) $this.View }
+'''
+        check = r'''
+$values = @(Read-Property 'ProductName')
+if ($values.Count -ne 1 -or $values[0] -cne 'Locket') { throw "Property reader emitted extra values: $values" }
+Write-Output $values[0]
+'''
+        actual = module.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command',
+                             fixture + module.WINDOWS_READ_PROPERTY + check])
+        self.assertEqual(actual, 'Locket')
+
     def test_payload_scan_rejects_canary_split_across_read_boundary(self):
         module = self.load()
         with self.temporary() as root:

@@ -93,6 +93,19 @@ def ps_literal(value):
     return "'" + str(value).replace("'", "''") + "'"
 
 
+WINDOWS_READ_PROPERTY = r'''
+function Read-Property($name) {
+  $view = $database.OpenView("SELECT ``Value`` FROM ``Property`` WHERE ``Property`` = '$name'")
+  [void] $view.Execute()
+  $record = $view.Fetch()
+  if ($null -eq $record) { throw "Missing MSI property $name" }
+  $value = $record.StringData(1)
+  [void] $view.Close()
+  return $value
+}
+'''
+
+
 def install_windows(package, version, scratch):
     destination = scratch / 'installed-Locket'
     if destination.exists():
@@ -103,17 +116,10 @@ def install_windows(package, version, scratch):
 $ErrorActionPreference = 'Stop'
 $msi = New-Object -ComObject WindowsInstaller.Installer
 $database = $msi.OpenDatabase(PACKAGE_PATH, 0)
-function Read-Property($name) {
-  $view = $database.OpenView("SELECT ``Value`` FROM ``Property`` WHERE ``Property`` = '$name'")
-  $view.Execute()
-  $record = $view.Fetch()
-  if ($null -eq $record) { throw "Missing MSI property $name" }
-  $value = $record.StringData(1)
-  $view.Close()
-  return $value
-}
+READ_PROPERTY_FUNCTION
 $code = Read-Property 'ProductCode'
-if ((Read-Property 'ProductName') -ne 'Locket') { throw 'Unexpected MSI product name' }
+$productName = Read-Property 'ProductName'
+if ($productName -ne 'Locket') { throw "Unexpected MSI product name: $productName" }
 if ((Read-Property 'ProductVersion') -ne EXPECTED_VERSION) { throw 'Unexpected MSI product version' }
 $arguments = '/i "' + PACKAGE_PATH + '" /qn /norestart /l*v "' + LOG_PATH + '" INSTALLDIR="' + INSTALL_PATH + '" AUTOLAUNCHAPP=""'
 $process = Start-Process -FilePath 'msiexec.exe' -ArgumentList $arguments -Wait -PassThru
@@ -121,7 +127,8 @@ if ($process.ExitCode -notin @(0, 3010)) { throw "msiexec failed with exit $($pr
 if ($msi.ProductInfo($code, 'VersionString') -ne EXPECTED_VERSION) { throw 'Installed MSI registration version mismatch' }
 Write-Output ('Installed MSI ' + $code + ', exit ' + $process.ExitCode)
 '''
-    substitutions = {'PACKAGE_PATH': ps_literal(package), 'EXPECTED_VERSION': ps_literal(version),
+    substitutions = {'READ_PROPERTY_FUNCTION': WINDOWS_READ_PROPERTY,
+                     'PACKAGE_PATH': ps_literal(package), 'EXPECTED_VERSION': ps_literal(version),
                      'LOG_PATH': ps_literal(scratch / 'msi-install.log'),
                      'INSTALL_PATH': ps_literal(destination),
                      'LOG_DESCRIPTION': 'msi-install.log'}
