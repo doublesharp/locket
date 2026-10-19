@@ -1,4 +1,4 @@
-//! Linux LocalUserVerifier backend.
+//! Linux `LocalUserVerifier` backend.
 //!
 //! Mirrors the structure of [`crate::macos_local_authentication`] and
 //! keeps the platform-facing implementation behind a single safe entry
