@@ -400,15 +400,12 @@ fn launch_terminal(cli: &Path, root: &Path, policy: &str) -> Result<(), String> 
 #[cfg(target_os = "linux")]
 fn launch_terminal(cli: &Path, root: &Path, policy: &str) -> Result<(), String> {
     for (terminal, separator) in [("gnome-terminal", "--"), ("konsole", "-e"), ("xterm", "-e")] {
-        let Some(path) = std::env::var_os("PATH")
-            .map(|path| {
-                std::env::split_paths(&path)
-                    .filter(|path| path.is_absolute())
-                    .map(|path| path.join(terminal))
-                    .find(|path| executable_file(path))
-            })
-            .flatten()
-        else {
+        let Some(path) = std::env::var_os("PATH").and_then(|path| {
+            std::env::split_paths(&path)
+                .filter(|path| path.is_absolute())
+                .map(|path| path.join(terminal))
+                .find(|path| executable_file(path))
+        }) else {
             continue;
         };
         let mut command = Command::new(path);

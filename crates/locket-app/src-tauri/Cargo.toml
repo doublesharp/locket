@@ -33,12 +33,14 @@ locket-platform = { path = "../../locket-platform" }
 locket-store = { path = "../../locket-store" }
 sha2 = { workspace = true }
 toml = { workspace = true }
-tempfile = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tauri = { version = "2", features = ["tray-icon", "image-png"] }
 thiserror = { workspace = true }
 tokio = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+tempfile = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }
