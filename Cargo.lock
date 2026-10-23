@@ -3007,7 +3007,7 @@ dependencies = [
 
 [[package]]
 name = "locket-agent"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "data-encoding",
  "directories",
@@ -3034,11 +3034,11 @@ dependencies = [
 
 [[package]]
 name = "locket-app"
-version = "0.1.0"
+version = "0.1.1"
 
 [[package]]
 name = "locket-cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "chacha20poly1305",
  "clap",
@@ -3074,7 +3074,7 @@ dependencies = [
 
 [[package]]
 name = "locket-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "age",
  "bech32 0.11.1",
@@ -3094,7 +3094,7 @@ dependencies = [
 
 [[package]]
 name = "locket-crypto"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "argon2",
  "chacha20poly1305",
@@ -3109,7 +3109,7 @@ dependencies = [
 
 [[package]]
 name = "locket-desktop"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "arboard",
  "base64 0.22.1",
@@ -3132,7 +3132,7 @@ dependencies = [
 
 [[package]]
 name = "locket-docker"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "locket-core",
  "thiserror 2.0.20",
@@ -3140,7 +3140,7 @@ dependencies = [
 
 [[package]]
 name = "locket-exec"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "locket-core",
  "thiserror 2.0.20",
@@ -3148,7 +3148,7 @@ dependencies = [
 
 [[package]]
 name = "locket-platform"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "apple-native-keyring-store",
  "block2",
@@ -3177,14 +3177,14 @@ dependencies = [
 
 [[package]]
 name = "locket-scan"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "thiserror 2.0.20",
 ]
 
 [[package]]
 name = "locket-store"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "hmac 0.13.0",
  "locket-core",

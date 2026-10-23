@@ -15,10 +15,10 @@ workspace = true
 
 [dependencies]
 libc = { workspace = true }
-locket-crypto = { version = "0.1.0", path = "../locket-crypto" }
-locket-core = { version = "0.1.0", path = "../locket-core" }
-locket-platform = { version = "0.1.0", path = "../locket-platform" }
-locket-store = { version = "0.1.0", path = "../locket-store" }
+locket-crypto = { version = "0.1.1", path = "../locket-crypto" }
+locket-core = { version = "0.1.1", path = "../locket-core" }
+locket-platform = { version = "0.1.1", path = "../locket-platform" }
+locket-store = { version = "0.1.1", path = "../locket-store" }
 data-encoding = { workspace = true }
 directories = { workspace = true }
 ed25519-dalek = { workspace = true }
