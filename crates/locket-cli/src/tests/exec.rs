@@ -1172,6 +1172,37 @@ env_mode = "strict"
     Ok(())
 }
 
+fn docker_test_env(directory: &tempfile::TempDir) -> locket_exec::EnvMap {
+    locket_exec::EnvMap::from([
+        ("PATH".into(), locket_exec::env_value("/bin")),
+        (
+            "DOCKER_CONFIG".into(),
+            locket_exec::env_value(directory.path().join("docker-config").to_string_lossy()),
+        ),
+    ])
+}
+
+fn init_docker_test_project(
+    context: &RuntimeContext,
+    secret: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey"])?,
+        context,
+        &mut Vec::new(),
+    )?;
+    crate::set_secret_value(context, &test_secret_write_args("API_KEY"), secret, "manual", 1_000)?;
+    Ok(())
+}
+
+struct DockerNonInteractiveConfirmation;
+
+impl crate::ConfirmationReader for DockerNonInteractiveConfirmation {
+    fn read_confirmation(&self, prompt: &str) -> Result<String, crate::CliError> {
+        crate::runtime::prompts::read_stdin_confirmation(prompt, false)
+    }
+}
+
 #[test]
 fn docker_policy_plan_and_audit_are_metadata_only() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempdir()?;
@@ -1197,7 +1228,7 @@ argv = ["docker", "run", "app"]
 required_secrets = ["DATABASE_URL"]
 optional_secrets = ["API_KEY"]
 env_mode = "strict"
-inherit_env = ["PATH"]
+inherit_env = ["PATH", "DOCKER_CONFIG", "DOCKER_HOST"]
 "#,
         )?;
 
@@ -1217,7 +1248,7 @@ inherit_env = ["PATH"]
         Some(crate::Command::Env { command: crate::EnvCommand::Docker(_) })
     ));
 
-    let parent_env = std::iter::once(("PATH".to_owned(), locket_exec::env_value("/bin"))).collect();
+    let parent_env = docker_test_env(&directory);
     let docker_argv = vec!["docker".to_owned(), "run".to_owned(), "alpine".to_owned()];
     let mut prepared =
         crate::prepare_docker_policy_execution(&context, "docker_app", &docker_argv, parent_env)?;
@@ -1274,7 +1305,7 @@ fn compose_policy_plan_supports_options_and_denies_remote_by_default()
 argv = ["docker", "compose", "up"]
 required_secrets = ["API_KEY"]
 env_mode = "strict"
-inherit_env = ["PATH"]
+inherit_env = ["PATH", "DOCKER_CONFIG", "DOCKER_HOST"]
 "#,
         )?;
 
@@ -1304,7 +1335,7 @@ inherit_env = ["PATH"]
         &["web".to_owned()],
     )?;
     assert_eq!(argv, ["docker", "compose", "--project-directory", ".", "--profile", "web", "up"]);
-    let parent_env = std::iter::once(("PATH".to_owned(), locket_exec::env_value("/bin"))).collect();
+    let parent_env = docker_test_env(&directory);
     let prepared =
         crate::prepare_compose_policy_execution(&context, "compose_app", &argv, parent_env)?;
     assert_eq!(
@@ -1946,18 +1977,18 @@ argv = ["docker", "run", "app"]
 required_secrets = ["DATABASE_URL"]
 optional_secrets = ["API_KEY"]
 env_mode = "strict"
-inherit_env = ["PATH"]
+inherit_env = ["PATH", "DOCKER_CONFIG", "DOCKER_HOST"]
 
 [commands.compose_app]
 argv = ["docker", "compose", "up"]
 required_secrets = ["DATABASE_URL"]
 optional_secrets = ["API_KEY"]
 env_mode = "strict"
-inherit_env = ["PATH"]
+inherit_env = ["PATH", "DOCKER_CONFIG", "DOCKER_HOST"]
 "#,
         )?;
 
-    let parent_env = std::iter::once(("PATH".to_owned(), locket_exec::env_value("/bin"))).collect();
+    let parent_env = docker_test_env(&directory);
 
     // docker run path: prepare, write audit row, assert metadata-only.
     let docker_argv = vec!["docker".to_owned(), "run".to_owned(), "alpine".to_owned()];
@@ -1976,8 +2007,7 @@ inherit_env = ["PATH"]
         Some(Path::new(".")),
         &[],
     )?;
-    let compose_parent_env =
-        std::iter::once(("PATH".to_owned(), locket_exec::env_value("/bin"))).collect();
+    let compose_parent_env = docker_test_env(&directory);
     let mut compose_prepared = crate::prepare_compose_policy_execution(
         &context,
         "compose_app",
@@ -2045,6 +2075,437 @@ inherit_env = ["PATH"]
     };
     assert!(compose_err.to_string().contains("remote Docker context is denied by default"));
 
+    Ok(())
+}
+
+#[test]
+fn docker_helpers_enforce_secret_acls_against_actual_arguments()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    crate::set_secret_value(
+        &context,
+        &test_secret_write_args("API_KEY"),
+        "fixture-value",
+        "manual",
+        1_000,
+    )?;
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(directory.path().join("locket.toml"))?
+        .write_all(
+            br#"
+[commands.docker_app]
+argv = ["docker", "run", "approved-image"]
+required_secrets = ["API_KEY"]
+inherit_env = ["DOCKER_CONFIG"]
+[commands.compose_app]
+argv = ["docker", "compose", "up", "approved-service"]
+required_secrets = ["API_KEY"]
+inherit_env = ["DOCKER_CONFIG"]
+[secrets.API_KEY]
+allow_argv = [["docker", "run", "approved-image"], ["docker", "compose", "up", "approved-service"]]
+"#,
+        )?;
+
+    for (policy, approved, denied) in [
+        (
+            "docker_app",
+            vec!["docker", "run", "approved-image"],
+            vec!["docker", "run", "other-image"],
+        ),
+        (
+            "compose_app",
+            vec!["docker", "compose", "up", "approved-service"],
+            vec!["docker", "compose", "up", "other-service"],
+        ),
+    ] {
+        let prepare = if policy == "docker_app" {
+            crate::prepare_docker_policy_execution
+        } else {
+            crate::prepare_compose_policy_execution
+        };
+        let approved = approved.into_iter().map(str::to_owned).collect::<Vec<_>>();
+        let denied = denied.into_iter().map(str::to_owned).collect::<Vec<_>>();
+        let allowed = prepare(&context, policy, &approved, docker_test_env(&directory))?;
+        assert_eq!(
+            allowed.execution.env.get("API_KEY").map(|value| value.as_str()),
+            Some("fixture-value")
+        );
+        let unavailable =
+            test_context_with_key_store(&directory, Arc::new(UnavailableMasterKeyStore));
+        let Err(error) = prepare(&unavailable, policy, &denied, docker_test_env(&directory)) else {
+            return Err("Docker helper delivered a secret to arguments denied by its ACL".into());
+        };
+        assert_eq!(error.exit_code(), locket_core::LocketError::InvalidPolicy.exit_code());
+        assert!(error.to_string().contains("secret ACL denied"));
+    }
+    Ok(())
+}
+
+#[test]
+fn docker_helpers_deny_remote_saved_and_environment_contexts()
+-> Result<(), Box<dyn std::error::Error>> {
+    use sha2::{Digest, Sha256};
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    init_docker_test_project(&context, "fixture-value")?;
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(directory.path().join("locket.toml"))?
+        .write_all(
+            br#"
+[commands.docker_app]
+argv = ["docker", "run", "app"]
+required_secrets = ["API_KEY"]
+env_mode = "strict"
+inherit_env = ["DOCKER_CONFIG", "DOCKER_CONTEXT", "DOCKER_HOST"]
+[commands.compose_app]
+argv = ["docker", "compose", "up"]
+required_secrets = ["API_KEY"]
+env_mode = "strict"
+inherit_env = ["DOCKER_CONFIG", "DOCKER_CONTEXT", "DOCKER_HOST"]
+"#,
+        )?;
+    let config = directory.path().join("docker-config");
+    let metadata_dir = config
+        .join("contexts/meta")
+        .join(data_encoding::HEXLOWER.encode(&Sha256::digest(b"fixture-context")));
+    std::fs::create_dir_all(&metadata_dir)?;
+    std::fs::write(config.join("config.json"), r#"{"currentContext":"fixture-context"}"#)?;
+    let metadata = metadata_dir.join("meta.json");
+    std::fs::write(
+        &metadata,
+        r#"{"Name":"fixture-context","Endpoints":{"docker":{"Host":"ssh://remote-builder"}}}"#,
+    )?;
+    for (policy, argv) in [
+        ("docker_app", vec!["docker", "run", "app"]),
+        ("compose_app", vec!["docker", "compose", "up"]),
+    ] {
+        let prepare = if policy == "docker_app" {
+            crate::prepare_docker_policy_execution
+        } else {
+            crate::prepare_compose_policy_execution
+        };
+        let argv = argv.into_iter().map(str::to_owned).collect::<Vec<_>>();
+        for explicit_context in [false, true] {
+            let mut env = locket_exec::EnvMap::from([(
+                "DOCKER_CONFIG".into(),
+                locket_exec::env_value(config.to_string_lossy()),
+            )]);
+            if explicit_context {
+                env.insert("DOCKER_CONTEXT".into(), locket_exec::env_value("fixture-context"));
+            }
+            let Err(error) = prepare(&context, policy, &argv, env) else {
+                return Err("remote Docker context received local secrets".into());
+            };
+            assert!(error.to_string().contains("remote Docker context"));
+            assert!(!error.to_string().contains("fixture-value"));
+        }
+    }
+    for (policy, subcommand, command) in
+        [("docker_app", "run", "app"), ("compose_app", "compose", "up")]
+    {
+        std::fs::write(
+            &metadata,
+            r#"{"Name":"fixture-context","Endpoints":{"docker":{"Host":"unix:///fixture/docker.sock"}}}"#,
+        )?;
+        let env = locket_exec::EnvMap::from([
+            ("DOCKER_CONFIG".into(), locket_exec::env_value(config.to_string_lossy())),
+            ("DOCKER_CONTEXT".into(), locket_exec::env_value("fixture-context")),
+            ("DOCKER_HOST".into(), locket_exec::env_value("ssh://overridden-host")),
+        ]);
+        let argv = ["docker", subcommand, command].map(str::to_owned);
+        let prepare = if subcommand == "run" {
+            crate::prepare_docker_policy_execution
+        } else {
+            crate::prepare_compose_policy_execution
+        };
+        let prepared = prepare(&context, policy, &argv, env)?;
+        // A subsequent context change cannot redirect the pinned local plan.
+        std::fs::write(
+            &metadata,
+            r#"{"Name":"fixture-context","Endpoints":{"docker":{"Host":"ssh://changed-after-check"}}}"#,
+        )?;
+        assert_eq!(prepared.plan.context_class, locket_docker::DockerContextClass::Local);
+        assert_eq!(
+            &prepared.plan.argv[..4],
+            &["docker", "--host", "unix:///fixture/docker.sock", subcommand]
+        );
+        assert_eq!(prepared.execution.args, prepared.plan.argv[1..]);
+        assert!(!prepared.execution.env.contains_key("DOCKER_CONTEXT"));
+        assert_eq!(
+            prepared.execution.env.get("API_KEY").map(|value| value.as_str()),
+            Some("fixture-value")
+        );
+        assert!(!prepared.plan.argv.join(" ").contains("fixture-value"));
+    }
+    Ok(())
+}
+
+#[test]
+fn docker_helpers_reject_routing_secrets_before_decryption()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    let mut policy_file =
+        std::fs::OpenOptions::new().append(true).open(directory.path().join("locket.toml"))?;
+    let names = [
+        "DOCKER_HOST",
+        "DOCKER_CONTEXT",
+        "DOCKER_CONFIG",
+        "HOME",
+        "USERPROFILE",
+        "DOCKER_TLS",
+        "DOCKER_TLS_VERIFY",
+        "DOCKER_CERT_PATH",
+    ];
+    for name in names {
+        crate::set_secret_value(
+            &context,
+            &test_secret_write_args(name),
+            "routing-secret-canary",
+            "manual",
+            1_000,
+        )?;
+        for subcommand in ["run", "compose"] {
+            writeln!(
+                policy_file,
+                "\n[commands.{subcommand}_{name}]\nargv = [\"docker\", \"{subcommand}\", \"app\"]\nrequired_secrets = [\"{name}\"]\nenv_mode = \"strict\"\ninherit_env = [\"DOCKER_CONFIG\"]"
+            )?;
+        }
+    }
+    // A routing-policy error must win over unavailable decryption keys.
+    let unavailable = test_context_with_key_store(&directory, Arc::new(UnavailableMasterKeyStore));
+    for name in names {
+        for subcommand in ["run", "compose"] {
+            let prepare = if subcommand == "run" {
+                crate::prepare_docker_policy_execution
+            } else {
+                crate::prepare_compose_policy_execution
+            };
+            let argv = ["docker".into(), subcommand.into(), "app".into()];
+            let env = locket_exec::EnvMap::from([(
+                "DOCKER_CONFIG".into(),
+                locket_exec::env_value(directory.path().join("docker-config").to_string_lossy()),
+            )]);
+            let Err(error) = prepare(&unavailable, &format!("{subcommand}_{name}"), &argv, env)
+            else {
+                return Err(format!("routing secret {name} was accepted").into());
+            };
+            assert!(error.to_string().contains("cannot be injected"), "{name}: {error}");
+            assert!(!error.to_string().contains("routing-secret-canary"));
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn docker_helpers_remote_allow_requires_exact_policy_confirmation()
+-> Result<(), Box<dyn std::error::Error>> {
+    use sha2::{Digest, Sha256};
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    init_docker_test_project(&context, "remote-secret-canary")?;
+    let mut policy_file =
+        std::fs::OpenOptions::new().append(true).open(directory.path().join("locket.toml"))?;
+    for subcommand in ["run", "compose"] {
+        let command = if subcommand == "run" { "app" } else { "up" };
+        writeln!(
+            policy_file,
+            "\n[commands.{subcommand}_remote]\nargv = [\"docker\", \"{subcommand}\", \"{command}\"]\nrequired_secrets = [\"API_KEY\"]\nenv_mode = \"strict\"\ninherit_env = [\"DOCKER_CONFIG\", \"DOCKER_HOST\", \"DOCKER_CONTEXT\"]\nallow_remote_docker = true"
+        )?;
+    }
+    let config = directory.path().join("docker-config");
+    let metadata = config
+        .join("contexts/meta")
+        .join(data_encoding::HEXLOWER.encode(&Sha256::digest(b"remote-context")));
+    std::fs::create_dir_all(&metadata)?;
+    std::fs::write(config.join("config.json"), r#"{"currentContext":"remote-context"}"#)?;
+    std::fs::write(
+        metadata.join("meta.json"),
+        r#"{"Name":"remote-context","Endpoints":{"docker":{"Host":"ssh://builder"}}}"#,
+    )?;
+    for subcommand in ["run", "compose"] {
+        let prepare = if subcommand == "run" {
+            crate::prepare_docker_policy_execution
+        } else {
+            crate::prepare_compose_policy_execution
+        };
+        let policy = format!("{subcommand}_remote");
+        let command = if subcommand == "run" { "app" } else { "up" };
+        let argv = ["docker".into(), subcommand.into(), command.into()];
+        for (variable, value) in [
+            ("DOCKER_HOST", "ssh://builder"),
+            ("DOCKER_HOST", "tcp://builder:2376"),
+            ("DOCKER_HOST", "npipe:////server/pipe/docker_engine"),
+            ("DOCKER_CONTEXT", "remote-context"),
+            ("DOCKER_CONTEXT", ""), // Falls back to the saved currentContext.
+        ] {
+            let mut env = docker_test_env(&directory);
+            env.insert(variable.into(), locket_exec::env_value(value));
+            let mut non_interactive = context.clone();
+            non_interactive.confirmation_reader = Arc::new(DockerNonInteractiveConfirmation);
+            let Err(error) = prepare(&non_interactive, &policy, &argv, env.clone()) else {
+                return Err("non-interactive remote injection bypassed confirmation".into());
+            };
+            assert!(error.to_string().contains("requires interactive confirmation"), "{error}");
+            for answer in [
+                String::new(),
+                "yes".into(),
+                "remote wrong-policy".into(),
+                format!("remote {policy} "),
+            ] {
+                let mut denied_context = context.clone();
+                denied_context.confirmation_reader =
+                    Arc::new(StaticConfirmationReader::new(&answer));
+                let Err(error) = prepare(&denied_context, &policy, &argv, env.clone()) else {
+                    return Err(format!("remote injection accepted confirmation {answer:?}").into());
+                };
+                assert!(
+                    error.to_string().contains("confirmation did not match remote Docker scope"),
+                    "{error}"
+                );
+                assert!(!error.to_string().contains("remote-secret-canary"));
+            }
+            let mut confirmed_context = context.clone();
+            confirmed_context.confirmation_reader =
+                Arc::new(StaticConfirmationReader::new(&format!("remote {policy}\r\n")));
+            let prepared = prepare(&confirmed_context, &policy, &argv, env)?;
+            assert_eq!(prepared.plan.context_class, locket_docker::DockerContextClass::Remote);
+            assert_eq!(
+                prepared.execution.env.get("API_KEY").map(|value| value.as_str()),
+                Some("remote-secret-canary")
+            );
+            assert!(!prepared.plan.argv.join(" ").contains("remote-secret-canary"));
+            assert!(
+                !crate::docker_policy_audit_metadata(&prepared, "SUCCESS")
+                    .to_string()
+                    .contains("remote-secret-canary")
+            );
+        }
+        let mut confirmed_context = context.clone();
+        confirmed_context.confirmation_reader =
+            Arc::new(StaticConfirmationReader::new(&format!("remote {policy}")));
+        for host in ["fd://3", "unknown-endpoint", "unix://", "tcp://host:invalid"] {
+            let mut env = docker_test_env(&directory);
+            env.insert("DOCKER_HOST".into(), locket_exec::env_value(host));
+            let Err(error) = prepare(&confirmed_context, &policy, &argv, env) else {
+                return Err(format!("unclassifiable host {host} accepted").into());
+            };
+            assert!(error.to_string().contains("unknown or malformed"), "{error}");
+            assert!(!error.to_string().contains("remote-secret-canary"));
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn docker_helpers_ignore_stripped_routing_environment_and_preserve_pass_through()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--no-device", "--no-passkey"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    crate::set_secret_value(
+        &context,
+        &test_secret_write_args("API_KEY"),
+        "local-secret-canary",
+        "manual",
+        1_000,
+    )?;
+    let mut policy_file =
+        std::fs::OpenOptions::new().append(true).open(directory.path().join("locket.toml"))?;
+    for subcommand in ["run", "compose"] {
+        writeln!(
+            policy_file,
+            "\n[commands.{subcommand}_local]\nargv = [\"docker\", \"{subcommand}\", \"saved-app\"]\nrequired_secrets = [\"API_KEY\"]\nenv_mode = \"strict\"\ninherit_env = [\"DOCKER_CONFIG\"]"
+        )?;
+    }
+    for subcommand in ["run", "compose"] {
+        let prepare = if subcommand == "run" {
+            crate::prepare_docker_policy_execution
+        } else {
+            crate::prepare_compose_policy_execution
+        };
+        let mut argv = vec![
+            "docker",
+            subcommand,
+            "app",
+            "tool",
+            "--host=container-option",
+            "--context",
+            "container-option",
+            "--config=app.json",
+            "-Hheader",
+        ];
+        if subcommand == "compose" {
+            argv.insert(2, "run");
+        }
+        let argv = argv.into_iter().map(str::to_owned).collect::<Vec<_>>();
+        let env = locket_exec::EnvMap::from([
+            (
+                "DOCKER_CONFIG".into(),
+                locket_exec::env_value(directory.path().join("docker-config").to_string_lossy()),
+            ),
+            ("DOCKER_HOST".into(), locket_exec::env_value("ssh://ignored-parent-host")),
+            ("DOCKER_CONTEXT".into(), locket_exec::env_value("ignored-parent-context")),
+            ("DOCKER_TLS".into(), locket_exec::env_value("1")),
+        ]);
+        let prepared = prepare(&context, &format!("{subcommand}_local"), &argv, env)?;
+        assert_eq!(prepared.plan.context_class, locket_docker::DockerContextClass::Local);
+        let default_host = if cfg!(windows) {
+            "npipe:////./pipe/docker_engine"
+        } else {
+            "unix:///var/run/docker.sock"
+        };
+        assert_eq!(&prepared.plan.argv[..4], &["docker", "--host", default_host, subcommand]);
+        assert!(prepared.plan.argv.ends_with(&argv[2..]));
+        assert_eq!(prepared.policy.command, locket_core::CommandSpec::Argv(argv.clone()));
+        for name in ["DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_TLS"] {
+            assert!(!prepared.execution.env.contains_key(name));
+        }
+        assert_eq!(prepared.execution.args, prepared.plan.argv[1..]);
+        assert!(!prepared.plan.argv.join(" ").contains("local-secret-canary"));
+        let unavailable =
+            test_context_with_key_store(&directory, Arc::new(UnavailableMasterKeyStore));
+        for flag in [
+            "--host=ssh://remote",
+            "--context=remote",
+            "--config=elsewhere",
+            "-Hssh://remote",
+            "-cremote",
+            "-DHssh://remote",
+        ] {
+            let mut global_argv = argv.clone();
+            global_argv.insert(1, flag.to_owned());
+            let Err(error) = prepare(
+                &unavailable,
+                &format!("{subcommand}_local"),
+                &global_argv,
+                docker_test_env(&directory),
+            ) else {
+                return Err(format!("global routing flag {flag} was accepted").into());
+            };
+            assert!(
+                error.to_string().contains("Global Docker destination flags are not supported"),
+                "{error}"
+            );
+        }
+    }
     Ok(())
 }
 

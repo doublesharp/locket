@@ -56,6 +56,7 @@ clippy:
 	$(CARGO) clippy --workspace --all-targets --all-features $(CARGO_OFFLINE_FLAG) -j $(CARGO_JOBS) -- -D warnings
 
 test:
+	python3 -B scripts/mutation_smoke_test.py
 	scripts/cargo-test.sh
 
 nextest:

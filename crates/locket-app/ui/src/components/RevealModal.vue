@@ -15,6 +15,7 @@ import {
 } from '../reveal/model';
 
 const model = new RevealModalModel();
+const emit = defineEmits<{ invalidate: [] }>();
 
 defineExpose({
   /**
@@ -62,12 +63,13 @@ function stopTicker(): void {
 
 function onClose(): void {
   model.dismiss('explicit-close');
+  emit('invalidate');
 }
 
 function onBlur(): void {
-  if (state.value.kind === 'visible') {
-    model.dismiss('blur');
-  }
+  model.dismiss('blur');
+  // A request may still be pending while this modal is idle.
+  emit('invalidate');
 }
 
 onMounted(() => {
@@ -84,6 +86,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   model.scrub('component-unmount');
+  emit('invalidate');
   unsubscribe?.();
   unsubscribe = null;
   stopTicker();

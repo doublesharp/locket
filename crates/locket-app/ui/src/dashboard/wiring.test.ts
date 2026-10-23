@@ -42,8 +42,11 @@ describe('desktop component action wiring without a DOM runner', () => {
     expect(app).toContain('await desktopStartAgent(');
     expect(source('../views/ProjectDashboard.vue')).not.toContain('Project and profile search');
   });
-  it('does not display an unattempted scan as no findings', () => {
-    expect(source('../views/ScanResults.vue')).toContain('No scan has run');
+  it('explains that terminal scan completion and results stay outside the app', () => {
+    expect(source('../views/ScanResults.vue')).toContain(
+      'does not receive findings or completion status',
+    );
+    expect(source('../views/ScanResults.vue')).not.toContain('No scan findings');
   });
 });
 
@@ -72,10 +75,9 @@ it('disables disconnected actions and only claims empty after loading', () => {
   expect(app).toContain('if (!policyAccess.value.enabled) return;');
 });
 
-it('guards environment responses and refreshes the sole initial native context', () => {
+it('guards environment responses and omits unscoped scan counts', () => {
   expect(app).toContain('await withCurrentSelection(');
   expect(app).toContain('captureSelection(selectedProject.value, selectionGeneration.value)');
-  expect(app).toContain('initialProjectSelection(result.value, selectedProject.value)');
-  expect(app).toContain('selectedProject.value = initial;');
+  // Startup native selection is exercised by the mounted App.behavior.test.ts.
   expect(dashboard).not.toContain('scan_warning_count');
 });

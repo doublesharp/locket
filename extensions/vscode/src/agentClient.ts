@@ -1,6 +1,7 @@
 import * as net from 'node:net';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { execFileSync } from 'node:child_process';
 
 const PROTOCOL_VERSION = 1;
 const DEFAULT_MAX_MESSAGE_SIZE = 1024 * 1024;
@@ -448,12 +449,46 @@ export class AgentClient {
   }
 }
 
-export function resolveAgentSocketPath(environment: NodeJS.ProcessEnv = process.env): string {
+interface EndpointPlatform {
+  readonly platform: NodeJS.Platform;
+  readonly home: string;
+  readonly windowsSid?: () => string;
+}
+
+function currentWindowsSid(environment: NodeJS.ProcessEnv): string {
+  const systemRoot = environment.SystemRoot ?? environment.SYSTEMROOT ?? 'C:\\Windows';
+  try {
+    const output = execFileSync(path.win32.join(systemRoot, 'System32', 'whoami.exe'), ['/user', '/fo', 'csv', '/nh'], {
+      encoding: 'utf8', timeout: DEFAULT_CONNECT_TIMEOUT_MS, maxBuffer: 16_384, windowsHide: true,
+    });
+    const match = /,"(S-\d+(?:-\d+)+)"\s*$/u.exec(output.trim());
+    if (match?.[1] !== undefined) { return match[1]; }
+  } catch { /* Report a stable error without process output or user identity. */ }
+  throw AgentClientError.unavailable('Unable to determine the Windows agent pipe. Set LOCKET_AGENT_SOCKET explicitly.');
+}
+
+export function resolveAgentSocketPath(
+  environment: NodeJS.ProcessEnv = process.env,
+  platform: EndpointPlatform = { platform: process.platform, home: os.homedir() },
+): string {
   const override = environment.LOCKET_AGENT_SOCKET?.trim();
   if (override !== undefined && override.length > 0) {
     return override;
   }
-  return path.join(os.homedir(), '.locket', 'agent.sock');
+  if (platform.platform === 'win32') {
+    const sid = (platform.windowsSid ?? (() => currentWindowsSid(environment)))();
+    if (!/^S-\d+(?:-\d+)+$/u.test(sid)) {
+      throw AgentClientError.unavailable('Unable to determine the Windows agent pipe. Set LOCKET_AGENT_SOCKET explicitly.');
+    }
+    return `\\\\.\\pipe\\locket-agent-${sid}`;
+  }
+  if (platform.platform === 'darwin') {
+    return path.posix.join(platform.home, 'Library', 'Application Support', 'locket', 'agent.sock');
+  }
+  if (platform.platform === 'linux' && environment.XDG_RUNTIME_DIR) {
+    return path.posix.join(environment.XDG_RUNTIME_DIR, 'locket', 'agent.sock');
+  }
+  return path.posix.join(platform.home, '.locket', 'agent.sock');
 }
 
 export function encodeFrame(envelope: RequestEnvelope, maxMessageSize = DEFAULT_MAX_MESSAGE_SIZE): Buffer {

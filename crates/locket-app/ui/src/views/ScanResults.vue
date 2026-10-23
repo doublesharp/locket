@@ -1,152 +1,50 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue';
-
-import type { ScanFindingRow } from '../types/views';
-
 interface Props {
-  findings: ScanFindingRow[];
-  scanning: boolean;
-  lastScanAt?: string;
-  locked: boolean;
+  actionsEnabled: boolean;
+  launching: boolean;
   errorMessage?: string | null;
+  launchNotice?: string | null;
 }
 
 const props = defineProps<Props>();
-
 const emit = defineEmits<{
-  (e: 'rescan'): void;
+  (e: 'scan'): void;
 }>();
 
-const searchQuery = ref<string>('');
-
-const filteredFindings = computed<ScanFindingRow[]>(() => {
-  const query = searchQuery.value.trim().toLowerCase();
-  if (query.length === 0) {
-    return props.findings;
-  }
-  return props.findings.filter((row) => searchText(row).includes(query));
-});
-
-const isEmpty = computed<boolean>(
-  () => !props.scanning && !props.errorMessage && props.findings.length === 0,
-);
-const isFilteredEmpty = computed<boolean>(
-  () =>
-    !props.scanning &&
-    !props.errorMessage &&
-    props.findings.length > 0 &&
-    filteredFindings.value.length === 0,
-);
-
-function severityLabel(severity: ScanFindingRow['severity']): string {
-  return severity;
-}
-
-function locationLabel(row: ScanFindingRow): string {
-  return `${row.path}:${row.line}:${row.column}`;
-}
-
-function searchText(row: ScanFindingRow): string {
-  return [
-    row.rule,
-    row.severity,
-    row.path,
-    String(row.line),
-    String(row.column),
-    row.redactedSummary,
-    row.suppressedBy ?? '',
-  ]
-    .join(' ')
-    .toLowerCase();
-}
-
-function onRescan(): void {
-  emit('rescan');
+function onScan(): void {
+  if (props.actionsEnabled && !props.launching) emit('scan');
 }
 </script>
 
 <template>
-  <section class="view" aria-labelledby="scan-results-heading">
+  <section class="view" aria-labelledby="scan-heading">
     <header class="view__header">
-      <h2 id="scan-results-heading">Scan results</h2>
-      <div class="view__actions">
-        <label class="view__search">
-          <span class="view__search-label">Search findings</span>
-          <input
-            v-model="searchQuery"
-            type="search"
-            autocomplete="off"
-            spellcheck="false"
-            placeholder="Search metadata"
-          />
-        </label>
-        <span v-if="lastScanAt" class="view__last-scan">
-          Last scan
-          <time :datetime="lastScanAt">{{ lastScanAt }}</time>
-        </span>
-        <button
-          type="button"
-          class="view__action"
-          aria-label="Run scan again"
-          :disabled="scanning"
-          @click="onRescan"
-        >
-          {{ scanning ? 'Scanning…' : 'Rescan' }}
-        </button>
-      </div>
+      <h2 id="scan-heading">Scan in terminal</h2>
+      <button
+        type="button"
+        class="view__action"
+        aria-label="Scan in terminal"
+        :disabled="launching || !actionsEnabled"
+        @click="onScan"
+      >
+        {{ launching ? 'Opening terminal…' : 'Scan in terminal' }}
+      </button>
     </header>
 
-    <p v-if="scanning" class="view__loading" role="status">Scanning project tree…</p>
-
+    <p class="view__help">
+      Run <code>locket scan --require-known</code> in this project's trusted folder. The CLI uses
+      the project's ignore rules, scan rules, and known values. Complete any unlock or approval in
+      the terminal.
+    </p>
+    <p class="view__help">
+      Read the results in the terminal. This app does not receive findings or completion status.
+    </p>
+    <p v-if="!actionsEnabled" class="view__notice">
+      Connect a project and wait for project selection to finish before opening a scan.
+    </p>
+    <p v-if="launching" class="view__notice" role="status">Opening your terminal…</p>
     <p v-else-if="errorMessage" class="view__error" role="alert">{{ errorMessage }}</p>
-
-    <p v-else-if="locked" class="view__notice" role="status">
-      Vault locked; known-value matching is unavailable.
-    </p>
-
-    <p v-else-if="!lastScanAt" class="view__notice">
-      No scan has run for this project. Run a scan to check its files.
-    </p>
-
-    <p v-else-if="isEmpty" class="view__empty">No scan findings.</p>
-
-    <p v-else-if="isFilteredEmpty" class="view__empty">No matching scan findings.</p>
-
-    <table v-else class="view__table" aria-describedby="scan-results-heading">
-      <thead>
-        <tr>
-          <th scope="col">Severity</th>
-          <th scope="col">Rule</th>
-          <th scope="col">Location</th>
-          <th scope="col">Summary</th>
-          <th scope="col">Suppressed</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr v-for="row in filteredFindings" :key="row.id">
-          <td>
-            <span :class="['badge', `badge--severity-${row.severity}`]">
-              {{ severityLabel(row.severity) }}
-            </span>
-          </td>
-          <td>
-            <span class="view__name">{{ row.rule }}</span>
-          </td>
-          <td>
-            <code class="view__location">{{ locationLabel(row) }}</code>
-          </td>
-          <td>
-            <span class="view__muted">{{ row.redactedSummary }}</span>
-          </td>
-          <td>
-            <span v-if="row.suppressedBy" class="badge badge--suppressed">
-              {{ row.suppressedBy }}
-            </span>
-            <span v-else class="view__muted">—</span>
-          </td>
-        </tr>
-      </tbody>
-    </table>
+    <p v-else-if="launchNotice" class="view__notice" role="status">{{ launchNotice }}</p>
   </section>
 </template>
 
@@ -174,54 +72,6 @@ function onRescan(): void {
   text-transform: uppercase;
 }
 
-.view__actions {
-  display: inline-flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 0.75rem;
-}
-
-.view__search {
-  display: grid;
-  gap: 0.25rem;
-  min-width: min(18rem, 100%);
-}
-
-.view__search-label {
-  color: #9aa3b2;
-  font-size: 0.75rem;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-}
-
-.view__search input {
-  box-sizing: border-box;
-  width: 100%;
-  min-height: 2rem;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 0.375rem;
-  background: rgba(255, 255, 255, 0.05);
-  color: #e6e8ec;
-  font: inherit;
-  padding: 0.375rem 0.625rem;
-}
-
-.view__search input:focus {
-  border-color: #f8d77a;
-  outline: 2px solid rgba(248, 215, 122, 0.24);
-  outline-offset: 1px;
-}
-
-.view__search input::placeholder {
-  color: #667085;
-}
-
-.view__last-scan {
-  font-size: 0.75rem;
-  color: #9aa3b2;
-}
-
 .view__action {
   background: rgba(255, 255, 255, 0.04);
   color: #e6e8ec;
@@ -237,7 +87,7 @@ function onRescan(): void {
 }
 
 .view__action:disabled {
-  cursor: progress;
+  cursor: not-allowed;
   opacity: 0.6;
 }
 
@@ -246,11 +96,9 @@ function onRescan(): void {
   outline-offset: 2px;
 }
 
-.view__loading,
-.view__empty,
+.view__help,
 .view__notice,
 .view__error {
-  margin: 0;
   font-size: 0.875rem;
   color: #9aa3b2;
 }
@@ -261,81 +109,5 @@ function onRescan(): void {
 
 .view__error {
   color: #f4b3b3;
-}
-
-.view__table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 0.875rem;
-}
-
-.view__table th,
-.view__table td {
-  text-align: left;
-  padding: 0.5rem 0.75rem;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-  vertical-align: top;
-}
-
-.view__table th {
-  font-weight: 600;
-  color: #9aa3b2;
-  font-size: 0.75rem;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-
-.view__name {
-  font-weight: 600;
-}
-
-.view__muted {
-  color: #9aa3b2;
-}
-
-.view__location {
-  font-size: 0.8125rem;
-  color: #e6e8ec;
-}
-
-.badge {
-  display: inline-block;
-  padding: 0.125rem 0.5rem;
-  border-radius: 0.375rem;
-  font-size: 0.75rem;
-  letter-spacing: 0.02em;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  background: rgba(255, 255, 255, 0.04);
-  color: #e6e8ec;
-  text-transform: capitalize;
-}
-
-.badge--severity-low {
-  background: rgba(255, 255, 255, 0.04);
-  color: #9aa3b2;
-}
-
-.badge--severity-medium {
-  background: rgba(248, 215, 122, 0.1);
-  border-color: rgba(248, 215, 122, 0.28);
-  color: #f8d77a;
-}
-
-.badge--severity-high {
-  background: rgba(255, 168, 120, 0.12);
-  border-color: rgba(255, 168, 120, 0.32);
-  color: #ffb98e;
-}
-
-.badge--severity-critical {
-  background: rgba(240, 138, 138, 0.14);
-  border-color: rgba(240, 138, 138, 0.4);
-  color: #f4b3b3;
-}
-
-.badge--suppressed {
-  background: rgba(255, 255, 255, 0.04);
-  color: #9aa3b2;
-  text-transform: none;
 }
 </style>

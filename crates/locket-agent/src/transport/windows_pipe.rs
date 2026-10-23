@@ -133,7 +133,7 @@ pub async fn handle_named_pipe_connection(
 
     let mut buffer = Vec::with_capacity(4 * 1024);
     loop {
-        let request = match read_one_frame(&mut stream, &mut buffer).await? {
+        let request = match super::server::read_one_frame(&mut stream, &mut buffer).await? {
             Some(request) => request,
             None => return Ok(()),
         };
@@ -142,28 +142,6 @@ pub async fn handle_named_pipe_connection(
             .map_err(|error| io::Error::other(error.to_string()))?;
         stream.write_all(&frame).await?;
         stream.flush().await?;
-    }
-}
-
-async fn read_one_frame(
-    stream: &mut NamedPipeServer,
-    buffer: &mut Vec<u8>,
-) -> io::Result<Option<crate::envelope::RequestEnvelope>> {
-    use tokio::io::AsyncReadExt;
-
-    loop {
-        if let Ok((envelope, consumed)) =
-            crate::framing::decode_request_frame(buffer, crate::DEFAULT_MAX_MESSAGE_SIZE)
-        {
-            buffer.drain(..consumed);
-            return Ok(Some(envelope));
-        }
-        let mut chunk = [0_u8; 1024];
-        let read = stream.read(&mut chunk).await?;
-        if read == 0 {
-            return Ok(None);
-        }
-        buffer.extend_from_slice(&chunk[..read]);
     }
 }
 

@@ -138,6 +138,22 @@ pub async fn handle_scan(
             false,
         ));
     };
+    // The dispatcher verifies signed automation and its registered policy binding.
+    // Ordinary local grants retain full-profile coverage; signed scans must use
+    // the saved policy, never a caller-supplied list of secret names.
+    let policy_name = if request.payload.get("auth").is_some() {
+        let Some(name) = request
+            .payload
+            .get("policy_name")
+            .and_then(Value::as_str)
+            .filter(|name| !name.trim().is_empty())
+        else {
+            return protocol_error(request, "automation scans require policy_name");
+        };
+        Some(name)
+    } else {
+        None
+    };
     if typed.project_id.is_none()
         && typed.profile_id.is_none()
         && typed.store_path.is_none()
@@ -230,8 +246,15 @@ pub async fn handle_scan(
         };
     };
 
-    match scan_known_values(&typed, project_id, profile_id, store_path, &master_key, now_unix_nanos)
-    {
+    match scan_known_values(
+        &typed,
+        project_id,
+        profile_id,
+        store_path,
+        &master_key,
+        now_unix_nanos,
+        policy_name,
+    ) {
         Ok(response) => {
             let count = u32::try_from(response.findings.len()).unwrap_or(u32::MAX);
             state.record_scan_warning_count(count).await;
@@ -332,18 +355,90 @@ fn scan_known_values(
     store_path: &Path,
     master_key: &[u8],
     now_unix_nanos: i128,
+    policy_name: Option<&str>,
 ) -> Result<ScanResponse, ScanFailure> {
     let master_key = key_array(master_key).ok_or_else(corrupt_db)?;
     let mut store = Store::open(store_path).map_err(|_| corrupt_db())?;
     ensure_profile_exists(&store, project_id, profile_id)?;
-    let known_values =
-        collect_known_values(&store, project_id, profile_id, &master_key, now_unix_nanos, request)?;
+    let allowed_secrets =
+        policy_name.map(|name| allowed_scan_secrets(&store, project_id, name)).transpose()?;
+    let known_values = collect_known_values(
+        &store,
+        project_id,
+        profile_id,
+        &master_key,
+        now_unix_nanos,
+        request,
+        allowed_secrets.as_ref(),
+    )?;
     let mut matches = ScanMatches { findings: Vec::new(), matched_secret_names: BTreeSet::new() };
     for input in &request.inputs {
         append_input_matches(input, &known_values, &mut matches);
     }
     append_scan_audit(&mut store, project_id, profile_id, &master_key, &matches, now_unix_nanos)?;
     Ok(ScanResponse { findings: matches.findings, locked: false })
+}
+
+fn allowed_scan_secrets(
+    store: &Store,
+    project_id: &str,
+    policy_name: &str,
+) -> Result<BTreeSet<String>, ScanFailure> {
+    let policy = store
+        .get_command_policy_index(project_id, policy_name)
+        .map_err(|_| corrupt_db())?
+        .ok_or_else(|| {
+            ScanFailure::new(
+                "PolicyNotFound",
+                "command policy not found",
+                LocketError::PolicyNotFound,
+            )
+        })?;
+    // Match ResolveReference's durable-source checks. A deleted or changed
+    // command must not retain the permissions from its previous index row.
+    // Legacy indexes remain valid until the next explicit local policy edit.
+    if let Some(path) = policy.normalized_json.get("source_path") {
+        let path = path.as_str().ok_or_else(corrupt_db)?;
+        let current = std::fs::symlink_metadata(path)
+            .ok()
+            .filter(|metadata| metadata.file_type().is_file())
+            .and_then(|_| std::fs::read_to_string(path).ok())
+            .and_then(|source| toml::from_str::<toml::Value>(&source).ok());
+        let matches = current.as_ref().is_some_and(|document| {
+            let digest_matches =
+                policy.normalized_json.get("source_digest").is_none_or(|expected| {
+                    expected.as_str().is_some_and(|expected| {
+                        locket_core::policy::policy_source_digest(document, policy_name)
+                            .ok()
+                            .as_deref()
+                            == Some(expected)
+                    })
+                });
+            digest_matches
+                && document.get("project_id").and_then(toml::Value::as_str) == Some(project_id)
+                && document
+                    .get("commands")
+                    .and_then(|commands| commands.get(policy_name))
+                    .and_then(|command| serde_json::to_value(command).ok())
+                    .as_ref()
+                    == Some(&policy.policy_json)
+        });
+        if !matches {
+            return Err(ScanFailure::new(
+                "AccessDenied",
+                "command configuration changed; refresh and approve the local command before scanning",
+                LocketError::AccessDenied,
+            ));
+        }
+    }
+    policy
+        .normalized_json
+        .get("allowed_secrets")
+        .and_then(Value::as_array)
+        .ok_or_else(corrupt_db)?
+        .iter()
+        .map(|name| name.as_str().map(str::to_owned).ok_or_else(corrupt_db))
+        .collect()
 }
 
 fn ensure_profile_exists(
@@ -374,10 +469,14 @@ fn collect_known_values(
     master_key: &locket_crypto::KeyBytes,
     now_unix_nanos: i128,
     request: &ScanRequest,
+    allowed_secrets: Option<&BTreeSet<String>>,
 ) -> Result<Vec<KnownSecret>, ScanFailure> {
     let mut known = Vec::new();
     let timestamp = i64::try_from(now_unix_nanos).map_err(|_| corrupt_db())?;
     for secret in store.list_secrets_by_profile(project_id, profile_id).map_err(|_| corrupt_db())? {
+        if allowed_secrets.is_some_and(|allowed| !allowed.contains(&secret.name)) {
+            continue;
+        }
         for version in store.list_secret_versions(&secret.id).map_err(|_| corrupt_db())? {
             if should_scan_known_version(&secret, &version, timestamp)
                 && store.get_blob(&secret.id, version.version).map_err(|_| corrupt_db())?.is_some()
@@ -417,9 +516,21 @@ fn append_input_matches(
             continue;
         }
         let mut cursor = 0;
+        let mut position_cursor = 0;
+        let (mut line, mut column) = (1_u32, 1_u32);
         while let Some(relative) = input.text[cursor..].find(known.value.as_str()) {
             let start = cursor + relative;
-            let (line, column) = line_column_for_byte(&input.text, start);
+            // Preserve Unicode columns without rescanning the entire prefix
+            // for every match in a dense input.
+            for character in input.text[position_cursor..start].chars() {
+                if character == '\n' {
+                    line = line.saturating_add(1);
+                    column = 1;
+                } else {
+                    column = column.saturating_add(1);
+                }
+            }
+            position_cursor = start;
             matches.findings.push(ScanFinding {
                 rule: known.rule_label.clone(),
                 path: input.path.clone(),
@@ -433,23 +544,6 @@ fn append_input_matches(
             cursor = start + known.value.len();
         }
     }
-}
-
-fn line_column_for_byte(text: &str, byte_index: usize) -> (u32, u32) {
-    let mut line = 1;
-    let mut column = 1;
-    for (index, character) in text.char_indices() {
-        if index >= byte_index {
-            break;
-        }
-        if character == '\n' {
-            line += 1;
-            column = 1;
-        } else {
-            column += 1;
-        }
-    }
-    (line, column)
 }
 
 fn append_scan_audit(
@@ -646,6 +740,41 @@ mod tests {
         master_key: locket_crypto::KeyBytes,
         current_value: String,
         grace_value: String,
+    }
+
+    #[test]
+    fn known_matches_preserve_unicode_columns_and_multiline_values() {
+        let input = ScanInput {
+            path: "sample.txt".to_owned(),
+            text: "é🦀:a\nb;a\nb\r\na\nb".to_owned(),
+        };
+        let known = super::KnownSecret {
+            value: zeroize::Zeroizing::new("a\nb".to_owned()),
+            secret_name: "TEST_VALUE".to_owned(),
+            rule_label: "known-value/TEST_VALUE".to_owned(),
+        };
+        let mut matches = super::ScanMatches {
+            findings: Vec::new(),
+            matched_secret_names: std::collections::BTreeSet::new(),
+        };
+        super::append_input_matches(&input, &[known], &mut matches);
+        assert_eq!(
+            matches
+                .findings
+                .iter()
+                .map(|finding| (finding.line, finding.column))
+                .collect::<Vec<_>>(),
+            [(1, 4), (2, 3), (4, 1)]
+        );
+        assert_eq!(
+            matches.matched_secret_names,
+            std::collections::BTreeSet::from(["TEST_VALUE".to_owned()])
+        );
+        for finding in matches.findings {
+            assert_eq!(finding.path, "sample.txt");
+            assert_eq!(finding.rule, "known-value/TEST_VALUE");
+            assert_eq!(finding.redacted_summary, "known secret value match");
+        }
     }
 
     #[test]
@@ -920,6 +1049,308 @@ mod tests {
             binding: Some(GrantBinding::new(std::process::id(), "0")),
             require_known,
             redact_names,
+        }
+    }
+
+    mod automation_scope {
+        use super::*;
+        use crate::server::{current_unix_nanos, dispatch};
+        use ed25519_dalek::{Signer, SigningKey};
+        use serde_json::Value;
+        use sha2::{Digest, Sha256};
+
+        const POLICY: &str = "scan-policy";
+        const CLIENT: &str = "lk_client_scan";
+        type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
+
+        async fn fixture() -> TestResult<(ScanFixture, AgentSocketState)> {
+            let fixture = build_fixture()?;
+            let mut store = Store::open(&fixture.store_path)?;
+            store.connection().execute(
+                "UPDATE secret_versions SET grace_until = ?1 WHERE secret_id = ?2",
+                rusqlite::params![i64::MAX, GRACE_SECRET_ID],
+            )?;
+            store.insert_automation_client(&locket_store::AutomationClientRecord {
+                id: CLIENT.to_owned(),
+                project_id: PROJECT_ID.to_owned(),
+                name: "scanner".to_owned(),
+                public_key: SigningKey::from_bytes(&[42; 32]).verifying_key().to_bytes().to_vec(),
+                fingerprint: "scan-test-fingerprint".to_owned(),
+                storage: "external".to_owned(),
+                allowed_actions: vec!["scan-known-values".to_owned(), "redact".to_owned()],
+                allowed_policies: vec![POLICY.to_owned()],
+                created_at: 1,
+                last_used_at: None,
+                revoked_at: None,
+            })?;
+            save_policy(&mut store, PROJECT_ID, &json!({"allowed_secrets": [SECRET_NAME]}))?;
+            let now = current_unix_nanos();
+            let state = AgentSocketState::locked("scan-test");
+            state.unlock_cache.lock().await.insert(
+                PROJECT_ID.to_owned(),
+                UnlockEntry::new(
+                    fixture.master_key.to_vec(),
+                    now,
+                    Duration::from_secs(60),
+                    UnlockMethod::Passphrase,
+                ),
+            );
+            state.grants.lock().await.insert(GrantRecord::new(GrantRecordFields {
+                grant_id: GRANT_ID.to_owned(),
+                project_id: PROJECT_ID.to_owned(),
+                profile_id: PROFILE_ID.to_owned(),
+                action: GrantAction::ScanKnownValues,
+                binding: GrantBinding::new(std::process::id(), "0"),
+                issued_at_unix_nanos: now,
+                ttl_seconds: 60,
+                expires_at_unix_nanos: now + 60_000_000_000,
+            }));
+            Ok((fixture, state))
+        }
+
+        fn save_policy(store: &mut Store, project: &str, normalized: &Value) -> TestResult {
+            store.upsert_command_policy_index(
+                project,
+                POLICY,
+                &json!({"argv": ["scanner"], "required_secrets": [SECRET_NAME]}),
+                normalized,
+                1,
+                None,
+            )?;
+            Ok(())
+        }
+
+        fn request(fixture: &ScanFixture, action: &str) -> RequestEnvelope {
+            let mut request = scan_envelope(&scan_request(fixture, true, false));
+            request.payload["policy_name"] = json!(POLICY);
+            request.payload["requested_action"] = json!(action);
+            // Neither a caller-provided allow-list nor a replacement policy is authoritative.
+            request.payload["allowed_secrets"] = json!([GRACE_SECRET_NAME]);
+            request.payload["policy"] = json!({"allowed_secrets": [GRACE_SECRET_NAME]});
+            request
+        }
+
+        async fn sign(
+            state: &AgentSocketState,
+            mut request: RequestEnvelope,
+        ) -> TestResult<RequestEnvelope> {
+            let hello = RequestEnvelope::new(
+                "hello",
+                AgentMethod::ClientHello,
+                json!({"client_id": CLIENT}),
+            );
+            let ResponseEnvelope::Success(challenge) = dispatch(&hello, state).await else {
+                return Err("ClientHello failed".into());
+            };
+            let challenge_id = challenge.payload["challenge_id"].as_str().ok_or("challenge id")?;
+            let nonce = challenge.payload["nonce"].as_str().ok_or("nonce")?;
+            let now = i64::try_from(current_unix_nanos())?;
+            let mut canonical = serde_json::to_value(&request)?;
+            canonical.sort_all_objects();
+            let hash = Sha256::digest(serde_json::to_vec(&canonical)?);
+            let mut message = b"locket-client-auth-v1".to_vec();
+            message.extend_from_slice(CLIENT.as_bytes());
+            message.extend_from_slice(challenge_id.as_bytes());
+            message.extend_from_slice(&data_encoding::BASE64URL_NOPAD.decode(nonce.as_bytes())?);
+            message.extend_from_slice(now.to_string().as_bytes());
+            message.extend_from_slice(request.id.as_bytes());
+            message.extend_from_slice(&hash);
+            let signature = SigningKey::from_bytes(&[42; 32]).sign(&message);
+            request.payload["auth"] = json!({
+                "client_id": CLIENT, "challenge_id": challenge_id, "nonce": nonce,
+                "request_timestamp": now,
+                "signature": data_encoding::BASE64URL_NOPAD.encode(&signature.to_bytes()),
+            });
+            Ok(request)
+        }
+
+        fn audit_count(fixture: &ScanFixture, action: &str) -> TestResult<i64> {
+            Ok(Store::open(&fixture.store_path)?.connection().query_row(
+                "SELECT COUNT(*) FROM audit_log WHERE action = ?1",
+                [action],
+                |row| row.get(0),
+            )?)
+        }
+
+        fn assert_no_values(response: &ResponseEnvelope, fixture: &ScanFixture) -> TestResult {
+            let serialized = serde_json::to_string(response)?;
+            assert!(!serialized.contains(&fixture.current_value));
+            assert!(!serialized.contains(&fixture.grace_value));
+            Ok(())
+        }
+
+        #[tokio::test(flavor = "current_thread")]
+        async fn signed_scan_and_redact_match_only_saved_policy_secrets() -> TestResult {
+            for action in ["scan-known-values", "redact"] {
+                let (fixture, state) = fixture().await?;
+                let request = sign(&state, request(&fixture, action)).await?;
+                let response = dispatch(&request, &state).await;
+                assert_eq!(audit_count(&fixture, "CLIENT_AUTH")?, 1);
+                assert_no_values(&response, &fixture)?;
+                let payload = scan_payload(response)?;
+                assert!(!payload.locked);
+                assert_eq!(payload.findings.len(), 1, "excluded canary must not match");
+                assert_eq!(payload.findings[0].rule, "known-value/DATABASE_URL");
+                assert_eq!(state.status_snapshot(current_unix_nanos()).await.scan_warning_count, 1);
+                assert_eq!(audit_count(&fixture, "SCAN")?, 1);
+                let audit = scan_audit_metadata(&fixture)?;
+                assert_eq!(audit["finding_counts"]["known_secret_value"], 1);
+                assert_eq!(audit["redacted_secret_names"], json!([SECRET_NAME]));
+                assert!(!serde_json::to_string(&audit)?.contains(&fixture.grace_value));
+            }
+            Ok(())
+        }
+
+        #[tokio::test(flavor = "current_thread")]
+        async fn signed_scan_filters_excluded_secret_before_decryption() -> TestResult {
+            let (fixture, state) = fixture().await?;
+            let mut store = Store::open(&fixture.store_path)?;
+            store.connection().execute(
+                "UPDATE blobs SET ciphertext = zeroblob(16) WHERE secret_id = ?1",
+                [GRACE_SECRET_ID],
+            )?;
+            let signed = sign(&state, request(&fixture, "scan-known-values")).await?;
+            assert_eq!(scan_payload(dispatch(&signed, &state).await)?.findings.len(), 1);
+            // This corrupt blob really is unreadable if the saved policy authorizes it.
+            save_policy(&mut store, PROJECT_ID, &json!({"allowed_secrets": [GRACE_SECRET_NAME]}))?;
+            let signed = sign(&state, request(&fixture, "scan-known-values")).await?;
+            assert_eq!(error_code(dispatch(&signed, &state).await)?, "CorruptDb");
+            assert_eq!(audit_count(&fixture, "SCAN")?, 1);
+            Ok(())
+        }
+
+        #[tokio::test(flavor = "current_thread")]
+        async fn signed_scan_empty_policy_has_zero_matches_and_audit_count() -> TestResult {
+            let (fixture, state) = fixture().await?;
+            save_policy(
+                &mut Store::open(&fixture.store_path)?,
+                PROJECT_ID,
+                &json!({"allowed_secrets": []}),
+            )?;
+            let signed = sign(&state, request(&fixture, "scan-known-values")).await?;
+            let payload = scan_payload(dispatch(&signed, &state).await)?;
+            assert!(!payload.locked);
+            assert_eq!(payload.findings.len(), 0);
+            assert_eq!(audit_count(&fixture, "SCAN")?, 1);
+            assert_eq!(scan_audit_metadata(&fixture)?["finding_counts"]["known_secret_value"], 0);
+            Ok(())
+        }
+
+        #[tokio::test(flavor = "current_thread")]
+        async fn unsigned_scan_preserves_full_profile_even_with_policy_metadata() -> TestResult {
+            let (fixture, state) = fixture().await?;
+            let payload =
+                scan_payload(dispatch(&request(&fixture, "scan-known-values"), &state).await)?;
+            assert_eq!(payload.findings.len(), 2);
+            assert_eq!(audit_count(&fixture, "CLIENT_AUTH")?, 0);
+            assert_eq!(scan_audit_metadata(&fixture)?["finding_counts"]["known_secret_value"], 2);
+            Ok(())
+        }
+
+        #[tokio::test(flavor = "current_thread")]
+        async fn signed_scan_rejects_missing_or_foreign_saved_policy() -> TestResult {
+            for foreign in [false, true] {
+                let (fixture, state) = fixture().await?;
+                let mut store = Store::open(&fixture.store_path)?;
+                store.delete_command_policy_index(PROJECT_ID, POLICY, None)?;
+                if foreign {
+                    store.insert_project_if_absent("lk_proj_foreign", "foreign", 1)?;
+                    save_policy(
+                        &mut store,
+                        "lk_proj_foreign",
+                        &json!({"allowed_secrets": [SECRET_NAME, GRACE_SECRET_NAME]}),
+                    )?;
+                }
+                let signed = sign(&state, request(&fixture, "scan-known-values")).await?;
+                let response = dispatch(&signed, &state).await;
+                assert_no_values(&response, &fixture)?;
+                assert_eq!(error_code(response)?, "PolicyNotFound");
+                assert_eq!(audit_count(&fixture, "CLIENT_AUTH")?, 1);
+                assert_eq!(audit_count(&fixture, "SCAN")?, 0);
+            }
+            Ok(())
+        }
+
+        #[tokio::test(flavor = "current_thread")]
+        async fn signed_scan_rejects_malformed_saved_allow_list() -> TestResult {
+            for normalized in [
+                json!({}),
+                json!({"allowed_secrets": SECRET_NAME}),
+                json!({"allowed_secrets": [SECRET_NAME, false]}),
+            ] {
+                let (fixture, state) = fixture().await?;
+                save_policy(&mut Store::open(&fixture.store_path)?, PROJECT_ID, &normalized)?;
+                let signed = sign(&state, request(&fixture, "scan-known-values")).await?;
+                let response = dispatch(&signed, &state).await;
+                assert_no_values(&response, &fixture)?;
+                assert_eq!(error_code(response)?, "CorruptDb");
+                assert_eq!(audit_count(&fixture, "SCAN")?, 0);
+            }
+            Ok(())
+        }
+
+        #[tokio::test(flavor = "current_thread")]
+        async fn signed_scan_rejects_invalid_request_policy_scope() -> TestResult {
+            for policy in [
+                None,
+                Some(Value::Null),
+                Some(json!(7)),
+                Some(json!(" ")),
+                Some(json!("foreign-policy")),
+            ] {
+                let (fixture, state) = fixture().await?;
+                let mut request = request(&fixture, "scan-known-values");
+                let expected = if policy == Some(json!("foreign-policy")) {
+                    "AutomationClientNotTrusted"
+                } else {
+                    "ProtocolError"
+                };
+                if let Some(policy) = policy {
+                    request.payload["policy_name"] = policy;
+                } else {
+                    request.payload.as_object_mut().ok_or("payload")?.remove("policy_name");
+                }
+                let signed = sign(&state, request).await?;
+                let response = dispatch(&signed, &state).await;
+                assert_no_values(&response, &fixture)?;
+                assert_eq!(error_code(response)?, expected);
+                assert_eq!(audit_count(&fixture, "SCAN")?, 0);
+            }
+            Ok(())
+        }
+
+        #[tokio::test(flavor = "current_thread")]
+        async fn signed_scan_requires_current_durable_policy_source() -> TestResult {
+            for change in ["changed", "deleted", "foreign"] {
+                let (fixture, state) = fixture().await?;
+                let path = fixture.store_path.with_file_name("locket.toml");
+                let source = format!(
+                    "project_id = {PROJECT_ID:?}\n[commands.{POLICY}]\nargv = [\"scanner\"]\nrequired_secrets = [{SECRET_NAME:?}]\n"
+                );
+                std::fs::write(&path, &source)?;
+                let document: toml::Value = toml::from_str(&source)?;
+                let digest = locket_core::policy::policy_source_digest(&document, POLICY)?;
+                save_policy(
+                    &mut Store::open(&fixture.store_path)?,
+                    PROJECT_ID,
+                    &json!({
+                        "allowed_secrets": [SECRET_NAME], "source_path": path, "source_digest": digest,
+                    }),
+                )?;
+                let signed = sign(&state, request(&fixture, "scan-known-values")).await?;
+                scan_payload(dispatch(&signed, &state).await)?;
+                match change {
+                    "deleted" => std::fs::remove_file(&path)?,
+                    "foreign" => {
+                        std::fs::write(&path, source.replace(PROJECT_ID, "lk_proj_foreign"))?;
+                    }
+                    _ => std::fs::write(&path, source.replace(SECRET_NAME, GRACE_SECRET_NAME))?,
+                }
+                let signed = sign(&state, request(&fixture, "scan-known-values")).await?;
+                assert_eq!(error_code(dispatch(&signed, &state).await)?, "AccessDenied");
+                assert_eq!(audit_count(&fixture, "SCAN")?, 1);
+            }
+            Ok(())
         }
     }
 

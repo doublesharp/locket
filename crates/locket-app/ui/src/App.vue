@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, onUnmounted, ref, watch } from 'vue';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 
@@ -36,12 +36,12 @@ import {
   desktopImportEnv,
   desktopStartAgent,
   desktopRunPolicy,
+  desktopScanProject,
   desktopSavePolicy,
   unlockVault,
   actionError,
   reveal as revealAgent,
   rotateSecret,
-  scan as scanKnownValues,
   setActiveProfile,
   setSecret,
   writeConfig,
@@ -78,7 +78,6 @@ import type {
   CommandPolicyRow,
   DeviceMemberRow,
   RuntimeSessionRow,
-  ScanFindingRow,
   SecretRowMeta,
   SettingsState,
   VersionHistoryRow,
@@ -94,10 +93,10 @@ import type {
   ListRuntimeSessionsRequest,
   ListSecretsRequest,
   ListVersionsRequest,
-  ScanFinding,
   WriteConfigChanges,
 } from './agent/types';
 import { privacyAlias, privacyLabel } from './utils/privacy';
+import { createRequestLifetime } from './utils/requestLifetime';
 
 type ViewKey =
   | 'dashboard'
@@ -178,6 +177,7 @@ const currentView = ref<ViewKey>('dashboard');
 const revealModal = ref<InstanceType<typeof RevealModal> | null>(null);
 const copyError = ref<string | null>(null);
 const revealError = ref<string | null>(null);
+const revealRequests = createRequestLifetime();
 let unlistenTrayMenu: UnlistenFn | null = null;
 
 type TrayMenuAction =
@@ -219,7 +219,7 @@ const secondaryItems = computed<Array<{ key: ViewKey; label: string }>>(() => {
     return [
       { key: 'execution', label: 'Runs' },
       { key: 'audit', label: 'Audit' },
-      { key: 'scan', label: 'Scan project' },
+      { key: 'scan', label: 'Scan in terminal' },
     ];
   if (['team', 'devices'].includes(currentView.value))
     return [
@@ -280,7 +280,6 @@ const versions = ref<VersionHistoryRow[]>([]);
 const sessions = ref<RuntimeSessionRow[]>([]);
 const deviceMembers = ref<DeviceMemberRow[]>([]);
 const auditRows = ref<AuditLogRow[]>([]);
-const findings = ref<ScanFindingRow[]>([]);
 const policies = ref<CommandPolicyRow[]>([]);
 const rawAuditRows = ref<AuditWireRow[]>([]);
 const secretsLoading = ref<boolean>(false);
@@ -322,10 +321,10 @@ const settingsError = ref<string | null>(null);
 const auditLoading = ref<boolean>(false);
 const auditError = ref<string | null>(null);
 const auditLastRefreshed = ref<string | undefined>(undefined);
-const scanning = ref<boolean>(false);
-const scanLocked = ref<boolean>(false);
+const scanLaunching = ref(false);
 const scanError = ref<string | null>(null);
-const lastScanAt = ref<string | undefined>(undefined);
+const scanNotice = ref<string | null>(null);
+const scanRequests = createRequestLifetime();
 const backupBusy = ref<boolean>(false);
 const backupNotice = ref<string | null>(null);
 const backupError = ref<string | null>(null);
@@ -532,6 +531,7 @@ async function handleTrayMenuAction(action: TrayMenuAction): Promise<void> {
       break;
     case 'lock-vault':
       {
+        invalidateReveal();
         const result = await lockVault();
         if (!result.ok) desktopError.value = actionError(result.error);
       }
@@ -550,7 +550,7 @@ async function handleTrayMenuAction(action: TrayMenuAction): Promise<void> {
       break;
     case 'start-scan':
       currentView.value = 'scan';
-      await triggerRescan();
+      await launchProjectScan();
       break;
     case 'reveal-secret':
       currentView.value = 'secrets';
@@ -638,8 +638,33 @@ watch(
   { immediate: true },
 );
 
-async function handleRevealSelectedSecret(): Promise<void> {
+function invalidateReveal(): void {
+  revealRequests.invalidate();
+  revealModal.value?.scrub();
   revealError.value = null;
+}
+
+watch(
+  [
+    currentView,
+    selectedSecret,
+    selectionGeneration,
+    () => activeContext.value?.root,
+    () => activeContext.value?.project_id,
+    () => activeContext.value?.profile_id,
+    () => activeContext.value?.profile_name,
+    () => status.value?.lock_state,
+  ],
+  invalidateReveal,
+  // Invalidate even when a transition is reversed in the same tick. A tray
+  // view change also needs to finish before it starts its own reveal request.
+  { flush: 'sync' },
+);
+
+async function handleRevealSelectedSecret(): Promise<void> {
+  invalidateReveal();
+  const isCurrent = revealRequests.begin();
+  if (!isCurrent()) return;
   const target = selectedSecret.value;
   if (target === null) {
     revealError.value = 'Select a secret in the list before revealing.';
@@ -654,6 +679,7 @@ async function handleRevealSelectedSecret(): Promise<void> {
     secret_name: target.name,
     profile_id: profileId,
   });
+  if (!isCurrent()) return;
   if (!result.ok) {
     revealError.value = revealErrorLabel(result.error);
     return;
@@ -966,6 +992,7 @@ async function handleProfileSwitch(payload: {
       'Connect and unlock the selected project before switching environments.';
     return;
   }
+  invalidateReveal();
   profileSwitchInProgress.value = true;
   profileSwitchError.value = null;
   await withCurrentSelection(
@@ -1257,63 +1284,40 @@ watch(auditRequest, () => {
   void refreshAuditLog();
 });
 
-function normalizeSeverity(severity: string): ScanFindingRow['severity'] {
-  switch (severity.toLowerCase()) {
-    case 'critical':
-      return 'critical';
-    case 'high':
-    case 'error':
-      return 'high';
-    case 'medium':
-    case 'warn':
-    case 'warning':
-      return 'medium';
-    default:
-      return 'low';
-  }
-}
+watch(
+  [selectionGeneration, profileSwitchInProgress],
+  () => {
+    scanRequests.invalidate();
+    scanLaunching.value = false;
+    scanError.value = null;
+    scanNotice.value = null;
+  },
+  { flush: 'sync' },
+);
 
-function scanFindingRow(finding: ScanFinding, index: number): ScanFindingRow {
-  return {
-    id: `${finding.path}:${finding.line}:${finding.column}:${finding.rule}:${index}`,
-    rule: finding.rule,
-    severity: normalizeSeverity(finding.severity),
-    path: finding.path,
-    line: finding.line,
-    column: finding.column,
-    redactedSummary: finding.redacted_summary,
-    suppressedBy: finding.suppressed_by ?? undefined,
-  };
-}
-
-async function triggerRescan(): Promise<void> {
-  scanning.value = true;
+async function launchProjectScan(): Promise<void> {
+  if (scanLaunching.value || desktopBusy.value || profileSwitchInProgress.value) return;
   scanError.value = null;
-  const context = status.value?.project_id;
-  if (!context) {
-    scanError.value = 'Connect and unlock this project, then retry the scan.';
-    scanning.value = false;
+  scanNotice.value = null;
+  const projectId = selectedProject.value?.project_id;
+  if (!projectId) {
+    scanError.value = 'Connect a project before opening a scan in your terminal.';
     return;
   }
-  const result = await scanKnownValues({
-    paths: selectedProject.value ? [selectedProject.value.root] : [],
-    require_known: false,
-  });
-  if (status.value?.project_id !== context) {
-    scanning.value = false;
-    return;
-  }
-  if (result.ok) {
-    findings.value = result.value.findings.map(scanFindingRow);
-    scanLocked.value = result.value.locked;
-    lastScanAt.value = new Date().toISOString();
+  const isCurrent = scanRequests.begin();
+  if (!isCurrent()) return;
+  scanLaunching.value = true;
+  const result = await desktopScanProject({ project_id: projectId });
+  if (!isCurrent()) return;
+  scanLaunching.value = false;
+  if (!result.ok) scanError.value = actionError(result.error);
+  else if (!result.value.launched) {
+    scanError.value =
+      'The terminal did not launch. Check the desktop terminal configuration and retry.';
   } else {
-    findings.value = [];
-    scanLocked.value = false;
-    scanError.value = actionError(result.error);
-    lastScanAt.value = undefined;
+    scanNotice.value =
+      'Opened in your terminal. Complete any unlock or approval there, then check the scan results there.';
   }
-  scanning.value = false;
 }
 
 function backupErrorLabel(error: AgentClientError): string {
@@ -1456,9 +1460,7 @@ async function refreshProjectConnections(): Promise<void> {
     if (generation !== selectionGeneration.value) return;
     const initial = initialProjectSelection(result.value, selectedProject.value);
     if (!selectedProject.value && initial) {
-      selectedProject.value = initial;
-      projectPath.value = initial.root;
-      await refresh();
+      await connectProject(false, initial.root);
     }
   } else if (generation === selectionGeneration.value && desktopAvailable)
     desktopError.value = actionError(result.error);
@@ -1593,10 +1595,6 @@ watch(
   () =>
     `${status.value?.project_id ?? ''}:${status.value?.profile_name ?? ''}:${status.value?.lock_state ?? ''}`,
   () => {
-    findings.value = [];
-    lastScanAt.value = undefined;
-    scanError.value = null;
-    scanLocked.value = false;
     auditChainOk.value = null;
     auditLastRefreshed.value = undefined;
     auditError.value = null;
@@ -1614,6 +1612,16 @@ onMounted(() => {
       unlistenTrayMenu = unlisten;
     })
     .catch(() => {});
+});
+
+onBeforeUnmount(() => {
+  scanRequests.dispose();
+  scanLaunching.value = false;
+  scanError.value = null;
+  scanNotice.value = null;
+  revealRequests.dispose();
+  revealModal.value?.scrub('component-unmount');
+  revealError.value = null;
 });
 
 onUnmounted(() => {
@@ -1828,18 +1836,16 @@ onUnmounted(() => {
         :policies-loaded="!!policiesLastRefreshed && !policiesError"
         :audit-error="auditError"
         :audit-last-refreshed="auditLastRefreshed"
-        :scan-locked="scanLocked"
-        :scan-error="scanError"
+        :scan-locked="false"
         :sessions-last-refreshed="sessionsLastRefreshed"
         :secrets="secrets"
         :versions="versions"
         :sessions="sessions"
         :audit-rows="auditRows"
-        :findings="findings"
+        :findings="[]"
         :policies="policies"
         :settings="settings"
         :audit-chain-ok="auditChainOk"
-        :last-scan-at="lastScanAt"
         @action="handleNextAction"
         @navigate="selectView"
         @refresh="triggerVerify"
@@ -1918,12 +1924,13 @@ onUnmounted(() => {
 
       <ScanResults
         v-else-if="currentView === 'scan'"
-        :findings="findings"
-        :scanning="scanning"
-        :locked="scanLocked"
+        :actions-enabled="
+          desktopAvailable && !!selectedProject && !desktopBusy && !profileSwitchInProgress
+        "
+        :launching="scanLaunching"
         :error-message="scanError"
-        :last-scan-at="lastScanAt"
-        @rescan="triggerRescan"
+        :launch-notice="scanNotice"
+        @scan="launchProjectScan"
       />
 
       <PolicyEditor
@@ -1996,7 +2003,7 @@ onUnmounted(() => {
       <p v-if="copyError" role="alert" class="shell__notice">{{ copyError }}</p>
     </main>
 
-    <RevealModal ref="revealModal" />
+    <RevealModal ref="revealModal" @invalidate="invalidateReveal" />
     <UnlockModal
       v-if="unlockOpen"
       :project-label="projectLabel"

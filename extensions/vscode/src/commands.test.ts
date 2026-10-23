@@ -118,6 +118,30 @@ test('audit infers store and project metadata without path prompts',async()=>{
   assert.deepEqual(prompts,[]);
 });
 
+test('scan runs the trusted CLI with known-value coverage instead of the empty RPC compatibility handler',async()=>{
+  let calls=0;
+  await command('locket.scanWorkspace',client(async()=>{calls++;return {findings:[],locked:true};}));
+  assert.equal(calls,0);
+  assert.deepEqual(terminals,[{name:'Locket Scan',shellPath:project.cliPath,shellArgs:['scan','--require-known'],cwd:project.root}]);
+  assert.equal(terminalShown,true);
+  assert.equal(infos.some(message=>/completed|no findings/iu.test(message)),false);
+});
+
+test('scan cannot launch from an untrusted workspace or missing project',async()=>{
+  let resolutions=0;
+  const disposable=register(client(async()=>{throw new Error('unexpected RPC');}),{resolveProject:async()=>{resolutions++;return undefined;}});
+  try {
+    trusted=false;
+    await registered.get('locket.scanWorkspace')?.();
+    assert.equal(resolutions,0);
+    trusted=true;
+    await registered.get('locket.scanWorkspace')?.();
+    assert.equal(resolutions,1);
+    assert.deepEqual(terminals,[]);
+    assert.deepEqual(infos,[]);
+  } finally { disposable.dispose(); }
+});
+
 test('untrusted workspace never resolves or invokes a process-backed action',async()=>{
   trusted=false;
   let resolutions=0;

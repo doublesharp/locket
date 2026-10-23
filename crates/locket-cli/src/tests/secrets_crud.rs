@@ -2,6 +2,43 @@
 use super::*;
 
 #[test]
+fn reveal_rejects_unsupported_stored_blob_schema() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let context = test_context(&directory);
+    run_with_context(
+        Cli::try_parse_from(["locket", "init", "--name", "schema-test", "--profile", "dev"])?,
+        &context,
+        &mut Vec::new(),
+    )?;
+    let canary = "stored-schema-test-canary";
+    crate::set_secret_value(&context, &test_secret_write_args("API_KEY"), canary, "manual", 1_000)?;
+    let reveal = || Cli::try_parse_from(["locket", "get", "API_KEY", "--reveal", "--force"]);
+    let mut output = Vec::new();
+    run_with_context(reveal()?, &context, &mut output)?;
+    assert_eq!(String::from_utf8(output)?, format!("{canary}\n"));
+    let store = crate::open_store(&context)?;
+    assert_eq!(store.connection().execute("UPDATE blobs SET aad_schema_version = 2", [])?, 1);
+    let success_count = || {
+        store.connection().query_row(
+            "SELECT COUNT(*) FROM audit_log WHERE action = 'REVEAL' AND status = 'SUCCESS'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+    };
+    let before = success_count()?;
+    assert_eq!(before, 1);
+    let mut output = Vec::new();
+    let result = run_with_context(reveal()?, &context, &mut output);
+    assert!(matches!(
+        result,
+        Err(crate::CliError::Crypto(locket_crypto::CryptoError::DecryptionFailed))
+    ));
+    assert_eq!(output, [] as [u8; 0]);
+    assert_eq!(success_count()?, before);
+    Ok(())
+}
+
+#[test]
 fn set_command_reads_secure_secret_value_without_leaking_it()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempdir()?;

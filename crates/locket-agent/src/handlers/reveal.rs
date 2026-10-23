@@ -65,14 +65,10 @@ pub struct RevealRequest {
     pub binding: Option<GrantBinding>,
 }
 
-/// Response payload for `Reveal` once the unlock cache is wired.
-///
-/// The stub handler never produces this shape today, but the type is
-/// part of the public API so future success paths and the desktop UI
-/// can rely on a stable shape.
+/// Response payload for an authorized `Reveal` with a live unlock and grant.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct RevealResponse {
-    /// Resolved secret value. Treated as a redacted token by the UI.
+    /// Plaintext secret value. Callers must limit its display lifetime.
     pub value: String,
     /// Time-to-live hint for any caller-side caching, in seconds.
     pub ttl_seconds: u32,

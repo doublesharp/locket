@@ -75,14 +75,17 @@ pub fn encrypt_secret_value_v1(
 ///
 /// # Errors
 ///
-/// Returns an error if the wrapped DEK layout is invalid, authentication fails,
-/// or decrypted bytes are not a valid secret value.
+/// Returns an error if the AAD schema version is unsupported, the wrapped DEK
+/// layout is invalid, authentication fails, or decrypted bytes are not a valid secret value.
 pub fn decrypt_secret_value_v1(
     profile_secret_key: &KeyBytes,
     encrypted: &EncryptedSecretValue,
     value_aad: &[u8],
     dek_wrap_aad: &[u8],
 ) -> CryptoResult<Zeroizing<String>> {
+    if encrypted.aad_schema_version != AAD_SCHEMA_V1 {
+        return Err(CryptoError::DecryptionFailed);
+    }
     let dek = unwrap_dek_v1(profile_secret_key, &encrypted.encrypted_dek, dek_wrap_aad)?;
     let mut plaintext = Zeroizing::new(aead_decrypt(
         &dek,

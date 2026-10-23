@@ -1,6 +1,9 @@
 use std::error::Error;
 
-use crate::{SecretBlobRecord, SecretFingerprintRecord, SecretVersionRecord};
+use crate::{
+    AuditContext, AuditWrite, SecretBlobRecord, SecretCopyTarget, SecretFingerprintRecord,
+    SecretRecord, SecretVersionRecord, Store, StoreError, VersionDeprecation,
+};
 
 use super::{
     insert_project_profile, insert_project_profile_secret, open_initialized_store, test_secret,
@@ -262,6 +265,182 @@ fn rotate_secret_advances_current_and_deprecates_prior() -> Result<(), Box<dyn E
     assert_eq!(versions[1].version, 2);
 
     Ok(())
+}
+
+#[derive(Clone, Copy)]
+enum ConcurrentSecretChange {
+    Tombstone,
+    Rotate,
+    Purge,
+}
+
+impl ConcurrentSecretChange {
+    fn apply(self, store: &mut Store, secret: &SecretRecord) -> Result<u32, StoreError> {
+        match self {
+            Self::Tombstone => {
+                store.tombstone_secret(&secret.id, 200)?;
+                Ok(2)
+            }
+            Self::Rotate => {
+                store.rotate_secret(
+                    secret,
+                    &SecretVersionRecord { version: 2, created_at: 200, ..test_secret_version() },
+                    &SecretBlobRecord { version: 2, created_at: 200, ..test_secret_blob() },
+                    &SecretFingerprintRecord {
+                        version: 2,
+                        created_at: 200,
+                        ..test_secret_fingerprint()
+                    },
+                    200,
+                    None,
+                )?;
+                // Use an unused version so a uniqueness error cannot mask stale-state handling.
+                Ok(3)
+            }
+            Self::Purge => {
+                assert!(store.purge_secret_version(&secret.id, 1, 200)?);
+                Ok(2)
+            }
+        }
+    }
+}
+
+fn stored_fingerprints(store: &Store) -> rusqlite::Result<Vec<(u32, Vec<u8>)>> {
+    store
+        .connection()
+        .prepare(
+            "SELECT version, fingerprint FROM fingerprints
+             WHERE secret_id = 'lk_sec_test' ORDER BY version",
+        )?
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect()
+}
+
+fn assert_stale_rotation_rolls_back(
+    copy: bool,
+    change: ConcurrentSecretChange,
+) -> Result<(), Box<dyn Error>> {
+    let mut test_store = open_initialized_store()?;
+    insert_project_profile(&test_store.store)?;
+    test_store.store.create_active_secret(
+        &test_secret(),
+        &test_secret_version(),
+        &test_secret_blob(),
+        &test_secret_fingerprint(),
+    )?;
+    let stale_secret = test_store
+        .store
+        .get_active_secret("lk_proj_test", "lk_prof_test", "DATABASE_URL", "user-local")?
+        .ok_or("missing active secret")?;
+
+    let mut other = Store::open(test_store.store.connection().path().ok_or("missing store path")?)?;
+    let next_version = change.apply(&mut other, &stale_secret)?;
+    let before_secret =
+        other.get_secret_by_source("lk_proj_test", "lk_prof_test", "DATABASE_URL", "user-local")?;
+    let before_versions = other.list_secret_versions(&stale_secret.id)?;
+    let before_blob = other.get_blob(&stale_secret.id, 1)?;
+    let before_fingerprints = stored_fingerprints(&other)?;
+    let action = if copy { "SECRET_COPY" } else { "ROTATE" };
+    let mut metadata = serde_json::json!({
+        "schema_version": 1,
+        "action": action,
+        "status": "SUCCESS",
+        "secret_name": "DATABASE_URL",
+        "profile_id": "lk_prof_test",
+        "source": "user-local",
+    });
+    if copy {
+        metadata["from_profile_id"] = serde_json::json!("lk_prof_test");
+        metadata["to_profile_id"] = serde_json::json!("lk_prof_test");
+    }
+    let audit = AuditWrite {
+        project_id: "lk_proj_test",
+        profile_id: Some("lk_prof_test"),
+        action,
+        status: "SUCCESS",
+        secret_name: Some("DATABASE_URL"),
+        command: None,
+        metadata_json: &metadata,
+        timestamp: 300,
+    };
+    let version =
+        SecretVersionRecord { version: next_version, created_at: 300, ..test_secret_version() };
+    let blob = SecretBlobRecord { version: next_version, created_at: 300, ..test_secret_blob() };
+    let fingerprint = SecretFingerprintRecord {
+        version: next_version,
+        created_at: 300,
+        ..test_secret_fingerprint()
+    };
+    let deprecation = VersionDeprecation { deprecated_at: 300, grace_until: None };
+    let audit = Some(AuditContext { key: &[42; 32], write: &audit });
+    let result = if copy {
+        test_store.store.copy_secret_with_audit(
+            SecretCopyTarget::Rotate { secret: &stale_secret, deprecation },
+            &version,
+            &blob,
+            &fingerprint,
+            audit,
+        )
+    } else {
+        test_store.store.rotate_secret_with_audit(
+            &stale_secret,
+            &version,
+            &blob,
+            &fingerprint,
+            deprecation,
+            audit,
+        )
+    };
+
+    assert!(
+        matches!(result, Err(StoreError::SecretStateConflict { ref secret_id, expected_version: 1 })
+            if secret_id == &stale_secret.id),
+        "{action} must reject the stale secret snapshot, got {result:?}"
+    );
+    assert_eq!(
+        result.as_ref().err().map(StoreError::locket_error),
+        Some(locket_core::LocketError::StorageBusy)
+    );
+    assert_eq!(
+        other.get_secret_by_source("lk_proj_test", "lk_prof_test", "DATABASE_URL", "user-local")?,
+        before_secret
+    );
+    assert_eq!(other.list_secret_versions(&stale_secret.id)?, before_versions);
+    assert_eq!(other.get_blob(&stale_secret.id, 1)?, before_blob);
+    assert_eq!(other.get_blob(&stale_secret.id, next_version)?, None);
+    assert_eq!(stored_fingerprints(&other)?, before_fingerprints);
+    assert_eq!(other.list_recent_audit_actions("lk_proj_test", 10)?, Vec::<String>::new());
+    Ok(())
+}
+
+#[test]
+fn stale_rotate_after_tombstone_rolls_back() -> Result<(), Box<dyn Error>> {
+    assert_stale_rotation_rolls_back(false, ConcurrentSecretChange::Tombstone)
+}
+
+#[test]
+fn stale_copy_rotation_after_tombstone_rolls_back() -> Result<(), Box<dyn Error>> {
+    assert_stale_rotation_rolls_back(true, ConcurrentSecretChange::Tombstone)
+}
+
+#[test]
+fn stale_rotate_after_concurrent_rotation_rolls_back() -> Result<(), Box<dyn Error>> {
+    assert_stale_rotation_rolls_back(false, ConcurrentSecretChange::Rotate)
+}
+
+#[test]
+fn stale_copy_rotation_after_concurrent_rotation_rolls_back() -> Result<(), Box<dyn Error>> {
+    assert_stale_rotation_rolls_back(true, ConcurrentSecretChange::Rotate)
+}
+
+#[test]
+fn stale_rotate_after_current_version_purge_rolls_back() -> Result<(), Box<dyn Error>> {
+    assert_stale_rotation_rolls_back(false, ConcurrentSecretChange::Purge)
+}
+
+#[test]
+fn stale_copy_rotation_after_current_version_purge_rolls_back() -> Result<(), Box<dyn Error>> {
+    assert_stale_rotation_rolls_back(true, ConcurrentSecretChange::Purge)
 }
 
 #[test]

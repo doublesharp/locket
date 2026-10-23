@@ -670,11 +670,28 @@ pub fn request_project_status_snapshot(
 }
 
 #[cfg(any(unix, target_os = "windows"))]
-fn decode_agent_response(buffer: &[u8]) -> Option<Result<Value, io::Error>> {
-    use locket_agent::{DEFAULT_MAX_MESSAGE_SIZE, ResponseEnvelope, decode_response_frame};
+/// Decodes a response, waiting only for an incomplete frame. Parser diagnostics
+/// may contain peer-supplied plaintext, so permanent failures use a fixed message.
+pub fn decode_agent_frame(
+    buffer: &[u8],
+) -> Result<Option<locket_agent::ResponseEnvelope>, io::Error> {
+    use locket_agent::{DEFAULT_MAX_MESSAGE_SIZE, ProtocolError, decode_response_frame};
 
-    let Ok((response, _)) = decode_response_frame(buffer, DEFAULT_MAX_MESSAGE_SIZE) else {
-        return None;
+    match decode_response_frame(buffer, DEFAULT_MAX_MESSAGE_SIZE) {
+        Ok((response, _)) => Ok(Some(response)),
+        Err(ProtocolError::IncompleteFrame) => Ok(None),
+        Err(_) => Err(io::Error::new(io::ErrorKind::InvalidData, "invalid agent response frame")),
+    }
+}
+
+#[cfg(any(unix, target_os = "windows"))]
+fn decode_agent_response(buffer: &[u8]) -> Option<Result<Value, io::Error>> {
+    use locket_agent::ResponseEnvelope;
+
+    let response = match decode_agent_frame(buffer) {
+        Ok(Some(response)) => response,
+        Ok(None) => return None,
+        Err(error) => return Some(Err(error)),
     };
     Some(match response {
         ResponseEnvelope::Success(success) => Ok(success.payload),
@@ -1080,6 +1097,10 @@ fn follow_agent_logs(
         std::thread::sleep(StdDuration::from_millis(AGENT_LOG_FOLLOW_SLEEP_MS));
     }
 }
+
+#[cfg(all(test, unix))]
+#[path = "agent_framing_tests.rs"]
+pub(crate) mod framing_tests;
 
 #[cfg(test)]
 mod tests {

@@ -13,7 +13,6 @@ import {
   buildLockRequest,
   buildPrepareExecRequest,
   buildRegisterIdeEnvSessionPayload,
-  buildScanKnownValuesRequest,
   buildSetActiveProfileRequest,
   buildUnlockRequest,
   policyAllowList,
@@ -80,13 +79,6 @@ test('prepare exec request includes project id, profile id, and policy name', ()
   assert.throws(() => buildPrepareExecRequest('lk_proj_a', 'prof-dev', ''), /policy name is required/u);
 });
 
-test('scan workspace request filters blank paths and never sets require_known', () => {
-  const request = buildScanKnownValuesRequest(['/repo/a', '   ', '/repo/b']);
-  assert.deepEqual(request.paths, ['/repo/a', '/repo/b']);
-  assert.equal(request.require_known, false);
-  assert.equal(request.redact_names, false);
-});
-
 test('list audit request bounds the limit and trims fields', () => {
   const request = buildListAuditRequest(' /tmp/store.db ', ' lk_proj_a ');
   assert.equal(request.store_path, '/tmp/store.db');
@@ -106,7 +98,6 @@ test('command routing table covers every spec command and uses unique ids', () =
     { commandId: 'locket.lock', agentMethod: 'Lock' },
     { commandId: 'locket.switchProfile', agentMethod: 'SetActiveProfile' },
     { commandId: 'locket.runPolicy', agentMethod: 'ListPolicies' },
-    { commandId: 'locket.scanWorkspace', agentMethod: 'ScanKnownValues' },
     { commandId: 'locket.openAuditView', agentMethod: 'ListAudit' },
   ];
   assert.deepEqual([...LOCKET_COMMAND_ROUTES], expected);

@@ -2,6 +2,7 @@
 
 pub mod compose;
 pub mod docker;
+mod docker_context;
 pub mod env;
 #[allow(clippy::module_inception)]
 pub mod exec;

@@ -56,12 +56,6 @@ export interface PrepareExecRequestPayload {
   readonly policy_name: string;
 }
 
-export interface ScanKnownValuesRequestPayload {
-  readonly paths: readonly string[];
-  readonly require_known: boolean;
-  readonly redact_names: boolean;
-}
-
 export interface ListAuditRequestPayload {
   readonly store_path: string;
   readonly project_id: string;
@@ -151,15 +145,15 @@ export const LOCKET_COMMAND_ROUTES: ReadonlyArray<{
   { commandId: 'locket.lock', agentMethod: 'Lock' },
   { commandId: 'locket.switchProfile', agentMethod: 'SetActiveProfile' },
   { commandId: 'locket.runPolicy', agentMethod: 'ListPolicies' },
-  { commandId: 'locket.scanWorkspace', agentMethod: 'ScanKnownValues' },
   { commandId: 'locket.openAuditView', agentMethod: 'ListAudit' },
 ];
 
 // Full VS Code command contribution set. Most entries are agent RPC
-// routes above; value access and terminal creation launch the CLI/terminal
+// routes above; scans, value access and terminal creation launch the CLI/terminal
 // and are intentionally not agent RPC routes.
 export const LOCKET_EDITOR_COMMAND_IDS: readonly string[] = [
   ...LOCKET_COMMAND_ROUTES.map((route) => route.commandId),
+  'locket.scanWorkspace',
   'locket.createTerminal',
   'locket.revealSecret',
   'locket.copySecret',
@@ -234,19 +228,6 @@ export function buildPrepareExecRequest(
     project_id: trimmedProjectId,
     profile_id: trimmedProfileId,
     policy_name: trimmedPolicyName,
-  };
-}
-
-// Build a `ScanKnownValues` request scoped to the workspace folder.
-// The extension only supplies path labels; the agent never opens files
-// on its behalf for editor-driven scans.
-export function buildScanKnownValuesRequest(
-  workspacePaths: readonly string[],
-): ScanKnownValuesRequestPayload {
-  return {
-    paths: workspacePaths.filter((value) => value.trim().length > 0),
-    require_known: false,
-    redact_names: false,
   };
 }
 

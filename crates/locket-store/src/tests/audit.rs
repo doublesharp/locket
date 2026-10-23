@@ -9,14 +9,164 @@ use sha2::Sha256;
 
 use crate::audit::append_audit;
 use crate::{
-    AuditContext, AuditWrite, ImportedAuditChainRow, StoreError,
+    AuditContext, AuditListFilter, AuditWrite, ImportedAuditChainRow, StoreError,
     verify_imported_audit_chain_structure,
 };
 
 use super::{
-    insert_project_profile, open_initialized_store, test_secret, test_secret_blob,
+    TestStore, insert_project_profile, open_initialized_store, test_secret, test_secret_blob,
     test_secret_fingerprint, test_secret_version,
 };
+
+fn audit_display_fixture(
+    secret_name: Option<&str>,
+    command: Option<&str>,
+) -> Result<TestStore, Box<dyn Error>> {
+    let mut test_store = open_initialized_store()?;
+    insert_project_profile(&test_store.store)?;
+    for (timestamp, secret_name, command) in [(100, None, None), (200, secret_name, command)] {
+        let mut metadata = json!({
+            "schema_version": 1,
+            "action": "DOCTOR",
+            "status": "SUCCESS",
+            "check_names": ["audit_hmac_chain"],
+        });
+        if let Some(value) = secret_name {
+            metadata["secret_name"] = json!(value);
+        }
+        if let Some(value) = command {
+            metadata["command"] = json!(value);
+        }
+        test_store.store.append_audit(
+            &[42; 32],
+            &AuditWrite {
+                project_id: "lk_proj_test",
+                profile_id: Some("lk_prof_test"),
+                action: "DOCTOR",
+                status: "SUCCESS",
+                secret_name,
+                command,
+                metadata_json: &metadata,
+                timestamp,
+            },
+        )?;
+    }
+    Ok(test_store)
+}
+
+#[derive(Clone, Copy)]
+enum AuditDisplayRead {
+    Listing,
+    VerifyReadOnly,
+    VerifyAndAppend,
+}
+
+fn assert_audit_display_tampering_detected(
+    column: &str,
+    read: AuditDisplayRead,
+) -> Result<(), Box<dyn Error>> {
+    for (secret_name, command, replacement) in [
+        (Some("DATABASE_URL"), Some("doctor"), Some("FORGED")),
+        (Some("DATABASE_URL"), Some("doctor"), None),
+        (None, None, Some("FORGED")),
+    ] {
+        let mut test_store = audit_display_fixture(secret_name, command)?;
+        let sql = match column {
+            "secret_name" => "UPDATE audit_log SET secret_name = ?1 WHERE sequence = 2",
+            "command" => "UPDATE audit_log SET command = ?1 WHERE sequence = 2",
+            _ => return Err("unsupported test column".into()),
+        };
+        assert_eq!(test_store.store.connection().execute(sql, [replacement])?, 1);
+
+        match read {
+            AuditDisplayRead::Listing => {
+                let since =
+                    test_store.store.list_audit_rows_since("lk_proj_test", "lk_prof_test", 0)?;
+                let filtered = test_store.store.list_audit_rows_filtered(
+                    "lk_proj_test",
+                    &AuditListFilter { limit: 10, ..AuditListFilter::default() },
+                )?;
+                for rows in [since, filtered] {
+                    assert_eq!(rows.len(), 2);
+                    assert_eq!(rows[0].secret_name, None);
+                    assert_eq!(rows[0].command, None);
+                    assert_eq!(rows[1].secret_name.as_deref(), secret_name);
+                    assert_eq!(rows[1].command.as_deref(), command);
+                }
+            }
+            AuditDisplayRead::VerifyReadOnly => {
+                let verification =
+                    test_store.store.verify_audit_chain_read_only("lk_proj_test", &[42; 32])?;
+                assert!(!verification.hmac_ok, "tampered {column} must fail verification");
+                assert_eq!(verification.first_break_sequence, Some(2));
+                assert_eq!(verification.rows_verified, 1);
+                assert!(
+                    verification.first_break_reason.as_deref().is_some_and(|r| r.contains(column))
+                );
+            }
+            AuditDisplayRead::VerifyAndAppend => {
+                let result =
+                    test_store.store.verify_audit_chain_and_append("lk_proj_test", &[42; 32], 300);
+                assert!(
+                    matches!(result, Err(StoreError::AuditIntegrity { sequence: 2, ref reason })
+                        if reason.contains(column)),
+                    "tampered {column} must fail verification, got {result:?}"
+                );
+            }
+        }
+        assert_eq!(test_store.store.list_recent_audit_actions("lk_proj_test", 10)?.len(), 2);
+    }
+    Ok(())
+}
+
+#[test]
+fn audit_display_listing_uses_authenticated_secret_name() -> Result<(), Box<dyn Error>> {
+    assert_audit_display_tampering_detected("secret_name", AuditDisplayRead::Listing)
+}
+
+#[test]
+fn audit_display_listing_uses_authenticated_command() -> Result<(), Box<dyn Error>> {
+    assert_audit_display_tampering_detected("command", AuditDisplayRead::Listing)
+}
+
+#[test]
+fn audit_display_read_only_verification_rejects_tampered_secret_name() -> Result<(), Box<dyn Error>>
+{
+    assert_audit_display_tampering_detected("secret_name", AuditDisplayRead::VerifyReadOnly)
+}
+
+#[test]
+fn audit_display_read_only_verification_rejects_tampered_command() -> Result<(), Box<dyn Error>> {
+    assert_audit_display_tampering_detected("command", AuditDisplayRead::VerifyReadOnly)
+}
+
+#[test]
+fn audit_display_appending_verification_rejects_tampered_secret_name() -> Result<(), Box<dyn Error>>
+{
+    assert_audit_display_tampering_detected("secret_name", AuditDisplayRead::VerifyAndAppend)
+}
+
+#[test]
+fn audit_display_appending_verification_rejects_tampered_command() -> Result<(), Box<dyn Error>> {
+    assert_audit_display_tampering_detected("command", AuditDisplayRead::VerifyAndAppend)
+}
+
+#[test]
+fn audit_display_missing_optional_fields_remain_compatible() -> Result<(), Box<dyn Error>> {
+    let mut test_store = audit_display_fixture(None, None)?;
+    let rows = test_store.store.list_audit_rows_filtered(
+        "lk_proj_test",
+        &AuditListFilter { limit: 10, ..AuditListFilter::default() },
+    )?;
+    assert_eq!(rows.len(), 2);
+    assert!(rows.iter().all(|row| row.secret_name.is_none() && row.command.is_none()));
+    assert_eq!(test_store.store.list_audit_rows_since("lk_proj_test", "lk_prof_test", 0)?, rows);
+    let verification = test_store.store.verify_audit_chain_read_only("lk_proj_test", &[42; 32])?;
+    assert!(verification.hmac_ok);
+    assert_eq!(verification.rows_verified, 2);
+    assert_eq!(test_store.store.verify_audit_chain_and_append("lk_proj_test", &[42; 32], 300)?, 2);
+    Ok(())
+}
 
 fn imported_audit_row(
     sequence: u64,

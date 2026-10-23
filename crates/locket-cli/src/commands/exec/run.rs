@@ -1262,10 +1262,7 @@ fn agent_invoke_value(
     payload: serde_json::Value,
     operation: &'static str,
 ) -> Result<serde_json::Value, CliError> {
-    use locket_agent::{
-        DEFAULT_MAX_MESSAGE_SIZE, RequestEnvelope, ResponseEnvelope, decode_response_frame,
-        encode_frame,
-    };
+    use locket_agent::{DEFAULT_MAX_MESSAGE_SIZE, RequestEnvelope, ResponseEnvelope, encode_frame};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::UnixStream;
 
@@ -1283,7 +1280,9 @@ fn agent_invoke_value(
 
         let mut buffer = Vec::with_capacity(1024);
         loop {
-            if let Ok((response, _)) = decode_response_frame(&buffer, DEFAULT_MAX_MESSAGE_SIZE) {
+            if let Some(response) = crate::commands::agent::decode_agent_frame(&buffer)
+                .map_err(|error| agent_unavailable(operation, &error))?
+            {
                 return match response {
                     ResponseEnvelope::Success(success) => Ok(success.payload),
                     ResponseEnvelope::Error(error) => Err(agent_error_to_cli(&error)),
@@ -1323,6 +1322,53 @@ fn agent_unavailable(operation: &'static str, error: &io::Error) -> CliError {
         LocketError::AgentUnavailable,
         format!("AgentUnavailable: could not {operation}: {error}"),
     )
+}
+
+#[cfg(all(test, unix))]
+mod framing_tests {
+    #![allow(clippy::panic, clippy::unwrap_used)]
+
+    use crate::commands::agent::framing_tests::{
+        CANARY, fragmented_success, invalid_frame, with_open_peer,
+    };
+    use serde_json::json;
+
+    fn rejects_frame(kind: &str) {
+        let result = with_open_peer(vec![invalid_frame(kind)], |context| {
+            super::agent_invoke_value(context, locket_agent::AgentMethod::Status, json!({}), "test")
+        });
+        let Err(error) = result else {
+            panic!("permanent frame error expected");
+        };
+        assert!(matches!(
+            error,
+            crate::CliError::Typed { kind: locket_core::LocketError::AgentUnavailable, .. }
+        ));
+        assert!(!error.to_string().contains(CANARY));
+    }
+
+    #[test]
+    fn exec_reader_rejects_oversized_frame_while_peer_stays_open() {
+        rejects_frame("oversized");
+    }
+
+    #[test]
+    fn exec_reader_rejects_malformed_frame_while_peer_stays_open() {
+        rejects_frame("malformed");
+    }
+
+    #[test]
+    fn exec_reader_rejects_version_frame_while_peer_stays_open() {
+        rejects_frame("version");
+    }
+
+    #[test]
+    fn exec_reader_accepts_fragmented_frame_while_peer_stays_open() {
+        let result = with_open_peer(fragmented_success(), |context| {
+            super::agent_invoke_value(context, locket_agent::AgentMethod::Status, json!({}), "test")
+        });
+        assert_eq!(result.unwrap(), json!({"ok": true}));
+    }
 }
 
 fn agent_error_to_cli(error: &locket_agent::ErrorEnvelope) -> CliError {

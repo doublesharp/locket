@@ -447,9 +447,21 @@ fn scan_known_values(
             continue;
         }
         let mut cursor = 0;
+        let mut position_cursor = 0;
+        let (mut line, mut column) = (1, 1);
         while let Some(relative) = text[cursor..].find(known_value.as_str()) {
             let start = cursor + relative;
-            let (line, column) = line_column_for_byte(text, start);
+            // Matches are ordered. Count each prefix character only once,
+            // including newlines inside the preceding matched value.
+            for character in text[position_cursor..start].chars() {
+                if character == '\n' {
+                    line += 1;
+                    column = 1;
+                } else {
+                    column += 1;
+                }
+            }
+            position_cursor = start;
             findings.push(ScanFinding {
                 path_label: path_label.to_owned(),
                 line,
@@ -461,23 +473,6 @@ fn scan_known_values(
         }
     }
     findings
-}
-
-fn line_column_for_byte(text: &str, byte_index: usize) -> (usize, usize) {
-    let mut line = 1;
-    let mut column = 1;
-    for (index, character) in text.char_indices() {
-        if index >= byte_index {
-            break;
-        }
-        if character == '\n' {
-            line += 1;
-            column = 1;
-        } else {
-            column += 1;
-        }
-    }
-    (line, column)
 }
 
 fn should_skip_scan_path(path: &Path) -> bool {
@@ -540,4 +535,41 @@ where
 
     let message = String::from_utf8_lossy(&output.stderr);
     Err(metadata_invalid_error(format!("git command failed: {}", message.trim())))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::scan_known_values;
+    use locket_scan::FindingKind;
+    use zeroize::Zeroizing;
+
+    #[test]
+    fn known_matches_preserve_unicode_columns_and_multiline_values() {
+        let values = [Zeroizing::new(String::new()), Zeroizing::new("a\nb".to_owned())];
+        let matches = scan_known_values("sample.txt", "é🦀:a\nb;a\nb\r\na\nb", &values);
+        assert_eq!(
+            matches.iter().map(|finding| (finding.line, finding.column)).collect::<Vec<_>>(),
+            [(1, 4), (2, 3), (4, 1)]
+        );
+        for finding in matches {
+            assert_eq!(finding.path_label, "sample.txt");
+            assert_eq!(finding.token_length, 3);
+            assert_eq!(finding.kind, FindingKind::KnownSecretValue);
+        }
+    }
+
+    #[test]
+    fn dense_known_matches_report_every_position() {
+        let record = "é:test-value,";
+        let count = 10_000;
+        let text = record.repeat(count);
+        let values = [Zeroizing::new("test-value".to_owned())];
+        let matches = scan_known_values("dense.txt", &text, &values);
+        assert_eq!(matches.len(), count);
+        for (index, finding) in matches.iter().enumerate() {
+            assert_eq!(finding.line, 1);
+            assert_eq!(finding.column, index * record.chars().count() + 3);
+            assert_eq!(finding.token_length, "test-value".len());
+        }
+    }
 }

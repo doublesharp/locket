@@ -24,7 +24,6 @@ import {
   buildListAuditRequest,
   buildListPoliciesRequest,
   buildLockRequest,
-  buildScanKnownValuesRequest,
   buildSetActiveProfileRequest,
   buildUnlockRequest,
 } from './commandsModel';
@@ -38,7 +37,6 @@ const PROJECT_ID = 'lk_proj_smoke';
 const PROFILE_NAME = 'dev';
 const PROFILE_ID = 'prof-dev';
 const SECRET_NAME = 'DATABASE_URL';
-const WORKSPACE_PATHS = ['/repo/main', '/repo/aux'];
 
 const EXPECTED_COMMAND_PAYLOADS: ReadonlyArray<{
   readonly commandId: string;
@@ -77,15 +75,6 @@ const EXPECTED_COMMAND_PAYLOADS: ReadonlyArray<{
     payload: { project_id: PROJECT_ID, privacy_redact_names: false },
   },
   {
-    commandId: 'locket.scanWorkspace',
-    agentMethod: 'ScanKnownValues',
-    payload: {
-      paths: WORKSPACE_PATHS,
-      require_known: false,
-      redact_names: false,
-    },
-  },
-  {
     commandId: 'locket.openAuditView',
     agentMethod: 'ListAudit',
     payload: {
@@ -111,8 +100,6 @@ function buildPayloadForCommand(commandId: string): unknown {
       return buildSetActiveProfileRequest(CONFIG_PATH, STORE_PATH, PROJECT_ID, PROFILE_NAME);
     case 'locket.runPolicy':
       return buildListPoliciesRequest(PROJECT_ID);
-    case 'locket.scanWorkspace':
-      return buildScanKnownValuesRequest(WORKSPACE_PATHS);
     case 'locket.revealSecret':
     case 'locket.copySecret':
       return buildRevealRequest(SECRET_NAME, PROFILE_ID);

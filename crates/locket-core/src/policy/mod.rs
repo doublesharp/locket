@@ -479,6 +479,27 @@ ttl = "{value}"
     }
 
     #[test]
+    fn rejects_invalid_unicode_durations_in_policy_ttl() {
+        for value in ["é", "1💥", "💥s", "１s", "1m\u{301}"] {
+            let result = PolicyDocument::from_toml_str(&format!(
+                r#"schema_version = 1
+[commands.dev]
+argv = ["pnpm"]
+ttl = "{value}"
+"#
+            ));
+
+            assert_eq!(
+                result,
+                Err(PolicyParseError::InvalidTtl {
+                    command: "dev".to_owned(),
+                    value: value.to_owned(),
+                })
+            );
+        }
+    }
+
+    #[test]
     fn rejects_missing_command_spec() {
         let result = PolicyDocument::from_toml_str(
             r#"schema_version = 1

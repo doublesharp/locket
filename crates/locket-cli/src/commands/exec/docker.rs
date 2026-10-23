@@ -94,45 +94,28 @@ fn prepare_docker_helper_policy_execution(
 ) -> Result<PreparedDockerPolicyExecution, CliError> {
     let resolved = require_project(context)?;
     let effective = load_effective_command_policy(&resolved, policy_name, &context.cwd)?;
-    let policy = effective.policy.clone();
+    let mut policy = effective.policy.clone();
     ensure_runtime_policy_supported(&policy)?;
+    // Docker helpers accept pass-through arguments. The saved command cannot
+    // stand in for the actual recipient when evaluating per-secret argv ACLs.
+    policy.command = CommandSpec::Argv(argv.to_vec());
+    let document = crate::read_policy_document(&resolved.root.join(crate::LOCKET_TOML))?;
+    crate::enforce_secret_access_policies(
+        &document,
+        &policy,
+        &resolved.root,
+        &context.cwd.canonicalize()?,
+    )?;
+    super::docker_context::validate_destination_arguments(argv)?;
+    locket_docker::validate_injected_names(
+        policy.allowed_secrets.iter().map(locket_core::SecretName::as_str),
+    )
+    .map_err(docker_error)?;
     let store = open_store(context)?;
     let (profile, _selections, locket_env) =
         resolve_policy_locket_env(context, &store, &resolved, &effective, &policy)?;
-    let inherited = policy.inherit_env.iter().map(String::as_str).collect::<Vec<_>>();
-    let mut delivery_env = locket_exec::merge_environment(
-        &parent_env,
-        locket_exec::DEFAULT_SAFE_ALLOWLIST,
-        &inherited,
-        &locket_exec::EnvMap::new(),
-        &locket_env,
-        policy.env_mode,
-        policy.override_behavior,
-    )
-    .map_err(|error| exec_prepare_error(locket_exec::ExecError::Environment(error)))?;
-    super::run::finalize_configuration_environment(&resolved, &policy, &mut delivery_env)?;
-    delivery_env
-        .retain(|name, _| policy.allowed_secrets.iter().any(|allowed| allowed.as_str() == name));
-    let endpoint = parent_env.get("DOCKER_HOST").map(|value| value.as_str());
-    let plan = match helper_kind {
-        DockerHelperKind::DockerRun => locket_docker::prepare_docker_run(
-            argv,
-            &locket_exec::EnvMap::new(),
-            &delivery_env,
-            endpoint,
-            policy.allow_remote_docker,
-        ),
-        DockerHelperKind::Compose => locket_docker::prepare_compose(
-            argv,
-            &locket_exec::EnvMap::new(),
-            &delivery_env,
-            endpoint,
-            policy.allow_remote_docker,
-        ),
-    }
-    .map_err(docker_error)?;
     let request = locket_exec::ExecutionRequest {
-        argv: plan.argv.clone(),
+        argv: argv.to_vec(),
         parent_env,
         inherit_env: policy.inherit_env.clone(),
         external_env: locket_exec::EnvMap::new(),
@@ -142,6 +125,51 @@ fn prepare_docker_helper_policy_execution(
     };
     let mut execution = locket_exec::prepare_execution(&request).map_err(exec_prepare_error)?;
     super::run::finalize_configuration_environment(&resolved, &policy, &mut execution.env)?;
+    let endpoint = super::docker_context::resolve_endpoint(&execution.env, &context.cwd)?;
+    let mut delivery_env = execution.env.clone();
+    delivery_env
+        .retain(|name, _| policy.allowed_secrets.iter().any(|allowed| allowed.as_str() == name));
+    let mut plan = match helper_kind {
+        DockerHelperKind::DockerRun => locket_docker::prepare_docker_run(
+            argv,
+            &locket_exec::EnvMap::new(),
+            &delivery_env,
+            Some(&endpoint),
+            policy.allow_remote_docker,
+        ),
+        DockerHelperKind::Compose => locket_docker::prepare_compose(
+            argv,
+            &locket_exec::EnvMap::new(),
+            &delivery_env,
+            Some(&endpoint),
+            policy.allow_remote_docker,
+        ),
+    }
+    .map_err(docker_error)?;
+    if plan.context_class == locket_docker::DockerContextClass::Local {
+        // Pin the checked destination so a later context-file change cannot
+        // redirect this prepared invocation to a different daemon.
+        plan.argv.splice(1..1, ["--host".to_owned(), endpoint]);
+    } else {
+        use std::io::Write as _;
+        let expected = format!("remote {}", policy.name);
+        writeln!(
+            std::io::stderr(),
+            "Docker will receive local secrets on a remote daemon. Type '{expected}' to confirm."
+        )?;
+        let confirmation = context.confirmation_reader.read_confirmation("remote Docker")?;
+        if confirmation.trim_end_matches(['\r', '\n']) != expected {
+            return Err(crate::runtime::error::confirmation_failed_error(
+                "confirmation did not match remote Docker scope",
+            ));
+        }
+    }
+    // Keep the exact environment whose destination was checked. Re-resolving
+    // defaults after confirmation could change the prepared child environment.
+    execution.args = plan.argv.iter().skip(1).cloned().collect();
+    if plan.context_class == locket_docker::DockerContextClass::Local {
+        execution.env.remove("DOCKER_CONTEXT");
+    }
 
     Ok(PreparedDockerPolicyExecution {
         store,

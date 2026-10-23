@@ -467,10 +467,8 @@ async fn agent_set_active_profile(
 
 /// Tauri command exposing the agent's `Reveal` RPC to the webview.
 ///
-/// Today the agent stub returns `UnlockRequired`; the webview's reveal
-/// modal renders that as a typed denial without ever holding plaintext.
-/// Real value-returning behavior lands once the agent unlock cache and
-/// grant table ship.
+/// Resolves native project context and obtains a grant before requesting
+/// plaintext. The webview owns the reveal's focus, context, and TTL lifetime.
 #[tauri::command]
 async fn agent_reveal(
     request: locket_agent::RevealRequest,
@@ -995,6 +993,7 @@ pub fn run() -> tauri::Result<()> {
             desktop_actions::desktop_import_env,
             desktop_actions::desktop_start_agent,
             desktop_actions::desktop_run_policy,
+            desktop_actions::desktop_scan_project,
             desktop_actions::desktop_save_policy,
             desktop_actions::desktop_variable_readiness,
             desktop_actions::desktop_team_sync_status,

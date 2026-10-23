@@ -164,6 +164,33 @@ test('socket path honors LOCKET_AGENT_SOCKET override', () => {
   assert.equal(resolveAgentSocketPath({ LOCKET_AGENT_SOCKET: '/tmp/locket-test.sock' }), '/tmp/locket-test.sock');
 });
 
+test('default socket follows the CLI platform data directory', () => {
+  if (process.platform === 'darwin') {
+    assert.equal(resolveAgentSocketPath({}), path.join(os.homedir(), 'Library', 'Application Support', 'locket', 'agent.sock'));
+  } else if (process.platform === 'linux') {
+    assert.equal(resolveAgentSocketPath({ XDG_RUNTIME_DIR: '/run/user/fixture' }), '/run/user/fixture/locket/agent.sock');
+  } else if (process.platform === 'win32') {
+    assert.match(resolveAgentSocketPath({}), /^\\\\\.\\pipe\\locket-agent-S-\d+(?:-\d+)+$/u);
+  }
+});
+
+test('endpoint discovery matches CLI defaults on every supported platform', () => {
+  const home = '/home/fixture';
+  assert.equal(resolveAgentSocketPath({}, { platform: 'darwin', home }), `${home}/Library/Application Support/locket/agent.sock`);
+  assert.equal(resolveAgentSocketPath({ XDG_RUNTIME_DIR: '/run/user/42' }, { platform: 'linux', home }), '/run/user/42/locket/agent.sock');
+  assert.equal(resolveAgentSocketPath({}, { platform: 'linux', home }), `${home}/.locket/agent.sock`);
+  assert.equal(resolveAgentSocketPath({ XDG_RUNTIME_DIR: '' }, { platform: 'linux', home }), `${home}/.locket/agent.sock`);
+  assert.equal(resolveAgentSocketPath({}, { platform: 'win32', home: 'C:\\Users\\fixture', windowsSid: () => 'S-1-5-21-42' }), '\\\\.\\pipe\\locket-agent-S-1-5-21-42');
+});
+
+test('an explicit endpoint overrides platform discovery and missing SID fails closed', () => {
+  let sidCalls = 0;
+  const platform = { platform: 'win32' as const, home: 'C:\\Users\\fixture', windowsSid: () => { sidCalls++; return 'invalid\\pipe'; } };
+  assert.equal(resolveAgentSocketPath({ LOCKET_AGENT_SOCKET: ' custom-endpoint ' }, platform), 'custom-endpoint');
+  assert.equal(sidCalls, 0);
+  assert.throws(() => resolveAgentSocketPath({}, platform), /Unable to determine the Windows agent pipe/u);
+});
+
 async function temporarySocketPath(): Promise<{ socketPath: string; cleanup: () => Promise<void> }> {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'locket-vscode-agent-'));
   return {

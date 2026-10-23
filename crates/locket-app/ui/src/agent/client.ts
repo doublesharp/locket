@@ -434,6 +434,11 @@ export async function desktopRunPolicy(request: {
 }): Promise<AgentResult<{ launched: boolean; command: string }>> {
   return callTyped('desktop_run_policy', { request });
 }
+export async function desktopScanProject(request: {
+  project_id: string;
+}): Promise<AgentResult<{ launched: boolean; command: string }>> {
+  return callTyped('desktop_scan_project', { request });
+}
 export async function desktopSavePolicy(
   request: DesktopSavePolicyRequest,
 ): Promise<AgentResult<void>> {

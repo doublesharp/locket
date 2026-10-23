@@ -12,6 +12,8 @@ use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 
 use crate::envelope::{ErrorEnvelope, RequestEnvelope, ResponseEnvelope, SuccessEnvelope};
+use crate::grant::GrantAction;
+use crate::method::AgentMethod;
 
 const SIGNING_CONTEXT: &[u8] = b"locket-client-auth-v1";
 const CHALLENGE_NONCE_LEN: usize = 24;
@@ -68,7 +70,7 @@ struct AuthContext {
     project_id: String,
     store_path: PathBuf,
     requested_action: String,
-    requested_policy: Option<String>,
+    requested_policy: String,
     auth: AuthFields,
 }
 
@@ -137,9 +139,7 @@ async fn authenticate_request(
         write_denial_audit(&mut store, state, &context, &client, now, "policy_denied").await?;
         return Err(AuthError::NotTrusted("action not allowed"));
     }
-    if let Some(policy) = context.requested_policy.as_deref()
-        && !client.allowed_policies.iter().any(|allowed| allowed == policy)
-    {
+    if !client.allowed_policies.iter().any(|allowed| allowed == &context.requested_policy) {
         write_denial_audit(&mut store, state, &context, &client, now, "policy_denied").await?;
         return Err(AuthError::NotTrusted("policy not allowed"));
     }
@@ -200,21 +200,50 @@ fn auth_context(request: &RequestEnvelope) -> Result<Option<AuthContext>, &'stat
         serde_json::from_value(auth_value.clone()).map_err(|_| "invalid auth payload")?;
     let project_id = required_string(payload, "project_id")?.to_owned();
     let store_path = PathBuf::from(required_string(payload, "store_path")?);
-    let requested_action = payload
-        .get("requested_action")
-        .or_else(|| payload.get("action"))
-        .and_then(Value::as_str)
-        .ok_or("missing requested_action")?
-        .to_owned();
-    let requested_policy = payload.get("policy_name").and_then(Value::as_str).map(str::to_owned);
+    let requested_action = required_string(payload, "requested_action")?;
+    if !permitted_automation_actions(request)?.contains(&requested_action) {
+        return Err("requested_action does not authorize this operation");
+    }
+    // Every v1 automation permission is restricted to named command policies.
+    // Missing, null or non-string policy values must not skip the allow-list.
+    let requested_policy = required_string(payload, "policy_name")?;
+    if requested_policy.trim().is_empty() {
+        return Err("automation requests require policy_name");
+    }
     Ok(Some(AuthContext {
         request_id: request.id.clone(),
         project_id,
         store_path,
-        requested_action,
-        requested_policy,
+        requested_action: requested_action.to_owned(),
+        requested_policy: requested_policy.to_owned(),
         auth,
     }))
+}
+
+fn permitted_automation_actions(
+    request: &RequestEnvelope,
+) -> Result<&'static [&'static str], &'static str> {
+    // Permissions belong to the operation the dispatcher will execute. The
+    // caller's label can select a supported flow, but cannot relabel an RPC.
+    // Preparing/executing a policy includes resolving its allowed references;
+    // known-value redaction uses the same scan RPC as scanner integrations.
+    match request.method().map_err(|_| "unsupported automation method")? {
+        AgentMethod::PrepareExec => Ok(&["run-policy"]),
+        AgentMethod::ResolveReference => Ok(&["resolve-reference", "run-policy"]),
+        AgentMethod::ScanKnownValues => Ok(&["scan-known-values", "redact"]),
+        AgentMethod::RequestGrant => {
+            let action: GrantAction = serde_json::from_value(request.payload["action"].clone())
+                .map_err(|_| "invalid automation grant action")?;
+            match action {
+                GrantAction::RunPolicy | GrantAction::PrepareExec => Ok(&["run-policy"]),
+                GrantAction::ResolveReference => Ok(&["resolve-reference", "run-policy"]),
+                GrantAction::ScanKnownValues => Ok(&["scan-known-values", "redact"]),
+                GrantAction::Redact => Ok(&["redact"]),
+                _ => Err("grant action is not available to automation clients"),
+            }
+        }
+        _ => Err("method is not available to automation clients"),
+    }
 }
 
 fn required_string<'a>(

@@ -25,6 +25,17 @@ pub enum StoreError {
     #[error(transparent)]
     Sqlite(#[from] rusqlite::Error),
 
+    /// A secret changed after the caller fetched its current version.
+    #[error(
+        "secret {secret_id} is no longer active at version {expected_version}; reload and retry"
+    )]
+    SecretStateConflict {
+        /// Secret whose stored state no longer matches the caller's snapshot.
+        secret_id: String,
+        /// Current version expected by the caller.
+        expected_version: u32,
+    },
+
     /// JSON metadata encoding failed.
     #[error(transparent)]
     Json(#[from] serde_json::Error),
@@ -113,6 +124,7 @@ impl StoreError {
     pub fn locket_error(&self) -> LocketError {
         match self {
             Self::Sqlite(error) => sqlite_locket_error(error),
+            Self::SecretStateConflict { .. } => LocketError::StorageBusy,
             Self::UnsupportedSchema { .. } => LocketError::SchemaNewerThanBinary,
             Self::AuditIntegrity { .. }
             | Self::InvalidAuditHmacLength { .. }

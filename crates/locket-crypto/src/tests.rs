@@ -290,6 +290,42 @@ fn canonical_secret_aads() -> Result<(Vec<u8>, Vec<u8>), CryptoError> {
 }
 
 #[test]
+fn unsupported_aad_schema_fails_secret_decryption() -> Result<(), CryptoError> {
+    let (value_aad, wrap_aad) = canonical_secret_aads()?;
+    let mut encrypted =
+        super::encrypt_secret_value_v1(&PROFILE_SECRET_KEY, "secret", &value_aad, &wrap_aad)?;
+    assert_eq!(
+        decrypt_secret_value_v1(&PROFILE_SECRET_KEY, &encrypted, &value_aad, &wrap_aad)?.as_str(),
+        "secret"
+    );
+
+    for schema_version in [0, 2, u16::MAX] {
+        encrypted.aad_schema_version = schema_version;
+        assert_eq!(
+            decrypt_secret_value_v1(&PROFILE_SECRET_KEY, &encrypted, &value_aad, &wrap_aad),
+            Err(CryptoError::DecryptionFailed),
+            "unsupported AAD schema {schema_version}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn unsupported_aad_schema_is_rejected_before_unwrapping() -> Result<(), CryptoError> {
+    let (value_aad, wrap_aad) = canonical_secret_aads()?;
+    let mut encrypted =
+        super::encrypt_secret_value_v1(&PROFILE_SECRET_KEY, "secret", &value_aad, &wrap_aad)?;
+    encrypted.aad_schema_version = 2;
+    encrypted.encrypted_dek.clear();
+
+    assert_eq!(
+        decrypt_secret_value_v1(&PROFILE_SECRET_KEY, &encrypted, &value_aad, &wrap_aad),
+        Err(CryptoError::DecryptionFailed)
+    );
+    Ok(())
+}
+
+#[test]
 fn wrong_profile_secret_key_fails_secret_decryption() -> Result<(), CryptoError> {
     let (value_aad, wrap_aad) = canonical_secret_aads()?;
     let encrypted =

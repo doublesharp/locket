@@ -88,6 +88,94 @@ fn unknown_policy_and_unknown_project_are_rejected() -> Result<(), Box<dyn Error
     Ok(())
 }
 
+#[test]
+fn scan_launch_uses_registered_root_fixed_argv_and_returns_only_launch_metadata()
+-> Result<(), Box<dyn Error>> {
+    let f = Fixture::new()?;
+    let cli = f.directory.path().join("trusted-locket");
+    let called = std::cell::Cell::new(false);
+    let response = scan_project_with(
+        &f.store,
+        &f.id,
+        || Ok(cli.clone()),
+        |executable, root, args| {
+            called.set(true);
+            assert_eq!(executable, cli);
+            assert_eq!(root, f.root);
+            assert_eq!(args, ["scan", "--require-known"]);
+            Ok(())
+        },
+    )?;
+    assert!(called.get());
+    assert_eq!(
+        serde_json::to_value(response)?,
+        serde_json::json!({"launched": true, "command": "locket scan --require-known"})
+    );
+    Ok(())
+}
+
+#[test]
+fn scan_launch_rejects_unknown_untrusted_or_changed_projects_before_resolving_cli()
+-> Result<(), Box<dyn Error>> {
+    let f = Fixture::new()?;
+    let resolved = std::cell::Cell::new(false);
+    let launched = std::cell::Cell::new(false);
+    for state in ["unknown", "untrusted", "changed"] {
+        if state == "untrusted" {
+            Store::open(&f.store)?.untrust_project_root(&f.id, &root_hash(&f.root))?;
+        } else if state == "changed" {
+            Store::open(&f.store)?.trust_project_root(
+                &f.id,
+                &root_hash(&f.root),
+                f.root.to_str(),
+                2,
+            )?;
+            fs::write(f.root.join("locket.toml"), "schema_version = 1\nproject_id = 'changed'\n")?;
+        }
+        let result = scan_project_with(
+            &f.store,
+            if state == "unknown" { "unknown" } else { &f.id },
+            || {
+                resolved.set(true);
+                Ok(f.root.join("unused-cli"))
+            },
+            |_, _, _| {
+                launched.set(true);
+                Ok(())
+            },
+        );
+        assert!(result.is_err());
+        assert!(!resolved.get());
+        assert!(!launched.get());
+    }
+    Ok(())
+}
+
+#[test]
+fn scan_launch_failures_never_return_success() -> Result<(), Box<dyn Error>> {
+    let f = Fixture::new()?;
+    let launched = std::cell::Cell::new(false);
+    let missing_cli = scan_project_with(
+        &f.store,
+        &f.id,
+        || Err("CLI unavailable".into()),
+        |_, _, _| {
+            launched.set(true);
+            Ok(())
+        },
+    );
+    assert_eq!(missing_cli.err().as_deref(), Some("CLI unavailable"));
+    assert!(!launched.get());
+    let failed_terminal = scan_project_with(
+        &f.store,
+        &f.id,
+        || Ok(f.root.join("unused-cli")),
+        |_, _, _| Err("Terminal refused to open".into()),
+    );
+    assert_eq!(failed_terminal.err().as_deref(), Some("Terminal refused to open"));
+    Ok(())
+}
+
 #[cfg(unix)]
 fn executable(directory: &Path, body: &str) -> Result<PathBuf, Box<dyn Error>> {
     use std::os::unix::fs::PermissionsExt;
@@ -162,7 +250,7 @@ fn terminal_script_quotes_adversarial_paths_and_policy() {
     let script = terminal_script(
         Path::new("/bin/locket '$(touch nope)'"),
         Path::new("/project/a'b\n$(oops)"),
-        "test' ; touch nope",
+        &["run", "test' ; touch nope"],
     );
     assert!(script.contains("'/project/a'\\''b\n$(oops)'"));
     assert!(script.contains("'test'\\'' ; touch nope'"));
@@ -190,7 +278,7 @@ fn windows_terminal_receives_only_encoded_untrusted_content() -> Result<(), Box<
     let args = windows_terminal_args(
         Path::new("C:\\cli'; write-host nope\\locket.exe"),
         Path::new("C:\\root; ' $(oops)"),
-        "task'; write-host nope",
+        &["run", "task'; write-host nope"],
     );
     assert!(args.iter().any(|arg| arg == "-EncodedCommand"));
     assert!(!args.iter().any(|arg| arg.contains("write-host") || arg.contains("oops")));
@@ -216,13 +304,112 @@ fn terminal_script_reaches_only_fake_cli_with_literal_arguments() -> Result<(), 
     let f = Fixture::new()?;
     let cli = executable(&f.root, "printf '%s\\n' \"$@\" > terminal-args; pwd > terminal-cwd")?;
     let policy = "test' ; $(touch unintended)";
-    let launcher = write_terminal_launcher(&cli, &f.root, policy)?;
+    let launcher = write_terminal_launcher(&cli, &f.root, &["run", policy])?;
     assert_eq!(fs::metadata(launcher.path())?.permissions().mode() & 0o777, 0o700);
     let result = Command::new("/bin/sh").arg(launcher.path()).status()?;
     assert!(result.success());
     assert!(!launcher.path().exists());
     assert_eq!(fs::read_to_string(f.root.join("terminal-args"))?, format!("run\n{policy}\n"));
     assert!(!f.root.join("unintended").exists());
+    Ok(())
+}
+
+#[test]
+fn scan_terminal_script_quotes_hostile_paths_and_keeps_fixed_arguments() {
+    let script = terminal_script(
+        Path::new("/bin/locket '$(touch nope)'"),
+        Path::new("/project/a'b\n$(oops); `oops`"),
+        &["scan", "--require-known"],
+    );
+    assert!(script.starts_with(
+        "#!/bin/sh\n/bin/rm -- \"$0\"\ncd -- '/project/a'\\''b\n$(oops); `oops`' && '/bin/locket '\\''$(touch nope)'\\''' 'scan' '--require-known'\n"
+    ));
+}
+
+#[test]
+#[cfg(unix)]
+fn scan_terminal_launcher_passes_only_fixed_argv_in_hostile_cwd() -> Result<(), Box<dyn Error>> {
+    use std::os::unix::fs::PermissionsExt;
+    let f = Fixture::new()?;
+    let root = f.root.join("scan' $(touch unintended); `touch injected`\n");
+    fs::create_dir(&root)?;
+    let cli = executable(&root, "printf '%s\\n' \"$@\" > scan-args; pwd -P > scan-cwd")?;
+    let launcher = write_terminal_launcher(&cli, &root, &["scan", "--require-known"])?;
+    assert_eq!(fs::metadata(launcher.path())?.permissions().mode() & 0o777, 0o700);
+    let result = Command::new("/bin/sh")
+        .arg(launcher.path())
+        .current_dir(&f.root)
+        .stdin(Stdio::null())
+        .status()?;
+    assert!(result.success());
+    assert!(!launcher.path().exists());
+    assert_eq!(fs::read_to_string(root.join("scan-args"))?, "scan\n--require-known\n");
+    assert_eq!(fs::read_to_string(root.join("scan-cwd"))?, format!("{}\n", root.display()));
+    for directory in [&f.root, &root] {
+        assert!(!directory.join("unintended").exists());
+        assert!(!directory.join("injected").exists());
+    }
+    Ok(())
+}
+
+#[test]
+#[cfg(unix)]
+fn scan_terminal_keeps_results_until_dismissed_and_preserves_exit_status()
+-> Result<(), Box<dyn Error>> {
+    use std::io::{BufRead, BufReader};
+    for (exit_code, linux) in [(0, false), (69, false), (0, true), (69, true)] {
+        let f = Fixture::new()?;
+        let cli =
+            executable(&f.root, &format!("printf 'scan fixture result\\n'; exit {exit_code}"))?;
+        let launcher = write_terminal_launcher(&cli, &f.root, &["scan", "--require-known"])?;
+        let argv = if linux {
+            posix_terminal_command(&cli, &f.root, &["scan", "--require-known"])
+        } else {
+            vec!["/bin/sh".into(), launcher.path().as_os_str().to_owned()]
+        };
+        let mut child = Command::new(&argv[0])
+            .args(&argv[1..])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()?;
+        let mut output = BufReader::new(child.stdout.take().ok_or("child output")?);
+        let mut line = String::new();
+        output.read_line(&mut line)?;
+        assert_eq!(line, "scan fixture result\n");
+        line.clear();
+        output.read_line(&mut line)?;
+        if line == "\n" {
+            line.clear();
+            output.read_line(&mut line)?;
+        }
+        assert!(line.contains("Press Enter to close"), "scan exited without a dismissal prompt");
+        assert!(child.try_wait()?.is_none(), "results window must remain open");
+        child.stdin.take().ok_or("child input")?.write_all(b"\n")?;
+        assert_eq!(child.wait()?.code(), Some(exit_code));
+    }
+    Ok(())
+}
+
+#[test]
+fn scan_windows_terminal_encodes_paths_and_fixed_argv() -> Result<(), Box<dyn Error>> {
+    use base64::Engine as _;
+    let args = windows_terminal_args(
+        Path::new("C:\\cli'; write-host nope\\locket.exe"),
+        Path::new("C:\\root; ' $(oops)\n`oops`"),
+        &["scan", "--require-known"],
+    );
+    assert_eq!(
+        &args[..args.len() - 1],
+        ["-w", "new", "new-tab", "powershell.exe", "-NoProfile", "-NoExit", "-EncodedCommand"]
+    );
+    let bytes =
+        base64::engine::general_purpose::STANDARD.decode(args.last().ok_or("encoded command")?)?;
+    let units: Vec<_> =
+        bytes.as_chunks::<2>().0.iter().map(|pair| u16::from_le_bytes(*pair)).collect();
+    assert_eq!(
+        String::from_utf16(&units)?,
+        "Set-Location -LiteralPath 'C:\\root; '' $(oops)\n`oops`' -ErrorAction Stop; & 'C:\\cli''; write-host nope\\locket.exe' 'scan' '--require-known'; $scanExit = $LASTEXITCODE; Read-Host \"Scan finished (exit $scanExit). Press Enter to close\" | Out-Null; exit $scanExit"
+    );
     Ok(())
 }
 

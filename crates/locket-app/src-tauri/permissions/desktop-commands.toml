@@ -10,6 +10,7 @@ commands.allow = [
   "desktop_import_env",
   "desktop_start_agent",
   "desktop_run_policy",
+  "desktop_scan_project",
   "desktop_save_policy",
   "desktop_variable_readiness",
   "desktop_team_sync_status",

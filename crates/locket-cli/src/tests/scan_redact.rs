@@ -422,22 +422,26 @@ fn scan_require_known_matches_vault_values_without_printing_them()
     crate::set_secret_value(&context, &args, "known-secret-value", "manual", 1_000)?;
     std::fs::write(directory.path().join("sample.txt"), "db=known-secret-value\n")?;
 
-    let mut scan_output = Vec::new();
-    let result = run_with_context(
-        Cli::try_parse_from(["locket", "scan", "--require-known", "sample.txt"])?,
-        &context,
-        &mut scan_output,
-    );
-    let Err(error) = result else {
-        return Err("known-secret match must fail closed (blocking)".into());
-    };
-    assert_eq!(error.exit_code(), 69);
-
-    let scan_output = String::from_utf8(scan_output)?;
-    assert!(scan_output.contains("known-secret"));
-    assert!(scan_output.contains("[blocking]"));
-    assert!(scan_output.contains("known-value coverage checked 1 value(s)"));
-    assert!(!scan_output.contains("known-secret-value"));
+    // The desktop/editor terminal handoff supplies no paths. Exercise that
+    // project-root scan as well as the explicit-file route.
+    for paths in [&["sample.txt"][..], &[][..]] {
+        let mut scan_output = Vec::new();
+        let result = run_with_context(
+            Cli::try_parse_from(
+                ["locket", "scan", "--require-known"].into_iter().chain(paths.iter().copied()),
+            )?,
+            &context,
+            &mut scan_output,
+        );
+        let Err(error) = result else {
+            return Err("known-secret match must fail closed (blocking)".into());
+        };
+        assert_eq!(error.exit_code(), 69);
+        let scan_output = String::from_utf8(scan_output)?;
+        assert!(scan_output.contains("sample.txt:1:4: [blocking] known-secret"));
+        assert!(scan_output.contains("known-value coverage checked 1 value(s)"));
+        assert!(!scan_output.contains("known-secret-value"));
+    }
     Ok(())
 }
 
@@ -483,7 +487,7 @@ fn scan_locked_vault_runs_metadata_only_but_require_known_fails()
 
     let mut require_known_output = Vec::new();
     let require_known_result = run_with_context(
-        Cli::try_parse_from(["locket", "scan", "--require-known", "sample.txt"])?,
+        Cli::try_parse_from(["locket", "scan", "--require-known"])?,
         &locked_context,
         &mut require_known_output,
     );

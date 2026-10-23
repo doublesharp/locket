@@ -51,6 +51,11 @@ pub(crate) struct DesktopRunPolicyRequest {
     project_id: String,
     policy_name: String,
 }
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct DesktopScanProjectRequest {
+    project_id: String,
+}
 #[derive(Serialize)]
 pub(crate) struct DesktopImportSummary {
     summary: String,
@@ -362,18 +367,39 @@ fn posix_quote(value: &str) -> String {
 }
 
 #[cfg(any(target_os = "macos", test))]
-fn terminal_script(cli: &Path, root: &Path, policy: &str) -> String {
-    format!(
-        "#!/bin/sh\n/bin/rm -- \"$0\"\ncd -- {} || exit 1\n{} run {}\n",
-        posix_quote(&root.to_string_lossy()),
+fn terminal_script(cli: &Path, root: &Path, args: &[&str]) -> String {
+    format!("#!/bin/sh\n/bin/rm -- \"$0\"\n{}", terminal_command_script(cli, root, args))
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
+fn terminal_command_script(cli: &Path, root: &Path, args: &[&str]) -> String {
+    let command = format!(
+        "{} {}",
         posix_quote(&cli.to_string_lossy()),
-        posix_quote(policy)
-    )
+        args.iter().map(|arg| posix_quote(arg)).collect::<Vec<_>>().join(" ")
+    );
+    let root = posix_quote(&root.to_string_lossy());
+    if args.first() == Some(&"scan") {
+        format!(
+            "cd -- {root} && {command}\nscan_status=$?\nprintf '\\nScan finished (exit %s). Press Enter to close.\\n' \"$scan_status\"\nIFS= read -r scan_dismiss\nexit \"$scan_status\"\n"
+        )
+    } else {
+        format!("cd -- {root} || exit 1\n{command}\n")
+    }
+}
+
+#[cfg(any(target_os = "linux", all(test, unix)))]
+fn posix_terminal_command(cli: &Path, root: &Path, args: &[&str]) -> Vec<std::ffi::OsString> {
+    if args.first() == Some(&"scan") {
+        vec!["/bin/sh".into(), "-c".into(), terminal_command_script(cli, root, args).into()]
+    } else {
+        std::iter::once(cli.as_os_str().to_owned()).chain(args.iter().map(Into::into)).collect()
+    }
 }
 
 #[cfg(target_os = "macos")]
-fn launch_terminal(cli: &Path, root: &Path, policy: &str) -> Result<(), String> {
-    let file = write_terminal_launcher(cli, root, policy)?;
+fn launch_terminal(cli: &Path, root: &Path, args: &[&str]) -> Result<(), String> {
+    let file = write_terminal_launcher(cli, root, args)?;
     let (_handle, path) = file.keep().map_err(metadata_error)?;
     let result = execute_cli(
         Path::new("/usr/bin/open"),
@@ -398,7 +424,7 @@ fn launch_terminal(cli: &Path, root: &Path, policy: &str) -> Result<(), String> 
 }
 
 #[cfg(target_os = "linux")]
-fn launch_terminal(cli: &Path, root: &Path, policy: &str) -> Result<(), String> {
+fn launch_terminal(cli: &Path, root: &Path, args: &[&str]) -> Result<(), String> {
     for (terminal, separator) in [("gnome-terminal", "--"), ("konsole", "-e"), ("xterm", "-e")] {
         let Some(path) = std::env::var_os("PATH").and_then(|path| {
             std::env::split_paths(&path)
@@ -421,8 +447,7 @@ fn launch_terminal(cli: &Path, root: &Path, policy: &str) -> Result<(), String> 
         }
         let mut child = command
             .arg(separator)
-            .arg(cli)
-            .args(["run", policy])
+            .args(posix_terminal_command(cli, root, args))
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -443,7 +468,7 @@ fn launch_terminal(cli: &Path, root: &Path, policy: &str) -> Result<(), String> 
 }
 
 #[cfg(target_os = "windows")]
-fn launch_terminal(cli: &Path, root: &Path, policy: &str) -> Result<(), String> {
+fn launch_terminal(cli: &Path, root: &Path, args: &[&str]) -> Result<(), String> {
     let terminal = std::env::var_os("PATH")
         .and_then(|path| {
             std::env::split_paths(&path)
@@ -454,14 +479,15 @@ fn launch_terminal(cli: &Path, root: &Path, policy: &str) -> Result<(), String> 
         .ok_or_else(|| "Install Windows Terminal to run an interactive command.".to_string())?;
     execute_cli(
         &terminal,
-        &CliPlan { cwd: root.into(), args: windows_terminal_args(cli, root, policy), input: None },
+        &CliPlan { cwd: root.into(), args: windows_terminal_args(cli, root, args), input: None },
         Duration::from_secs(10),
     )
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-fn launch_terminal(_: &Path, _: &Path, _: &str) -> Result<(), String> {
-    Err("Interactive policy launch is unsupported on this platform. Use `locket run` in a terminal.".into())
+fn launch_terminal(_: &Path, _: &Path, _: &[&str]) -> Result<(), String> {
+    Err("Interactive launch is unsupported on this platform. Use the Locket CLI in a terminal."
+        .into())
 }
 
 async fn blocking<T: Send + 'static>(
@@ -581,7 +607,7 @@ pub(crate) async fn desktop_run_policy(
     blocking(move || {
         let context = policy_context(&store, &request.project_id, &request.policy_name)?;
         let cli = resolve_cli()?;
-        launch_terminal(&cli, Path::new(&context.root), &request.policy_name)?;
+        launch_terminal(&cli, Path::new(&context.root), &["run", &request.policy_name])?;
         Ok(DesktopRunResponse {
             launched: true,
             command: format!("locket run {}", posix_quote(&request.policy_name)),
@@ -589,6 +615,30 @@ pub(crate) async fn desktop_run_policy(
     })
     .await
 }
+
+// Only the native side chooses argv and resolves the trusted root and CLI. A
+// terminal handoff says nothing about the scanner's outcome or findings.
+fn scan_project_with(
+    store: &Path,
+    project_id: &str,
+    resolve: impl FnOnce() -> Result<PathBuf, String>,
+    launch: impl FnOnce(&Path, &Path, &[&str]) -> Result<(), String>,
+) -> Result<DesktopRunResponse, String> {
+    let context = project_context(store, project_id)?;
+    let cli = resolve()?;
+    launch(&cli, Path::new(&context.root), &["scan", "--require-known"])?;
+    Ok(DesktopRunResponse { launched: true, command: "locket scan --require-known".into() })
+}
+
+#[tauri::command]
+pub(crate) async fn desktop_scan_project(
+    request: DesktopScanProjectRequest,
+) -> Result<DesktopRunResponse, String> {
+    let store = super::default_store_path().map_err(|error| error.to_string())?;
+    blocking(move || scan_project_with(&store, &request.project_id, resolve_cli, launch_terminal))
+        .await
+}
+
 #[tauri::command]
 pub(crate) async fn desktop_save_policy(request: serde_json::Value) -> Result<(), String> {
     let store = super::default_store_path().map_err(|error| error.to_string())?;
@@ -631,16 +681,21 @@ fn scoped_status(
     Ok(status)
 }
 #[cfg(any(target_os = "windows", test))]
-fn windows_terminal_args(cli: &Path, root: &Path, policy: &str) -> Vec<String> {
+fn windows_terminal_args(cli: &Path, root: &Path, args: &[&str]) -> Vec<String> {
     use base64::Engine as _;
     fn quote(value: &str) -> String {
         format!("'{}'", value.replace('\'', "''"))
     }
+    let ending = if args.first() == Some(&"scan") {
+        "$scanExit = $LASTEXITCODE; Read-Host \"Scan finished (exit $scanExit). Press Enter to close\" | Out-Null; exit $scanExit"
+    } else {
+        "exit $LASTEXITCODE"
+    };
     let script = format!(
-        "Set-Location -LiteralPath {} -ErrorAction Stop; & {} 'run' {}; exit $LASTEXITCODE",
+        "Set-Location -LiteralPath {} -ErrorAction Stop; & {} {}; {ending}",
         quote(&root.to_string_lossy()),
         quote(&cli.to_string_lossy()),
-        quote(policy)
+        args.iter().map(|arg| quote(arg)).collect::<Vec<_>>().join(" ")
     );
     let bytes: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
     vec![
@@ -658,15 +713,15 @@ fn windows_terminal_args(cli: &Path, root: &Path, policy: &str) -> Vec<String> {
 fn write_terminal_launcher(
     cli: &Path,
     root: &Path,
-    policy: &str,
+    args: &[&str],
 ) -> Result<tempfile::NamedTempFile, String> {
     use std::os::unix::fs::PermissionsExt;
     let mut file = tempfile::Builder::new()
-        .prefix("locket-policy-")
+        .prefix("locket-terminal-")
         .suffix(".command")
         .tempfile()
         .map_err(|_| "Cannot create the scoped Terminal launcher.".to_string())?;
-    file.write_all(terminal_script(cli, root, policy).as_bytes()).map_err(metadata_error)?;
+    file.write_all(terminal_script(cli, root, args).as_bytes()).map_err(metadata_error)?;
     file.as_file().set_permissions(fs::Permissions::from_mode(0o700)).map_err(metadata_error)?;
     file.as_file().sync_all().map_err(metadata_error)?;
     Ok(file)

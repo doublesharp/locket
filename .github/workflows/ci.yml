@@ -85,7 +85,9 @@ jobs:
         run: cargo clippy -p locket-desktop --all-targets --all-features --locked -- -D warnings
 
       - name: Test workspace
-        run: cargo test --workspace --all-targets --all-features --locked
+        run: |
+          python3 -B scripts/mutation_smoke_test.py
+          cargo test --workspace --all-targets --all-features --locked
 
       - name: Upload quality reports
         if: always()

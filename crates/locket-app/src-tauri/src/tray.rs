@@ -57,7 +57,7 @@ pub enum TrayMenuAction {
     SwitchProfile,
     /// Open saved command policies.
     RunPolicy,
-    /// Start a known-value scan.
+    /// Launch the CLI scanner in an interactive terminal.
     StartScan,
     /// Reveal the currently-selected secret in the desktop reveal modal.
     /// Only enabled when the vault is unlocked and a secret is selected.
@@ -94,7 +94,7 @@ impl TrayMenuAction {
             Self::UnlockVault => "Unlock Vault...",
             Self::SwitchProfile => "Switch Profile...",
             Self::RunPolicy => "Run Policy...",
-            Self::StartScan => "Start Scan",
+            Self::StartScan => "Scan in terminal",
             Self::RevealSecret => "Reveal selected secret",
             Self::CopySecret => "Copy selected secret",
         }
@@ -259,7 +259,7 @@ pub enum TrayMenuSideEffect {
     OpenProfileSwitcher,
     /// Refresh the policy list before showing the policy view.
     RefreshPolicies,
-    /// Trigger a fresh scan against the agent.
+    /// Launch the selected project's CLI scan in a terminal.
     StartScan,
     /// Open the reveal modal for the currently selected secret.
     RevealSelectedSecret,
@@ -496,10 +496,9 @@ const fn icon_is_template() -> bool {
 /// Register the Locket tray icon at app startup.
 ///
 /// Call this exactly once from inside the Tauri `setup` hook. The tray
-/// is registered with the `LOCKET_TRAY_ID`, an empty `Menu` (menu
-/// actions arrive in a later slice), and a stub `on_tray_icon_event`
-/// handler that intentionally does nothing — click routing also lands
-/// in a later slice.
+/// is registered with the `LOCKET_TRAY_ID` and the current selection's
+/// action menu. Menu events route to the app; direct icon clicks have
+/// no additional action.
 ///
 /// The initial icon is the `AgentStopped` placeholder because the
 /// agent socket connect happens after `setup`. A background
@@ -508,7 +507,7 @@ const fn icon_is_template() -> bool {
 ///
 /// # Errors
 ///
-/// Returns any `tauri::Error` produced while building the empty menu
+/// Returns any `tauri::Error` produced while building the action menu
 /// or the tray icon, decoding the baked-in PNG bytes, or registering
 /// the icon with the app.
 pub fn setup_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
@@ -868,6 +867,11 @@ mod tests {
         assert!(tooltip.contains("profile-"));
         assert!(!tooltip.contains("payments-api"));
         assert!(!tooltip.contains("prod"));
+    }
+
+    #[test]
+    fn scan_menu_label_explains_the_terminal_handoff() {
+        assert_eq!(TrayMenuAction::StartScan.label(), "Scan in terminal");
     }
 
     #[test]

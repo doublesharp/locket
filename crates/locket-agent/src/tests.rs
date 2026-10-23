@@ -1999,6 +1999,25 @@ async fn unlock_auth_project(state: &crate::server::AgentSocketState) {
             UnlockMethod::Passphrase,
         ),
     );
+    state
+        .set_command_policies_for_tests(vec![crate::CommandPolicySnapshot {
+            project_id: "lk_proj_auth".to_owned(),
+            name: "deploy".to_owned(),
+            command_kind: "argv".to_owned(),
+            command_preview: "deploy".to_owned(),
+            required_secrets: Vec::new(),
+            optional_secrets: Vec::new(),
+            allowed_secrets: Vec::new(),
+            confirm: false,
+            require_user_verification: false,
+            require_agent: true,
+            allow_remote_docker: false,
+            ttl_seconds: 30,
+            env_mode: "minimal".to_owned(),
+            override_mode: "locket".to_owned(),
+            updated_at_unix_nanos: 1,
+        }])
+        .await;
 }
 
 async fn unlock_profile_test_state(state: &crate::server::AgentSocketState, project_id: &str) {
@@ -2103,6 +2122,272 @@ fn sign_auth_payload(
     }))
 }
 
+async fn sign_automation_request(
+    state: &crate::server::AgentSocketState,
+    mut request: RequestEnvelope,
+) -> Result<RequestEnvelope, Box<dyn std::error::Error>> {
+    let hello = RequestEnvelope::new(
+        "hello",
+        AgentMethod::ClientHello,
+        json!({ "client_id": "lk_client_auth" }),
+    );
+    let ResponseEnvelope::Success(challenge) = crate::server::dispatch(&hello, state).await else {
+        return Err("ClientHello should succeed".into());
+    };
+    let auth = sign_auth_payload(
+        &automation_signing_key(),
+        &request,
+        "lk_client_auth",
+        challenge.payload["challenge_id"].as_str().ok_or("challenge id")?,
+        challenge.payload["nonce"].as_str().ok_or("challenge nonce")?,
+        auth_now_i64(),
+    )?;
+    request.payload["auth"] = auth;
+    Ok(request)
+}
+
+fn automation_grant_request(store_path: &std::path::Path, action: &str) -> RequestEnvelope {
+    RequestEnvelope::new(
+        "signed-grant",
+        AgentMethod::RequestGrant,
+        json!({
+            "project_id": "lk_proj_auth",
+            "profile_id": "lk_prof_auth",
+            "store_path": store_path,
+            "requested_action": "run-policy",
+            "policy_name": "deploy",
+            "action": action,
+            "ttl_seconds": 30,
+            "binding": { "pid": std::process::id(), "process_start_time": "auth-test" }
+        }),
+    )
+}
+
+fn assert_no_successful_automation_auth(
+    store: &locket_store::Store,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (nonce_count, last_used_at, success_count): (i64, Option<i64>, i64) =
+        store.connection().query_row(
+            "SELECT (SELECT COUNT(*) FROM automation_client_nonces), last_used_at,
+             (SELECT COUNT(*) FROM audit_log WHERE action = 'CLIENT_AUTH' AND status = 'SUCCESS')
+             FROM automation_clients WHERE id = 'lk_client_auth'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+    assert_eq!((nonce_count, last_used_at, success_count), (0, None, 0));
+    Ok(())
+}
+
+#[tokio::test]
+async fn automation_client_auth_rejects_reveal_grant_hidden_as_run_policy()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let store_path = directory.path().join("store.db");
+    let store = seed_automation_client_store(
+        &store_path,
+        automation_signing_key().verifying_key().as_bytes(),
+    )?;
+    let state = crate::server::AgentSocketState::locked("auth-test");
+    unlock_auth_project(&state).await;
+
+    for policy in [None, Some("deploy")] {
+        let mut request = automation_grant_request(&store_path, "Reveal");
+        if let Some(policy) = policy {
+            request.payload["policy_name"] = json!(policy);
+        } else {
+            request.payload.as_object_mut().ok_or("payload")?.remove("policy_name");
+        }
+        let signed = sign_automation_request(&state, request).await?;
+        let response = crate::server::dispatch(&signed, &state).await;
+        assert!(state.grants.lock().await.is_empty(), "unauthorized Reveal grant was issued");
+        assert!(matches!(response, ResponseEnvelope::Error(_)), "{response:?}");
+        assert_no_successful_automation_auth(&store)?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn automation_client_auth_rejects_method_mismatch_before_mutation()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let store_path = directory.path().join("store.db");
+    let store = seed_automation_client_store(
+        &store_path,
+        automation_signing_key().verifying_key().as_bytes(),
+    )?;
+    let state = crate::server::AgentSocketState::locked("auth-test");
+    unlock_auth_project(&state).await;
+    state.grants.lock().await.insert(test_grant_record("existing", i128::MAX));
+    let grants_before = state.grants.lock().await.clone();
+    let mut request = automation_grant_request(&store_path, "RunPolicy");
+    request.kind = "Lock".to_owned();
+    let signed = sign_automation_request(&state, request).await?;
+    let response = crate::server::dispatch(&signed, &state).await;
+    assert_eq!(*state.grants.lock().await, grants_before, "denied RPC mutated grants");
+    assert!(
+        state
+            .unlock_cache
+            .lock()
+            .await
+            .lookup("lk_proj_auth", crate::server::current_unix_nanos())
+            .is_some(),
+        "denied RPC cleared the unlock cache"
+    );
+    assert!(matches!(response, ResponseEnvelope::Error(_)), "{response:?}");
+    assert_no_successful_automation_auth(&store)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn automation_client_auth_requires_policy_scope() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let store_path = directory.path().join("store.db");
+    let store = seed_automation_client_store(
+        &store_path,
+        automation_signing_key().verifying_key().as_bytes(),
+    )?;
+    let state = crate::server::AgentSocketState::locked("auth-test");
+    unlock_auth_project(&state).await;
+    for policy in [None, Some(json!(null)), Some(json!("")), Some(json!(17))] {
+        let mut request = automation_grant_request(&store_path, "RunPolicy");
+        if let Some(policy) = policy {
+            request.payload["policy_name"] = policy;
+        } else {
+            request.payload.as_object_mut().ok_or("payload")?.remove("policy_name");
+        }
+        let signed = sign_automation_request(&state, request).await?;
+        let response = crate::server::dispatch(&signed, &state).await;
+        assert!(state.grants.lock().await.is_empty(), "unscoped grant was issued");
+        assert!(matches!(response, ResponseEnvelope::Error(_)), "{response:?}");
+        assert_no_successful_automation_auth(&store)?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn automation_client_auth_rejects_unknown_method_and_actions()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let store_path = directory.path().join("store.db");
+    let store = seed_automation_client_store(
+        &store_path,
+        automation_signing_key().verifying_key().as_bytes(),
+    )?;
+    let state = crate::server::AgentSocketState::locked("auth-test");
+    unlock_auth_project(&state).await;
+    for (method, action, requested_action) in [
+        ("UnknownMethod", "RunPolicy", "run-policy"),
+        ("Status", "RunPolicy", "run-policy"),
+        ("RequestGrant", "UnknownAction", "run-policy"),
+        ("RequestGrant", "RunPolicy", "unknown-action"),
+        ("RequestGrant", "PrepareExec", "prepare-exec"),
+        ("RequestGrant", "ScanKnownValues", "run-policy"),
+        ("RequestGrant", "Copy", "run-policy"),
+        ("RequestGrant", "Export", "run-policy"),
+        ("RequestGrant", "SetSecret", "run-policy"),
+        ("RequestGrant", "ImportDotenv", "run-policy"),
+        ("RequestGrant", "ApplyPolicy", "run-policy"),
+        ("RequestGrant", "TeamSync", "run-policy"),
+    ] {
+        let mut request = automation_grant_request(&store_path, action);
+        request.kind = method.to_owned();
+        request.payload["requested_action"] = json!(requested_action);
+        let signed = sign_automation_request(&state, request).await?;
+        let response = crate::server::dispatch(&signed, &state).await;
+        assert!(matches!(response, ResponseEnvelope::Error(_)), "{response:?}");
+        assert!(state.grants.lock().await.is_empty());
+        assert_no_successful_automation_auth(&store)?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn automation_client_auth_accepts_permitted_grant_flows()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let store_path = directory.path().join("store.db");
+    let store = seed_automation_client_store(
+        &store_path,
+        automation_signing_key().verifying_key().as_bytes(),
+    )?;
+    let state = crate::server::AgentSocketState::locked("auth-test");
+    unlock_auth_project(&state).await;
+    for (action, requested_action) in [
+        ("RunPolicy", "run-policy"),
+        ("PrepareExec", "run-policy"),
+        ("ResolveReference", "run-policy"),
+        ("ResolveReference", "resolve-reference"),
+        ("ScanKnownValues", "scan-known-values"),
+        ("ScanKnownValues", "redact"),
+        ("Redact", "redact"),
+    ] {
+        // Each control has only the permission needed for its flow.
+        store.connection().execute(
+            "UPDATE automation_clients SET allowed_actions_json = ?1 WHERE id = 'lk_client_auth'",
+            [serde_json::to_string(&[requested_action])?],
+        )?;
+        let mut request = automation_grant_request(&store_path, action);
+        request.payload["requested_action"] = json!(requested_action);
+        let signed = sign_automation_request(&state, request).await?;
+        let response = crate::server::dispatch(&signed, &state).await;
+        let ResponseEnvelope::Success(success) = response else {
+            return Err(format!("{requested_action} / {action}: {response:?}").into());
+        };
+        let grant_id = success.payload["grant_id"].as_str().ok_or("grant id")?;
+        let grant = state.grants.lock().await.revoke(grant_id).ok_or("issued grant missing")?;
+        assert_eq!(serde_json::to_value(grant.action)?, json!(action));
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn automation_client_auth_allows_resolution_and_scanning_but_requires_grants()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let store_path = directory.path().join("store.db");
+    let store = seed_automation_client_store(
+        &store_path,
+        automation_signing_key().verifying_key().as_bytes(),
+    )?;
+    let state = crate::server::AgentSocketState::locked("auth-test");
+    unlock_auth_project(&state).await;
+    for (method, requested_action) in [
+        (AgentMethod::ResolveReference, "run-policy"),
+        (AgentMethod::ResolveReference, "resolve-reference"),
+        (AgentMethod::ScanKnownValues, "scan-known-values"),
+        (AgentMethod::ScanKnownValues, "redact"),
+    ] {
+        store.connection().execute(
+            "UPDATE automation_clients SET allowed_actions_json = ?1 WHERE id = 'lk_client_auth'",
+            [serde_json::to_string(&[requested_action])?],
+        )?;
+        let request = RequestEnvelope::new(
+            "signed-operation",
+            method,
+            json!({
+                "project_id": "lk_proj_auth", "profile_id": "lk_prof_auth",
+                "store_path": store_path, "policy_name": "deploy",
+                "requested_action": requested_action, "reference": "lk://dev/TOKEN",
+                "require_known": true
+            }),
+        );
+        let signed = sign_automation_request(&state, request).await?;
+        let response = crate::server::dispatch(&signed, &state).await;
+        let ResponseEnvelope::Error(error) = response else {
+            return Err("signed operation should still require a grant".into());
+        };
+        assert_eq!(error.error, "GrantRequired", "{method:?} / {requested_action}");
+        assert!(state.grants.lock().await.is_empty());
+    }
+    let successful_auths: i64 = store.connection().query_row(
+        "SELECT COUNT(*) FROM audit_log WHERE action = 'CLIENT_AUTH' AND status = 'SUCCESS'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(successful_auths, 4);
+    Ok(())
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn automation_client_auth_accepts_signed_request_and_audits()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -2130,11 +2415,12 @@ async fn automation_client_auth_accepts_signed_request_and_audits()
 
     let payload = json!({
         "project_id": "lk_proj_auth",
+        "profile_id": "lk_prof_auth",
         "store_path": store_path,
         "requested_action": "run-policy",
         "policy_name": "deploy"
     });
-    let unsigned = RequestEnvelope::new("signed-1", AgentMethod::Status, payload.clone());
+    let unsigned = RequestEnvelope::new("signed-1", AgentMethod::PrepareExec, payload.clone());
     let mut signed_payload = payload;
     signed_payload.as_object_mut().ok_or("payload object")?.insert(
         "auth".to_owned(),
@@ -2147,10 +2433,17 @@ async fn automation_client_auth_accepts_signed_request_and_audits()
             auth_now_i64(),
         )?,
     );
-    let signed = RequestEnvelope::new("signed-1", AgentMethod::Status, signed_payload);
+    let signed = RequestEnvelope::new("signed-1", AgentMethod::PrepareExec, signed_payload);
     let ResponseEnvelope::Success(_) = dispatch(&signed, &state).await else {
         return Err("signed request should authenticate and dispatch".into());
     };
+    let grants_before_replay = state.grants.lock().await.clone();
+    assert_eq!(grants_before_replay.len(), 1);
+    let ResponseEnvelope::Error(replay_error) = dispatch(&signed, &state).await else {
+        return Err("reusing a signed challenge must fail".into());
+    };
+    assert_eq!(replay_error.error, "AutomationClientNotTrusted");
+    assert_eq!(*state.grants.lock().await, grants_before_replay);
 
     let store = locket_store::Store::open(directory.path().join("store.db"))?;
     let nonce_count: i64 = store.connection().query_row(
@@ -2347,12 +2640,13 @@ async fn automation_client_auth_rejects_policy_mismatch_and_replay()
     unlock_auth_project(&state).await;
     let bad_policy_payload = json!({
         "project_id": "lk_proj_auth",
+        "profile_id": "lk_prof_auth",
         "store_path": store_path,
         "requested_action": "run-policy",
         "policy_name": "prod"
     });
     let bad_unsigned =
-        RequestEnvelope::new("signed-deny", AgentMethod::Status, bad_policy_payload.clone());
+        RequestEnvelope::new("signed-deny", AgentMethod::PrepareExec, bad_policy_payload.clone());
     state.automation_challenges.lock().await.insert(
         "deny-challenge".to_owned(),
         IssuedChallenge {
@@ -2374,20 +2668,24 @@ async fn automation_client_auth_rejects_policy_mismatch_and_replay()
             auth_now_i64(),
         )?,
     );
-    let bad_signed = RequestEnvelope::new("signed-deny", AgentMethod::Status, bad_signed_payload);
+    let bad_signed =
+        RequestEnvelope::new("signed-deny", AgentMethod::PrepareExec, bad_signed_payload);
     let ResponseEnvelope::Error(error) = dispatch(&bad_signed, &state).await else {
         return Err("policy mismatch should fail".into());
     };
     assert_eq!(error.error, "AutomationClientNotTrusted");
+    assert!(state.grants.lock().await.is_empty());
+    assert_no_successful_automation_auth(&locket_store::Store::open(&store_path)?)?;
 
     let replay_payload = json!({
         "project_id": "lk_proj_auth",
+        "profile_id": "lk_prof_auth",
         "store_path": directory.path().join("store.db"),
         "requested_action": "run-policy",
         "policy_name": "deploy"
     });
     let replay_unsigned =
-        RequestEnvelope::new("signed-replay", AgentMethod::Status, replay_payload.clone());
+        RequestEnvelope::new("signed-replay", AgentMethod::PrepareExec, replay_payload.clone());
     state.automation_challenges.lock().await.insert(
         "replay-challenge".to_owned(),
         IssuedChallenge {
@@ -2419,11 +2717,12 @@ async fn automation_client_auth_rejects_policy_mismatch_and_replay()
         )?,
     );
     let replay_signed =
-        RequestEnvelope::new("signed-replay", AgentMethod::Status, replay_signed_payload);
+        RequestEnvelope::new("signed-replay", AgentMethod::PrepareExec, replay_signed_payload);
     let ResponseEnvelope::Error(error) = dispatch(&replay_signed, &state).await else {
         return Err("replayed nonce should fail".into());
     };
     assert_eq!(error.error, "AutomationClientReplayDetected");
+    assert!(state.grants.lock().await.is_empty());
     Ok(())
 }
 
@@ -3236,6 +3535,223 @@ mod server_tests {
 
         let outcome = server.await??;
         assert_eq!(outcome, ConnectionOutcome::PeerClosed);
+        Ok(())
+    }
+
+    fn malformed_request_frames() -> Result<Vec<Vec<u8>>, ProtocolError> {
+        let mut unsupported = RequestEnvelope::new("version", AgentMethod::Status, Value::Null);
+        unsupported.v = PROTOCOL_VERSION + 1;
+        Ok(vec![
+            u32::MAX.to_le_bytes().to_vec(),
+            vec![1, 0, 0, 0, b'{'],
+            encode_frame(&unsupported, DEFAULT_MAX_MESSAGE_SIZE)?,
+        ])
+    }
+
+    async fn assert_malformed_request_closes_open_client(
+        malformed: &[u8],
+        subscription: bool,
+        coalesced: bool,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use std::time::Duration;
+        use tokio::time::timeout;
+
+        let directory = tempdir()?;
+        tighten_directory(directory.path())?;
+        let socket_path = directory.path().join("agent.sock");
+        let config = AgentSocketConfig::new(socket_path.clone(), "framing-test");
+        let listener = bind_socket_listener(&config)?;
+        let state = AgentSocketState::locked("framing-test");
+        state.set_test_heartbeat_interval(Duration::from_secs(60)).await;
+        let mut server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await?;
+            Ok::<_, std::io::Error>(handle_connection(stream, state).await)
+        });
+        let mut client = UnixStream::connect(&socket_path).await?;
+        let mut frame = Vec::new();
+        if subscription {
+            frame = encode_frame(
+                &RequestEnvelope::new("subscribe", AgentMethod::SubscribeStatus, json!({})),
+                DEFAULT_MAX_MESSAGE_SIZE,
+            )?;
+            if !coalesced {
+                client.write_all(&frame).await?;
+                frame.clear();
+                let mut buffer = Vec::new();
+                timeout(
+                    Duration::from_secs(1),
+                    read_required_response_frame(&mut client, &mut buffer, "subscription"),
+                )
+                .await??;
+            }
+        }
+        frame.extend_from_slice(malformed);
+        client.write_all(&frame).await?;
+
+        // Keep the write half open. EOF from the peer must not be needed
+        // to discover an oversized prefix, invalid JSON or invalid version.
+        let result = timeout(Duration::from_secs(1), &mut server).await;
+        if result.is_err() {
+            server.abort();
+            let _ = server.await;
+        }
+        assert!(result.is_ok(), "permanent decode error waited for client EOF");
+        assert_eq!(result???, ConnectionOutcome::Errored);
+        let mut remaining = Vec::new();
+        timeout(Duration::from_secs(1), client.read_to_end(&mut remaining)).await??;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn request_transport_rejects_oversized_prefix_without_eof()
+    -> Result<(), Box<dyn std::error::Error>> {
+        assert_malformed_request_closes_open_client(&malformed_request_frames()?[0], false, false)
+            .await
+    }
+
+    #[tokio::test]
+    async fn request_transport_rejects_invalid_json_without_eof()
+    -> Result<(), Box<dyn std::error::Error>> {
+        assert_malformed_request_closes_open_client(&malformed_request_frames()?[1], false, false)
+            .await
+    }
+
+    #[tokio::test]
+    async fn request_transport_rejects_unsupported_version_without_eof()
+    -> Result<(), Box<dyn std::error::Error>> {
+        assert_malformed_request_closes_open_client(&malformed_request_frames()?[2], false, false)
+            .await
+    }
+
+    #[tokio::test]
+    async fn subscription_transport_rejects_oversized_prefix_without_eof()
+    -> Result<(), Box<dyn std::error::Error>> {
+        assert_malformed_request_closes_open_client(&malformed_request_frames()?[0], true, false)
+            .await
+    }
+
+    #[tokio::test]
+    async fn subscription_transport_rejects_invalid_json_without_eof()
+    -> Result<(), Box<dyn std::error::Error>> {
+        assert_malformed_request_closes_open_client(&malformed_request_frames()?[1], true, false)
+            .await
+    }
+
+    #[tokio::test]
+    async fn subscription_transport_rejects_unsupported_version_without_eof()
+    -> Result<(), Box<dyn std::error::Error>> {
+        assert_malformed_request_closes_open_client(&malformed_request_frames()?[2], true, false)
+            .await
+    }
+
+    #[tokio::test]
+    async fn subscription_transport_rejects_coalesced_malformed_frames_without_eof()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for frame in malformed_request_frames()? {
+            assert_malformed_request_closes_open_client(&frame, true, true).await?;
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn request_transport_preserves_fragmented_and_coalesced_frames()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::time::Duration;
+        use tokio::time::timeout;
+
+        let directory = tempdir()?;
+        tighten_directory(directory.path())?;
+        let socket_path = directory.path().join("agent.sock");
+        let listener = bind_socket_listener(&AgentSocketConfig::new(socket_path.clone(), "v"))?;
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await?;
+            Ok::<_, std::io::Error>(handle_connection(stream, AgentSocketState::locked("v")).await)
+        });
+        let mut client = UnixStream::connect(&socket_path).await?;
+        let frame = encode_frame(
+            &RequestEnvelope::new("first", AgentMethod::Status, Value::Null),
+            DEFAULT_MAX_MESSAGE_SIZE,
+        )?;
+        let mut buffer = Vec::new();
+        client.write_all(&frame[..2]).await?;
+        assert!(
+            timeout(Duration::from_millis(30), read_one_response_frame(&mut client, &mut buffer))
+                .await
+                .is_err()
+        );
+        client.write_all(&frame[2..frame.len() - 1]).await?;
+        assert!(
+            timeout(Duration::from_millis(30), read_one_response_frame(&mut client, &mut buffer))
+                .await
+                .is_err()
+        );
+        let mut tail = vec![frame[frame.len() - 1]];
+        tail.extend(encode_frame(
+            &RequestEnvelope::new("second", AgentMethod::Status, Value::Null),
+            DEFAULT_MAX_MESSAGE_SIZE,
+        )?);
+        client.write_all(&tail).await?;
+        for id in ["first", "second"] {
+            let response = timeout(
+                Duration::from_secs(1),
+                read_required_response_frame(&mut client, &mut buffer, id),
+            )
+            .await??;
+            assert_eq!(expect_success(response, id)?.id, id);
+        }
+        drop(client);
+        assert_eq!(timeout(Duration::from_secs(1), server).await???, ConnectionOutcome::PeerClosed);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn subscription_transport_preserves_fragmented_cancel_and_coalesced_frames()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::time::Duration;
+        use tokio::time::timeout;
+
+        for coalesced in [false, true] {
+            let directory = tempdir()?;
+            tighten_directory(directory.path())?;
+            let socket_path = directory.path().join("agent.sock");
+            let listener = bind_socket_listener(&AgentSocketConfig::new(socket_path.clone(), "v"))?;
+            let mut server = tokio::spawn(async move {
+                let (stream, _) = listener.accept().await?;
+                Ok::<_, std::io::Error>(
+                    handle_connection(stream, AgentSocketState::locked("v")).await,
+                )
+            });
+            let mut client = UnixStream::connect(&socket_path).await?;
+            let mut subscribe = encode_frame(
+                &RequestEnvelope::new("sub", AgentMethod::SubscribeStatus, json!({})),
+                DEFAULT_MAX_MESSAGE_SIZE,
+            )?;
+            let cancel = encode_frame(
+                &RequestEnvelope::new("cancel", AgentMethod::CancelSubscription, json!({})),
+                DEFAULT_MAX_MESSAGE_SIZE,
+            )?;
+            if coalesced {
+                subscribe.extend(cancel);
+                client.write_all(&subscribe).await?;
+            } else {
+                client.write_all(&subscribe).await?;
+                let mut buffer = Vec::new();
+                timeout(
+                    Duration::from_secs(1),
+                    read_required_response_frame(&mut client, &mut buffer, "subscription"),
+                )
+                .await??;
+                client.write_all(&cancel[..2]).await?;
+                assert!(timeout(Duration::from_millis(30), &mut server).await.is_err());
+                client.write_all(&cancel[2..cancel.len() - 1]).await?;
+                assert!(timeout(Duration::from_millis(30), &mut server).await.is_err());
+                client.write_all(&cancel[cancel.len() - 1..]).await?;
+            }
+            assert_eq!(
+                timeout(Duration::from_secs(1), server).await???,
+                ConnectionOutcome::PeerClosed
+            );
+        }
         Ok(())
     }
 }

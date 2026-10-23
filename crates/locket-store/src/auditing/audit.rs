@@ -53,9 +53,9 @@ pub struct AuditLogRecord {
     pub action: String,
     /// Audit status string.
     pub status: String,
-    /// Optional query convenience secret name.
+    /// Optional secret name from HMAC-covered metadata.
     pub secret_name: Option<String>,
-    /// Optional query convenience command string.
+    /// Optional command string from HMAC-covered metadata.
     pub command: Option<String>,
 }
 
@@ -159,6 +159,8 @@ struct StoredAuditRow {
     action: String,
     status: String,
     metadata_json: String,
+    secret_name: Option<String>,
+    command: Option<String>,
     previous_hmac: [u8; AUDIT_HMAC_LEN],
     hmac: [u8; AUDIT_HMAC_LEN],
 }
@@ -191,7 +193,7 @@ fn read_audit_rows(
 ) -> Result<Vec<StoredAuditRow>, StoreError> {
     let mut statement = transaction.prepare(
         "SELECT sequence, schema_version, timestamp, project_id, profile_id,
-                action, status, metadata_json, previous_hmac, hmac
+                action, status, metadata_json, previous_hmac, hmac, secret_name, command
          FROM audit_log
          WHERE project_id = ?1
          ORDER BY sequence",
@@ -211,6 +213,8 @@ fn read_audit_rows(
                 row.get::<_, String>(7)?,
                 previous_hmac,
                 hmac,
+                row.get::<_, Option<String>>(10)?,
+                row.get::<_, Option<String>>(11)?,
             ))
         })?
         .map(|row| {
@@ -225,6 +229,8 @@ fn read_audit_rows(
                 metadata_json,
                 previous_hmac,
                 hmac,
+                secret_name,
+                command,
             ) = row?;
             Ok(StoredAuditRow {
                 sequence,
@@ -235,6 +241,8 @@ fn read_audit_rows(
                 action,
                 status,
                 metadata_json,
+                secret_name,
+                command,
                 previous_hmac: hmac_vec_to_array(sequence, previous_hmac)?,
                 hmac: hmac_vec_to_array(sequence, hmac)?,
             })
@@ -364,6 +372,26 @@ fn verify_audit_rows(
                 first_break_reason: Some("row hmac mismatch".to_owned()),
                 rows_verified,
             });
+        }
+
+        for (field, displayed) in
+            [("secret_name", row.secret_name.as_deref()), ("command", row.command.as_deref())]
+        {
+            let matches = match (displayed, metadata.get(field)) {
+                (None, None) => true,
+                (Some(displayed), Some(Value::String(authenticated))) => displayed == authenticated,
+                _ => false,
+            };
+            if !matches {
+                return Ok(AuditChainVerification {
+                    hmac_ok: false,
+                    first_break_sequence: Some(row.sequence),
+                    first_break_reason: Some(format!(
+                        "{field} convenience column does not match metadata_json"
+                    )),
+                    rows_verified,
+                });
+            }
         }
 
         previous_hmac = row.hmac;
@@ -949,7 +977,9 @@ impl Store {
         since: i64,
     ) -> Result<Vec<AuditLogRecord>, StoreError> {
         let mut statement = self.connection.prepare(
-            "SELECT sequence, timestamp, profile_id, action, status, secret_name, command
+            "SELECT sequence, timestamp, profile_id, action, status,
+                    json_extract(metadata_json, '$.secret_name'),
+                    json_extract(metadata_json, '$.command')
              FROM audit_log
              WHERE project_id = ?1 AND profile_id = ?2 AND timestamp >= ?3
              ORDER BY timestamp, sequence",
@@ -971,9 +1001,11 @@ impl Store {
         filter: &AuditListFilter,
     ) -> Result<Vec<AuditLogRecord>, StoreError> {
         let mut statement = self.connection.prepare(
-            "SELECT sequence, timestamp, profile_id, action, status, secret_name, command
+            "SELECT sequence, timestamp, profile_id, action, status,
+                    json_extract(metadata_json, '$.secret_name'),
+                    json_extract(metadata_json, '$.command')
              FROM (
-               SELECT sequence, timestamp, profile_id, action, status, secret_name, command
+               SELECT sequence, timestamp, profile_id, action, status, metadata_json
                FROM audit_log
                WHERE project_id = ?1
                  AND (?2 IS NULL OR profile_id = ?2)
@@ -1107,54 +1139,17 @@ impl Store {
     ) -> Result<u64, StoreError> {
         let transaction = self.connection.transaction()?;
         let rows = read_audit_rows(&transaction, project_id)?;
-        let mut previous_hmac = [0; AUDIT_HMAC_LEN];
-
-        for (expected_sequence, row) in (1_u64..).zip(&rows) {
-            if row.sequence != expected_sequence {
-                return Err(StoreError::AuditIntegrity {
-                    sequence: expected_sequence,
-                    reason: "sequence gap or reordering".to_owned(),
-                });
-            }
-            if row.previous_hmac != previous_hmac {
-                return Err(StoreError::AuditIntegrity {
-                    sequence: row.sequence,
-                    reason: "previous_hmac mismatch".to_owned(),
-                });
-            }
-            let metadata = serde_json::from_str::<Value>(&row.metadata_json).map_err(|error| {
-                StoreError::AuditIntegrity {
-                    sequence: row.sequence,
-                    reason: format!("metadata_json is not valid JSON: {error}"),
-                }
-            })?;
-            let input = AuditHmacInput {
-                schema_version: row.schema_version,
-                sequence: row.sequence,
-                timestamp: Timestamp::from_unix_nanos(row.timestamp),
-                project_id: Some(&row.project_id),
-                profile_id: row.profile_id.as_deref(),
-                action: &row.action,
-                status: &row.status,
-                metadata_json: Some(&metadata),
-                previous_hmac: Some(&row.previous_hmac),
-            };
-            let canonical = audit_hmac_v1_bytes(&input)?;
-            let mut mac = Hmac::<Sha256>::new_from_slice(audit_key)
-                .map_err(|_| StoreError::InvalidAuditKeyLength { actual: audit_key.len() })?;
-            mac.update(&canonical);
-            let expected_hmac = mac.finalize().into_bytes();
-            if expected_hmac.as_slice() != row.hmac.as_slice() {
-                return Err(StoreError::AuditIntegrity {
-                    sequence: row.sequence,
-                    reason: "row hmac mismatch".to_owned(),
-                });
-            }
-
-            previous_hmac = row.hmac;
+        let verification = verify_audit_rows(&rows, audit_key)?;
+        if !verification.hmac_ok {
+            return Err(StoreError::AuditIntegrity {
+                sequence: verification.first_break_sequence.unwrap_or(1),
+                reason: verification
+                    .first_break_reason
+                    .unwrap_or_else(|| "audit verification failed".to_owned()),
+            });
         }
 
-        let rows_verified = rows.len() as u64;
+        let rows_verified = verification.rows_verified;
         let metadata = json!({
             "schema_version": 1,
             "action": "AUDIT_VERIFY",

@@ -52,6 +52,17 @@ pub enum DockerError {
     /// The target Docker context is remote and policy did not allow it.
     #[error("remote Docker context is not allowed for secret injection")]
     RemoteContextDenied,
+    /// The endpoint cannot be safely classified, even with remote permission.
+    #[error("Docker endpoint is unknown or malformed; secret injection is denied")]
+    UnknownEndpoint,
+    /// A secret would change Docker's destination or connection configuration.
+    #[error(
+        "Docker routing variable {name} cannot be injected as a secret; inherit it explicitly instead"
+    )]
+    RoutingSecretDenied {
+        /// Variable name only; never its value.
+        name: String,
+    },
     /// No Docker or Compose argv was supplied.
     #[error("empty Docker command")]
     EmptyCommand,
@@ -65,28 +76,129 @@ pub enum DockerError {
 
 /// Classifies a Docker endpoint string such as `DOCKER_HOST`.
 ///
-/// Missing endpoint information is treated as local because the Docker CLI
-/// defaults to the platform-local socket/pipe.
+/// `None` represents the platform-local default for callers that have already
+/// resolved context selection. Empty, malformed, and unrecognized endpoints
+/// are unknown. An inherited file descriptor cannot establish locality.
 #[must_use]
 pub fn classify_docker_endpoint(endpoint: Option<&str>) -> DockerContextClass {
-    let Some(endpoint) = endpoint.filter(|value| !value.trim().is_empty()) else {
+    let Some(endpoint) = endpoint else {
         return DockerContextClass::Local;
     };
-    let normalized = endpoint.trim().to_ascii_lowercase();
-    if normalized.starts_with("unix://")
-        || normalized.starts_with("npipe://")
-        || normalized.starts_with("fd://")
-    {
+    if endpoint.trim() != endpoint || endpoint.chars().any(char::is_control) {
+        return DockerContextClass::Unknown;
+    }
+    let normalized = endpoint.to_ascii_lowercase();
+    let Some((scheme, address)) = normalized.split_once("://") else {
+        return DockerContextClass::Unknown;
+    };
+    match scheme {
+        "unix" if address.starts_with('/') && address.len() > 1 => DockerContextClass::Local,
+        "npipe" => classify_named_pipe(address),
+        "tcp" | "ssh" | "http" | "https" if valid_remote_address(scheme, address) => {
+            DockerContextClass::Remote
+        }
+        _ => DockerContextClass::Unknown,
+    }
+}
+
+fn classify_named_pipe(address: &str) -> DockerContextClass {
+    let address = address.replace('\\', "/");
+    let Some((server, pipe)) = address.strip_prefix("//").and_then(|path| path.split_once('/'))
+    else {
+        return DockerContextClass::Unknown;
+    };
+    let Some(name) = pipe.strip_prefix("pipe/") else {
+        return DockerContextClass::Unknown;
+    };
+    if name.is_empty() || name.split('/').any(|part| matches!(part, "" | "." | "..")) {
+        return DockerContextClass::Unknown;
+    }
+    if server == "." {
         DockerContextClass::Local
-    } else if normalized.starts_with("tcp://")
-        || normalized.starts_with("ssh://")
-        || normalized.starts_with("http://")
-        || normalized.starts_with("https://")
-    {
+    } else if valid_host_name(server) {
         DockerContextClass::Remote
     } else {
         DockerContextClass::Unknown
     }
+}
+
+fn valid_host_name(host: &str) -> bool {
+    host.bytes().any(|byte| byte.is_ascii_alphanumeric())
+        && host
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
+}
+
+fn valid_remote_address(scheme: &str, address: &str) -> bool {
+    if address.chars().any(char::is_whitespace) || address.contains(['?', '#', '\\']) {
+        return false;
+    }
+    let (authority, path) =
+        address.split_once('/').map_or((address, None), |(host, path)| (host, Some(path)));
+    if scheme == "tcp" && path.is_some() {
+        return false;
+    }
+    let authority = if let Some((user, host)) = authority.split_once('@') {
+        if scheme != "ssh" || !valid_host_name(user) {
+            return false;
+        }
+        host
+    } else {
+        authority
+    };
+    let port = if let Some(ipv6) = authority.strip_prefix('[') {
+        let Some((host, suffix)) = ipv6.split_once(']') else {
+            return false;
+        };
+        if host.parse::<std::net::Ipv6Addr>().is_err() {
+            return false;
+        }
+        if suffix.is_empty() {
+            return true;
+        }
+        let Some(port) = suffix.strip_prefix(':') else {
+            return false;
+        };
+        Some(port)
+    } else {
+        let (host, port) =
+            authority.split_once(':').map_or((authority, None), |(host, port)| (host, Some(port)));
+        if !valid_host_name(host) {
+            return false;
+        }
+        port
+    };
+    port.is_none_or(|port| {
+        port.bytes().all(|byte| byte.is_ascii_digit())
+            && port.parse::<u16>().is_ok_and(|port| port > 0)
+    })
+}
+
+/// Rejects secret names that Docker uses to select its endpoint or configuration.
+/// Call this before decryption when the policy's names are available separately.
+///
+/// # Errors
+///
+/// Returns [`DockerError::RoutingSecretDenied`] for a Docker routing variable.
+pub fn validate_injected_names<'a>(
+    names: impl IntoIterator<Item = &'a str>,
+) -> Result<(), DockerError> {
+    const ROUTING_VARIABLES: &[&str] = &[
+        "DOCKER_HOST",
+        "DOCKER_CONTEXT",
+        "DOCKER_CONFIG",
+        "HOME",
+        "USERPROFILE",
+        "DOCKER_TLS",
+        "DOCKER_TLS_VERIFY",
+        "DOCKER_CERT_PATH",
+    ];
+    for name in names {
+        if ROUTING_VARIABLES.iter().any(|reserved| name.eq_ignore_ascii_case(reserved)) {
+            return Err(DockerError::RoutingSecretDenied { name: name.to_owned() });
+        }
+    }
+    Ok(())
 }
 
 /// Prepares a `docker run` invocation so Docker reads secrets from its own
@@ -100,7 +212,8 @@ pub fn classify_docker_endpoint(endpoint: Option<&str>) -> DockerContextClass {
 /// Returns [`DockerError::EmptyCommand`] for empty argv,
 /// [`DockerError::UnexpectedCommand`] when the command is not `docker`, and
 /// [`DockerError::RemoteContextDenied`] when a remote endpoint is detected
-/// without explicit policy permission.
+/// without explicit policy permission. Unknown endpoints and routing secrets
+/// return [`DockerError::UnknownEndpoint`] and [`DockerError::RoutingSecretDenied`].
 pub fn prepare_docker_run(
     argv: &[String],
     base_env: &EnvMap,
@@ -109,6 +222,7 @@ pub fn prepare_docker_run(
     allow_remote: bool,
 ) -> Result<DockerInjectionPlan, DockerError> {
     validate_remote(endpoint, allow_remote)?;
+    validate_injected_names(locket_env.keys().map(String::as_str))?;
     validate_program(argv, "docker")?;
     validate_subcommand(argv, "run")?;
 
@@ -138,7 +252,8 @@ pub fn prepare_docker_run(
 /// Returns [`DockerError::EmptyCommand`] for empty argv,
 /// [`DockerError::UnexpectedCommand`] when the command is not `docker`, and
 /// [`DockerError::RemoteContextDenied`] when a remote endpoint is detected
-/// without explicit policy permission.
+/// without explicit policy permission. Unknown endpoints and routing secrets
+/// return [`DockerError::UnknownEndpoint`] and [`DockerError::RoutingSecretDenied`].
 pub fn prepare_compose(
     argv: &[String],
     base_env: &EnvMap,
@@ -147,6 +262,7 @@ pub fn prepare_compose(
     allow_remote: bool,
 ) -> Result<DockerInjectionPlan, DockerError> {
     validate_remote(endpoint, allow_remote)?;
+    validate_injected_names(locket_env.keys().map(String::as_str))?;
     validate_program(argv, "docker")?;
     validate_subcommand(argv, "compose")?;
     let injected_names = sorted_names(locket_env);
@@ -161,10 +277,11 @@ pub fn prepare_compose(
 }
 
 fn validate_remote(endpoint: Option<&str>, allow_remote: bool) -> Result<(), DockerError> {
-    if classify_docker_endpoint(endpoint) == DockerContextClass::Remote && !allow_remote {
-        return Err(DockerError::RemoteContextDenied);
+    match classify_docker_endpoint(endpoint) {
+        DockerContextClass::Unknown => Err(DockerError::UnknownEndpoint),
+        DockerContextClass::Remote if !allow_remote => Err(DockerError::RemoteContextDenied),
+        _ => Ok(()),
     }
-    Ok(())
 }
 
 fn validate_program(argv: &[String], expected: &str) -> Result<(), DockerError> {
@@ -217,7 +334,7 @@ mod tests {
     #[test]
     fn classifies_local_and_remote_endpoints() {
         assert_eq!(classify_docker_endpoint(None), DockerContextClass::Local);
-        assert_eq!(classify_docker_endpoint(Some("   ")), DockerContextClass::Local);
+        assert_eq!(classify_docker_endpoint(Some("   ")), DockerContextClass::Unknown);
         assert_eq!(
             classify_docker_endpoint(Some("unix:///var/run/docker.sock")),
             DockerContextClass::Local
@@ -358,5 +475,138 @@ mod tests {
         let result = prepare_compose(&[], &EnvMap::new(), &EnvMap::new(), None, false);
 
         assert_eq!(result, Err(DockerError::EmptyCommand));
+    }
+
+    #[test]
+    fn docker_unknown_or_malformed_endpoints_fail_closed_even_when_remote_allowed() {
+        for endpoint in [
+            "",
+            "   ",
+            "desktop-linux",
+            "fd://3",
+            "fd://",
+            "unix://",
+            "unix://host/socket",
+            "npipe://",
+            "npipe:////./pipe/",
+            "npipe:////server/not-pipe/docker_engine",
+            "tcp://",
+            "tcp://:2376",
+            "tcp://host:invalid",
+            "tcp://host:65536",
+            "tcp://[::1",
+            "ssh://",
+            "ssh://user@",
+            "https://?missing-host",
+            "unix:///socket\n",
+            "tcp://host/path",
+            "ssh://host?query",
+        ] {
+            assert_eq!(
+                classify_docker_endpoint(Some(endpoint)),
+                DockerContextClass::Unknown,
+                "endpoint {endpoint:?}"
+            );
+            for allow_remote in [false, true] {
+                for subcommand in ["run", "compose"] {
+                    let argv = ["docker".to_owned(), subcommand.to_owned(), "app".to_owned()];
+                    let prepare =
+                        if subcommand == "run" { prepare_docker_run } else { prepare_compose };
+                    assert!(
+                        prepare(
+                            &argv,
+                            &EnvMap::new(),
+                            &EnvMap::new(),
+                            Some(endpoint),
+                            allow_remote
+                        )
+                        .is_err(),
+                        "unknown endpoint must be refused: {endpoint:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn docker_named_pipe_server_controls_remote_policy() -> Result<(), DockerError> {
+        for endpoint in
+            ["npipe:////server/pipe/docker_engine", r"npipe://\\server\pipe\docker_engine"]
+        {
+            assert_eq!(classify_docker_endpoint(Some(endpoint)), DockerContextClass::Remote);
+            for subcommand in ["run", "compose"] {
+                let argv = ["docker".to_owned(), subcommand.to_owned(), "app".to_owned()];
+                let prepare =
+                    if subcommand == "run" { prepare_docker_run } else { prepare_compose };
+                assert_eq!(
+                    prepare(&argv, &EnvMap::new(), &EnvMap::new(), Some(endpoint), false),
+                    Err(DockerError::RemoteContextDenied)
+                );
+                assert_eq!(
+                    prepare(&argv, &EnvMap::new(), &EnvMap::new(), Some(endpoint), true)?
+                        .context_class,
+                    DockerContextClass::Remote
+                );
+            }
+        }
+        for endpoint in [
+            "npipe:////./pipe/docker_engine",
+            r"npipe://\\.\pipe\docker_engine",
+            "unix:///var/run/docker.sock",
+        ] {
+            assert_eq!(classify_docker_endpoint(Some(endpoint)), DockerContextClass::Local);
+        }
+        for endpoint in ["tcp://[::1]:2376", "ssh://user@builder:2222", "tcp://localhost:2375"] {
+            assert_eq!(classify_docker_endpoint(Some(endpoint)), DockerContextClass::Remote);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn docker_unknown_named_endpoint_is_denied_even_when_remote_allowed() {
+        let argv = ["docker".into(), "run".into(), "app".into()];
+        for allow_remote in [false, true] {
+            assert!(
+                prepare_docker_run(
+                    &argv,
+                    &EnvMap::new(),
+                    &EnvMap::new(),
+                    Some("unknown-endpoint"),
+                    allow_remote
+                )
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn docker_routing_secrets_are_rejected_by_both_helpers() {
+        for name in [
+            "DOCKER_HOST",
+            "DOCKER_CONTEXT",
+            "DOCKER_CONFIG",
+            "HOME",
+            "USERPROFILE",
+            "DOCKER_TLS",
+            "DOCKER_TLS_VERIFY",
+            "DOCKER_CERT_PATH",
+        ] {
+            for subcommand in ["run", "compose"] {
+                let argv = ["docker".into(), subcommand.into(), "app".into()];
+                let prepare =
+                    if subcommand == "run" { prepare_docker_run } else { prepare_compose };
+                let result = prepare(
+                    &argv,
+                    &EnvMap::new(),
+                    &env(&[(name, "routing-secret-canary")]),
+                    None,
+                    true,
+                );
+                assert!(result.is_err(), "routing secret {name} was allowed");
+                if let Err(error) = result {
+                    assert!(!error.to_string().contains("routing-secret-canary"));
+                }
+            }
+        }
     }
 }

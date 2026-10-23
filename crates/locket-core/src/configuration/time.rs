@@ -117,7 +117,9 @@ const DAY_SECONDS: u64 = 24 * HOUR_SECONDS;
 const WEEK_SECONDS: u64 = 7 * DAY_SECONDS;
 
 fn parse_duration(value: &str) -> Result<Duration, InvalidDuration> {
-    let (number, unit) = value.split_at(value.len().checked_sub(1).ok_or(InvalidDuration)?);
+    let (number, unit) = value
+        .split_at_checked(value.len().checked_sub(1).ok_or(InvalidDuration)?)
+        .ok_or(InvalidDuration)?;
     if number.is_empty()
         || number.starts_with('0')
         || !number.bytes().all(|byte| byte.is_ascii_digit())
@@ -143,7 +145,7 @@ fn parse_duration(value: &str) -> Result<Duration, InvalidDuration> {
 mod tests {
     use std::str::FromStr;
 
-    use super::{Duration, Timestamp};
+    use super::{Duration, InvalidDuration, Timestamp};
 
     #[test]
     fn timestamps_render_as_signed_unix_nanoseconds_and_audit_i128() {
@@ -172,6 +174,24 @@ mod tests {
             "\t1h", "1",
         ] {
             assert!(Duration::from_str(input).is_err(), "{input} should be invalid");
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_unicode_durations() {
+        for input in ["é", "1💥", "💥s", "１s", "1m\u{301}"] {
+            assert_eq!(Duration::from_str(input), Err(InvalidDuration), "{input}");
+        }
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn arbitrary_unicode_durations_never_panic(input in proptest::collection::vec(proptest::char::any(), 0..128)) {
+            let input: String = input.into_iter().collect();
+            let result = Duration::from_str(&input);
+            if !input.is_ascii() {
+                proptest::prop_assert_eq!(result, Err(InvalidDuration));
+            }
         }
     }
 

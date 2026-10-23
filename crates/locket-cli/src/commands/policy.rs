@@ -1161,54 +1161,105 @@ fn build_snapshots(
 }
 
 #[cfg(unix)]
-fn pump_policies_unix(context: &RuntimeContext, payload: serde_json::Value) -> Result<(), String> {
+fn pump_policies_unix(
+    context: &RuntimeContext,
+    payload: serde_json::Value,
+) -> Result<(), io::Error> {
     use locket_agent::{
-        AgentMethod, DEFAULT_MAX_MESSAGE_SIZE, RequestEnvelope, ResponseEnvelope,
-        decode_response_frame, encode_frame,
+        AgentMethod, DEFAULT_MAX_MESSAGE_SIZE, RequestEnvelope, ResponseEnvelope, encode_frame,
     };
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::UnixStream;
 
     let socket_path = crate::agent_socket_path(context);
     if !socket_path.exists() {
-        return Err(format!("agent socket missing at {}", socket_path.display()));
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("agent socket missing at {}", socket_path.display()),
+        ));
     }
 
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|error| error.to_string())?;
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
     runtime.block_on(async move {
-        let mut stream =
-            UnixStream::connect(&socket_path).await.map_err(|error| format!("connect: {error}"))?;
+        let mut stream = UnixStream::connect(&socket_path).await?;
         let request = RequestEnvelope::new(
             "cli-pump-policies",
             AgentMethod::RegisterCommandPolicies,
             payload,
         );
-        let frame = encode_frame(&request, DEFAULT_MAX_MESSAGE_SIZE)
-            .map_err(|error| format!("encode: {error}"))?;
-        stream.write_all(&frame).await.map_err(|error| format!("write: {error}"))?;
-        stream.flush().await.map_err(|error| format!("flush: {error}"))?;
+        let frame = encode_frame(&request, DEFAULT_MAX_MESSAGE_SIZE).map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidData, "invalid agent request frame")
+        })?;
+        stream.write_all(&frame).await?;
+        stream.flush().await?;
 
         let mut buffer = Vec::with_capacity(1024);
         loop {
-            if let Ok((response, _)) = decode_response_frame(&buffer, DEFAULT_MAX_MESSAGE_SIZE) {
+            if let Some(response) = crate::commands::agent::decode_agent_frame(&buffer)? {
                 return match response {
                     ResponseEnvelope::Success(_) => Ok(()),
-                    ResponseEnvelope::Error(error) => {
-                        Err(format!("agent error {}: {}", error.error, error.message))
-                    }
+                    ResponseEnvelope::Error(error) => Err(io::Error::other(format!(
+                        "agent error {}: {}",
+                        error.error, error.message
+                    ))),
                 };
             }
             let mut chunk = [0_u8; 1024];
-            let read = stream.read(&mut chunk).await.map_err(|error| format!("read: {error}"))?;
+            let read = stream.read(&mut chunk).await?;
             if read == 0 {
-                return Err("agent closed connection without a response".to_owned());
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "agent closed connection without a response",
+                ));
             }
             buffer.extend_from_slice(&chunk[..read]);
         }
     })
+}
+
+#[cfg(all(test, unix))]
+mod framing_tests {
+    #![allow(clippy::panic)]
+
+    use crate::commands::agent::framing_tests::{
+        CANARY, fragmented_success, invalid_frame, with_open_peer,
+    };
+    use serde_json::json;
+
+    fn rejects_frame(kind: &str) {
+        let result = with_open_peer(vec![invalid_frame(kind)], |context| {
+            super::pump_policies_unix(context, json!({}))
+        });
+        let Err(error) = result else {
+            panic!("permanent frame error expected");
+        };
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("invalid agent response frame"));
+        assert!(!error.to_string().contains(CANARY));
+    }
+
+    #[test]
+    fn policy_reader_rejects_oversized_frame_while_peer_stays_open() {
+        rejects_frame("oversized");
+    }
+
+    #[test]
+    fn policy_reader_rejects_malformed_frame_while_peer_stays_open() {
+        rejects_frame("malformed");
+    }
+
+    #[test]
+    fn policy_reader_rejects_version_frame_while_peer_stays_open() {
+        rejects_frame("version");
+    }
+
+    #[test]
+    fn policy_reader_accepts_fragmented_frame_while_peer_stays_open() {
+        let result = with_open_peer(fragmented_success(), |context| {
+            super::pump_policies_unix(context, json!({}))
+        });
+        assert!(result.is_ok());
+    }
 }
 
 #[cfg(test)]

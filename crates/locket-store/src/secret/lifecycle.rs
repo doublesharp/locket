@@ -1,7 +1,7 @@
 //! Secret create / rotate / copy / purge / tombstone lifecycle methods.
 
 use locket_core::canonical_json_string;
-use rusqlite::params;
+use rusqlite::{Connection, params};
 use serde_json::Value;
 
 use crate::Store;
@@ -11,6 +11,31 @@ use crate::secret::{
     SecretBlobRecord, SecretCopyTarget, SecretFingerprintRecord, SecretMetadataUpdate,
     SecretRecord, SecretVersionRecord, VersionDeprecation,
 };
+
+fn advance_secret_current_version(
+    transaction: &Connection,
+    secret: &SecretRecord,
+    new_version: &SecretVersionRecord,
+) -> Result<(), StoreError> {
+    let updated = transaction.execute(
+        "UPDATE secrets
+         SET current_version = ?2, updated_at = ?3, last_rotated_at = ?3
+         WHERE id = ?1 AND state = 'active' AND current_version = ?4",
+        params![
+            secret.id.as_str(),
+            new_version.version,
+            new_version.created_at,
+            secret.current_version,
+        ],
+    )?;
+    if updated != 1 {
+        return Err(StoreError::SecretStateConflict {
+            secret_id: secret.id.clone(),
+            expected_version: secret.current_version,
+        });
+    }
+    Ok(())
+}
 
 impl Store {
     /// Creates a secret, its initial version, encrypted blob, and keyed fingerprint atomically.
@@ -191,8 +216,8 @@ impl Store {
     ///
     /// # Errors
     ///
-    /// Returns [`StoreError::Sqlite`] when `SQLite` rejects any update or insert.
-    /// The transaction is rolled back when any row fails.
+    /// Returns [`StoreError::SecretStateConflict`] when the secret changed since it was read,
+    /// or [`StoreError::Sqlite`] when an update or insert fails. Errors roll back the transaction.
     pub fn rotate_secret(
         &mut self,
         secret: &SecretRecord,
@@ -216,7 +241,8 @@ impl Store {
     ///
     /// # Errors
     ///
-    /// Returns [`StoreError`] when `SQLite` rejects a row or audit canonicalization fails.
+    /// Returns [`StoreError::SecretStateConflict`] when the stored active/current state
+    /// no longer matches `secret`, or another [`StoreError`] when a row or audit append fails.
     pub fn rotate_secret_with_audit(
         &mut self,
         secret: &SecretRecord,
@@ -227,7 +253,7 @@ impl Store {
         audit: Option<AuditContext<'_>>,
     ) -> Result<(), StoreError> {
         let transaction = self.connection.savepoint()?;
-        transaction.execute(
+        let deprecated = transaction.execute(
             "UPDATE secret_versions
              SET state = 'deprecated', deprecated_at = ?3, grace_until = ?4
              WHERE secret_id = ?1 AND version = ?2 AND state = 'current'",
@@ -238,6 +264,12 @@ impl Store {
                 deprecation.grace_until,
             ],
         )?;
+        if deprecated != 1 {
+            return Err(StoreError::SecretStateConflict {
+                secret_id: secret.id.clone(),
+                expected_version: secret.current_version,
+            });
+        }
         transaction.execute(
             "INSERT INTO secret_versions(
                secret_id, version, source, origin, state, created_at,
@@ -282,12 +314,7 @@ impl Store {
                 fingerprint.created_at,
             ],
         )?;
-        transaction.execute(
-            "UPDATE secrets
-             SET current_version = ?2, updated_at = ?3, last_rotated_at = ?3
-             WHERE id = ?1 AND state = 'active'",
-            params![secret.id.as_str(), new_version.version, new_version.created_at],
-        )?;
+        advance_secret_current_version(&transaction, secret, new_version)?;
         append_optional_audit(&transaction, audit)?;
         transaction.commit()?;
 
@@ -301,7 +328,8 @@ impl Store {
     ///
     /// # Errors
     ///
-    /// Returns [`StoreError`] when `SQLite` rejects a row or audit canonicalization fails.
+    /// Returns [`StoreError::SecretStateConflict`] when a rotation target's stored active/current
+    /// state changed, or another [`StoreError`] when a row or audit append fails.
     pub fn copy_secret_with_audit(
         &mut self,
         target: SecretCopyTarget<'_>,
@@ -336,7 +364,7 @@ impl Store {
                 )?;
             }
             SecretCopyTarget::Rotate { secret, deprecation } => {
-                transaction.execute(
+                let deprecated = transaction.execute(
                     "UPDATE secret_versions
                      SET state = 'deprecated', deprecated_at = ?3, grace_until = ?4
                      WHERE secret_id = ?1 AND version = ?2 AND state = 'current'",
@@ -347,6 +375,12 @@ impl Store {
                         deprecation.grace_until,
                     ],
                 )?;
+                if deprecated != 1 {
+                    return Err(StoreError::SecretStateConflict {
+                        secret_id: secret.id.clone(),
+                        expected_version: secret.current_version,
+                    });
+                }
             }
         }
         transaction.execute(
@@ -394,12 +428,7 @@ impl Store {
             ],
         )?;
         if let SecretCopyTarget::Rotate { secret, .. } = target {
-            transaction.execute(
-                "UPDATE secrets
-                 SET current_version = ?2, updated_at = ?3, last_rotated_at = ?3
-                 WHERE id = ?1 AND state = 'active'",
-                params![secret.id.as_str(), new_version.version, new_version.created_at],
-            )?;
+            advance_secret_current_version(&transaction, secret, new_version)?;
         }
         append_optional_audit(&transaction, audit)?;
         transaction.commit()?;

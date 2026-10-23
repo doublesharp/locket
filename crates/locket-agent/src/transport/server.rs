@@ -6,7 +6,6 @@
 //! construction lives in `windows_pipe`.
 
 use std::collections::BTreeMap;
-#[cfg(unix)]
 use std::io;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -17,17 +16,19 @@ use std::sync::Arc;
 use locket_platform::KeyringMasterKeyStore;
 use locket_platform::{MasterKeyStore, PassphraseFallbackMasterKeyStore, PlatformError};
 use locket_store::{Store, StoreError};
+use tokio::io::AsyncReadExt;
 #[cfg(unix)]
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncWriteExt;
 #[cfg(unix)]
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{Mutex, Notify};
 
-#[cfg(unix)]
 use crate::DEFAULT_MAX_MESSAGE_SIZE;
 use crate::envelope::{ErrorEnvelope, RequestEnvelope, ResponseEnvelope, SuccessEnvelope};
+use crate::error::ProtocolError;
+use crate::framing::decode_request_frame;
 #[cfg(unix)]
-use crate::framing::{decode_request_frame, encode_frame};
+use crate::framing::encode_frame;
 use crate::method::AgentMethod;
 use crate::session_lock::{
     SessionLockAudit, SessionLockOutcome, SessionLockSource, append_lock_audit,
@@ -652,7 +653,7 @@ async fn collect_live_summary(
 /// Handles a single accepted connection.
 ///
 /// Validates peer credentials, reads framed requests, dispatches the
-/// stub handler, and writes framed responses until the peer closes or
+/// appropriate handler, and writes framed responses until the peer closes or
 /// a read error occurs.
 ///
 /// A peer whose effective UID does not match the daemon's UID is
@@ -731,20 +732,25 @@ async fn stream_status(
         // socket. A peer can send `CancelSubscription` immediately
         // after `SubscribeStatus`, in which case it would already be
         // sitting in `buffer`.
-        if let Ok((envelope, consumed)) = decode_request_frame(&buffer, DEFAULT_MAX_MESSAGE_SIZE) {
-            buffer.drain(..consumed);
-            if matches!(envelope.method(), Ok(AgentMethod::CancelSubscription)) {
-                return ConnectionOutcome::PeerClosed;
+        match decode_request_frame(&buffer, DEFAULT_MAX_MESSAGE_SIZE) {
+            Ok((envelope, consumed)) => {
+                buffer.drain(..consumed);
+                if matches!(envelope.method(), Ok(AgentMethod::CancelSubscription)) {
+                    return ConnectionOutcome::PeerClosed;
+                }
+                let response = error_response(
+                    &envelope,
+                    "ProtocolError",
+                    "only CancelSubscription is allowed mid-stream",
+                );
+                let _ = write_response(&mut stream, &response).await;
+                return ConnectionOutcome::Errored;
             }
-            let response = error_response(
-                &envelope,
-                "ProtocolError",
-                "only CancelSubscription is allowed mid-stream",
-            );
-            let _ = write_response(&mut stream, &response).await;
-            return ConnectionOutcome::Errored;
+            Err(ProtocolError::IncompleteFrame) => {}
+            Err(_) => return ConnectionOutcome::Errored,
         }
 
+        let mut chunk = [0_u8; 1024];
         tokio::select! {
             event = subscriber.next_event_with_heartbeat(heartbeat) => {
                 let Some(event) = event else { return ConnectionOutcome::Errored; };
@@ -759,11 +765,11 @@ async fn stream_status(
                     return ConnectionOutcome::Errored;
                 }
             }
-            read = stream.read_buf(&mut buffer) => {
+            read = stream.read(&mut chunk) => {
                 match read {
                     Ok(0) => return ConnectionOutcome::PeerClosed,
-                    Ok(_) => {
-                        // Loop will attempt decode at the top.
+                    Ok(read) => {
+                        buffer.extend_from_slice(&chunk[..read]);
                     }
                     Err(_) => return ConnectionOutcome::Errored,
                 }
@@ -772,15 +778,20 @@ async fn stream_status(
     }
 }
 
-#[cfg(unix)]
-async fn read_one_frame(
-    stream: &mut UnixStream,
+// Shared by Unix sockets and Windows pipes. Only an incomplete frame can
+// become valid after another read; all other decode errors close the stream.
+pub(super) async fn read_one_frame<R: tokio::io::AsyncRead + Unpin>(
+    stream: &mut R,
     buffer: &mut Vec<u8>,
 ) -> Result<Option<RequestEnvelope>, io::Error> {
     loop {
-        if let Ok((envelope, consumed)) = decode_request_frame(buffer, DEFAULT_MAX_MESSAGE_SIZE) {
-            buffer.drain(..consumed);
-            return Ok(Some(envelope));
+        match decode_request_frame(buffer, DEFAULT_MAX_MESSAGE_SIZE) {
+            Ok((envelope, consumed)) => {
+                buffer.drain(..consumed);
+                return Ok(Some(envelope));
+            }
+            Err(ProtocolError::IncompleteFrame) => {}
+            Err(error) => return Err(io::Error::new(io::ErrorKind::InvalidData, error)),
         }
         let mut chunk = [0_u8; 1024];
         let read = stream.read(&mut chunk).await?;

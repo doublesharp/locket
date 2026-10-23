@@ -14,13 +14,14 @@ set -euo pipefail
 # filters. Each area is a logical concern that may span multiple crates:
 #
 #   policy_evaluation  - crates/locket-core/src/policy/**.rs
-#                        crates/locket-agent/src/policies.rs
+#                        crates/locket-agent/src/handlers/policies.rs
 #   env_merge          - crates/locket-cli/src/commands/exec/run.rs
-#                        crates/locket-agent/src/prepare_exec.rs
+#                        crates/locket-agent/src/handlers/prepare_exec.rs
 #   typed_error_map    - crates/locket-core/src/error.rs
-#                        crates/locket-cli/src/main.rs (error -> exit code)
-#   authz_boundaries   - crates/locket-agent/src/auth.rs (peer creds)
-#                        crates/locket-store/src/grants.rs
+#                        crates/locket-cli/src/runtime/error.rs (error -> exit code)
+#   authz_boundaries   - crates/locket-agent/src/handlers/auth.rs
+#                        crates/locket-agent/src/state/grant.rs
+#                        crates/locket-store/src/access/grants.rs
 #
 # The fallback path (cargo-mutants not installed) still runs `cargo test` per
 # package so contributors without cargo-mutants get a meaningful smoke. The
@@ -37,10 +38,10 @@ mutation_timeout="${MUTATION_TIMEOUT:-60}"
 
 # Areas mapped to --file glob filters. Globs are interpreted by cargo-mutants.
 mutation_areas=(
-  "policy_evaluation:crates/locket-core/src/policy/**/*.rs,crates/locket-agent/src/policies.rs"
-  "env_merge:crates/locket-cli/src/commands/exec/run.rs,crates/locket-agent/src/prepare_exec.rs"
-  "typed_error_map:crates/locket-core/src/error.rs,crates/locket-cli/src/main.rs"
-  "authz_boundaries:crates/locket-agent/src/auth.rs,crates/locket-store/src/grants.rs"
+  "policy_evaluation:crates/locket-core/src/policy/**/*.rs,crates/locket-agent/src/handlers/policies.rs"
+  "env_merge:crates/locket-cli/src/commands/exec/run.rs,crates/locket-agent/src/handlers/prepare_exec.rs"
+  "typed_error_map:crates/locket-core/src/error.rs,crates/locket-cli/src/runtime/error.rs"
+  "authz_boundaries:crates/locket-agent/src/handlers/auth.rs,crates/locket-agent/src/state/grant.rs,crates/locket-store/src/access/grants.rs"
 )
 
 # Fallback package set (cargo-mutants not installed). locket-cli is included

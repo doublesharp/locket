@@ -16,7 +16,6 @@ import {
   buildListAuditRequest,
   buildListPoliciesRequest,
   buildLockRequest,
-  buildScanKnownValuesRequest,
   buildSetActiveProfileRequest,
 } from './commandsModel';
 import { runUnlockFlow } from './unlockHandler';
@@ -44,7 +43,7 @@ export function registerLocketCommands(agentClient: AgentClient, deps: CommandDe
     vscode.commands.registerCommand('locket.lock', () => lock(agentClient)),
     vscode.commands.registerCommand('locket.switchProfile', () => switchProfile(agentClient, resolveProject)),
     vscode.commands.registerCommand('locket.runPolicy', () => runPolicy(agentClient, resolveProject)),
-    vscode.commands.registerCommand('locket.scanWorkspace', () => scanWorkspace(agentClient)),
+    vscode.commands.registerCommand('locket.scanWorkspace', () => scanWorkspace(resolveProject)),
     vscode.commands.registerCommand('locket.openAuditView', () => openAuditView(agentClient, resolveProject)),
   ];
   return new vscode.Disposable(() => {
@@ -211,17 +210,16 @@ async function runPolicy(agentClient: AgentClient, resolveProject: ProjectResolv
   terminal.show();
 }
 
-async function scanWorkspace(agentClient: AgentClient): Promise<void> {
-  if (!vscode.workspace.isTrusted) { void vscode.window.showWarningMessage('Locket requires a trusted workspace.'); return; }
-  const folders = vscode.workspace.workspaceFolders ?? [];
-  const paths = folders.map((folder) => folder.uri.fsPath);
-  if (paths.length === 0) {
-    void vscode.window.showInformationMessage('Locket scan requires an open workspace folder.');
-    return;
-  }
+async function scanWorkspace(resolveProject: ProjectResolver): Promise<void> {
+  const project = await resolveProject();
+  if (project === undefined) { return; }
   try {
-    await agentClient.invoke('ScanKnownValues', buildScanKnownValuesRequest(paths));
-    void vscode.window.showInformationMessage('Locket scan completed; see the diagnostics view for findings.');
+    const terminal = vscode.window.createTerminal({
+      name: 'Locket Scan', shellPath: project.cliPath,
+      shellArgs: ['scan', '--require-known'], cwd: project.root,
+    });
+    terminal.show();
+    void vscode.window.showInformationMessage('Continue the scan in the terminal. Known-value coverage requires an unlocked vault; findings and coverage are reported there.');
   } catch (error) {
     void vscode.window.showErrorMessage(agentErrorMessage(error));
   }
